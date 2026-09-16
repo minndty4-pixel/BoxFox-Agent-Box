@@ -126,6 +126,7 @@ interface UiState {
   isSettingsOpen: boolean
   settingsCategory: SettingSectionId
   settingsTab: SettingTabId
+  providerInitialTab: 'api' | 'router'
   editingHarnessId: string | null
   openSettings: (tab?: SettingTabId) => void
   closeSettings: () => void
@@ -224,13 +225,15 @@ export const useUiStore = create<UiState>((set, get) => ({
   isSettingsOpen: false,
   settingsCategory: 'AGENTS',
   settingsTab: 'harness',
+  providerInitialTab: 'router',
   editingHarnessId: null,
   openSettings: (tab = 'harness') =>
-    set({ isSettingsOpen: true, settingsTab: tab, editingHarnessId: null }),
+    set((s) => ({ isSettingsOpen: true, settingsTab: tab === 'llm_api_keys' || tab === 'router' ? 'provider' : tab, providerInitialTab: tab === 'llm_api_keys' ? 'api' : tab === 'router' ? 'router' : s.providerInitialTab, editingHarnessId: null })),
   closeSettings: () => set({ isSettingsOpen: false, editingHarnessId: null }),
   setSettingsTab: (tab, category) =>
     set((s) => ({
-      settingsTab: tab,
+      settingsTab: tab === 'llm_api_keys' || tab === 'router' ? 'provider' : tab,
+      providerInitialTab: tab === 'llm_api_keys' ? 'api' : tab === 'router' ? 'router' : s.providerInitialTab,
       settingsCategory: category ?? s.settingsCategory,
       editingHarnessId: null,
     })),

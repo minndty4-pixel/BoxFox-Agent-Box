@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { Globe, Terminal } from 'lucide-react'
 import { useUiStore } from '../../store/uiStore'
 import { SettingsSidebar } from './SettingsSidebar'
@@ -13,13 +14,31 @@ import { AccountView } from './AccountView'
 import { NotificationsView } from './NotificationsView'
 import { UsageView } from './UsageView'
 import { ReferralsView } from './ReferralsView'
-import { LlmApiKeysView } from './LlmApiKeysView'
+import { ProviderView } from './ProviderView'
 import { SupportView } from './SupportView'
 
 export function SettingsModal() {
   const isSettingsOpen = useUiStore((s) => s.isSettingsOpen)
   const settingsTab = useUiStore((s) => s.settingsTab)
   const editingHarnessId = useUiStore((s) => s.editingHarnessId)
+  const providerInitialTab = useUiStore((s) => s.providerInitialTab)
+  const closeSettings = useUiStore((s) => s.closeSettings)
+  const dialogRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!isSettingsOpen) return
+    const previous = document.activeElement as HTMLElement | null
+    dialogRef.current?.querySelector<HTMLElement>('button')?.focus()
+    const key = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { event.preventDefault(); closeSettings() }
+      if (event.key !== 'Tab') return
+      const items = [...(dialogRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),a[href],[tabindex="0"]') ?? [])].filter(el => el.getClientRects().length)
+      const first = items[0], last = items.at(-1)
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
+    }
+    window.addEventListener('keydown', key)
+    return () => { window.removeEventListener('keydown', key); previous?.focus() }
+  }, [isSettingsOpen, closeSettings])
 
   if (!isSettingsOpen) return null
 
@@ -71,7 +90,11 @@ export function SettingsModal() {
           </div>
         )
       case 'llm_api_keys':
-        return <LlmApiKeysView />
+        return <ProviderView initialTab="api" />
+      case 'router':
+        return <ProviderView initialTab="router" />
+      case 'provider':
+        return <ProviderView initialTab={providerInitialTab} />
       case 'scheduled_sessions':
         return <ScheduledSessionsView />
       case 'automations':
@@ -109,10 +132,10 @@ export function SettingsModal() {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex bg-black/90 backdrop-blur-xs text-fg animate-in fade-in duration-150">
-      <div className="flex h-full w-full overflow-hidden bg-bg">
+    <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Settings" className="fixed inset-0 z-50 flex bg-black/90 backdrop-blur-xs text-fg animate-in fade-in duration-150">
+      <div className="flex h-full w-full flex-col overflow-hidden bg-bg sm:flex-row">
         <SettingsSidebar />
-        <main className="flex-1 overflow-y-auto bg-bg">{renderContent()}</main>
+        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden bg-bg">{renderContent()}</main>
       </div>
     </div>
   )

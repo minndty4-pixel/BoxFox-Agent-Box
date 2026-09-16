@@ -1,0 +1,2 @@
+# Dependency for validating snapshot manifests against Draft 2020-12 JSON Schema.
+jsonschema>=4.18,<5

@@ -1,0 +1,83 @@
+/** Original BoxFox chat presentation; independent native-router turns. */
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Check, Copy, LoaderCircle, RotateCcw, Sparkles } from 'lucide-react'
+import type { ProviderConnection, ProviderSnapshot } from '../../types/provider'
+import { useRouterChatStore, type RouterChatSelection, type RouterChatTurn } from '../../store/routerChatStore'
+import { useProviderStore } from '../../store/providerStore'
+import { useUiStore } from '../../store/uiStore'
+import { useT } from '../../i18n/context'
+import { MarkdownRenderer } from '../chat/MarkdownRenderer'
+import { ProviderIcon } from '../providers/ProviderIcon'
+import { ChatInputBar } from './ChatInputBar'
+
+function selectionKey(s: RouterChatSelection | null) { return !s ? '' : s.kind === 'alias' ? `alias:${s.aliasId}` : `model:${s.connectionId}:${s.modelId}` }
+function eligible(c: ProviderConnection) { return c.enabled && c.authState === 'ready' && c.discoveryState === 'ready' && (c.providerId !== 'antigravity' || c.projectState === 'ready') }
+export function routerChatOptions(snapshot: ProviderSnapshot) {
+  // A live inventory alone does not prove inference works. Preserve models
+  // pending their first probe, but never offer a model known unavailable.
+  const models = snapshot.connections.filter(eligible).flatMap(c => c.models.filter(m => m.enabled && m.health !== 'unavailable').map(m => ({ value: `model:${c.id}:${m.id}`, label: `${c.name} · ${m.name}`, providerId: c.providerId, selection: { kind: 'model', connectionId: c.id, modelId: m.id } as RouterChatSelection })))
+  const aliases = snapshot.aliases.filter(a => a.enabled && a.targets.some(t => models.some(m => m.selection.kind === 'model' && m.selection.connectionId === t.connectionId && m.selection.modelId === t.modelId))).map(a => ({ value: `alias:${a.id}`, label: a.name, providerId: snapshot.connections.find(c => c.id === a.targets[0]?.connectionId)?.providerId ?? 'router', selection: { kind: 'alias', aliasId: a.id } as RouterChatSelection }))
+  return [...aliases, ...models]
+}
+function tokenLabel(t: RouterChatTurn | undefined) { return !t?.usage || (t.usage.prompt_tokens == null && t.usage.completion_tokens == null) ? 'Usage chưa có dữ liệu' : `${t.usage.prompt_tokens ?? '?'} in · ${t.usage.completion_tokens ?? '?'} out` }
+function RouterTurn({ turn, snapshot, busy }: { turn: RouterChatTurn; snapshot: ProviderSnapshot | null; busy: boolean }) {
+  const [copied, setCopied] = useState(false)
+  const retry = useRouterChatStore(s => s.retry)
+  const id = turn.meta?.connectionId ?? (turn.selection.kind === 'model' ? turn.selection.connectionId : null)
+  const c = snapshot?.connections.find(c => c.id === id)
+  return <div className="space-y-6" data-testid="router-chat-turn">
+    <div className="flex flex-col items-end gap-1.5">
+      <div className="max-w-[85%] rounded-2xl bg-panel2 border border-line px-4 py-3 text-xs leading-relaxed text-fg shadow-xs"><MarkdownRenderer content={turn.prompt} /></div>
+      <div className="flex items-center gap-2 text-[10px] text-muted pr-1 select-none">
+        <time dateTime={turn.startedAt}>{new Date(turn.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
+        <button type="button" title="Copy message" aria-label="Copy message" onClick={() => { void navigator.clipboard.writeText(turn.prompt).then(() => setCopied(true)) }} className="hover:text-fg transition cursor-pointer">{copied ? <Check className="size-3 text-emerald-500" /> : <Copy className="size-3" />}</button>
+        <span className="flex size-4 items-center justify-center rounded-full bg-panel border border-line text-[8px] font-bold text-muted">KV</span>
+      </div>
+    </div>
+    <div className="space-y-3 pl-0.5">
+      <div className="flex items-center gap-1.5 text-[11px] text-muted select-none">
+        {c ? <ProviderIcon key={c.providerId} providerId={c.providerId} name={c.name} className="size-3.5" /> : <Sparkles className="size-3.5 text-brand" />}
+        <span className="font-medium text-fg">{c?.name ?? 'BoxFox'}</span>{turn.status === 'streaming' && <LoaderCircle className="size-3 animate-spin" />}<span>{turn.meta?.modelId}</span>
+      </div>
+      {turn.response ? <MarkdownRenderer content={turn.response} /> : turn.status === 'streaming' ? <p className="text-xs text-muted">Đang chờ phản hồi…</p> : null}
+      {turn.error && <p role="alert" className="text-xs leading-relaxed text-rose-500">{turn.error}</p>}
+      {turn.status === 'cancelled' && <p className="text-xs text-muted">Đã dừng request.</p>}
+      <div className="flex items-start justify-between gap-3 select-none">
+        <details className="min-w-0 text-[10px] text-muted">
+          <summary className="cursor-pointer hover:text-fg">{turn.status === 'streaming' ? 'Đang chạy' : turn.status === 'failed' ? 'Request thất bại' : turn.status === 'cancelled' ? 'Đã dừng' : 'Đã hoàn thành'}{turn.latencyMs != null ? ` · ${(turn.latencyMs / 1000).toFixed(2)}s` : ''} · {tokenLabel(turn)}</summary>
+          <div className="mt-2 space-y-1 break-all font-mono"><div>Request ID: {turn.meta?.requestId ?? 'chưa nhận được'}</div><div>Target: {turn.meta ? `${turn.meta.connectionId}/${turn.meta.modelId}` : 'chưa nhận được'}</div><div>Finish: {turn.finishReason ?? 'chưa có dữ liệu'}</div><div>Chi phí: chưa có dữ liệu</div>{turn.toolCalls.length > 0 && <><div>Tool-call được trả về, không được thực thi:</div><pre className="overflow-auto rounded-lg border border-line bg-panel2 p-2">{JSON.stringify(turn.toolCalls, null, 2)}</pre></>}</div>
+        </details>
+        {turn.status !== 'streaming' && <button type="button" onClick={() => void retry(turn.id)} disabled={busy} aria-label="Retry request" title="Retry request" className="shrink-0 text-muted transition hover:text-fg disabled:opacity-30 cursor-pointer"><RotateCcw className="size-3" /></button>}
+      </div>
+    </div>
+  </div>
+}
+
+export function RouterTestChat() {
+  const t = useT()
+  const { snapshot, loading, error, load } = useProviderStore()
+  const { selection, turns, isSending, setSelection, send, stop } = useRouterChatStore()
+  const openSettings = useUiStore(s => s.openSettings)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const options = useMemo(() => snapshot ? routerChatOptions(snapshot) : [], [snapshot])
+  const selected = options.find(o => o.value === selectionKey(selection))
+  const routerModels = useMemo(() => options.map(option => ({ id: option.value, name: option.label, provider: option.providerId })), [options])
+  // A failed per-model probe is shown in Provider, but does not mean that the
+  // router engine or another verified model is unavailable.
+  const routerUnavailable = !snapshot && Boolean(error)
+  useEffect(() => { void load().catch(() => { }) }, [load])
+  useEffect(() => { if (!snapshot || selected) return; const r = snapshot.defaultRoute, key = r.aliasId ? `alias:${r.aliasId}` : `model:${r.connectionId}:${r.modelId}`; const next = options.find(o => o.value === key)?.selection ?? options[0]?.selection ?? null; if (selectionKey(next) !== selectionKey(selection)) setSelection(next) }, [snapshot, options, selected, selection, setSelection])
+  useEffect(() => { messagesEndRef.current?.scrollIntoView?.({ behavior: 'smooth' }) }, [turns.length])
+  useEffect(() => { const onKey = (e: globalThis.KeyboardEvent) => { if (e.key === 'Escape' && isSending) stop() }; window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey) }, [isSending, stop])
+  const openProvider = () => openSettings('provider' as Parameters<typeof openSettings>[0])
+  return <div className="flex h-full flex-col overflow-hidden bg-bg" data-testid="router-chat">
+    <div className="flex shrink-0 items-center justify-between gap-2 border-b border-line bg-panel px-4 py-2 select-none">
+      <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted" title={routerUnavailable ? error ?? undefined : 'Mỗi prompt là một request độc lập; không gửi lại lịch sử.'}><span className={`size-1.5 shrink-0 rounded-full ${routerUnavailable ? 'bg-rose-500' : !selected ? 'bg-muted/40' : 'bg-brand'}`} /><span className="truncate">{routerUnavailable ? 'Router chưa kết nối' : loading ? 'Đang kết nối…' : !selected ? 'Chưa cấu hình Provider' : 'Chat một lượt'}</span></div>
+      <span className="truncate text-[10px] text-muted">{tokenLabel(turns.at(-1))}</span><button type="button" onClick={openProvider} className="shrink-0 text-[11px] text-muted hover:text-fg cursor-pointer">{routerUnavailable || !selected ? 'Mở Provider' : 'Provider'}</button>
+    </div>
+    <div className="min-h-0 flex-1 overflow-y-auto p-5 space-y-6 select-text">
+      {turns.length === 0 ? <div className="flex h-full flex-col items-center justify-center p-8 text-center"><div className="max-w-sm space-y-2"><div className="mx-auto flex size-10 items-center justify-center rounded-xl bg-panel2 border border-line text-muted"><Sparkles className="size-5 text-brand" /></div><h3 className="text-sm font-semibold text-fg">{t('chat.empty.title')}</h3><p className="text-xs leading-relaxed text-muted">{t('chat.routerEmptyBody')}</p></div></div> : turns.map(turn => <RouterTurn key={turn.id} turn={turn} snapshot={snapshot} busy={isSending} />)}<div ref={messagesEndRef} />
+    </div>
+    <ChatInputBar router={{ models: routerModels, activeModelId: selectionKey(selection), isBusy: isSending, onModelChange: id => setSelection(options.find(option => option.value === id)?.selection ?? null), onSend: prompt => { if (selected && !routerUnavailable && !loading) void send(prompt) }, onStop: stop }} />
+  </div>
+}

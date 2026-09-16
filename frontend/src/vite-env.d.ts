@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
+  readonly VITE_CHAT_MODE?: 'router_test' | 'agent'
   readonly VITE_TRANSPORT?: 'mock' | 'live'
   readonly VITE_AGENT_WS_URL?: string
   /** Base URL của ide-proxy/Box API; để trống dùng http://localhost:8081. */

@@ -13,7 +13,7 @@ import { useUiStore } from '../../store/uiStore'
 import { useComposerStore } from '../../store/composerStore'
 import { useT } from '../../i18n/context'
 import { useCompactComposer } from '../../hooks/useCompactComposer'
-import { HarnessModelPicker } from '../chat/HarnessModelPicker'
+import { HarnessModelPicker, type RouterSingleModel } from '../chat/HarnessModelPicker'
 import { RepoPicker } from '../chat/RepoPicker'
 import { AttachmentPicker, type AttachedFile } from '../chat/AttachmentPicker'
 import { ShortcutsPopover } from '../chat/ShortcutsPopover'
@@ -27,7 +27,16 @@ function isLiveTransport(): boolean {
   return (import.meta.env.VITE_TRANSPORT ?? '').trim().toLowerCase() === 'live'
 }
 
-export function ChatInputBar() {
+export interface RouterComposerAdapter {
+  models: RouterSingleModel[]
+  activeModelId: string
+  isBusy: boolean
+  onModelChange: (id: string) => void
+  onSend: (prompt: string) => void
+  onStop: () => void
+}
+
+export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
   const t = useT()
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
@@ -35,7 +44,8 @@ export function ChatInputBar() {
   const barRef = useRef<HTMLDivElement>(null)
   const compact = useCompactComposer(barRef)
   const sendCommand = useAgentStore((s) => s.sendCommand)
-  const isBusy = useAgentStore((s) => s.isBusy)
+  const agentBusy = useAgentStore((s) => s.isBusy)
+  const isBusy = router?.isBusy ?? agentBusy
   const autopilotEnabled = useUiStore((s) => s.autopilotEnabled)
   const setAutopilotEnabled = useUiStore((s) => s.setAutopilotEnabled)
   const pendingElements = useComposerStore((s) => s.pendingElements)
@@ -59,11 +69,12 @@ export function ChatInputBar() {
     // nối vào `text` như file đính kèm ở trên — quyết định D3
     // (`v1-element-selector.md` §4.2): phần tử phải đi tới agent kèm nhãn
     // Integrity/Confidentiality của nó, nối chuỗi sẽ làm mất nhãn đó.
-    sendCommand({
-      type: 'user_message',
-      text: textToSend,
-      ...(pendingElements.length > 0 ? { elements: pendingElements } : {}),
-    })
+    if (router) router.onSend(textToSend)
+    else sendCommand({
+        type: 'user_message',
+        text: textToSend,
+        ...(pendingElements.length > 0 ? { elements: pendingElements } : {}),
+      })
     setInput('')
     setAttachments([])
     clearPendingElements()
@@ -73,6 +84,7 @@ export function ChatInputBar() {
   }
 
   const handleInterrupt = () => {
+    if (router) { router.onStop(); return }
     sendCommand({
       type: 'interrupt',
       level: 'tam_dung',
@@ -182,7 +194,7 @@ export function ChatInputBar() {
             <ShortcutsPopover variant="toolbar" />
 
             {/* Quick Harness & Model Picker Popover */}
-            <HarnessModelPicker />
+            <HarnessModelPicker routerModels={router?.models} activeRouterModelId={router?.activeModelId} onRouterModelChange={router?.onModelChange} />
 
             {/* Quick Ask */}
             <button

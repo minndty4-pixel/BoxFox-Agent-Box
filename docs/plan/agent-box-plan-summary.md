@@ -1,106 +1,87 @@
-# Agent Box — tóm tắt kế hoạch
+# BoxFox Agent Box — tóm tắt kế hoạch
 
-Tài liệu đầy đủ: **`/code/.plans/agent-box-plan.md`** (Phần 0 → XVI). Đây là bản kế hoạch duy nhất cần đọc.
+> **Trạng thái:** kế hoạch sản phẩm, không phải xác nhận rằng backend security hoặc harness đã triển khai.
+>
+> Tài liệu chủ: [Kế hoạch sản phẩm đầy đủ](agent-box-plan.md). Chi tiết runtime không lặp lại ở đây: xem [kiến trúc harness](../architecture/agent-harness.md), [kiến trúc model router](../architecture/model-router.md) và [kiến trúc sandbox](../architecture/sandbox.md).
 
-## Sản phẩm
+## Sản phẩm và ưu tiên
 
-Một **AI Computer tự host** (agent có một máy tính riêng để làm việc, xem file, chạy lệnh, điều khiển trình duyệt), trong đó:
+BoxFox là một **AI Computer tự host**: người dùng giao việc cho agent trong workspace/desktop sandbox, xem tiến độ và artifact, rồi duyệt các quyết định cần thiết. Sản phẩm hướng tới các tác vụ coding, research và workflow browser/desktop có thể kéo dài qua nhiều bước.
 
-- mọi dữ liệu đi vào agent đều mang **nhãn nguồn gốc** — đến từ đâu, có được quyền chỉ đạo agent không, được gửi ra đâu;
-- mọi hành động ra ngoài (ghi file, chạy lệnh, gửi mạng) đều cần một **cho phép có phạm vi và có thời hạn**, được cấp **sau** thời điểm dữ liệu bẩn nhất đi vào ngữ cảnh.
+**Ưu tiên đã chọn là harness sản phẩm nhiều agent.** Harness là bộ chạy và điều phối agent: quản lý phiên, ngữ cảnh, prompt, tool, skill, ngân sách, trạng thái, event và kết quả. Agent con là child session thực sự, không chỉ là model call: có lineage (chuỗi cha-con), giới hạn depth, quyền, budget, deadline và cancellation riêng.
 
-Điều kiện "cấp sau" là chỗ khác biệt. Nó chặn đúng lỗi mà các agent hiện tại mắc: người dùng đồng ý một hành động vô hại, rồi chuẩn thuận đó bị mang sang đúng bước rò rỉ dữ liệu mà không phát sinh thêm một lần hỏi nào (arXiv 2510.26328).
+## Năm quyết định sản phẩm cần giữ
 
-## Cấu trúc tài liệu
+1. **Quyền nằm ngoài mô hình.** Model không tự cấp, mở rộng hay hồi sinh quyền. Tool bị ẩn khỏi prompt không phải cơ chế bảo mật; executor vẫn phải kiểm ở lúc chạy.
+2. **Tách nguồn, quyền chỉ đạo và đích dữ liệu.** Đây là ba câu hỏi khác nhau; một nhãn “an toàn” không đủ.
+3. **Quyền có phạm vi và thời hạn.** Lease (giấy phép có hạn) gắn với hành động/đích, scope, hạn, số lần dùng và trạng thái liên quan; resume không làm sống lại lease cũ.
+4. **Giữ provenance.** Provenance là dấu vết nguồn gốc/biến đổi. Nhãn và nguồn gốc phải đi qua summary, checkpoint, resume, artifact và kết quả agent con.
+5. **Đo cả an toàn lẫn khả năng dùng.** Báo riêng Attack Success Rate (ASR — tỷ lệ tấn công thành công), utility/khả năng hoàn thành việc và số lần hỏi người dùng.
 
-| Phần | Nội dung |
+Sandbox là ranh giới thực thi thật; lọc chuỗi lệnh, `realpath` hoặc một container đang chạy không tự chứng minh giới hạn filesystem. Credential (bí mật xác thực) không được vào agent sandbox: router dùng broker và opaque handle, hỗ trợ API key hoặc OAuth được người dùng ủy quyền. OAuth là cơ chế ủy quyền mà không cần đưa mật khẩu trực tiếp.
+
+## Trạng thái hiện tại đã xác minh
+
+| Khu vực | Trạng thái | Điều không được suy ra |
+|---|---|---|
+| Backend | Các package trong `backend/src/agentbox/` mới là khung rỗng, chưa có runtime harness/security gateway hoàn chỉnh. | Không nói IFC, lease, policy hoặc multi-agent backend đã thực thi. |
+| Frontend | React/TypeScript, UI workspace, transport abstraction và cấu hình harness có mặt; luồng agent còn có mock. | UI/card/nhãn hiển thị không phải enforcement server-side. |
+| Sandbox desktop | Docker desktop, editor, terminal, màn hình và API phụ trợ có mã chạy. | Không coi đó là chứng minh shell scope hẹp hoặc egress đã được policy kiểm soát toàn diện. |
+| Plan approval/benchmark | Có quy ước UI/tệp và tài liệu benchmark. | Nhãn `approved` hay fixture hiện có không là bằng chứng permission/đánh giá đầu-cuối. |
+
+## Bản đồ cấp cao
+
+```text
+UI người dùng
+   │
+   ▼
+Harness nhiều agent ──► cổng chính sách/audit ──► tool executor/sandbox
+   │
+   └──────────────────► model router ──► credential broker/provider adapters
+```
+
+- Harness điều phối session/task/run/turn, Plan/Act, prompt/context, delegation, retry/cancel/resume và event store.
+- Cổng chính sách xét nhãn, approval, lease, budget và egress; không dùng model để đoán hành động an toàn.
+- Tool executor chạy trong ranh giới đã kiểm chứng và trả artifact có provenance.
+- Router chuẩn hóa request, chọn model/provider/route, che dữ liệu nhạy cảm trong observability và không fallback sang đích policy cấm.
+
+Kiến trúc chi tiết nằm ở tài liệu chuyên trách để plan không lặp một kiến trúc dài:
+
+- [Harness nhiều agent](../architecture/agent-harness.md): vòng đời, prompt, tools, skills, context, child sessions, artifacts và event/API.
+- [Model router](../architecture/model-router.md): canonical protocol, adapters, credential, aliases, routing/fallback và logging.
+- [Nghiên cứu](../research/agent-harness/) và [nghiên cứu router](../research/model-router/): bằng chứng nguồn; `code-reference/` chứa snapshot có commit, checksum và license, không được import vào runtime.
+
+## Lộ trình theo phụ thuộc
+
+| Pha | Kết quả cần có |
 |---|---|
-| **0** | Từ điển thuật ngữ — 4 mục, gồm cả mục 0.4 các viết tắt kỹ thuật thông dụng |
-| **I-IV** | Sản phẩm là gì · kiến trúc tổng thể 7 tầng · bối cảnh bài toán · đối thủ và công trình liên quan |
-| **V-XII** | Tám module riêng: Agent Core (**hai chế độ Plan/Act, ReAct bên trong mỗi chế độ** · bảy thành phần Controller · kiến trúc nhiều agent · tính năng nền tảng) · Tool & Skill · Sandbox · Computer Use (**có cổng chặn mặc định tắt**) · **Bảo mật** · Memory · Model Router · **Giao diện** |
-| **XIII** | Benchmark & đánh giá |
-| **XIV-XVI** | Lộ trình đồ án · lộ trình sản phẩm và cloud · rủi ro và điểm cần quyết |
+| **0. Bằng chứng và quyết định** | Research/snapshot có provenance và license; phân biệt implemented, mock và planned. |
+| **1. Hợp đồng tin cậy** | Schema phiên/quyền/artifact/event, state machine và test bằng model/tool giả. |
+| **2. Spike shell + egress** | Đo ranh giới filesystem/process/network trước khi mở shell như capability bảo mật. |
+| **3. Vertical slice một agent** | Plan/Act, cổng model/tool, artifact và UI event thật, với enforcement server-side. |
+| **4. Nền nhiều agent** | Child sessions, delegation contract, quyền con, budget/cancellation tree và scheduler. |
+| **5. Router sản phẩm** | Canonical request, model catalog, credential broker, adapters, route/fallback/rate limit. |
+| **6. Context/skills/desktop** | Progressive skill có provenance, compaction an toàn, browser/vision và UX desktop đã chốt. |
+| **7. Đánh giá + hardening** | Invariant tests, benchmark tái tạo được và báo cáo ASR/utility/prompts/cost/latency. |
 
-Mỗi phần kỹ thuật (V-XIII) kết thúc bằng đúng hai khối: **▸ Phạm vi đồ án (3 tháng)** và **▸ Cần gì để thành sản phẩm** (kèm ước lượng riêng từng việc).
+Không gắn lịch/nhân lực cố định cho đến khi hoàn tất spike shell và chốt phạm vi đội/người dùng. Không mở rộng delegation trước khi vertical slice có event, approval và tool enforcement thật.
 
-## Bốn đóng góp, xếp theo độ mạnh
+## Hai quyết định còn mở
 
-1. **Đ3** — mở rộng nhãn nguồn gốc sang hành động phát sinh từ **ảnh màn hình** (computer use). Chưa thấy công trình nào làm.
-2. **Đ4** — đo định lượng đánh đổi **ASR ↔ khả năng làm việc ↔ số lần phải hỏi người dùng**.
-3. **Đ1** — ghép kiểm soát luồng thông tin với giấy phép có phạm vi/thời hạn trong cùng một runtime chạy được.
-4. **Đ2** — đưa cả hai vào một AI Computer tự host dùng được, có giao diện.
+### Shell
 
-## Mô hình suy luận của Agent Core
+[ADR-0001 — ba lựa chọn cô lập shell](../architecture/decisions/0001-shell-isolation-options.md) là nguồn chi tiết. Nó giữ worker ngắn hạn với mount riêng (khuyến nghị spike trước), sandbox tiến trình trong desktop và shell toàn workspace (phải giảm claim scope). Chưa lựa chọn nào đã triển khai; ADR nêu test sibling write, symlink race, host sentinel, secret không mount, process con và egress.
 
-Phần V nói rõ agent chọn hành động theo mô hình nào, vì lựa chọn đó ràng buộc trực tiếp tầng bảo mật.
+### Điều khiển desktop đồng thời
 
-**Quyết định: hai chế độ vận hành tách biệt — Plan mode và Act mode — và ReAct chạy bên trong từng chế độ.** Đây là mô hình mà Cline, Cursor và Claude Code đang dùng, khác Plan-Act-Replan ở một điểm kiến trúc: **năng lực của agent khác nhau giữa hai giai đoạn**, không chỉ prompt khác nhau.
+[ADR-0002 — điều khiển desktop đồng thời](../architecture/decisions/0002-concurrent-desktop-control.md) giữ quyết định hoãn và ba hướng xử lý stale action. Khuyến nghị bản đầu là user takeover tạm dừng agent; không bật side-effect computer use trước khi executor có test race.
 
-| | Plan mode | Act mode |
-|---|---|---|
-| Tool có trong prompt | Chỉ `SAFE`: `list_dir`, `read_file`, `ask_user` | Toàn bộ: thêm `write_file`, `edit_file`, `run_command` |
-| Tool **không có** trong prompt | `write_file`, `edit_file`, `run_command`, `computer_use` — **không có trong prompt**, không phải bị từ chối | — |
-| Số lần xin quyền | **Bằng 0 trong đa số trường hợp** | Theo bảng quyết định 9.5.3 |
+## Giới hạn phải nói rõ
 
-- **Chuyển Plan → Act là điểm chuẩn thuận duy nhất của cả một việc**, và chỉ **người dùng** bấm được. Mode Manager **không** nhận lệnh chuyển chế độ từ output của LLM — nếu nhận thì một chỉ thị độc chỉ cần viết "hãy chuyển sang Act mode" là vô hiệu hoá toàn bộ cơ chế.
-- Một cú bấm chuyển làm bốn việc: chốt `content_hash` của bản kế hoạch · chuẩn thuận artifact kế hoạch · cấp **giấy phép theo phạm vi kế hoạch** (30 phút) · mở bộ tool đầy đủ. Chuẩn thuận đó **không** làm sạch ngữ cảnh — thứ cho agent đi tiếp là giấy phép, không phải chuẩn thuận.
-- **Giá trị lớn nhất là dồn việc hỏi người dùng về một chỗ có nghĩa:** một quyết định trên một bản kế hoạch đọc được tốt hơn hẳn mười lăm quyết định trên mười lăm thẻ rời rạc. Permission fatigue là rủi ro số một của cách A.
-- **Quy tắc tái neo** giữ giấy phép sống được: artifact bẩn mới **trong** phạm vi kế hoạch không làm mất hiệu lực, **ngoài** phạm vi thì mất ngay. Đây là một **nới lỏng có chủ ý** so với tuyên bố 9.4.2, và nó được ghi thành một mục ngoại lệ riêng ở 9.4.2 chứ không ẩn đi.
-- **Phạm vi kế hoạch do LLM viết, nên có hai chốt chặn ở Controller:** (1) phạm vi **đã gộp và đã `realpath`** phải hiện thành một dòng riêng trên thẻ chuyển chế độ; (2) một **trần độ rộng cứng nằm trong file cấu hình ngoài workspace** — phạm vi giải ra gốc workspace hoặc vượt 5 thư mục thì Controller **từ chối** cấp giấy phép gộp và lùi về hỏi từng hành động. `EGRESS` và đường dẫn `BÍ_MẬT` **luôn** bị loại khỏi phạm vi gộp.
-- **Kiến trúc nhiều agent: KHÔNG dùng cho đồ án.** Một agent một luồng. Lý do riêng của dự án mạnh hơn lý do hiệu năng: **mỗi ranh giới agent là một chỗ nhãn có thể bị rửa** — một bản tóm tắt của sub-agent vào ngữ cảnh chính với nhãn sạch là vô hiệu hoá cả tầng nhãn bằng đúng một lần chuyển tay. Ngoại lệ đáng ghi lại (nhưng ngoài phạm vi): sub-agent chỉ-đọc bị cách ly, chỉ trả về giá trị có kiểu — đúng là **quarantined LLM** của FIDES và CaMeL.
-- **Kế hoạch không phải cơ chế bảo mật.** Policy Engine không bao giờ đọc `plan.md` trong workspace (`plan.md` do agent ghi, injection cũng ghi được). Thứ được tin không phải bản kế hoạch, mà là **hành động bấm của người dùng trên một nội dung cụ thể đã hiện ra**.
-- **Reflexion ngoài phạm vi**, kèm lý do thiết kế: một đoạn tự phê bình sinh từ kết quả bẩn vẫn mang nhãn bẩn, nên nó không làm sạch được gì mà chỉ thêm một chỗ để chỉ thị độc được diễn giải lại.
+- Plan/skill/workspace do agent viết không phải chính sách được tin.
+- Một approval chỉ có ý nghĩa khi gắn proposal ID, content hash, scope digest, epoch, actor, thời hạn và được server kiểm lại.
+- User là người thực hiện lệnh không tự làm output terminal hoặc tài liệu đã đọc thành chỉ thị tin cậy.
+- Tắt mạng desktop không có nghĩa mọi dữ liệu đều không rời máy nếu host vẫn gọi model/provider.
+- MITM (Man-in-the-Middle — proxy/chứng chỉ trung gian chặn lưu lượng) và integration subscription/endpoint không chính thức không thuộc MVP mặc định.
 
-Phần V cũng ghi ra **tám tính năng nền tảng bắt buộc** kèm mặt bảo mật của từng cái. Ba chỗ dễ làm sai nhất: quay lại checkpoint phải **quay lại cả nhãn** nhưng **không** làm sạch ngữ cảnh; agent **không có tool nào** để tự quay lại (nếu có thì injection dùng nó để xoá dấu vết); mở lại phiên cũ **luôn tăng `task_epoch`** và **không hồi sinh** giấy phép cũ.
-
-## Ba quyết định đáng tranh luận
-
-**1. Benchmark là AgentDojo + VPI-Bench, không chạy OSWorld/WebArena.**
-Hai cái sau đo *khả năng làm việc*, không đo bảo mật — SOTA đầu 2026 đã ~66,3% và ~74,3%. Thi ở đó là tự đặt mình vào trục "agent giỏi hơn", trong khi mọi so sánh của dự án là **so với chính nó khi tắt tầng bảo mật**.
-
-**2. Bộ mô phỏng người dùng có luật chốt trước, và báo cáo tách 3 số.**
-Vì cơ chế dựa vào việc hỏi người dùng, ASR phụ thuộc hoàn toàn vào cách "người dùng" trả lời. Luôn từ chối thì ASR≈0 nhưng vô nghĩa; dùng oracle biết đáp án thì thứ chặn được tấn công chính là oracle. Nên: bộ mô phỏng **chỉ thấy đúng những gì giao diện hiện ra**, chạy sáu luật P1-P6 chốt trước, và báo cáo tách **(1) số lần hỏi · (2) ASR · (3) khả năng làm việc** dưới cùng một policy, kèm hai đường biên (luôn đồng ý / luôn từ chối). Đây là điểm hội đồng sẽ hỏi đầu tiên.
-
-Hai luật trong sáu luật đó tồn tại vì một lý do dễ bỏ sót: nếu bộ mô phỏng chỉ biết "đồng ý một lần" hoặc "từ chối" thì nó **không bao giờ cấp một giấy phép nào**, và chênh lệch giữa cấu hình C2 và C3 sẽ bằng 0 vì bộ mô phỏng chứ không vì thiết kế.
-
-**3. Nhân lực quyết định phạm vi, và con số không dễ chịu.**
-Cộng đủ mọi phần: **173,5-209 ngày = 34,7-41,8 tuần-người** (1 tuần-người = 5 ngày của một người; đã gồm +3 ngày của quyết định 12.3.1). Sau đường cắt ở mục 14.2 (18-25 ngày) còn **155,5-184 ngày = 31,1-36,8 tuần-người**. Con số này cao hơn bản trước vì Phần V phình thêm: bảy thành phần Controller, bộ máy hai chế độ, và bốn tính năng nền tảng ở mục 5.8. Đối chiếu ngân sách 13 tuần lịch:
-
-| Nhân lực | Ngân sách | Kết luận |
-|---|---|---|
-| 1 người | 13 tuần-người | **Không vừa 3 tháng bằng bất kỳ đường cắt nào.** Phải xin kéo dài, hoặc thu hẹp còn Phần IX + XIII + giao diện hai khung (~15-18 tuần-người, **vẫn thiếu 2-5 tuần**) |
-| 2 người | 26 tuần-người | **Thiếu 5,1-10,8 tuần-người ở mọi điểm trong khoảng** — không vừa kể cả ở đầu dưới. Phải cắt thêm ngay tuần 0 (bỏ Phần VIII → khoảng 28,7-33,8), và **mất Đ3 + VPI-Bench** |
-| 3 người | 39 tuần-người | **Cấu hình khuyến nghị duy nhất giữ được cả bốn đóng góp.** Biên an toàn **2,2-7,9 tuần-người** — đã mỏng hơn bản trước, nên vẫn phải theo đúng năm gate |
-
-Nếu Gate 1 buộc dùng kế hoạch B toàn phần thì phạm vi thành **31,5-37,3 tuần-người** (mục 13.3 có đường cắt bù riêng, bù được tối đa 1,1 trên 1,5 tuần cần bù).
-
-Không cắt trong mọi trường hợp: Phần IX (bảo mật), bộ ca **T5** (rửa nhãn) và **T7** (tấn công cơ chế hai chế độ Plan/Act), và ba cấu hình C1-C3 của Phần XIII — cắt những thứ đó là bỏ chính đóng góp. C0 là baseline nên được rút xuống 5 ca mẫu nếu phải cắt bù.
-
-## Năm gate ra quyết định trong lộ trình
-
-- **Gate 0 (tuần 0):** hỏi giảng viên hướng dẫn có bắt buộc thành phần ML tự huấn luyện. Nếu có → **+4-6 tuần-người**, phải bỏ computer use hoặc bỏ 2 khung giao diện.
-- **Gate 1 (tuần 1):** spike tích hợp AgentDojo + VPI-Bench, ba nhánh có ước lượng công riêng (0 · 1 tuần · 1,5 tuần) và một **đường cắt bù riêng** thay vì dùng lại mục 14.2. Phát hiện ở tuần 10 là mất cả phần đánh giá.
-- **Gate 2 (tuần 6):** phản ví dụ "giấy phép cấp lúc sạch bị dùng lúc bẩn" bị chặn từ đầu đến cuối qua giao diện. Mốc quan trọng nhất.
-- **Gate 3 (tuần 9-10):** pipeline đánh giá ra được số cho cả 4 cấu hình.
-- **Gate 4 (tuần 11):** có số cho RQ1/RQ2/RQ3.
-
-Mỗi gate có dòng ghi rõ **trượt thì cắt gì**. Nguyên tắc: trượt gate thì cắt phạm vi, không dời hạn.
-
-Rủi ro riêng cần biết ở Gate 3: nếu cấu hình **C1 (chỉ hỏi, tức mức các agent hiện tại đang làm)** ra kết quả ngang **C3 (đầy đủ)** thì dự án không có đóng góp thực nghiệm. Biết ở tuần 9 còn cứu được.
-
-## Sáu câu cần quyết — ba câu đầu phải xong tuần 0
-
-1. **Bao nhiêu người, có ai mạnh hạ tầng/SWE?** — quyết định trực tiếp phạm vi (xem bảng trên)
-2. **Giảng viên có bắt buộc ML tự huấn luyện?** — đổi cả lộ trình
-3. **Tên dự án** — repo hiện là `Cloud-Anget-P`; "Anget" là lỗi chính tả của "Agent", và "Cloud" đi ngược thông điệp local-first
-4. Công khai repo từ tuần mấy (đề xuất: sau tuần 10, khi bộ ca T5 đã pass)
-5. Module thứ hai ngoài coding (tài liệu có dữ liệu mật, hay xử lý ảnh)
-6. Nhóm người dùng đầu tiên
-
-## Ba rủi ro có thể làm thất bại
-
-**R1** ngữ nghĩa nhãn không chặt — tìm được đường rửa nhãn mà thiết kế không chặn · **R2** hỏi người dùng quá nhiều đến mức không ai dùng được (taint explosion) · **R3** trượt thời gian.
-
-"Có sản phẩm khác làm trước" (Pipelock, FIDES, Progent) chỉ ở mức thấp-trung bình và không nên chi phối quyết định.
-
-Mục 16.2 liệt kê **12 điều dự án không tuyên bố** — trong đó hai điều mới nhất: dự án **không** tuyên bố người dùng phát hiện được một bước độc nằm trong bản kế hoạch, và **không** tuyên bố giấy phép theo phạm vi kế hoạch hẹp bằng giấy phép một lần — viết sẵn để dùng nguyên văn trong báo cáo, vì một tuyên bố quá tay bị hội đồng bắt mất nhiều điểm hơn một phạm vi hẹp được nói rõ.
+Xem [bảng chuyển đầy đủ Phần 0–XVI](agent-box-plan.md#10-bảng-chuyển-từ-kế-hoạch-cũ-phần-0xvi) để tra nơi chứa nội dung của kế hoạch 2.844 dòng trước đây. Phần IX đã chuyển sang [mô hình bảo mật](../architecture/security-model.md); Phần XIII đã chuyển sang [kế hoạch đánh giá](agent-box-evaluation.md). Chỉ Phần XII (UI) còn chưa hoàn tất: bảo toàn chi tiết bằng `git show main:docs/plan/agent-box-plan.md` và trích xuất mục 12.1–12.7 sang frontend/spec chuyên trách.

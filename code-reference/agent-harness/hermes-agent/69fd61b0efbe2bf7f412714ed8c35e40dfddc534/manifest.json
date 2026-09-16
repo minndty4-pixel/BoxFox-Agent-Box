@@ -1,0 +1,1309 @@
+{
+  "schema_version": 1,
+  "snapshot_kind": "curated-source-evidence",
+  "runtime_importable": false,
+  "project": {
+    "id": "hermes-agent",
+    "repository": "https://github.com/NousResearch/hermes-agent",
+    "commit": "69fd61b0efbe2bf7f412714ed8c35e40dfddc534",
+    "license": "MIT",
+    "upstream_manifest": "pyproject.toml",
+    "license_file": "LICENSE",
+    "excluded": [
+      ".env",
+      "secrets",
+      "credential databases",
+      "dependencies",
+      "generated files"
+    ]
+  },
+  "files": [
+    {
+      "upstream_path": "README.md",
+      "local_path": "upstream/README.md",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/README.md",
+      "sha256": "1d733df90c2836c1b9cd8d7307d2d222023456b7b55b5036c2fbb54fd8bcfdf4",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "overview"
+      ]
+    },
+    {
+      "upstream_path": "pyproject.toml",
+      "local_path": "upstream/pyproject.toml",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/pyproject.toml",
+      "sha256": "a674c321c63c3bfd9fa099fab5957a64092416f7771680b370a4d77e992744ba",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "upstream-manifest"
+      ]
+    },
+    {
+      "upstream_path": "package.json",
+      "local_path": "upstream/package.json",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/package.json",
+      "sha256": "8b5b2ea9721e8d4bdedea457f5b5bab038e7f3e11ea4e1381bd43f2e87ce04cd",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "upstream-manifest"
+      ]
+    },
+    {
+      "upstream_path": "agent/system_prompt.py",
+      "local_path": "upstream/agent/system_prompt.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/system_prompt.py",
+      "sha256": "f80b10697592d244f1ecb500565aa489d410df1c152ef7411b3e6fe38141152f",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "prompt"
+      ]
+    },
+    {
+      "upstream_path": "agent/prompt_builder.py",
+      "local_path": "upstream/agent/prompt_builder.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/prompt_builder.py",
+      "sha256": "95271d8c1d71447013f9ce07bdc755f8d0a81594d237bf7bdc98ef0123cab641",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "prompt",
+        "context"
+      ]
+    },
+    {
+      "upstream_path": "agent/conversation_loop.py",
+      "local_path": "upstream/agent/conversation_loop.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/conversation_loop.py",
+      "sha256": "e8f8e140c43d0954a5d21c8a8edf2630e953b20b3e3a4e52db1405671cc25bb1",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "agent-loop"
+      ]
+    },
+    {
+      "upstream_path": "agent/tool_executor.py",
+      "local_path": "upstream/agent/tool_executor.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/tool_executor.py",
+      "sha256": "4aa59d2bf1722b0f3e28cc33ee13e8558153deec4391e502f7045c0cfe01ebac",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "tools",
+        "security"
+      ]
+    },
+    {
+      "upstream_path": "agent/turn_tool_round.py",
+      "local_path": "upstream/agent/turn_tool_round.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/turn_tool_round.py",
+      "sha256": "3e6cf5c94125dd75e2fb95cda6fe218a456187d9385a2a8005aa2f3276442d57",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "tools",
+        "agent-loop"
+      ]
+    },
+    {
+      "upstream_path": "agent/skill_bundles.py",
+      "local_path": "upstream/agent/skill_bundles.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/skill_bundles.py",
+      "sha256": "864e472f91247cba0f2b9a0f3c71001c4d61c0a9074fa33d79d94c262f0e4d1e",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "skills",
+        "registry"
+      ]
+    },
+    {
+      "upstream_path": "agent/skill_commands.py",
+      "local_path": "upstream/agent/skill_commands.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/skill_commands.py",
+      "sha256": "7b6edc522fd7ff7f438695ed60a7f8c7730fcfea3fed02af5acb6aca339df98d",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "skills",
+        "loader"
+      ]
+    },
+    {
+      "upstream_path": "agent/skill_preprocessing.py",
+      "local_path": "upstream/agent/skill_preprocessing.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/skill_preprocessing.py",
+      "sha256": "36424642b4f2ad79a30ee730d452b3ebe8e9596ad6985a5f8bbc736320645b58",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "skills",
+        "loader"
+      ]
+    },
+    {
+      "upstream_path": "agent/skill_utils.py",
+      "local_path": "upstream/agent/skill_utils.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/skill_utils.py",
+      "sha256": "d25a1eab0f3e50376a224e3c753b48f0a165b083e3f9654bfe3a969a579305d9",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "skills",
+        "registry"
+      ]
+    },
+    {
+      "upstream_path": "agent/subagent_lifecycle.py",
+      "local_path": "upstream/agent/subagent_lifecycle.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/subagent_lifecycle.py",
+      "sha256": "1c3dc15ad5bb91a79cba040ca7bf504e44f8fbf45db1911ed30821ce1730b51c",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "subagents"
+      ]
+    },
+    {
+      "upstream_path": "agent/delegation_context.py",
+      "local_path": "upstream/agent/delegation_context.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/delegation_context.py",
+      "sha256": "5644ad3f644ac33a7febf47d0b949d69bb210a55ca8e77197e447636b0f4deac",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "subagents",
+        "context"
+      ]
+    },
+    {
+      "upstream_path": "skills/autonomous-ai-agents/claude-code/SKILL.md",
+      "local_path": "upstream/skills/autonomous-ai-agents/claude-code/SKILL.md",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/skills/autonomous-ai-agents/claude-code/SKILL.md",
+      "sha256": "3fd7c81f2c6c19f8ce77303f76d1407cf88f8f43add0f811cb6d467eef5eaca6",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "skills",
+        "claude-code"
+      ]
+    },
+    {
+      "upstream_path": "skills/autonomous-ai-agents/codex/SKILL.md",
+      "local_path": "upstream/skills/autonomous-ai-agents/codex/SKILL.md",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/skills/autonomous-ai-agents/codex/SKILL.md",
+      "sha256": "3ed457c2b8d5d9c33ab3817cea9753cbcf7f165105eb9da488633a624216d51f",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "skills",
+        "codex"
+      ]
+    },
+    {
+      "upstream_path": "skills/autonomous-ai-agents/opencode/SKILL.md",
+      "local_path": "upstream/skills/autonomous-ai-agents/opencode/SKILL.md",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/skills/autonomous-ai-agents/opencode/SKILL.md",
+      "sha256": "afb3ea1f1b4300705f4a44f41ef2bb6f36c45e474b677dcb3c0aa4e6b3740595",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "skills",
+        "opencode"
+      ]
+    },
+    {
+      "upstream_path": "skills/creative/claude-design/SKILL.md",
+      "local_path": "upstream/skills/creative/claude-design/SKILL.md",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/skills/creative/claude-design/SKILL.md",
+      "sha256": "1582b0d49e48bdf937b2f555098484e0979cdfa285c6cc9fa329ba8e416d347a",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "skills",
+        "claude-design"
+      ]
+    },
+    {
+      "upstream_path": "LICENSE",
+      "local_path": "LICENSES/LICENSE",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/LICENSE",
+      "sha256": "821556e6336796450ab852d375117b48a4887e71d255794fd6318d99982a5ab6",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "license",
+        "provenance"
+      ]
+    },
+    {
+      "upstream_path": "run_agent.py",
+      "local_path": "upstream/run_agent.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/run_agent.py",
+      "sha256": "e5e36fadc6bf9d85275e83e422da72a09273e13d6436882a17cb06d118af473b",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "entrypoint",
+        "agent-loop"
+      ]
+    },
+    {
+      "upstream_path": "tools/registry.py",
+      "local_path": "upstream/tools/registry.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tools/registry.py",
+      "sha256": "241a0cbb6d8ea716db35f338784eaabe2bd8f56bedec3c1f9a7b557f268ce9fe",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "tools",
+        "registry"
+      ]
+    },
+    {
+      "upstream_path": "toolsets.py",
+      "local_path": "upstream/toolsets.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/toolsets.py",
+      "sha256": "7fa869260df75942a5b43d208a1c6bd39d880379652aecf03022b7c1856276c3",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "tools",
+        "registry"
+      ]
+    },
+    {
+      "upstream_path": "providers/base.py",
+      "local_path": "upstream/providers/base.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/providers/base.py",
+      "sha256": "eb4700b6a4a827993664ed38d99d8a74d730ef30f68d7d31f0d62d72afb68315",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "providers",
+        "abstraction"
+      ]
+    },
+    {
+      "upstream_path": "model_tools.py",
+      "local_path": "upstream/model_tools.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/model_tools.py",
+      "sha256": "432ab8bcf79bbac321e76385aaa15ad6056999cbf372917f0dbf0ab13e2679dc",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "tools",
+        "model-schema"
+      ]
+    },
+    {
+      "upstream_path": "tools/terminal_tool.py",
+      "local_path": "upstream/tools/terminal_tool.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tools/terminal_tool.py",
+      "sha256": "f209007887ae5d3706180fd2546ca35386852774791f0b4e7fa0f0d48f79d3da",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "tools",
+        "terminal"
+      ]
+    },
+    {
+      "upstream_path": "tools/browser_tool.py",
+      "local_path": "upstream/tools/browser_tool.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tools/browser_tool.py",
+      "sha256": "4dcc7d4bbfe2dba8910eaf3fbf709bf3f3b349f793f893a990f516cc871cf01d",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "tools",
+        "browser"
+      ]
+    },
+    {
+      "upstream_path": "tools/path_security.py",
+      "local_path": "upstream/tools/path_security.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tools/path_security.py",
+      "sha256": "e7f2d8c382b0333d3b937f08e1f0ec4ca455926dea43f6c70ca83ea11d62eed0",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "security",
+        "paths"
+      ]
+    },
+    {
+      "upstream_path": "tools/skills_tool.py",
+      "local_path": "upstream/tools/skills_tool.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tools/skills_tool.py",
+      "sha256": "a0595d572617d93017b0f59d133de2d1dc735a9a30056c4978df9b0b96a6cbc1",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "skills",
+        "loader"
+      ]
+    },
+    {
+      "upstream_path": "tools/skills_guard.py",
+      "local_path": "upstream/tools/skills_guard.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tools/skills_guard.py",
+      "sha256": "12fab7a06dfd300c80e9c222c7d985633623c56c0be6718715dddef2fe23131a",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "skills",
+        "security"
+      ]
+    },
+    {
+      "upstream_path": "tools/delegate_tool.py",
+      "local_path": "upstream/tools/delegate_tool.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tools/delegate_tool.py",
+      "sha256": "eebef774876a59d62dcbd7e1b10a2cacd5fe85f19146f186248803d777174ec3",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "subagents",
+        "delegation"
+      ]
+    },
+    {
+      "upstream_path": "tools/delegate_tool_child_run.py",
+      "local_path": "upstream/tools/delegate_tool_child_run.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tools/delegate_tool_child_run.py",
+      "sha256": "6820c385d2121514aa4ffc7950709d744bb96c865bcf01b49c8d98bada7119f5",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "subagents",
+        "delegation"
+      ]
+    },
+    {
+      "upstream_path": "tools/delegate_tool_progress.py",
+      "local_path": "upstream/tools/delegate_tool_progress.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tools/delegate_tool_progress.py",
+      "sha256": "315dc420cd1783b01df47e8f20de45cc4bb71f91673b07dbaff81d508e1c80c2",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "subagents",
+        "observability"
+      ]
+    },
+    {
+      "upstream_path": "tools/async_delegation.py",
+      "local_path": "upstream/tools/async_delegation.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tools/async_delegation.py",
+      "sha256": "8ad2280198acbafa6280878cd457245dca10b8090bac763f8601e307dc07526f",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "subagents",
+        "async"
+      ]
+    },
+    {
+      "upstream_path": "hermes_state_sessions.py",
+      "local_path": "upstream/hermes_state_sessions.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/hermes_state_sessions.py",
+      "sha256": "7a51be34b5a1396ecc28f8f88f24fb20cb74573b12b86b177738172ae7ff18c6",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "sessions",
+        "persistence"
+      ]
+    },
+    {
+      "upstream_path": "agent/memory_manager.py",
+      "local_path": "upstream/agent/memory_manager.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/memory_manager.py",
+      "sha256": "bd688b6ceecaf63e737516d9a65d2e0db3c3a8c12d5d7ede26c415b609a2898a",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "memory",
+        "context"
+      ]
+    },
+    {
+      "upstream_path": "agent/context_compressor.py",
+      "local_path": "upstream/agent/context_compressor.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/context_compressor.py",
+      "sha256": "862980fa312eb9e5c68a5dac9ded9c654419447162cf90699dc997f1dab43cd4",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "context",
+        "compaction"
+      ]
+    },
+    {
+      "upstream_path": "agent/session_persistence.py",
+      "local_path": "upstream/agent/session_persistence.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/session_persistence.py",
+      "sha256": "5fdbf157c3efd4d7e2ff470833befb0f98b8b0fc381dc7b76751da2008244a75",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "sessions",
+        "persistence"
+      ]
+    },
+    {
+      "upstream_path": "agent/plan_prompt.py",
+      "local_path": "upstream/agent/plan_prompt.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/plan_prompt.py",
+      "sha256": "81a4ce937a78eb5b766c6ecdc414a7d0570e8875845b46f1a63b5fe70ec1b45b",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "prompt",
+        "planning"
+      ]
+    },
+    {
+      "upstream_path": "agent/provider_registry.py",
+      "local_path": "upstream/agent/provider_registry.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/provider_registry.py",
+      "sha256": "e9dd5c7c6586dc5b946baec6d900d3812f5a280e64f7e0caf2a8c5c46edb6e60",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "providers",
+        "registry"
+      ]
+    },
+    {
+      "upstream_path": "agent/anthropic_adapter.py",
+      "local_path": "upstream/agent/anthropic_adapter.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/anthropic_adapter.py",
+      "sha256": "4703f2f68d0da659c31f4cdfd05a2623212887d998d822b1ecd8541871ebe6f0",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "providers",
+        "protocol"
+      ]
+    },
+    {
+      "upstream_path": "agent/codex_responses_adapter.py",
+      "local_path": "upstream/agent/codex_responses_adapter.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/codex_responses_adapter.py",
+      "sha256": "334d24f9efe0559567d8cecb3e7155fce73690502d9e8c5833f7826024095c09",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "providers",
+        "protocol"
+      ]
+    },
+    {
+      "upstream_path": "agent/anthropic_credentials.py",
+      "local_path": "upstream/agent/anthropic_credentials.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/anthropic_credentials.py",
+      "sha256": "82a761880a3264bbc49f645e170de691d7e6b30a67409efe005681f93af3d607",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "credentials",
+        "oauth"
+      ]
+    },
+    {
+      "upstream_path": "hermes_cli/auth_codex.py",
+      "local_path": "upstream/hermes_cli/auth_codex.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/hermes_cli/auth_codex.py",
+      "sha256": "5347c13f7209c9e65eb997ba78b17cd8cbb93aedfdba3aae80485ca6acfb52a1",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "credentials",
+        "oauth"
+      ]
+    },
+    {
+      "upstream_path": "agent/redact.py",
+      "local_path": "upstream/agent/redact.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/redact.py",
+      "sha256": "47c14bdffd1e427a89dd2fbea2d1ccfdbb340515adcf90b54e478e974645f5c0",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "security",
+        "redaction"
+      ]
+    },
+    {
+      "upstream_path": "agent/context_engine.py",
+      "local_path": "upstream/agent/context_engine.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/context_engine.py",
+      "sha256": "97c9c6f57a7c8a5e0f0dd6242d08b3417b8bbcfdf226eddf2d3b3af78cb42be5",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "agent/context_references.py",
+      "local_path": "upstream/agent/context_references.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/context_references.py",
+      "sha256": "4ec343d47f7faafbdb2b001a560c207ef3c34acb6fbbd5ad038d17c2765b8fbf",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "agent/conversation_compression.py",
+      "local_path": "upstream/agent/conversation_compression.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/conversation_compression.py",
+      "sha256": "63cb1ffe9f0cb36bea3e9504e265702cad721a7ababb79ff859ae42638ac21a3",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "agent/learn_prompt.py",
+      "local_path": "upstream/agent/learn_prompt.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/learn_prompt.py",
+      "sha256": "14529273cc4c1f371e9f2843cfd5a1ced9c3bba16acc6304d418b1f8a38f12c1",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "agent/memory_provider.py",
+      "local_path": "upstream/agent/memory_provider.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/memory_provider.py",
+      "sha256": "9849130a7e2c9a848c95177b4afdc016b40b3b39c67680c8e3bb69d3188cbd28",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "agent/provider_base.py",
+      "local_path": "upstream/agent/provider_base.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/provider_base.py",
+      "sha256": "4ec13ac532d9417a69a6e2bda807b1197efeddf78c06bb158d8dc0f38003b42d",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "agent/provider_projection.py",
+      "local_path": "upstream/agent/provider_projection.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/provider_projection.py",
+      "sha256": "ac936c1413190b7a05376b637057f3d83c0fdff18fb79e0781b0befbba7117fd",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "agent/tool_guardrails.py",
+      "local_path": "upstream/agent/tool_guardrails.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/tool_guardrails.py",
+      "sha256": "5f912a36db0414eb289f4e35a805702d58ff16126ff298a209a7d9b64680ab06",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "agent/transports/chat_completions.py",
+      "local_path": "upstream/agent/transports/chat_completions.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/transports/chat_completions.py",
+      "sha256": "a0b80cbe6f96dade40b899fcb88415e93ef463fad5073db9dbdc5dfe54892c57",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "agent/transports/codex.py",
+      "local_path": "upstream/agent/transports/codex.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/transports/codex.py",
+      "sha256": "3b74f0fc7801a55fab6a8d9131e4485892c8ebccd366802ed5ea98087308a275",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "agent/turn_api_call.py",
+      "local_path": "upstream/agent/turn_api_call.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/turn_api_call.py",
+      "sha256": "259a0786e0937712e25913ca5e57f125254d53eeb366f6f67e599b48b1a7d712",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "agent/turn_finalizer.py",
+      "local_path": "upstream/agent/turn_finalizer.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/turn_finalizer.py",
+      "sha256": "0f10aaaa0d617436068adfc4e5d31627a1719b87e430327096dbcc1ca1f26d34",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "agent/turn_iteration_prep.py",
+      "local_path": "upstream/agent/turn_iteration_prep.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/turn_iteration_prep.py",
+      "sha256": "962f35371cdfafd2fa1f7aad7abd093aff82f8d2f0bf7c5c037b2927d6205c5f",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "agent/turn_preflight_gate.py",
+      "local_path": "upstream/agent/turn_preflight_gate.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/turn_preflight_gate.py",
+      "sha256": "0927ef1a2f37210a4db01cb139d9bd9ffcd66c905b63337c678274bb5bf4a3da",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "agent/turn_request_assembly.py",
+      "local_path": "upstream/agent/turn_request_assembly.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/turn_request_assembly.py",
+      "sha256": "c95105f23228dee2d274165fc0fd2ba4b3954bfe9ab457f14d0f64c7281ac281",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "agent/turn_response_intake.py",
+      "local_path": "upstream/agent/turn_response_intake.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/turn_response_intake.py",
+      "sha256": "d7db0a4a5151047a01da17f8b7b7385f70839a8633645a01118685f0466838ee",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "agent/turn_tool_validation.py",
+      "local_path": "upstream/agent/turn_tool_validation.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/agent/turn_tool_validation.py",
+      "sha256": "684b53f02cbe6cdfb93c2c8c0b926f49427bdf0a1ccbea8ea64ae13ee3f8b5bb",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "hermes_cli/auth_oauth_grants.py",
+      "local_path": "upstream/hermes_cli/auth_oauth_grants.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/hermes_cli/auth_oauth_grants.py",
+      "sha256": "507a6ec38a7e163d8fb0ee8714a17d0766d1a563815a0b69c3e90d938b9e81ab",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "hermes_state_compression.py",
+      "local_path": "upstream/hermes_state_compression.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/hermes_state_compression.py",
+      "sha256": "539f164c81cca0ae095b6b0c32f498ee720fc969cdd2eb8d03b948818edd2169",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "providers/__init__.py",
+      "local_path": "upstream/providers/__init__.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/providers/__init__.py",
+      "sha256": "cfd7702e3e7095aad1c7dcabac86be00e7113e3c0cf5036b49a03856ed4438c4",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "skills/creative/design-md/SKILL.md",
+      "local_path": "upstream/skills/creative/design-md/SKILL.md",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/skills/creative/design-md/SKILL.md",
+      "sha256": "7ed56bba40ffc9573fa51b33b2424f37fb5f774e9ecb7e76e737797afd0b62ae",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tests/agent/test_auth_provider_failover.py",
+      "local_path": "upstream/tests/agent/test_auth_provider_failover.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tests/agent/test_auth_provider_failover.py",
+      "sha256": "aa549c35da0d83860cfba668bc0620f3f1d0af84da037e82eafbb99685e7b504",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tests/agent/test_compaction_prompt_rebuild.py",
+      "local_path": "upstream/tests/agent/test_compaction_prompt_rebuild.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tests/agent/test_compaction_prompt_rebuild.py",
+      "sha256": "3b883703aa9d79411eaaf1b14ca7203c223fcf101816681d538efcbcc040c597",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tests/agent/test_memory_boundary_commit.py",
+      "local_path": "upstream/tests/agent/test_memory_boundary_commit.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tests/agent/test_memory_boundary_commit.py",
+      "sha256": "a1c5d87f6abbf3fe9d59348c65902a1b03357a83d04031a602825b5efea1409e",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tests/agent/test_memory_provider.py",
+      "local_path": "upstream/tests/agent/test_memory_provider.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tests/agent/test_memory_provider.py",
+      "sha256": "19937f89c2ba1ddf7730fcacdd113554b1ccd3cc07e8577f500c64da6cf98b59",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tests/agent/test_project_skills.py",
+      "local_path": "upstream/tests/agent/test_project_skills.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tests/agent/test_project_skills.py",
+      "sha256": "e83052664e6a7d5d563b243409072adc81aa98788cca4f080e00f196f5f62500",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tests/agent/test_prompt_builder.py",
+      "local_path": "upstream/tests/agent/test_prompt_builder.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tests/agent/test_prompt_builder.py",
+      "sha256": "6679e95a119dd1ca18c7f3ef9b43b9693ee43875c31a02d00870bc0513402578",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tests/agent/test_prompt_cache_boundary.py",
+      "local_path": "upstream/tests/agent/test_prompt_cache_boundary.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tests/agent/test_prompt_cache_boundary.py",
+      "sha256": "b61d27afa2e9f80629b03403d715e495e176612beb4987a2f94575aa56a65517",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tests/agent/test_provider_fallback.py",
+      "local_path": "upstream/tests/agent/test_provider_fallback.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tests/agent/test_provider_fallback.py",
+      "sha256": "0b49c788ce76c155d202e3de79b59a79c17c5db2b39f95d53eb94ba4a8c508e1",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tests/agent/test_provider_parity.py",
+      "local_path": "upstream/tests/agent/test_provider_parity.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tests/agent/test_provider_parity.py",
+      "sha256": "4b2215d86cbca197624b01f413c5df34fafd005cf975eca534be899f6a7caedd",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tests/agent/test_sequential_deadline_delegate_exempt.py",
+      "local_path": "upstream/tests/agent/test_sequential_deadline_delegate_exempt.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tests/agent/test_sequential_deadline_delegate_exempt.py",
+      "sha256": "070a767524ddd0cd968a8281073aafa425a13cb2e98842e0575a7d3de38279e7",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tests/agent/test_skill_commands_reload.py",
+      "local_path": "upstream/tests/agent/test_skill_commands_reload.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tests/agent/test_skill_commands_reload.py",
+      "sha256": "9dec771fcf542b886453e0db5f4a45899ec6c73e4152b41845f93bf5040b4b40",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tests/agent/test_skill_utils.py",
+      "local_path": "upstream/tests/agent/test_skill_utils.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tests/agent/test_skill_utils.py",
+      "sha256": "33a6214e1f47e451855c05cdce9a1819259913672d963dbba57fa86afae5fe6f",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tests/agent/test_skills_auto_load.py",
+      "local_path": "upstream/tests/agent/test_skills_auto_load.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tests/agent/test_skills_auto_load.py",
+      "sha256": "9707d06203079378d48237d5a233fa71224970587411546701c4a21a5d4f10d0",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tests/agent/test_system_prompt.py",
+      "local_path": "upstream/tests/agent/test_system_prompt.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tests/agent/test_system_prompt.py",
+      "sha256": "9795134eceeb3ce280bf0d7093faea8f584a07ec51e919a3341b3a6e16e50752",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tests/agent/test_tool_batch_segmentation.py",
+      "local_path": "upstream/tests/agent/test_tool_batch_segmentation.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tests/agent/test_tool_batch_segmentation.py",
+      "sha256": "849e6ef0c355f050c81ec0937f6843d3a8dfe09d1d4d9006abff18a3ae2a48de",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tests/agent/test_tool_dispatch_helpers.py",
+      "local_path": "upstream/tests/agent/test_tool_dispatch_helpers.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tests/agent/test_tool_dispatch_helpers.py",
+      "sha256": "1bc90968f097ec7eb7394ab360d2f01a8cd43338df0a12b7f8077965fb4a6539",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tests/agent/test_tool_guardrails.py",
+      "local_path": "upstream/tests/agent/test_tool_guardrails.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tests/agent/test_tool_guardrails.py",
+      "sha256": "70794059e5cf25d98f17d4347a948f724712c2ab7278483fdc1fb471575d787d",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tests/gateway/test_async_delegation_session_binding.py",
+      "local_path": "upstream/tests/gateway/test_async_delegation_session_binding.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tests/gateway/test_async_delegation_session_binding.py",
+      "sha256": "06769809ffdd6b4725c6006b4d52227f87206f7545a130151a29a8d59ffbe5e3",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tests/gateway/test_async_session_db.py",
+      "local_path": "upstream/tests/gateway/test_async_session_db.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tests/gateway/test_async_session_db.py",
+      "sha256": "af41cd0abac6b2069cd26530e2b91d035d31c5cd258a12b45198860d5f748a8c",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tests/gateway/test_delegation_session_id_leak.py",
+      "local_path": "upstream/tests/gateway/test_delegation_session_id_leak.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tests/gateway/test_delegation_session_id_leak.py",
+      "sha256": "36b43bad90f6615121df601cea56396c413f90ad3688c57aadc36751eb34c0e9",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tools/file_operations.py",
+      "local_path": "upstream/tools/file_operations.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tools/file_operations.py",
+      "sha256": "18fa0fe106517cf509e9bcbd07c2cbcb2246b076ff6eaa1d955d5f588ff1fa78",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tools/file_tools.py",
+      "local_path": "upstream/tools/file_tools.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tools/file_tools.py",
+      "sha256": "ca38e572e5550cbf1478022b17bb5076e9a37b0cb3be459067cd82f444e78dc5",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tools/mcp_tool.py",
+      "local_path": "upstream/tools/mcp_tool.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tools/mcp_tool.py",
+      "sha256": "aecad81f5abd0f75778786270cd8f954c621c7e90a94f683da2acc02af20a981",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tools/memory_tool.py",
+      "local_path": "upstream/tools/memory_tool.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tools/memory_tool.py",
+      "sha256": "ed9c5db6b3144b88425f7039280239b29a047143aa8ffdfd3b7f47bf7e707143",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tools/memory_tool_store.py",
+      "local_path": "upstream/tools/memory_tool_store.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tools/memory_tool_store.py",
+      "sha256": "811ef2eb98a8b3f0448294b2c23d422ff7ebd4dc45835475b12df0557d7e5366",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tools/skill_linter.py",
+      "local_path": "upstream/tools/skill_linter.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tools/skill_linter.py",
+      "sha256": "8a5d4d4033ad33195bc9dc31ecb78b0bbea85f51af2126d7d482c5b7c0517148",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tools/skill_manager_tool.py",
+      "local_path": "upstream/tools/skill_manager_tool.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tools/skill_manager_tool.py",
+      "sha256": "e8b5ae8fb6ebe31ff51aba3688523c9e8d8ae6d2091bd3a924b78375cb006486",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tools/skill_provenance.py",
+      "local_path": "upstream/tools/skill_provenance.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tools/skill_provenance.py",
+      "sha256": "5c492a925cdde61c3257eb5db76568822d26be3d9a2c40d364a9997a3a7cb576",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tools/terminal_scope.py",
+      "local_path": "upstream/tools/terminal_scope.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tools/terminal_scope.py",
+      "sha256": "0f5f876e6d0753014393bea56bf96717b8c6e9d213a26b978862764d0a369726",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tools/terminal_tool_guards.py",
+      "local_path": "upstream/tools/terminal_tool_guards.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tools/terminal_tool_guards.py",
+      "sha256": "d80aff438573220487a787000d734d209c2fd5f93eb612dcef62a26a47385d27",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "tools/threat_patterns.py",
+      "local_path": "upstream/tools/threat_patterns.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/tools/threat_patterns.py",
+      "sha256": "9eda959055d0c9629114953dea65349c3cee625fd98fe2cab390724fdd73f280",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "trajectory_compressor.py",
+      "local_path": "upstream/trajectory_compressor.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/trajectory_compressor.py",
+      "sha256": "6da1c5c95a30a39f84f03189ed78fe0296adda5b971028190ea2b0759bc562fb",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "acp_adapter/__init__.py",
+      "local_path": "upstream/acp_adapter/__init__.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/acp_adapter/__init__.py",
+      "sha256": "c841e4cd574c5ae19003aebaee22396db3cc515dd600934059bbe78958324e98",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "acp",
+        "adapter",
+        "protocol"
+      ]
+    },
+    {
+      "upstream_path": "acp_adapter/__main__.py",
+      "local_path": "upstream/acp_adapter/__main__.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/acp_adapter/__main__.py",
+      "sha256": "65164332e6d17cb9325248ea8bbdf346e5ced681e6474c6d28f1729bd5c26225",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "acp",
+        "adapter",
+        "protocol"
+      ]
+    },
+    {
+      "upstream_path": "acp_adapter/auth.py",
+      "local_path": "upstream/acp_adapter/auth.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/acp_adapter/auth.py",
+      "sha256": "b5cd2d6043d0d2b5c94d36bae09fdd4d03c7b8558abece8296e16957ac49da3d",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "acp",
+        "adapter",
+        "protocol"
+      ]
+    },
+    {
+      "upstream_path": "acp_adapter/commands.py",
+      "local_path": "upstream/acp_adapter/commands.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/acp_adapter/commands.py",
+      "sha256": "089f01b170f4ae61d029e7e1cd21d8183f3aa35674b6a4dd6979d2e5c908b37a",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "acp",
+        "adapter",
+        "protocol"
+      ]
+    },
+    {
+      "upstream_path": "acp_adapter/content.py",
+      "local_path": "upstream/acp_adapter/content.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/acp_adapter/content.py",
+      "sha256": "d6b69043ada81ea5400981fad2e3267d7c6d8d8269ec96583a53980ba6f20b7a",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "acp",
+        "adapter",
+        "protocol"
+      ]
+    },
+    {
+      "upstream_path": "acp_adapter/edit_approval.py",
+      "local_path": "upstream/acp_adapter/edit_approval.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/acp_adapter/edit_approval.py",
+      "sha256": "576c409bcefb73afbb6e8ae9e6ed3b9c11814d66887a6d7d1832df275f0b2c2f",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "acp",
+        "adapter",
+        "protocol"
+      ]
+    },
+    {
+      "upstream_path": "acp_adapter/entry.py",
+      "local_path": "upstream/acp_adapter/entry.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/acp_adapter/entry.py",
+      "sha256": "70218ec9e9f5d7590fa927b86fdcda2cf33c45457247e291382e409995e8ac54",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "acp",
+        "adapter",
+        "protocol"
+      ]
+    },
+    {
+      "upstream_path": "acp_adapter/events.py",
+      "local_path": "upstream/acp_adapter/events.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/acp_adapter/events.py",
+      "sha256": "8360e629f74b834bb18d9d864fdfeb4101cc42f7866a35babe2899a36fcd0958",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "acp",
+        "adapter",
+        "protocol"
+      ]
+    },
+    {
+      "upstream_path": "acp_adapter/model_catalog.py",
+      "local_path": "upstream/acp_adapter/model_catalog.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/acp_adapter/model_catalog.py",
+      "sha256": "f7ed74ef1c1bacd5e9003761830c628c3c4ac47e78d175a12ada3c0ef345ebf5",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "acp",
+        "adapter",
+        "protocol"
+      ]
+    },
+    {
+      "upstream_path": "acp_adapter/permissions.py",
+      "local_path": "upstream/acp_adapter/permissions.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/acp_adapter/permissions.py",
+      "sha256": "41e706f4861bdb54d7fcdfd3f3f5c821dfe77165c5d24fa9cc98d0c6c31143ed",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "acp",
+        "adapter",
+        "protocol"
+      ]
+    },
+    {
+      "upstream_path": "acp_adapter/provenance.py",
+      "local_path": "upstream/acp_adapter/provenance.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/acp_adapter/provenance.py",
+      "sha256": "67e404c897ed75e37c62c67d7c833f9ed4a0c500eec3752e01edccf5b5f672ca",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "acp",
+        "adapter",
+        "protocol"
+      ]
+    },
+    {
+      "upstream_path": "acp_adapter/server.py",
+      "local_path": "upstream/acp_adapter/server.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/acp_adapter/server.py",
+      "sha256": "6034d98773ebc05a172108ba886f0413a13a189c2e922c3996c39029275bf076",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "acp",
+        "adapter",
+        "protocol"
+      ]
+    },
+    {
+      "upstream_path": "acp_adapter/session.py",
+      "local_path": "upstream/acp_adapter/session.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/acp_adapter/session.py",
+      "sha256": "73740c90cfdc603b4c839398e62592c4f47b02d42fc6bbe1f45148a626ec78b2",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "acp",
+        "adapter",
+        "protocol"
+      ]
+    },
+    {
+      "upstream_path": "acp_adapter/tools.py",
+      "local_path": "upstream/acp_adapter/tools.py",
+      "pinned_blob_url": "https://github.com/NousResearch/hermes-agent/blob/69fd61b0efbe2bf7f412714ed8c35e40dfddc534/acp_adapter/tools.py",
+      "sha256": "920d17f138ae258b08ea42979de31c5e146716681cb3b7a122d6406e4362e1de",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "acp",
+        "adapter",
+        "protocol"
+      ]
+    }
+  ]
+}

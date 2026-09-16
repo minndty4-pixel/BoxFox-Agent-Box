@@ -1,0 +1,295 @@
+{
+  "schema_version": 1,
+  "snapshot_kind": "curated-source-evidence",
+  "runtime_importable": false,
+  "project": {
+    "id": "9router",
+    "repository": "https://github.com/decolua/9router",
+    "commit": "17c4cc76877bd1755030a8414f8d0083f48dcccf",
+    "license": "MIT",
+    "upstream_manifest": "package.json",
+    "license_file": "LICENSE",
+    "excluded": [
+      ".env",
+      "secrets",
+      "credential databases",
+      "dependencies",
+      "generated files"
+    ]
+  },
+  "files": [
+    {
+      "upstream_path": "README.md",
+      "local_path": "upstream/README.md",
+      "pinned_blob_url": "https://github.com/decolua/9router/blob/17c4cc76877bd1755030a8414f8d0083f48dcccf/README.md",
+      "sha256": "3144793f43cc19fa78edd548423dbf299c47608f9eae7538e50be93397ccdbea",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "overview"
+      ]
+    },
+    {
+      "upstream_path": "package.json",
+      "local_path": "upstream/package.json",
+      "pinned_blob_url": "https://github.com/decolua/9router/blob/17c4cc76877bd1755030a8414f8d0083f48dcccf/package.json",
+      "sha256": "670515d6f190581be53f98f7e4a8764ab0a1ac3bc60858466ebfaea59fc77de7",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "upstream-manifest"
+      ]
+    },
+    {
+      "upstream_path": "src/app/api/v1/chat/completions/route.js",
+      "local_path": "upstream/src/app/api/v1/chat/completions/route.js",
+      "pinned_blob_url": "https://github.com/decolua/9router/blob/17c4cc76877bd1755030a8414f8d0083f48dcccf/src/app/api/v1/chat/completions/route.js",
+      "sha256": "1ad8cb10de0da68e7c1146385dd6c7a1a5611957e4f9e9b011f687dfeb3c6ebf",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "ingress",
+        "openai-protocol"
+      ]
+    },
+    {
+      "upstream_path": "src/app/api/v1/messages/route.js",
+      "local_path": "upstream/src/app/api/v1/messages/route.js",
+      "pinned_blob_url": "https://github.com/decolua/9router/blob/17c4cc76877bd1755030a8414f8d0083f48dcccf/src/app/api/v1/messages/route.js",
+      "sha256": "e2c345c56bf9869222d2ba8fd41e2de72cb405e24966869568ec498a79e16d74",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "ingress",
+        "anthropic-protocol"
+      ]
+    },
+    {
+      "upstream_path": "src/app/api/v1/responses/route.js",
+      "local_path": "upstream/src/app/api/v1/responses/route.js",
+      "pinned_blob_url": "https://github.com/decolua/9router/blob/17c4cc76877bd1755030a8414f8d0083f48dcccf/src/app/api/v1/responses/route.js",
+      "sha256": "57dad78737bb3b6ce7598f926a9d4c14a0c9a35806a8e495e614793b3e3f322b",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "ingress",
+        "responses-protocol"
+      ]
+    },
+    {
+      "upstream_path": "open-sse/handlers/chatCore.js",
+      "local_path": "upstream/open-sse/handlers/chatCore.js",
+      "pinned_blob_url": "https://github.com/decolua/9router/blob/17c4cc76877bd1755030a8414f8d0083f48dcccf/open-sse/handlers/chatCore.js",
+      "sha256": "d45fc6745e0c9232cf9c7640d16ee5d899c62abda48e1c46a6971ccf4191ac65",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "ingress",
+        "routing"
+      ]
+    },
+    {
+      "upstream_path": "open-sse/executors/index.js",
+      "local_path": "upstream/open-sse/executors/index.js",
+      "pinned_blob_url": "https://github.com/decolua/9router/blob/17c4cc76877bd1755030a8414f8d0083f48dcccf/open-sse/executors/index.js",
+      "sha256": "e2661f0facf61279a4051816fb653b8be3feed279256087bda0e7075305c85d8",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "providers",
+        "execution"
+      ]
+    },
+    {
+      "upstream_path": "open-sse/providers/index.js",
+      "local_path": "upstream/open-sse/providers/index.js",
+      "pinned_blob_url": "https://github.com/decolua/9router/blob/17c4cc76877bd1755030a8414f8d0083f48dcccf/open-sse/providers/index.js",
+      "sha256": "28a4b0bfaadf23b65567f721217ae3652e7d9ccde746e99090693f78cc459370",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "providers",
+        "registry"
+      ]
+    },
+    {
+      "upstream_path": "open-sse/translator/request/claude-to-openai.js",
+      "local_path": "upstream/open-sse/translator/request/claude-to-openai.js",
+      "pinned_blob_url": "https://github.com/decolua/9router/blob/17c4cc76877bd1755030a8414f8d0083f48dcccf/open-sse/translator/request/claude-to-openai.js",
+      "sha256": "e3a62f5ec7c229a2ee9f7a3bb0542b74b5cb79652a425220e123d7045b4a4a64",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "protocol",
+        "translation"
+      ]
+    },
+    {
+      "upstream_path": "open-sse/translator/response/openai-to-claude.js",
+      "local_path": "upstream/open-sse/translator/response/openai-to-claude.js",
+      "pinned_blob_url": "https://github.com/decolua/9router/blob/17c4cc76877bd1755030a8414f8d0083f48dcccf/open-sse/translator/response/openai-to-claude.js",
+      "sha256": "5a3da4220dd713a4333d544f854708007d33a2e434b0e065e1f055aa069e42fd",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "protocol",
+        "translation",
+        "streaming"
+      ]
+    },
+    {
+      "upstream_path": "src/lib/oauth/providers/codex.js",
+      "local_path": "upstream/src/lib/oauth/providers/codex.js",
+      "pinned_blob_url": "https://github.com/decolua/9router/blob/17c4cc76877bd1755030a8414f8d0083f48dcccf/src/lib/oauth/providers/codex.js",
+      "sha256": "729204f425602d7a888cbe8152b79eb06bf79ad65dd19281c393833b9bfc7825",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "credentials",
+        "oauth"
+      ]
+    },
+    {
+      "upstream_path": "src/lib/oauth/providerHelpers.js",
+      "local_path": "upstream/src/lib/oauth/providerHelpers.js",
+      "pinned_blob_url": "https://github.com/decolua/9router/blob/17c4cc76877bd1755030a8414f8d0083f48dcccf/src/lib/oauth/providerHelpers.js",
+      "sha256": "1da85cf418b6f2bf78836e41ecb2da746607abf472baf1532336720bbcf432e6",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "credentials",
+        "oauth"
+      ]
+    },
+    {
+      "upstream_path": "src/lib/db/repos/apiKeysRepo.js",
+      "local_path": "upstream/src/lib/db/repos/apiKeysRepo.js",
+      "pinned_blob_url": "https://github.com/decolua/9router/blob/17c4cc76877bd1755030a8414f8d0083f48dcccf/src/lib/db/repos/apiKeysRepo.js",
+      "sha256": "68f60f05d70472c21078ad154557468f93a5db95efbd03952f9d117013e9a05c",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "credentials",
+        "security"
+      ]
+    },
+    {
+      "upstream_path": "open-sse/services/tokenRefresh.js",
+      "local_path": "upstream/open-sse/services/tokenRefresh.js",
+      "pinned_blob_url": "https://github.com/decolua/9router/blob/17c4cc76877bd1755030a8414f8d0083f48dcccf/open-sse/services/tokenRefresh.js",
+      "sha256": "0e45463495d9ed8faffd9500a6cc075a7fb03b56f7b432f371277a6531dabfe0",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "credentials",
+        "refresh"
+      ]
+    },
+    {
+      "upstream_path": "LICENSE",
+      "local_path": "LICENSES/LICENSE",
+      "pinned_blob_url": "https://github.com/decolua/9router/blob/17c4cc76877bd1755030a8414f8d0083f48dcccf/LICENSE",
+      "sha256": "2e51fac8d7c32794775e690e2f6af5ebe846cf7ddf6fdd8877d3e03b9656d92c",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "license",
+        "provenance"
+      ]
+    },
+    {
+      "upstream_path": "src/sse/handlers/chat.js",
+      "local_path": "upstream/src/sse/handlers/chat.js",
+      "pinned_blob_url": "https://github.com/decolua/9router/blob/17c4cc76877bd1755030a8414f8d0083f48dcccf/src/sse/handlers/chat.js",
+      "sha256": "359c265b877eba53bd2d344104c5016aa9f63ed80075dd0efc1386b3561040e2",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "ingress",
+        "routing"
+      ]
+    },
+    {
+      "upstream_path": "open-sse/translator/index.js",
+      "local_path": "upstream/open-sse/translator/index.js",
+      "pinned_blob_url": "https://github.com/decolua/9router/blob/17c4cc76877bd1755030a8414f8d0083f48dcccf/open-sse/translator/index.js",
+      "sha256": "824b993b94cb6effe830ba07e16a870688c17ed93fe66048eff9713ba2246aec",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "protocol",
+        "translation"
+      ]
+    },
+    {
+      "upstream_path": "open-sse/translator/concerns/toolCall.js",
+      "local_path": "upstream/open-sse/translator/concerns/toolCall.js",
+      "pinned_blob_url": "https://github.com/decolua/9router/blob/17c4cc76877bd1755030a8414f8d0083f48dcccf/open-sse/translator/concerns/toolCall.js",
+      "sha256": "f56253822cc87141ab076e468548031b1efc85adcfbe680e8e296650dae071e4",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "protocol",
+        "tools"
+      ]
+    },
+    {
+      "upstream_path": "open-sse/services/combo.js",
+      "local_path": "upstream/open-sse/services/combo.js",
+      "pinned_blob_url": "https://github.com/decolua/9router/blob/17c4cc76877bd1755030a8414f8d0083f48dcccf/open-sse/services/combo.js",
+      "sha256": "6f861a3987e5cca80d5fc26c9951f569dd2d36149a64035ce94f1fccb2c94bad",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "routing",
+        "fallback"
+      ]
+    },
+    {
+      "upstream_path": "open-sse/executors/base.js",
+      "local_path": "upstream/open-sse/executors/base.js",
+      "pinned_blob_url": "https://github.com/decolua/9router/blob/17c4cc76877bd1755030a8414f8d0083f48dcccf/open-sse/executors/base.js",
+      "sha256": "1bcbe604529c2d58fe40a3a044e41497dbdc62b2c122b630309b4ad7018f219b",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "providers",
+        "execution"
+      ]
+    },
+    {
+      "upstream_path": "src/lib/db/repos/connectionsRepo.js",
+      "local_path": "upstream/src/lib/db/repos/connectionsRepo.js",
+      "pinned_blob_url": "https://github.com/decolua/9router/blob/17c4cc76877bd1755030a8414f8d0083f48dcccf/src/lib/db/repos/connectionsRepo.js",
+      "sha256": "7dd4da697645a0e11494f4ad8028d74f0122b6b38e9d20ba02f2c1afb2d53aff",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "credentials",
+        "security"
+      ]
+    },
+    {
+      "upstream_path": "open-sse/handlers/chatCore/sseToJsonHandler.js",
+      "local_path": "upstream/open-sse/handlers/chatCore/sseToJsonHandler.js",
+      "pinned_blob_url": "https://github.com/decolua/9router/blob/17c4cc76877bd1755030a8414f8d0083f48dcccf/open-sse/handlers/chatCore/sseToJsonHandler.js",
+      "sha256": "dbcabdc4ba96d155943b7351502f65ff6b726ae53ef27000b4b3079ad2dd57a1",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    },
+    {
+      "upstream_path": "open-sse/handlers/chatCore/streamingHandler.js",
+      "local_path": "upstream/open-sse/handlers/chatCore/streamingHandler.js",
+      "pinned_blob_url": "https://github.com/decolua/9router/blob/17c4cc76877bd1755030a8414f8d0083f48dcccf/open-sse/handlers/chatCore/streamingHandler.js",
+      "sha256": "7ac537ac3c2ce3b90722ec148a1f8bd70c3c7d13218489cb4a0a9fbbd58af0c7",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "documentation-evidence"
+      ]
+    }
+  ]
+}

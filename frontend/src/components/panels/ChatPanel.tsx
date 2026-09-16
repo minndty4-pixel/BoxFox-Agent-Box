@@ -31,13 +31,17 @@ import {
 import type { ChatMessage, ReferencedFile } from '../../types/ui'
 import { useAgentStore } from '../../store/agentStore'
 import { useUiStore } from '../../store/uiStore'
+import { useRouterChatStore, type RouterChatSelection, type RouterChatTurn } from '../../store/routerChatStore'
+import { useProviderStore } from '../../store/providerStore'
 import { useT } from '../../i18n/context'
 import { LabelDot } from '../LabelDot'
-import { ChatInputBar } from './ChatInputBar'
+import { ChatInputBar, type RouterComposerAdapter } from './ChatInputBar'
 import { ContextUsageBar } from './ContextUsageBar'
 import { MediaLightboxModal, type LightboxMediaProps } from '../chat/MediaLightboxModal'
 import { Video, Play } from 'lucide-react'
 import { MarkdownRenderer } from '../chat/MarkdownRenderer'
+import { ProviderIcon } from '../providers/ProviderIcon'
+import { routerChatOptions } from './RouterTestChat'
 
 type ChatGroup =
   | { kind: 'single'; message: ChatMessage }
@@ -77,6 +81,48 @@ export function ChatPanel() {
   // Lightbox Modal State
   const [lightboxMedia, setLightboxMedia] = useState<LightboxMediaProps | null>(null)
 
+  // ── Router Chat Integration ──────────────────────────────────────────
+  const { snapshot, load: loadProviders } = useProviderStore()
+  const { selection, turns: routerTurns, isSending, setSelection, send: routerSend, stop: routerStop } = useRouterChatStore()
+
+  // Load provider snapshot on mount
+  useEffect(() => { void loadProviders().catch(() => {}) }, [loadProviders])
+
+  // Derive options from snapshot
+  const routerOptions = useMemo(() => snapshot ? routerChatOptions(snapshot) : [], [snapshot])
+  const selKey = (s: RouterChatSelection | null) => !s ? '' : s.kind === 'alias' ? `alias:${s.aliasId}` : `model:${s.connectionId}:${s.modelId}`
+  const selected = routerOptions.find(o => o.value === selKey(selection))
+
+  // Auto-select default route when provider loads
+  useEffect(() => {
+    if (!snapshot || selected) return
+    const r = snapshot.defaultRoute
+    const key = r.aliasId ? `alias:${r.aliasId}` : `model:${r.connectionId}:${r.modelId}`
+    const next = routerOptions.find(o => o.value === key)?.selection ?? routerOptions[0]?.selection ?? null
+    if (selKey(next) !== selKey(selection)) setSelection(next)
+  }, [snapshot, routerOptions, selected, selection, setSelection])
+
+  // Build router adapter only when live models available
+  const routerAdapter: RouterComposerAdapter | undefined = useMemo(() => {
+    if (routerOptions.length === 0 || !selected) return undefined
+    const models = routerOptions.map(o => ({ id: o.value, name: o.label, provider: o.providerId }))
+    return {
+      models,
+      activeModelId: selKey(selection),
+      isBusy: isSending,
+      onModelChange: (id: string) => setSelection(routerOptions.find(o => o.value === id)?.selection ?? null),
+      onSend: (prompt: string) => { if (selected) void routerSend(prompt) },
+      onStop: routerStop,
+    }
+  }, [routerOptions, selected, selection, isSending, setSelection, routerSend, routerStop])
+
+  // Escape to stop streaming
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => { if (e.key === 'Escape' && isSending) routerStop() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [isSending, routerStop])
+
   const pendingRequestIds = Object.values(requests)
     .filter((r) => r.status === 'dang_cho')
     .map((r) => r.request_id)
@@ -85,7 +131,7 @@ export function ChatPanel() {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages.length])
+  }, [messages.length, routerTurns.length])
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-bg">
@@ -127,15 +173,20 @@ export function ChatPanel() {
                 onOpenPermission={() => openTab('decisions')}
                 onOpenModeSwitch={() => openTab('plan')}
                 onOpenLightbox={setLightboxMedia}
-                    />
+              />
             )
           })
         )}
+        {/* Router Turns — hiển thị kết quả chat qua Provider */}
+        {routerTurns.length > 0 && routerTurns.map(turn => (
+          <RouterTurnBubble key={turn.id} turn={turn} snapshot={snapshot} />
+        ))}
+
         <div ref={messagesEndRef} />
       </div>
 
       {/* Fixed bottom chat input bar */}
-      <ChatInputBar />
+      <ChatInputBar router={routerAdapter} />
 
       {/* Fullscreen Interactive Lightbox Modal */}
       {lightboxMedia && (
@@ -609,17 +660,105 @@ function PermissionChatRow({
   )
 }
 
+/** Inline router chat turn — hiển thị trong conversation stream */
+function RouterTurnBubble({ turn, snapshot }: {
+  turn: RouterChatTurn
+  snapshot: import('../../types/provider').ProviderSnapshot | null
+}) {
+  const [copied, setCopied] = useState(false)
+  const connId = turn.meta?.connectionId ?? (turn.selection.kind === 'model' ? turn.selection.connectionId : null)
+  const conn = snapshot?.connections.find(c => c.id === connId)
+
+  return (
+    <div className="space-y-4">
+      {/* User prompt — right aligned */}
+      <div className="flex flex-col items-end gap-1.5">
+        <div className="max-w-[85%] rounded-2xl bg-panel2 border border-line px-4 py-3 text-xs leading-relaxed text-fg shadow-xs">
+          <MarkdownRenderer content={turn.prompt} />
+        </div>
+        <div className="flex items-center gap-2 text-[10px] text-muted pr-1 select-none">
+          <time dateTime={turn.startedAt}>
+            {new Date(turn.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          </time>
+          <button
+            type="button"
+            title="Copy"
+            onClick={() => { void navigator.clipboard.writeText(turn.prompt).then(() => setCopied(true)) }}
+            className="hover:text-fg transition cursor-pointer"
+          >
+            {copied ? <Check className="size-3 text-emerald-500" /> : <Copy className="size-3" />}
+          </button>
+          <span className="flex size-4 items-center justify-center rounded-full bg-panel border border-line text-[8px] font-bold text-muted">
+            KV
+          </span>
+        </div>
+      </div>
+
+      {/* AI response — left aligned */}
+      <div className="space-y-2 pl-0.5">
+        <div className="flex items-center gap-1.5 text-[11px] text-muted select-none">
+          {conn ? (
+            <ProviderIcon providerId={conn.providerId} name={conn.name} className="size-3.5" />
+          ) : (
+            <Sparkles className="size-3.5 text-brand" />
+          )}
+          <span className="font-medium text-fg">{conn?.name ?? 'BoxFox'}</span>
+          {turn.status === 'streaming' && (
+            <span className="size-3 rounded-full border-2 border-brand border-t-transparent animate-spin" />
+          )}
+          {turn.meta?.modelId && (
+            <span className="text-muted">{turn.meta.modelId}</span>
+          )}
+        </div>
+
+        {turn.response ? (
+          <div className="text-xs leading-relaxed text-fg">
+            <MarkdownRenderer content={turn.response} />
+          </div>
+        ) : turn.status === 'streaming' ? (
+          <p className="text-xs text-muted">Đang chờ phản hồi…</p>
+        ) : null}
+
+        {turn.error && (
+          <p role="alert" className="text-xs leading-relaxed text-rose-500">{turn.error}</p>
+        )}
+        {turn.status === 'cancelled' && (
+          <p className="text-xs text-muted">Đã dừng request.</p>
+        )}
+
+        {/* Compact meta */}
+        <div className="flex items-center gap-3 text-[10px] text-muted select-none">
+          <span>
+            {turn.status === 'streaming'
+              ? 'Đang chạy'
+              : turn.status === 'failed'
+                ? 'Thất bại'
+                : turn.status === 'cancelled'
+                  ? 'Đã dừng'
+                  : 'Hoàn thành'}
+            {turn.latencyMs != null && ` · ${(turn.latencyMs / 1000).toFixed(2)}s`}
+          </span>
+          {turn.usage && (
+            <span>
+              {turn.usage.prompt_tokens ?? '?'} in · {turn.usage.completion_tokens ?? '?'} out
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ModeSwitchChatRow({ pending, onClick }: { pending: boolean; onClick: () => void }) {
   const t = useT()
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`flex w-full items-center gap-2.5 rounded-xl border p-3 text-left transition cursor-pointer ${
-        pending
+      className={`flex w-full items-center gap-2.5 rounded-xl border p-3 text-left transition cursor-pointer ${pending
           ? 'border-brand/40 bg-panel shadow-xs'
           : 'border-line bg-panel2/60 hover:bg-panel2'
-      }`}
+        }`}
     >
       <span className={`size-2 rounded-full ${pending ? 'bg-brand animate-pulse' : 'bg-muted'}`} />
       <span className="flex-1 text-xs font-medium text-fg">

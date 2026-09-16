@@ -138,6 +138,7 @@ const en: SameShape<typeof vi> = {
     allClosed: 'All tabs are closed. Click a tab name in the top bar to reopen it.',
   },
   chat: {
+    routerEmptyBody: 'Choose a Provider model, then send a message to start.',
     title: 'Conversation',
     empty: {
       title: 'No conversation yet',

@@ -1,0 +1,357 @@
+{
+  "schema_version": 1,
+  "snapshot_kind": "curated-source-evidence",
+  "runtime_importable": false,
+  "project": {
+    "id": "omniroute",
+    "repository": "https://github.com/diegosouzapw/OmniRoute",
+    "commit": "7cabac4985e8abcd7a34bad285698eebb924c46a",
+    "license": "MIT",
+    "upstream_manifest": "package.json",
+    "license_file": "LICENSE",
+    "excluded": [
+      ".env",
+      "secrets",
+      "credential databases",
+      "dependencies",
+      "generated files"
+    ]
+  },
+  "files": [
+    {
+      "upstream_path": "README.md",
+      "local_path": "upstream/README.md",
+      "pinned_blob_url": "https://github.com/diegosouzapw/OmniRoute/blob/7cabac4985e8abcd7a34bad285698eebb924c46a/README.md",
+      "sha256": "4c4205694307f4336e8e4b7219d27d4085edf4c220654c77399fd42eb4254f08",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "overview"
+      ]
+    },
+    {
+      "upstream_path": "package.json",
+      "local_path": "upstream/package.json",
+      "pinned_blob_url": "https://github.com/diegosouzapw/OmniRoute/blob/7cabac4985e8abcd7a34bad285698eebb924c46a/package.json",
+      "sha256": "e1e96c529780e009788f7fb83bb2a31f3f8520d35a2fcbb37923bedbb1cb37ae",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "upstream-manifest"
+      ]
+    },
+    {
+      "upstream_path": "src/app/api/[...omnirouteApiCatchAll]/route.ts",
+      "local_path": "upstream/src/app/api/[...omnirouteApiCatchAll]/route.ts",
+      "pinned_blob_url": "https://github.com/diegosouzapw/OmniRoute/blob/7cabac4985e8abcd7a34bad285698eebb924c46a/src/app/api/%5B...omnirouteApiCatchAll%5D/route.ts",
+      "sha256": "2f1cbbaafe546e2d40d4c2045595e01e4bc4b6db1d55d72385427320d3f52321",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "ingress",
+        "protocol"
+      ]
+    },
+    {
+      "upstream_path": "src/sse/handlers/chat.ts",
+      "local_path": "upstream/src/sse/handlers/chat.ts",
+      "pinned_blob_url": "https://github.com/diegosouzapw/OmniRoute/blob/7cabac4985e8abcd7a34bad285698eebb924c46a/src/sse/handlers/chat.ts",
+      "sha256": "460e2e8cd0d4b2238d78903ba177f0bd45810d2459b587fa040513572528e645",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "ingress",
+        "routing"
+      ]
+    },
+    {
+      "upstream_path": "open-sse/handlers/chatCore.ts",
+      "local_path": "upstream/open-sse/handlers/chatCore.ts",
+      "pinned_blob_url": "https://github.com/diegosouzapw/OmniRoute/blob/7cabac4985e8abcd7a34bad285698eebb924c46a/open-sse/handlers/chatCore.ts",
+      "sha256": "92833d93a5e253b76197f53f29a2473b2370fed739bccc78ebaad4030e13e407",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "routing",
+        "execution"
+      ]
+    },
+    {
+      "upstream_path": "open-sse/handlers/chatCore/providerExecutionPipeline.ts",
+      "local_path": "upstream/open-sse/handlers/chatCore/providerExecutionPipeline.ts",
+      "pinned_blob_url": "https://github.com/diegosouzapw/OmniRoute/blob/7cabac4985e8abcd7a34bad285698eebb924c46a/open-sse/handlers/chatCore/providerExecutionPipeline.ts",
+      "sha256": "9ff74b16d4943723af485eb7a0ac90ba329d473c7b76b6e615c98bb4c05e2968",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "routing",
+        "providers"
+      ]
+    },
+    {
+      "upstream_path": "open-sse/services/routing/index.ts",
+      "local_path": "upstream/open-sse/services/routing/index.ts",
+      "pinned_blob_url": "https://github.com/diegosouzapw/OmniRoute/blob/7cabac4985e8abcd7a34bad285698eebb924c46a/open-sse/services/routing/index.ts",
+      "sha256": "10847a5b312e613f65c939ba369da38e441e21a9a52732cd7927e0853d9651d0",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "routing",
+        "policy"
+      ]
+    },
+    {
+      "upstream_path": "open-sse/services/accountFallback.ts",
+      "local_path": "upstream/open-sse/services/accountFallback.ts",
+      "pinned_blob_url": "https://github.com/diegosouzapw/OmniRoute/blob/7cabac4985e8abcd7a34bad285698eebb924c46a/open-sse/services/accountFallback.ts",
+      "sha256": "16c3ae56329e5e83fb30726d50e3463508752a0758b00cf53c300a3800eaa88d",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "routing",
+        "fallback"
+      ]
+    },
+    {
+      "upstream_path": "open-sse/executors/index.ts",
+      "local_path": "upstream/open-sse/executors/index.ts",
+      "pinned_blob_url": "https://github.com/diegosouzapw/OmniRoute/blob/7cabac4985e8abcd7a34bad285698eebb924c46a/open-sse/executors/index.ts",
+      "sha256": "fa1a04647b4e1b0008399fcf835cc718e9c6a23113deeba916cf37a6dcc114a8",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "providers",
+        "registry"
+      ]
+    },
+    {
+      "upstream_path": "open-sse/translator/request/claude-to-openai.ts",
+      "local_path": "upstream/open-sse/translator/request/claude-to-openai.ts",
+      "pinned_blob_url": "https://github.com/diegosouzapw/OmniRoute/blob/7cabac4985e8abcd7a34bad285698eebb924c46a/open-sse/translator/request/claude-to-openai.ts",
+      "sha256": "a70df484f825abec45addc5a4df47ceb572794ede5a11cbb1e7c2ae9c2c4acdd",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "protocol",
+        "translation"
+      ]
+    },
+    {
+      "upstream_path": "open-sse/translator/response/openai-to-claude.ts",
+      "local_path": "upstream/open-sse/translator/response/openai-to-claude.ts",
+      "pinned_blob_url": "https://github.com/diegosouzapw/OmniRoute/blob/7cabac4985e8abcd7a34bad285698eebb924c46a/open-sse/translator/response/openai-to-claude.ts",
+      "sha256": "3c56346d0e66566aeaa8c4b6141aed574e8cd164f54000b202169c358cdf2304",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "protocol",
+        "translation",
+        "streaming"
+      ]
+    },
+    {
+      "upstream_path": "open-sse/services/tokenRefresh.ts",
+      "local_path": "upstream/open-sse/services/tokenRefresh.ts",
+      "pinned_blob_url": "https://github.com/diegosouzapw/OmniRoute/blob/7cabac4985e8abcd7a34bad285698eebb924c46a/open-sse/services/tokenRefresh.ts",
+      "sha256": "357086fd94585c8a1c27021ad8328b10f05c5fad1c8ee228e29d53436545f2ec",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "credentials",
+        "refresh"
+      ]
+    },
+    {
+      "upstream_path": "open-sse/services/tokenRefresh/providers/codex.ts",
+      "local_path": "upstream/open-sse/services/tokenRefresh/providers/codex.ts",
+      "pinned_blob_url": "https://github.com/diegosouzapw/OmniRoute/blob/7cabac4985e8abcd7a34bad285698eebb924c46a/open-sse/services/tokenRefresh/providers/codex.ts",
+      "sha256": "6d6f0414d91e3eb54a28e402300ae18225b8e6424dd8a1810a6a26e09f7bb801",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "credentials",
+        "oauth"
+      ]
+    },
+    {
+      "upstream_path": "open-sse/handlers/responseSanitizer.ts",
+      "local_path": "upstream/open-sse/handlers/responseSanitizer.ts",
+      "pinned_blob_url": "https://github.com/diegosouzapw/OmniRoute/blob/7cabac4985e8abcd7a34bad285698eebb924c46a/open-sse/handlers/responseSanitizer.ts",
+      "sha256": "8010f652927682b61ce1d95f7fa21514d690246313bf88fa2dc6704eae975345",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "security",
+        "sanitization"
+      ]
+    },
+    {
+      "upstream_path": "open-sse/services/admission/controller.ts",
+      "local_path": "upstream/open-sse/services/admission/controller.ts",
+      "pinned_blob_url": "https://github.com/diegosouzapw/OmniRoute/blob/7cabac4985e8abcd7a34bad285698eebb924c46a/open-sse/services/admission/controller.ts",
+      "sha256": "017162b0fe1aa895e77c2db0ece3ca6b632e0301346f6d7e088148963873aaac",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "security",
+        "rate-limit"
+      ]
+    },
+    {
+      "upstream_path": "LICENSE",
+      "local_path": "LICENSES/LICENSE",
+      "pinned_blob_url": "https://github.com/diegosouzapw/OmniRoute/blob/7cabac4985e8abcd7a34bad285698eebb924c46a/LICENSE",
+      "sha256": "5f3caa52b2c2ce5dfb40c85404a370d23b6dc3e26a1447d17dc7e56f773b91de",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "license",
+        "provenance"
+      ]
+    },
+    {
+      "upstream_path": "src/sse/handlers/resolveRoutingModel.ts",
+      "local_path": "upstream/src/sse/handlers/resolveRoutingModel.ts",
+      "pinned_blob_url": "https://github.com/diegosouzapw/OmniRoute/blob/7cabac4985e8abcd7a34bad285698eebb924c46a/src/sse/handlers/resolveRoutingModel.ts",
+      "sha256": "1185b36620c566deb2dad163079fae951e0608816c3391c0632873a621113690",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "routing",
+        "model-alias"
+      ]
+    },
+    {
+      "upstream_path": "src/sse/handlers/chatDispatch.ts",
+      "local_path": "upstream/src/sse/handlers/chatDispatch.ts",
+      "pinned_blob_url": "https://github.com/diegosouzapw/OmniRoute/blob/7cabac4985e8abcd7a34bad285698eebb924c46a/src/sse/handlers/chatDispatch.ts",
+      "sha256": "fd4207dc40f5e4b1d2d252612635feeae736aaf0dbf99a8c905a9a6b4e325370",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "ingress",
+        "routing"
+      ]
+    },
+    {
+      "upstream_path": "src/sse/handlers/chatHelpers.ts",
+      "local_path": "upstream/src/sse/handlers/chatHelpers.ts",
+      "pinned_blob_url": "https://github.com/diegosouzapw/OmniRoute/blob/7cabac4985e8abcd7a34bad285698eebb924c46a/src/sse/handlers/chatHelpers.ts",
+      "sha256": "bbd826634dfccafada44aff7116f47801f9ad55d6b77ce0dd7f356c1bd0c2c1c",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "ingress",
+        "helpers"
+      ]
+    },
+    {
+      "upstream_path": "src/sse/handlers/chat/comboTargetKeyPolicy.ts",
+      "local_path": "upstream/src/sse/handlers/chat/comboTargetKeyPolicy.ts",
+      "pinned_blob_url": "https://github.com/diegosouzapw/OmniRoute/blob/7cabac4985e8abcd7a34bad285698eebb924c46a/src/sse/handlers/chat/comboTargetKeyPolicy.ts",
+      "sha256": "da55d46242daac1fbc991c2db0d7dd2200e75a7921cd2624893f53f1f7dc0461",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "routing",
+        "security"
+      ]
+    },
+    {
+      "upstream_path": "src/sse/services/sessionAffinityPin.ts",
+      "local_path": "upstream/src/sse/services/sessionAffinityPin.ts",
+      "pinned_blob_url": "https://github.com/diegosouzapw/OmniRoute/blob/7cabac4985e8abcd7a34bad285698eebb924c46a/src/sse/services/sessionAffinityPin.ts",
+      "sha256": "318d7c03df9b1dafe5e91eb0e25843eac6f2699362db764b9c43d46505ab9e08",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "routing",
+        "session-affinity"
+      ]
+    },
+    {
+      "upstream_path": "src/sse/services/tokenRefresh.ts",
+      "local_path": "upstream/src/sse/services/tokenRefresh.ts",
+      "pinned_blob_url": "https://github.com/diegosouzapw/OmniRoute/blob/7cabac4985e8abcd7a34bad285698eebb924c46a/src/sse/services/tokenRefresh.ts",
+      "sha256": "4d9533086db8d51330198b7b4f0f40072e5af62de17a5acaa8e55a074b57918a",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "credentials",
+        "refresh"
+      ]
+    },
+    {
+      "upstream_path": "src/lib/oauth/connectionPersistence.ts",
+      "local_path": "upstream/src/lib/oauth/connectionPersistence.ts",
+      "pinned_blob_url": "https://github.com/diegosouzapw/OmniRoute/blob/7cabac4985e8abcd7a34bad285698eebb924c46a/src/lib/oauth/connectionPersistence.ts",
+      "sha256": "aba97fce4a1ee73ed2953f4347d5b54ac74349be895a361a14ddfa69511c4b65",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "credentials",
+        "oauth"
+      ]
+    },
+    {
+      "upstream_path": "src/server/authz/routeGuard.ts",
+      "local_path": "upstream/src/server/authz/routeGuard.ts",
+      "pinned_blob_url": "https://github.com/diegosouzapw/OmniRoute/blob/7cabac4985e8abcd7a34bad285698eebb924c46a/src/server/authz/routeGuard.ts",
+      "sha256": "4822a740e59d15b0b77a5bd7349d8e3cebb955620147be9c5616e64b2d876c0e",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "security",
+        "authorization"
+      ]
+    },
+    {
+      "upstream_path": "src/server/authz/pipeline.ts",
+      "local_path": "upstream/src/server/authz/pipeline.ts",
+      "pinned_blob_url": "https://github.com/diegosouzapw/OmniRoute/blob/7cabac4985e8abcd7a34bad285698eebb924c46a/src/server/authz/pipeline.ts",
+      "sha256": "87a344b1400dba566f229cc645329cd3513eaf69d92763258e0de8011e0c90ee",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "security",
+        "authorization"
+      ]
+    },
+    {
+      "upstream_path": "src/mitm/privilegedMitmStep.ts",
+      "local_path": "upstream/src/mitm/privilegedMitmStep.ts",
+      "pinned_blob_url": "https://github.com/diegosouzapw/OmniRoute/blob/7cabac4985e8abcd7a34bad285698eebb924c46a/src/mitm/privilegedMitmStep.ts",
+      "sha256": "bd83a221cf1a1c6752266dea910d4f1bbb66fab4e3c79f661d2b70e9156a1147",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "security",
+        "mitm"
+      ]
+    },
+    {
+      "upstream_path": "src/mitm/tproxy/caTrust.ts",
+      "local_path": "upstream/src/mitm/tproxy/caTrust.ts",
+      "pinned_blob_url": "https://github.com/diegosouzapw/OmniRoute/blob/7cabac4985e8abcd7a34bad285698eebb924c46a/src/mitm/tproxy/caTrust.ts",
+      "sha256": "84d51895284d4784f842fa7021ec7c2e50839a028d1cd1fec3aafd7133841b17",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "security",
+        "mitm"
+      ]
+    },
+    {
+      "upstream_path": "src/mitm/handlers/base.ts",
+      "local_path": "upstream/src/mitm/handlers/base.ts",
+      "pinned_blob_url": "https://github.com/diegosouzapw/OmniRoute/blob/7cabac4985e8abcd7a34bad285698eebb924c46a/src/mitm/handlers/base.ts",
+      "sha256": "e032d889729d7ccc9d2f7a078d24658b3d5159e293548758f3e3406ca0c72733",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "security",
+        "mitm"
+      ]
+    }
+  ]
+}

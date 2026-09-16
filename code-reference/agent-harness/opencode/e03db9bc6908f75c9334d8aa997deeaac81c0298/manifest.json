@@ -1,0 +1,559 @@
+{
+  "schema_version": 1,
+  "snapshot_kind": "curated-source-evidence",
+  "runtime_importable": false,
+  "project": {
+    "id": "opencode",
+    "repository": "https://github.com/anomalyco/opencode",
+    "commit": "e03db9bc6908f75c9334d8aa997deeaac81c0298",
+    "license": "MIT",
+    "upstream_manifest": "package.json",
+    "license_file": "LICENSE",
+    "excluded": [
+      ".env",
+      "secrets",
+      "credential databases",
+      "dependencies",
+      "generated files"
+    ]
+  },
+  "files": [
+    {
+      "upstream_path": "README.md",
+      "local_path": "upstream/README.md",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/README.md",
+      "sha256": "400890a3082e225c440561825270a911cd7df90a9f64f85166aed330201e50ba",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "overview"
+      ]
+    },
+    {
+      "upstream_path": "package.json",
+      "local_path": "upstream/package.json",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/package.json",
+      "sha256": "b1aa48ddbe8074072e308daf98e30eba2596fd2ad479bbbe061d04504b7a757e",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "upstream-manifest"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/package.json",
+      "local_path": "upstream/packages/opencode/package.json",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/package.json",
+      "sha256": "778160ff537cfb76b0abdb160292e48268f1d900a29e8e9276863b67d0fca19d",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "upstream-manifest"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/agent/agent.ts",
+      "local_path": "upstream/packages/opencode/src/agent/agent.ts",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/agent/agent.ts",
+      "sha256": "e781c571d584fa996200e320f14c2735e32968256b8db194391e7c06aed7433e",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "agent-loop"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/agent/subagent-permissions.ts",
+      "local_path": "upstream/packages/opencode/src/agent/subagent-permissions.ts",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/agent/subagent-permissions.ts",
+      "sha256": "c3bbbd4ea8f076c9da07f5dd242bb07581bd8744b602e3e23deb02ea87601e6c",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "subagents",
+        "permissions"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/session/session.ts",
+      "local_path": "upstream/packages/opencode/src/session/session.ts",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/session/session.ts",
+      "sha256": "0c56ae3535e29cae0de51156eaba2842c0896309f1d6b12525566b4a8ba4c7f2",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "sessions"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/session/processor.ts",
+      "local_path": "upstream/packages/opencode/src/session/processor.ts",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/session/processor.ts",
+      "sha256": "0b31e207beda56bd9a4b9b88c9e42d89a0651dd011773748c8e2938dfc3dcb74",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "agent-loop",
+        "sessions"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/session/prompt.ts",
+      "local_path": "upstream/packages/opencode/src/session/prompt.ts",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/session/prompt.ts",
+      "sha256": "f0c5bc64c0f0e966693d4a57f7ede1e9d6e188b396152f04b55303dc75b9b768",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "prompt"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/session/instruction.ts",
+      "local_path": "upstream/packages/opencode/src/session/instruction.ts",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/session/instruction.ts",
+      "sha256": "fee79c023eae44f720d4d600f334a987ad5f7615c4a008a20c89131a92684a8f",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "prompt",
+        "context"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/session/compaction.ts",
+      "local_path": "upstream/packages/opencode/src/session/compaction.ts",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/session/compaction.ts",
+      "sha256": "8d478570a7e4ad32b746030d4f86a1c673949b1e2259bd716b3885d99283289a",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "context",
+        "compaction"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/session/prompt/default.txt",
+      "local_path": "upstream/packages/opencode/src/session/prompt/default.txt",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/session/prompt/default.txt",
+      "sha256": "962fbf3cb3ec659c9a5244425ee2e7bb141ad4428f489a630a7738566880dc6a",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "prompt"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/agent/prompt/compaction.txt",
+      "local_path": "upstream/packages/opencode/src/agent/prompt/compaction.txt",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/agent/prompt/compaction.txt",
+      "sha256": "552db0de0af1873a8acd4a631e2548345d4c43192de1d9be69c8feab4b41f80c",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "prompt",
+        "compaction"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/skill/discovery.ts",
+      "local_path": "upstream/packages/opencode/src/skill/discovery.ts",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/skill/discovery.ts",
+      "sha256": "6bb6706bc9451f4a70582a5cd76396820aab2c7440e3974ad7ffceba200880ed",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "skills",
+        "loader"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/skill/index.ts",
+      "local_path": "upstream/packages/opencode/src/skill/index.ts",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/skill/index.ts",
+      "sha256": "91dce57f590e1ad3103e0555b893500e098a95cde2739422b699233889b205e6",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "skills",
+        "registry"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/tool/registry.ts",
+      "local_path": "upstream/packages/opencode/src/tool/registry.ts",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/tool/registry.ts",
+      "sha256": "a8b24a6d58a80c42307e251905dbaa4f25ca0724569b1e531e412da934ab00fe",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "tools",
+        "registry"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/tool/task.ts",
+      "local_path": "upstream/packages/opencode/src/tool/task.ts",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/tool/task.ts",
+      "sha256": "db09fa5868ad3ecfdd83aa2bb7243f85e9e2cd13d0b19fd6f307f7a337b2b36e",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "tools",
+        "subagents"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/tool/shell.ts",
+      "local_path": "upstream/packages/opencode/src/tool/shell.ts",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/tool/shell.ts",
+      "sha256": "342d742ae324782d222465c202dcdfcb7cc35a4cecf04e87f9881f1794d921ac",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "tools",
+        "security"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/permission/evaluate.ts",
+      "local_path": "upstream/packages/opencode/src/permission/evaluate.ts",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/permission/evaluate.ts",
+      "sha256": "0ee7b7fea6766c57ce0583bd6f23a303c5af314c0e5287018fa6bdfdc38e5a6e",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "permissions",
+        "security"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/permission/index.ts",
+      "local_path": "upstream/packages/opencode/src/permission/index.ts",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/permission/index.ts",
+      "sha256": "5b9e4aa65290a39363722b9fae4c68080188d8ed76896afa0d96cd9dbfd2821d",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "permissions"
+      ]
+    },
+    {
+      "upstream_path": "LICENSE",
+      "local_path": "LICENSES/LICENSE",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/LICENSE",
+      "sha256": "625f0f619133f89bbbb2abe37369613dfa1885eba1e50d02170deb62bb42cb6b",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "license",
+        "provenance"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/session/run-state.ts",
+      "local_path": "upstream/packages/opencode/src/session/run-state.ts",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/session/run-state.ts",
+      "sha256": "75ed3e7f02474f4ff8ac88b5f24b75ffa7cdb9829770377e7c33d248df43936e",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "sessions",
+        "state"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/session/status.ts",
+      "local_path": "upstream/packages/opencode/src/session/status.ts",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/session/status.ts",
+      "sha256": "dbbbdee83c292379c1665a1d482b810a13754b6ae2143169b24c75ced5841b42",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "sessions",
+        "state"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/session/schema.ts",
+      "local_path": "upstream/packages/opencode/src/session/schema.ts",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/session/schema.ts",
+      "sha256": "fe78e7d60b0772cb62c95473f8ff4c0e68caa083bbbb4dc1cc1984217234822d",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "sessions",
+        "schema"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/session/system.ts",
+      "local_path": "upstream/packages/opencode/src/session/system.ts",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/session/system.ts",
+      "sha256": "7257f0660202d3e5d7ef86ee48cb4e51d5d0aa67703c274b8eb840b8ae307bbc",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "prompt",
+        "sessions"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/session/tools.ts",
+      "local_path": "upstream/packages/opencode/src/session/tools.ts",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/session/tools.ts",
+      "sha256": "5ad3f44682fc8e2bacb2222157943de8ab7dd663a1e0ddf5e4a213539b1f67d7",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "tools",
+        "sessions"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/session/overflow.ts",
+      "local_path": "upstream/packages/opencode/src/session/overflow.ts",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/session/overflow.ts",
+      "sha256": "fa0d52e8a59b737e8129d6473f9f6416567cd765c6068f854e4ea0dd3d351d10",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "context",
+        "compaction"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/session/summary.ts",
+      "local_path": "upstream/packages/opencode/src/session/summary.ts",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/session/summary.ts",
+      "sha256": "116bcdfe4467a384920582688fe37739318817e2867000c733519b1783652fe8",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "context",
+        "compaction"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/tool/truncate.ts",
+      "local_path": "upstream/packages/opencode/src/tool/truncate.ts",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/tool/truncate.ts",
+      "sha256": "d3dc9e7402de74a7652ceb9f7796c970efc4958597b51a94fa264697366ccea5",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "tools",
+        "context"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/tool/skill.ts",
+      "local_path": "upstream/packages/opencode/src/tool/skill.ts",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/tool/skill.ts",
+      "sha256": "629ada0c0a0135cb003429aec233aeb165f0b98a2bd5171986bc319c11af3c07",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "tools",
+        "skills"
+      ]
+    },
+    {
+      "upstream_path": "packages/schema/src/session-event.ts",
+      "local_path": "upstream/packages/schema/src/session-event.ts",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/schema/src/session-event.ts",
+      "sha256": "d8a2ee9abba77aa0b33066af197becb81adab2f315d4f78aabfc456319666f20",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "sessions",
+        "events",
+        "schema"
+      ]
+    },
+    {
+      "upstream_path": "packages/schema/src/v1/permission.ts",
+      "local_path": "upstream/packages/schema/src/v1/permission.ts",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/schema/src/v1/permission.ts",
+      "sha256": "eaa6c288030c691429e9fd63db59b0609e55337c63d6fa932b30b3c1c6956d89",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "permissions",
+        "security",
+        "schema"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/session/prompt/anthropic.txt",
+      "local_path": "upstream/packages/opencode/src/session/prompt/anthropic.txt",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/session/prompt/anthropic.txt",
+      "sha256": "8324e4cf58eb45d4d9d6fd120f5e8da59e0548de48e7e6aefcdfbf2923f40b4e",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "prompt",
+        "model-template"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/session/prompt/beast.txt",
+      "local_path": "upstream/packages/opencode/src/session/prompt/beast.txt",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/session/prompt/beast.txt",
+      "sha256": "a384d7b485829c1fe43bd6deaae10466db2c16b8cba045764538974f737958ba",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "prompt",
+        "model-template"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/session/prompt/build-switch.txt",
+      "local_path": "upstream/packages/opencode/src/session/prompt/build-switch.txt",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/session/prompt/build-switch.txt",
+      "sha256": "5e3db616a685a3dfaaf95fb86ae6e2acfbdf520bda60f7b27f727d2a88ba8a25",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "prompt",
+        "model-template"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/session/prompt/codex.txt",
+      "local_path": "upstream/packages/opencode/src/session/prompt/codex.txt",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/session/prompt/codex.txt",
+      "sha256": "c30bca40693a47965e25ceac3f02d3709712af7abeab1278bba53a9efcffa928",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "prompt",
+        "model-template"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/session/prompt/copilot-gpt-5.txt",
+      "local_path": "upstream/packages/opencode/src/session/prompt/copilot-gpt-5.txt",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/session/prompt/copilot-gpt-5.txt",
+      "sha256": "0ef5261daf7a4ae72b3e874cabc7b06cf34d991376d1dcfa1874734b13031828",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "prompt",
+        "model-template"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/session/prompt/gemini.txt",
+      "local_path": "upstream/packages/opencode/src/session/prompt/gemini.txt",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/session/prompt/gemini.txt",
+      "sha256": "921750803b0314b88b8adc996e2afcf1a61fd7d9dd6dfcf812baeadac1468cf3",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "prompt",
+        "model-template"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/session/prompt/gpt-astra.txt",
+      "local_path": "upstream/packages/opencode/src/session/prompt/gpt-astra.txt",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/session/prompt/gpt-astra.txt",
+      "sha256": "46d386ea8dd8db5734d06f6ec1d04c566f1224b1afa5bc5b0ccefd6f853281f9",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "prompt",
+        "model-template"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/session/prompt/gpt.txt",
+      "local_path": "upstream/packages/opencode/src/session/prompt/gpt.txt",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/session/prompt/gpt.txt",
+      "sha256": "83a66a46a5febbc21454161d5f053638b22d25d95e09d77b8f6da33debc848ad",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "prompt",
+        "model-template"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/session/prompt/kimi.txt",
+      "local_path": "upstream/packages/opencode/src/session/prompt/kimi.txt",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/session/prompt/kimi.txt",
+      "sha256": "ade9199b00df5aa3b51bb02b8e8c711f3e0de224345aef7df9f31d3ea08a5bc7",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "prompt",
+        "model-template"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/session/prompt/meta.txt",
+      "local_path": "upstream/packages/opencode/src/session/prompt/meta.txt",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/session/prompt/meta.txt",
+      "sha256": "9068607ce8bbb3f9b09531d8114fc16e1724de96cd1e364565c9f6f6b2b61df3",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "prompt",
+        "model-template"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/session/prompt/plan-mode.txt",
+      "local_path": "upstream/packages/opencode/src/session/prompt/plan-mode.txt",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/session/prompt/plan-mode.txt",
+      "sha256": "473381e8f20d054fa24ed3631a3b741a4fd432dadb8a0f0925f73d94a6e2866c",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "prompt",
+        "model-template",
+        "planning"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/session/prompt/plan-reminder-anthropic.txt",
+      "local_path": "upstream/packages/opencode/src/session/prompt/plan-reminder-anthropic.txt",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/session/prompt/plan-reminder-anthropic.txt",
+      "sha256": "8c4517ba847f753b2e25f7056ddc393f6728074fa6444d4070d121e75b1f91b5",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "prompt",
+        "model-template",
+        "planning"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/session/prompt/plan.txt",
+      "local_path": "upstream/packages/opencode/src/session/prompt/plan.txt",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/session/prompt/plan.txt",
+      "sha256": "455db97e0d21e8097c2afb539d167b4b2483e99b585dbc4fff23cafd4a3029b8",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "prompt",
+        "model-template",
+        "planning"
+      ]
+    },
+    {
+      "upstream_path": "packages/opencode/src/session/prompt/trinity.txt",
+      "local_path": "upstream/packages/opencode/src/session/prompt/trinity.txt",
+      "pinned_blob_url": "https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/session/prompt/trinity.txt",
+      "sha256": "0019dc1d018d08c1b5a065d10896e22d2615d33580088f44aefc3a042a46ebe2",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "prompt",
+        "model-template"
+      ]
+    }
+  ]
+}

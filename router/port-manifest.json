@@ -1,0 +1,113 @@
+{
+  "snapshot": "Local immutable research snapshots; hashes identify exact source files, not unverifiable git commits.",
+  "upstreams": [
+    {
+      "name": "9router",
+      "version": "0.5.75",
+      "path": "research/9router-master/9router-master",
+      "licenseFile": "LICENSES/9router-MIT.txt"
+    },
+    {
+      "name": "OmniRoute",
+      "version": "3.8.51",
+      "path": "research/OmniRoute-release-v3.8.51/OmniRoute-release-v3.8.51",
+      "licenseFile": "LICENSES/OmniRoute-MIT.txt"
+    }
+  ],
+  "modules": [
+    {
+      "module": "router/src/vendor/9router/gemini.mjs",
+      "source": "research/9router-master/9router-master/open-sse/translator/formats/gemini.js",
+      "sourceSha256": "b412f8be0423ef6253f9e3f8560b1c5f28deb746497ed50e45d122596e2e1fba",
+      "changes": "Adapted subset; BoxFox fetch/credential/store interfaces, per-request state, strict failures and no post-output fallback. See PORTING.md."
+    },
+    {
+      "module": "router/src/vendor/9router/openai-to-gemini.mjs",
+      "source": "research/9router-master/9router-master/open-sse/translator/request/openai-to-gemini.js",
+      "sourceSha256": "326dc92a46e61834ca41b225debf189736aa33d65ea689a77007f888f45776b7",
+      "changes": "Adapted subset; BoxFox fetch/credential/store interfaces, per-request state, strict failures and no post-output fallback. See PORTING.md."
+    },
+    {
+      "module": "router/src/vendor/9router/gemini-to-openai.mjs",
+      "source": "research/9router-master/9router-master/open-sse/translator/response/gemini-to-openai.js",
+      "sourceSha256": "5199d6cb4f7c023ea384f3bd32beaad70cf8d6353b8edcb102a821a76b3dacf8",
+      "changes": "Adapted subset; BoxFox fetch/credential/store interfaces, per-request state, strict failures and no post-output fallback. See PORTING.md."
+    },
+    {
+      "module": "router/src/providers/antigravity.mjs",
+      "source": "research/OmniRoute-release-v3.8.51/OmniRoute-release-v3.8.51/src/lib/oauth/providers/antigravity.ts",
+      "sourceSha256": "4523f5d8647122bd4d6579f597e2184f028f82df0e0372318b954416700e8843",
+      "changes": "Adapted subset; BoxFox fetch/credential/store interfaces, per-request state, strict failures and no post-output fallback. See PORTING.md."
+    },
+    {
+      "module": "router/src/providers/antigravity.mjs",
+      "source": "research/OmniRoute-release-v3.8.51/OmniRoute-release-v3.8.51/open-sse/services/antigravityProjectBootstrap.ts",
+      "sourceSha256": "3e299ce1921eec2b1a44f4bf484b44aed0fdfae5fd3646898c3e7e22d75550e2",
+      "changes": "Adapted subset; BoxFox fetch/credential/store interfaces, per-request state, strict failures and no post-output fallback. See PORTING.md."
+    },
+    {
+      "module": "router/src/providers/antigravity.mjs",
+      "source": "research/9router-master/9router-master/open-sse/executors/antigravity.js",
+      "sourceSha256": "bbdf004bd215d1e01f991ac2afe7ca26564ca156824b5064040f8522c4497218",
+      "changes": "Adapted subset; BoxFox fetch/credential/store interfaces, per-request state, strict failures and no post-output fallback. See PORTING.md."
+    },
+    {
+      "module": "router/src/catalog.mjs",
+      "source": "research/9router-master/9router-master/open-sse/providers/registry/index.js",
+      "sourceSha256": "30ed7e833be7f08343951f651e5ae56726e57599ec2dad2e1feb572e5d817d4e",
+      "changes": "Catalog metadata and local icon identities adapted; runtime support is explicitly separated from catalog presence."
+    },
+    {
+      "module": "router/src/catalog.mjs",
+      "source": "research/OmniRoute-release-v3.8.51/OmniRoute-release-v3.8.51/src/lib/providers/catalog.ts",
+      "sourceSha256": "88f9e0cdcf50212d32787fa4619e4c38af466a9aac4f859aa8aa89fd8b9fa8d3",
+      "changes": "Auth modes, discovery classes and OmniRoute-only account providers adapted into the BoxFox catalog contract."
+    },
+    {
+      "module": "router/src/model-sync.mjs",
+      "source": "research/OmniRoute-release-v3.8.51/OmniRoute-release-v3.8.51/src/shared/services/modelSyncScheduler.ts",
+      "sourceSha256": "4ad9574c29cbc77e0bc675a62c69d58f8322976c3b22fe7b9548595bbd356c10",
+      "changes": "Adapted as a bounded six-hour host scheduler over encrypted BoxFox connections with single-flight discovery."
+    },
+    {
+      "module": "router/src/providers/antigravity.mjs",
+      "source": "research/9router-master/9router-master/open-sse/services/usage/antigravity-weekly.js",
+      "sourceSha256": "3b0c4f83edbc685638bc5c9793e13a9ded49fa9631ad985c986d9feed5d2fa71",
+      "changes": "Weekly quota family parsing adapted; best-effort failures remain unknown and never imply unlimited quota."
+    },
+    {
+      "module": "router/src/providers/antigravity.mjs",
+      "source": "research/OmniRoute-release-v3.8.51/OmniRoute-release-v3.8.51/open-sse/services/usage/antigravity.ts",
+      "sourceSha256": "64bbda3e42278d6a7f75f2dc495e2eb06370a8169af2f011e59786af505b0923",
+      "changes": "Live user-quota precedence and subscription-plan normalization adapted without credit-spending probes."
+    },
+    {
+      "module": "router/src/providers/antigravity-models.mjs",
+      "source": "research/9router-master/9router-master/open-sse/providers/registry/antigravity.js",
+      "sourceSha256": "1cc3f7a995d7b6a62af53bf749476c579e9750992af8742168a96241a7bc0064",
+      "changes": "Public-to-upstream model mapping, native thinking levels and quota families adapted. BoxFox intersects the registry with live inventory and only exposes unknown models after a successful bounded inference probe."
+    }
+  ],
+  "assets": [
+    {
+      "name": "antigravity.png",
+      "source": "research/9router-master/9router-master/public/providers/antigravity.png",
+      "sha256": "19b32e19801a5f87e2035439e859ea9f71e8d86505e7ba3a3eca402d84516620"
+    },
+    {
+      "name": "openai.svg",
+      "source": "research/OmniRoute-release-v3.8.51/OmniRoute-release-v3.8.51/public/providers/openai.svg",
+      "sha256": "db81a8225166f02f773304ba4d8f0141343da5f43870d8b41f10bf6bc59840c8"
+    },
+    {
+      "name": "anthropic.svg",
+      "source": "research/OmniRoute-release-v3.8.51/OmniRoute-release-v3.8.51/public/providers/anthropic.svg",
+      "sha256": "7fea3100bfc2a9480e181fc615d4791cab014f54674b83953785abb86dc293f0"
+    },
+    {
+      "name": "gemini.svg",
+      "source": "research/OmniRoute-release-v3.8.51/OmniRoute-release-v3.8.51/public/providers/gemini.svg",
+      "sha256": "c11d94a9e3ecb32f67dd9350848cf3124d617680533275c672e1e6bf61ce8cd4"
+    }
+  ]
+}

@@ -136,6 +136,7 @@ const vi = {
     allClosed: 'Mọi tab đã đóng. Bấm một tên tab ở thanh trên để mở lại.',
   },
   chat: {
+    routerEmptyBody: 'Chọn model trong Provider, rồi nhập tin nhắn để bắt đầu.',
     title: 'Hội thoại',
     empty: {
       title: 'Chưa có hội thoại nào',

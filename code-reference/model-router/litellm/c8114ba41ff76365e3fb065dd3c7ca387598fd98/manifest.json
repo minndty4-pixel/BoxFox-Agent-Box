@@ -1,0 +1,260 @@
+{
+  "schema_version": 1,
+  "snapshot_kind": "curated-source-evidence",
+  "runtime_importable": false,
+  "project": {
+    "id": "litellm",
+    "repository": "https://github.com/BerriAI/litellm",
+    "commit": "c8114ba41ff76365e3fb065dd3c7ca387598fd98",
+    "license": "MIT (top-level; enterprise/ excluded)",
+    "upstream_manifest": "pyproject.toml",
+    "license_file": "LICENSE",
+    "excluded": [
+      ".env",
+      "secrets",
+      "credential databases",
+      "dependencies",
+      "generated files",
+      "enterprise/"
+    ]
+  },
+  "files": [
+    {
+      "upstream_path": "README.md",
+      "local_path": "upstream/README.md",
+      "pinned_blob_url": "https://github.com/BerriAI/litellm/blob/c8114ba41ff76365e3fb065dd3c7ca387598fd98/README.md",
+      "sha256": "ebe61352cba96500d8401d646d9ef167aaf475ce7f72e8e113e13ae60a43d7f5",
+      "license": "MIT (top-level; enterprise/ excluded)",
+      "reuse_class": "reference-only",
+      "topics": [
+        "overview"
+      ]
+    },
+    {
+      "upstream_path": "pyproject.toml",
+      "local_path": "upstream/pyproject.toml",
+      "pinned_blob_url": "https://github.com/BerriAI/litellm/blob/c8114ba41ff76365e3fb065dd3c7ca387598fd98/pyproject.toml",
+      "sha256": "06201f793dab7a160a15a93ef1b235a5c2d20afcdeac7d91e4ff4ac8aba42743",
+      "license": "MIT (top-level; enterprise/ excluded)",
+      "reuse_class": "reference-only",
+      "topics": [
+        "upstream-manifest"
+      ]
+    },
+    {
+      "upstream_path": "package.json",
+      "local_path": "upstream/package.json",
+      "pinned_blob_url": "https://github.com/BerriAI/litellm/blob/c8114ba41ff76365e3fb065dd3c7ca387598fd98/package.json",
+      "sha256": "7173bbe6207c6cf7d4d789d9732a8c1261fa79213016a283d41f877d24b1a661",
+      "license": "MIT (top-level; enterprise/ excluded)",
+      "reuse_class": "reference-only",
+      "topics": [
+        "upstream-manifest"
+      ]
+    },
+    {
+      "upstream_path": "litellm/router.py",
+      "local_path": "upstream/litellm/router.py",
+      "pinned_blob_url": "https://github.com/BerriAI/litellm/blob/c8114ba41ff76365e3fb065dd3c7ca387598fd98/litellm/router.py",
+      "sha256": "bcad73da361021c1bb8d8f223f00e940c94368984834002a0067d2a197b5b567",
+      "license": "MIT (top-level; enterprise/ excluded)",
+      "reuse_class": "reference-only",
+      "topics": [
+        "routing",
+        "fallback"
+      ]
+    },
+    {
+      "upstream_path": "litellm/proxy/proxy_server.py",
+      "local_path": "upstream/litellm/proxy/proxy_server.py",
+      "pinned_blob_url": "https://github.com/BerriAI/litellm/blob/c8114ba41ff76365e3fb065dd3c7ca387598fd98/litellm/proxy/proxy_server.py",
+      "sha256": "84502f00271f59a5d48c86d6e2ecc876f44d70d16f68ae1aa95fa89786ee85e1",
+      "license": "MIT (top-level; enterprise/ excluded)",
+      "reuse_class": "reference-only",
+      "topics": [
+        "ingress",
+        "proxy"
+      ]
+    },
+    {
+      "upstream_path": "litellm/llms/anthropic/chat/transformation.py",
+      "local_path": "upstream/litellm/llms/anthropic/chat/transformation.py",
+      "pinned_blob_url": "https://github.com/BerriAI/litellm/blob/c8114ba41ff76365e3fb065dd3c7ca387598fd98/litellm/llms/anthropic/chat/transformation.py",
+      "sha256": "c00d41b5b89a35bd74aba54858fc7b8cea8717144f53bf8637912ce0071a2775",
+      "license": "MIT (top-level; enterprise/ excluded)",
+      "reuse_class": "reference-only",
+      "topics": [
+        "protocol",
+        "translation"
+      ]
+    },
+    {
+      "upstream_path": "litellm/llms/openai/responses/transformation.py",
+      "local_path": "upstream/litellm/llms/openai/responses/transformation.py",
+      "pinned_blob_url": "https://github.com/BerriAI/litellm/blob/c8114ba41ff76365e3fb065dd3c7ca387598fd98/litellm/llms/openai/responses/transformation.py",
+      "sha256": "0e8a1340e9452d06a5233d8533e00f4106a1cfb8e35a3b8e7e11318c90b5f6c2",
+      "license": "MIT (top-level; enterprise/ excluded)",
+      "reuse_class": "reference-only",
+      "topics": [
+        "protocol",
+        "translation"
+      ]
+    },
+    {
+      "upstream_path": "litellm/litellm_core_utils/credential_accessor.py",
+      "local_path": "upstream/litellm/litellm_core_utils/credential_accessor.py",
+      "pinned_blob_url": "https://github.com/BerriAI/litellm/blob/c8114ba41ff76365e3fb065dd3c7ca387598fd98/litellm/litellm_core_utils/credential_accessor.py",
+      "sha256": "9a6bf1858cb8be3ad08e30a57bf2995829752125200f52c6b36c860c31ad55ce",
+      "license": "MIT (top-level; enterprise/ excluded)",
+      "reuse_class": "reference-only",
+      "topics": [
+        "credentials",
+        "security"
+      ]
+    },
+    {
+      "upstream_path": "litellm/proxy/auth/auth_checks.py",
+      "local_path": "upstream/litellm/proxy/auth/auth_checks.py",
+      "pinned_blob_url": "https://github.com/BerriAI/litellm/blob/c8114ba41ff76365e3fb065dd3c7ca387598fd98/litellm/proxy/auth/auth_checks.py",
+      "sha256": "a620e57fd487d52a4ba8714c081ca2e5e6b1185f6d6ebe6cdf0915d5719e51be",
+      "license": "MIT (top-level; enterprise/ excluded)",
+      "reuse_class": "reference-only",
+      "topics": [
+        "credentials",
+        "security"
+      ]
+    },
+    {
+      "upstream_path": "litellm/proxy/auth/route_checks.py",
+      "local_path": "upstream/litellm/proxy/auth/route_checks.py",
+      "pinned_blob_url": "https://github.com/BerriAI/litellm/blob/c8114ba41ff76365e3fb065dd3c7ca387598fd98/litellm/proxy/auth/route_checks.py",
+      "sha256": "ae99d88dba93de7cc9714b3c75f594de7141630f54312436c2a798d79a6f6898",
+      "license": "MIT (top-level; enterprise/ excluded)",
+      "reuse_class": "reference-only",
+      "topics": [
+        "security",
+        "authorization"
+      ]
+    },
+    {
+      "upstream_path": "litellm/proxy/hooks/dynamic_rate_limiter.py",
+      "local_path": "upstream/litellm/proxy/hooks/dynamic_rate_limiter.py",
+      "pinned_blob_url": "https://github.com/BerriAI/litellm/blob/c8114ba41ff76365e3fb065dd3c7ca387598fd98/litellm/proxy/hooks/dynamic_rate_limiter.py",
+      "sha256": "14b1529e557a034310020168dd20d04129f3d88f3d7232c0d50d9901ac094b99",
+      "license": "MIT (top-level; enterprise/ excluded)",
+      "reuse_class": "reference-only",
+      "topics": [
+        "security",
+        "rate-limit"
+      ]
+    },
+    {
+      "upstream_path": "litellm/proxy/hooks/sensitive_data_routing.py",
+      "local_path": "upstream/litellm/proxy/hooks/sensitive_data_routing.py",
+      "pinned_blob_url": "https://github.com/BerriAI/litellm/blob/c8114ba41ff76365e3fb065dd3c7ca387598fd98/litellm/proxy/hooks/sensitive_data_routing.py",
+      "sha256": "51438d8eede80b5e9bf96e72e6bdda4cceebca357761ead5579a1464b8690a7c",
+      "license": "MIT (top-level; enterprise/ excluded)",
+      "reuse_class": "reference-only",
+      "topics": [
+        "security",
+        "routing"
+      ]
+    },
+    {
+      "upstream_path": "LICENSE",
+      "local_path": "LICENSES/LICENSE",
+      "pinned_blob_url": "https://github.com/BerriAI/litellm/blob/c8114ba41ff76365e3fb065dd3c7ca387598fd98/LICENSE",
+      "sha256": "b170d6bf8e8835dd357e011681db028f4d51e2fb0ea892058f56e01fb39b8273",
+      "license": "MIT (top-level; enterprise/ excluded)",
+      "reuse_class": "reference-only",
+      "topics": [
+        "license",
+        "provenance"
+      ]
+    },
+    {
+      "upstream_path": "litellm/router_strategy/base_routing_strategy.py",
+      "local_path": "upstream/litellm/router_strategy/base_routing_strategy.py",
+      "pinned_blob_url": "https://github.com/BerriAI/litellm/blob/c8114ba41ff76365e3fb065dd3c7ca387598fd98/litellm/router_strategy/base_routing_strategy.py",
+      "sha256": "2bb7451c5bfe8ccfa682a123a13b017e225550d29e5cb6cfce67c3a123b63705",
+      "license": "MIT (top-level; enterprise/ excluded)",
+      "reuse_class": "reference-only",
+      "topics": [
+        "routing",
+        "strategy"
+      ]
+    },
+    {
+      "upstream_path": "litellm/router_strategy/lowest_cost.py",
+      "local_path": "upstream/litellm/router_strategy/lowest_cost.py",
+      "pinned_blob_url": "https://github.com/BerriAI/litellm/blob/c8114ba41ff76365e3fb065dd3c7ca387598fd98/litellm/router_strategy/lowest_cost.py",
+      "sha256": "1b34e0cb822fafb00a53c06baa68f11c812234b79096b5320facc7320acc113b",
+      "license": "MIT (top-level; enterprise/ excluded)",
+      "reuse_class": "reference-only",
+      "topics": [
+        "routing",
+        "strategy"
+      ]
+    },
+    {
+      "upstream_path": "litellm/router_strategy/least_busy.py",
+      "local_path": "upstream/litellm/router_strategy/least_busy.py",
+      "pinned_blob_url": "https://github.com/BerriAI/litellm/blob/c8114ba41ff76365e3fb065dd3c7ca387598fd98/litellm/router_strategy/least_busy.py",
+      "sha256": "14132fc14c02967133c4c6ac52c73d6373fd0a3b3c2bf8e74a248f91770727db",
+      "license": "MIT (top-level; enterprise/ excluded)",
+      "reuse_class": "reference-only",
+      "topics": [
+        "routing",
+        "strategy"
+      ]
+    },
+    {
+      "upstream_path": "litellm/llms/base_llm/chat/transformation.py",
+      "local_path": "upstream/litellm/llms/base_llm/chat/transformation.py",
+      "pinned_blob_url": "https://github.com/BerriAI/litellm/blob/c8114ba41ff76365e3fb065dd3c7ca387598fd98/litellm/llms/base_llm/chat/transformation.py",
+      "sha256": "9a603449f1e7f3bbe1d70a4c8ef6774dbe1cd0a59011535c56810f254e62f5c0",
+      "license": "MIT (top-level; enterprise/ excluded)",
+      "reuse_class": "reference-only",
+      "topics": [
+        "protocol",
+        "translation"
+      ]
+    },
+    {
+      "upstream_path": "litellm/llms/base_llm/responses/transformation.py",
+      "local_path": "upstream/litellm/llms/base_llm/responses/transformation.py",
+      "pinned_blob_url": "https://github.com/BerriAI/litellm/blob/c8114ba41ff76365e3fb065dd3c7ca387598fd98/litellm/llms/base_llm/responses/transformation.py",
+      "sha256": "8272d9590c689133bb5156b9ef007f6e4f762936e164af8d401b21b4e9f104df",
+      "license": "MIT (top-level; enterprise/ excluded)",
+      "reuse_class": "reference-only",
+      "topics": [
+        "protocol",
+        "translation"
+      ]
+    },
+    {
+      "upstream_path": "tests/code_coverage_tests/router_code_coverage.py",
+      "local_path": "upstream/tests/code_coverage_tests/router_code_coverage.py",
+      "pinned_blob_url": "https://github.com/BerriAI/litellm/blob/c8114ba41ff76365e3fb065dd3c7ca387598fd98/tests/code_coverage_tests/router_code_coverage.py",
+      "sha256": "21c3eca6608c5fe58b008a6e3fcc0f51614d12ebbe629ee8530790f96e763d68",
+      "license": "MIT (top-level; enterprise/ excluded)",
+      "reuse_class": "reference-only",
+      "topics": [
+        "tests",
+        "routing"
+      ]
+    },
+    {
+      "upstream_path": "tests/e2e/llm_translation/test_messages_e2e.py",
+      "local_path": "upstream/tests/e2e/llm_translation/test_messages_e2e.py",
+      "pinned_blob_url": "https://github.com/BerriAI/litellm/blob/c8114ba41ff76365e3fb065dd3c7ca387598fd98/tests/e2e/llm_translation/test_messages_e2e.py",
+      "sha256": "31aef112670f9aa1f08f22d8949a09deaf06eb7705726e37132a4038b0faf0c9",
+      "license": "MIT (top-level; enterprise/ excluded)",
+      "reuse_class": "reference-only",
+      "topics": [
+        "tests",
+        "protocol"
+      ]
+    }
+  ]
+}

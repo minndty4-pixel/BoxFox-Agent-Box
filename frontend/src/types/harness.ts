@@ -29,7 +29,9 @@ export type SettingTabId =
   | 'harness'
   | 'instructions'
   | 'skills'
+  | 'provider'
   | 'llm_api_keys'
+  | 'router'
   | 'scheduled_sessions'
   | 'automations'
   // MACHINES

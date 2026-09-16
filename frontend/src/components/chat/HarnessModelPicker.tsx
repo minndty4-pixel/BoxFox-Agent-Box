@@ -6,6 +6,7 @@
  * - Footer: [⚙️ Manage Harnesses] và [+ Create Harness]
  */
 import { useState, useRef, useEffect, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import {
   Bot,
   Cpu,
@@ -18,12 +19,28 @@ import {
 } from 'lucide-react'
 import { useHarnessStore, AVAILABLE_MODELS } from '../../store/harnessStore'
 import { useUiStore } from '../../store/uiStore'
+import { useProviderStore } from '../../store/providerStore'
+import { ProviderIcon } from '../providers/ProviderIcon'
 
-export function HarnessModelPicker() {
+export interface RouterSingleModel {
+  id: string
+  name: string
+  provider: string
+}
+
+interface HarnessModelPickerProps {
+  routerModels?: RouterSingleModel[]
+  activeRouterModelId?: string
+  onRouterModelChange?: (id: string) => void
+}
+
+export function HarnessModelPicker({ routerModels, activeRouterModelId, onRouterModelChange }: HarnessModelPickerProps) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
   const [activeTab, setActiveTab] = useState<'harness' | 'model'>('harness')
-  const popoverRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const [panelPosition, setPanelPosition] = useState({ left: 8, bottom: 8 })
 
   const harnesses = useHarnessStore((s) => s.harnesses)
   const activeHarnessId = useHarnessStore((s) => s.activeHarnessId)
@@ -32,6 +49,36 @@ export function HarnessModelPicker() {
   const setActiveHarness = useHarnessStore((s) => s.setActiveHarness)
   const setActiveModel = useHarnessStore((s) => s.setActiveModel)
   const openSettings = useUiStore((s) => s.openSettings)
+
+  // ── Live Provider Models (tự kết nối Router, chỉ hiện khi user đã bật
+  //    provider trong Settings > Provider) ────────────────────────────────
+  const { snapshot, load: loadProviders } = useProviderStore()
+  useEffect(() => {
+    if (!snapshot) void loadProviders().catch(() => {})
+  }, [snapshot, loadProviders])
+
+  const liveModels: RouterSingleModel[] = useMemo(() => {
+    if (!snapshot?.connections) return []
+    return snapshot.connections
+      .filter(c => c.enabled && c.authState === 'ready' && c.discoveryState === 'ready'
+        && (c.providerId !== 'antigravity' || c.projectState === 'ready'))
+      .flatMap(c =>
+        c.models
+          .filter(m => m.enabled && m.health !== 'unavailable')
+          .map(m => ({
+            id: `model:${c.id}:${m.id}`,
+            name: `${c.name} · ${m.name}`,
+            provider: c.providerId,
+          }))
+      )
+  }, [snapshot])
+
+  // Khi có live models từ provider → ưu tiên hiển thị, ngược lại fallback
+  // về danh sách tĩnh AVAILABLE_MODELS.
+  const hasLive = liveModels.length > 0 || (routerModels && routerModels.length > 0)
+  const effectiveModels = routerModels && routerModels.length > 0
+    ? routerModels
+    : liveModels.length > 0 ? liveModels : null
 
   // Current active entity
   const currentHarness = useMemo(
@@ -42,6 +89,9 @@ export function HarnessModelPicker() {
     () => AVAILABLE_MODELS.find((m) => m.id === activeModelId) ?? AVAILABLE_MODELS[0],
     [activeModelId],
   )
+  const currentRouterModel = effectiveModels?.find((model) => model.id === activeRouterModelId) ?? effectiveModels?.[0] ?? null
+  const selectedModelName = currentRouterModel?.name ?? currentModel?.name ?? ''
+  const selectedModelProvider = currentRouterModel?.provider ?? currentModel?.provider ?? ''
 
   const subagentCount = currentHarness?.subagents?.filter((s) => s.enabled).length ?? 1
 
@@ -67,11 +117,18 @@ export function HarnessModelPicker() {
         (m.contextWindow ? m.contextWindow.toLowerCase().includes(q) : false),
     )
   }, [search])
+  const filteredRouterModels = useMemo(() => {
+    const list = effectiveModels ?? []
+    if (!search.trim()) return list
+    const q = search.toLowerCase()
+    return list.filter((model) => model.name.toLowerCase().includes(q) || model.provider.toLowerCase().includes(q))
+  }, [effectiveModels, search])
 
   // Close on outside click
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
-      if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
+      const target = e.target as Node
+      if (!triggerRef.current?.contains(target) && !panelRef.current?.contains(target)) {
         setOpen(false)
       }
     }
@@ -81,21 +138,46 @@ export function HarnessModelPicker() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [open])
 
+  // The toolbar's left group intentionally uses overflow-hidden so its controls
+  // never collide with Mic/Send on narrow chat columns. Render the floating
+  // panel in document.body so focusing its search field cannot horizontally
+  // scroll that group and make the original toolbar appear shifted.
+  useEffect(() => {
+    if (!open) return
+
+    const updatePosition = () => {
+      const rect = triggerRef.current?.getBoundingClientRect()
+      if (!rect) return
+      const width = 320
+      setPanelPosition({
+        left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
+        bottom: Math.max(8, window.innerHeight - rect.top + 8),
+      })
+    }
+
+    updatePosition()
+    window.addEventListener('resize', updatePosition)
+    window.addEventListener('scroll', updatePosition, true)
+    return () => {
+      window.removeEventListener('resize', updatePosition)
+      window.removeEventListener('scroll', updatePosition, true)
+    }
+  }, [open])
+
   return (
-    <div className="relative inline-block" ref={popoverRef}>
+    <div className="relative inline-block" ref={triggerRef}>
       {/* Trigger Button in Chat Input Toolbar — Compact Style */}
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className={`flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-medium transition cursor-pointer ${
-          open
+        className={`flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-medium transition cursor-pointer ${open
             ? 'border-zinc-500 bg-panel text-fg shadow-xs'
             : 'border-line bg-panel/80 text-muted hover:border-zinc-600 hover:text-fg'
-        }`}
+          }`}
         title={
           activeType === 'harness'
             ? `Harness: ${currentHarness?.name} (${subagentCount} sub-agents)`
-            : `Model: ${currentModel?.name} (${currentModel?.provider})`
+            : `Model: ${selectedModelName} (${selectedModelProvider})`
         }
       >
         {activeType === 'harness' ? (
@@ -105,15 +187,19 @@ export function HarnessModelPicker() {
           </>
         ) : (
           <>
-            <Cpu className="size-3.5 text-amber-400" />
+            {hasLive && selectedModelProvider ? (
+              <ProviderIcon providerId={selectedModelProvider} className="size-3.5" />
+            ) : (
+              <Cpu className="size-3.5 text-amber-400" />
+            )}
             <span className="font-semibold text-fg">
-              {currentModel?.name.includes('Claude')
+              {selectedModelName.includes('Claude')
                 ? 'Sonnet'
-                : currentModel?.name.includes('DeepSeek')
+                : selectedModelName.includes('DeepSeek')
                   ? 'DeepSeek'
-                  : currentModel?.name.includes('Gemini')
+                  : selectedModelName.includes('Gemini')
                     ? 'Gemini'
-                    : currentModel?.name.split(' ')[0]}
+                    : selectedModelName.split(' ')[0]}
             </span>
           </>
         )}
@@ -121,8 +207,12 @@ export function HarnessModelPicker() {
       </button>
 
       {/* Floating Popover (Anchored above the chat bar) */}
-      {open && (
-        <div className="absolute bottom-full left-0 z-50 mb-2 w-80 overflow-hidden rounded-xl border border-line bg-[#111318] shadow-2xl animate-in fade-in zoom-in-95 duration-150 select-none">
+      {open && createPortal(
+        <div
+          ref={panelRef}
+          className="fixed z-50 w-80 overflow-hidden rounded-xl border border-line bg-[#111318] shadow-2xl animate-in fade-in zoom-in-95 duration-150 select-none"
+          style={{ left: panelPosition.left, bottom: panelPosition.bottom }}
+        >
           {/* Search Header */}
           <div className="border-b border-line/70 p-2 bg-[#151820]">
             <div className="relative flex items-center">
@@ -151,11 +241,10 @@ export function HarnessModelPicker() {
               <button
                 type="button"
                 onClick={() => setActiveTab('harness')}
-                className={`flex items-center justify-center gap-1.5 rounded-md py-1 text-[11px] font-medium transition cursor-pointer ${
-                  activeTab === 'harness'
+                className={`flex items-center justify-center gap-1.5 rounded-md py-1 text-[11px] font-medium transition cursor-pointer ${activeTab === 'harness'
                     ? 'bg-[#1e222d] text-white shadow-xs font-semibold'
                     : 'text-muted hover:text-fg'
-                }`}
+                  }`}
               >
                 <Bot className="size-3 text-brand" />
                 <span>Harnesses</span>
@@ -163,11 +252,10 @@ export function HarnessModelPicker() {
               <button
                 type="button"
                 onClick={() => setActiveTab('model')}
-                className={`flex items-center justify-center gap-1.5 rounded-md py-1 text-[11px] font-medium transition cursor-pointer ${
-                  activeTab === 'model'
+                className={`flex items-center justify-center gap-1.5 rounded-md py-1 text-[11px] font-medium transition cursor-pointer ${activeTab === 'model'
                     ? 'bg-[#1e222d] text-white shadow-xs font-semibold'
                     : 'text-muted hover:text-fg'
-                }`}
+                  }`}
               >
                 <Cpu className="size-3 text-amber-400" />
                 <span>Single Models</span>
@@ -193,11 +281,10 @@ export function HarnessModelPicker() {
                         setActiveHarness(harness.id)
                         setOpen(false)
                       }}
-                      className={`flex w-full items-start justify-between rounded-lg p-2 text-left transition cursor-pointer ${
-                        isSelected
+                      className={`flex w-full items-start justify-between rounded-lg p-2 text-left transition cursor-pointer ${isSelected
                           ? 'bg-[#1c212c] text-white'
                           : 'hover:bg-panel2/60 text-zinc-300'
-                      }`}
+                        }`}
                     >
                       <div className="min-w-0 flex-1 space-y-0.5">
                         <div className="flex items-center gap-1.5">
@@ -229,45 +316,87 @@ export function HarnessModelPicker() {
                 })
               )
             ) : (
-              /* Single Models List */
-              filteredModels.length === 0 ? (
-                <div className="p-6 text-center text-xs text-muted">No models found</div>
-              ) : (
-                filteredModels.map((model) => {
-                  const isSelected = activeType === 'model' && activeModelId === model.id
-                  return (
-                    <button
-                      key={model.id}
-                      type="button"
-                      onClick={() => {
-                        setActiveModel(model.id)
-                        setOpen(false)
-                      }}
-                      className={`flex w-full items-center justify-between rounded-lg p-2 text-left transition cursor-pointer ${
-                        isSelected
-                          ? 'bg-[#1c212c] text-white'
-                          : 'hover:bg-panel2/60 text-zinc-300'
-                      }`}
-                    >
-                      <div className="min-w-0 flex-1 space-y-0.5">
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-semibold text-xs text-fg">{model.name}</span>
-                          <span className="rounded bg-panel px-1 py-0.2 text-[9px] font-mono text-muted border border-line">
-                            {model.provider}
-                          </span>
+              /* Single Models List — hiển thị live models khi user đã bật
+                 provider trong Settings, ngược lại fallback AVAILABLE_MODELS */
+              hasLive ? (
+                filteredRouterModels.length === 0 ? (
+                  <div className="p-6 text-center text-xs text-muted">No models found</div>
+                ) : (
+                  filteredRouterModels.map((model) => {
+                    const isSelected = activeType === 'model' && (activeRouterModelId === model.id || activeModelId === model.id)
+                    return (
+                      <button
+                        key={model.id}
+                        type="button"
+                        onClick={() => {
+                          onRouterModelChange?.(model.id)
+                          setActiveModel(model.id)
+                          setOpen(false)
+                        }}
+                        className={`flex w-full items-center justify-between rounded-lg p-2 text-left transition cursor-pointer ${isSelected
+                            ? 'bg-[#1c212c] text-white'
+                            : 'hover:bg-panel2/60 text-zinc-300'
+                          }`}
+                      >
+                        <div className="min-w-0 flex-1 space-y-0.5">
+                          <div className="flex items-center gap-2">
+                            <ProviderIcon providerId={model.provider} className="size-4" />
+                            <span className="font-semibold text-xs text-fg">{model.name}</span>
+                          </div>
+                          <div className="flex items-center gap-2 text-[10px] text-zinc-500 font-mono">
+                            <span className="flex items-center gap-1">
+                              <span className={`size-1.5 rounded-full inline-block ${isSelected ? 'bg-emerald-500' : 'bg-zinc-600'}`} />
+                              Live Provider
+                            </span>
+                          </div>
                         </div>
-                        <div className="flex items-center gap-2 text-[10px] text-zinc-500 font-mono">
-                          <span>Context: {model.contextWindow}</span>
-                          {model.supportsImages && <span>· Vision ready</span>}
-                        </div>
-                      </div>
 
-                      {isSelected && (
-                        <Check className="size-4 shrink-0 text-brand ml-2" />
-                      )}
-                    </button>
-                  )
-                })
+                        {isSelected && (
+                          <Check className="size-4 shrink-0 text-brand ml-2" />
+                        )}
+                      </button>
+                    )
+                  })
+                )
+              ) : (
+                filteredModels.length === 0 ? (
+                  <div className="p-6 text-center text-xs text-muted">No models found</div>
+                ) : (
+                  filteredModels.map((model) => {
+                    const isSelected = activeType === 'model' && activeModelId === model.id
+                    return (
+                      <button
+                        key={model.id}
+                        type="button"
+                        onClick={() => {
+                          setActiveModel(model.id)
+                          setOpen(false)
+                        }}
+                        className={`flex w-full items-center justify-between rounded-lg p-2 text-left transition cursor-pointer ${isSelected
+                            ? 'bg-[#1c212c] text-white'
+                            : 'hover:bg-panel2/60 text-zinc-300'
+                          }`}
+                      >
+                        <div className="min-w-0 flex-1 space-y-0.5">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-semibold text-xs text-fg">{model.name}</span>
+                            <span className="rounded bg-panel px-1 py-0.2 text-[9px] font-mono text-muted border border-line">
+                              {model.provider}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2 text-[10px] text-zinc-500 font-mono">
+                            <span>Context: {model.contextWindow}</span>
+                            {model.supportsImages && <span>· Vision ready</span>}
+                          </div>
+                        </div>
+
+                        {isSelected && (
+                          <Check className="size-4 shrink-0 text-brand ml-2" />
+                        )}
+                      </button>
+                    )
+                  })
+                )
               )
             )}
           </div>
@@ -298,7 +427,8 @@ export function HarnessModelPicker() {
               <span>Create Harness</span>
             </button>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   )

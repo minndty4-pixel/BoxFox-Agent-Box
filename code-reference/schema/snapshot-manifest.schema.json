@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://boxfox.local/code-reference/schema/snapshot-manifest.schema.json",
+  "title": "BoxFox curated source evidence snapshot",
+  "type": "object",
+  "required": ["schema_version", "snapshot_kind", "runtime_importable", "project", "files"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "snapshot_kind": {"const": "curated-source-evidence"},
+    "runtime_importable": {"const": false},
+    "project": {
+      "type": "object",
+      "required": ["id", "repository", "commit", "license", "upstream_manifest", "license_file", "excluded"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9-]+$"},
+        "repository": {"type": "string", "format": "uri", "pattern": "^https://github\\.com/"},
+        "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "license": {"type": "string"},
+        "upstream_manifest": {"type": "string", "pattern": "^(?!/)(?!\\.\\.(?:/|$))(?!.*?/\\.\\.(?:/|$))[^\\\\]+$"},
+        "license_file": {"const": "LICENSE"},
+        "excluded": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["upstream_path", "local_path", "pinned_blob_url", "sha256", "license", "reuse_class", "topics"],
+        "properties": {
+          "upstream_path": {"type": "string", "pattern": "^(?!/)(?!\\.\\.(?:/|$))(?!.*?/\\.\\.(?:/|$))[^\\\\]+$"},
+          "local_path": {"type": "string", "pattern": "^(?:upstream/(?!.*?/\\.\\.(?:/|$))[^\\\\]+|LICENSES/LICENSE)$"},
+          "pinned_blob_url": {"type": "string", "format": "uri", "pattern": "^https://github\\.com/[^/]+/[^/]+/blob/[0-9a-f]{40}/"},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "license": {"type": "string"},
+          "reuse_class": {"enum": ["copy", "adapt", "reference-only"]},
+          "topics": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

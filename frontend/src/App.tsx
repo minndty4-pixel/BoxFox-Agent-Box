@@ -93,6 +93,7 @@ export default function App() {
 
   useCompletionEmail()
 
+
   const mode = useAgentStore((s) => s.mode)
   const taskEpoch = useAgentStore((s) => s.taskEpoch)
   const budget = useAgentStore((s) => s.budget)
@@ -197,20 +198,18 @@ export default function App() {
                     type="button"
                     onClick={() => openTab(tab)}
                     aria-selected={isActive}
-                    className={`group flex items-center gap-1.5 rounded-t-md border-t border-x px-3 py-1.5 text-xs font-medium transition cursor-pointer ${
-                      isActive
+                    className={`group flex items-center gap-1.5 rounded-t-md border-t border-x px-3 py-1.5 text-xs font-medium transition cursor-pointer ${isActive
                         ? 'border-line bg-panel2 text-fg shadow-xs'
                         : 'border-transparent text-muted hover:text-fg hover:bg-panel2/40'
-                    }`}
+                      }`}
                   >
                     <Icon
-                      className={`size-3.5 ${
-                        isDecisionsWithPending
+                      className={`size-3.5 ${isDecisionsWithPending
                           ? 'text-amber-400 animate-pulse'
                           : isActive
                             ? 'text-brand'
                             : 'text-muted'
-                      }`}
+                        }`}
                     />
                     <span>{tab === 'decisions' ? 'Decisions' : t(TAB_LABEL_KEY[tab] as 'tabs.plan')}</span>
                     {isDecisionsWithPending && (
@@ -353,11 +352,10 @@ function TopBar({
         <span className="size-1.5 rounded-full bg-emerald-400" />
         <h1 className="text-xs font-semibold text-fg">{title}</h1>
         <span
-          className={`inline-flex items-center gap-1 rounded px-1.5 py-0.2 text-[9px] font-bold uppercase tracking-wider ${
-            mode === 'ACT'
+          className={`inline-flex items-center gap-1 rounded px-1.5 py-0.2 text-[9px] font-bold uppercase tracking-wider ${mode === 'ACT'
               ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
               : 'bg-zinc-800 text-zinc-300 border border-zinc-700'
-          }`}
+            }`}
         >
           {mode}
         </span>
@@ -374,11 +372,10 @@ function TopBar({
           <button
             type="button"
             onClick={() => setAddMenuOpen(!addMenuOpen)}
-            className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition cursor-pointer ${
-              addMenuOpen
+            className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition cursor-pointer ${addMenuOpen
                 ? 'border-brand/60 bg-panel2 text-brand shadow-xs'
                 : 'border-line/70 bg-panel2/50 text-muted hover:border-line hover:bg-panel2 hover:text-fg'
-            }`}
+              }`}
             title="Open Workspace View"
           >
             <Plus className="size-3 text-brand" />
@@ -404,11 +401,10 @@ function TopBar({
                         openTab(tabItem.id)
                         setAddMenuOpen(false)
                       }}
-                      className={`flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-xs transition cursor-pointer ${
-                        isAlreadyOpen
+                      className={`flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-xs transition cursor-pointer ${isAlreadyOpen
                           ? 'bg-panel/60 text-fg'
                           : 'text-muted hover:bg-panel hover:text-fg'
-                      }`}
+                        }`}
                     >
                       <Icon className="size-3.5 text-brand shrink-0" />
                       <div className="min-w-0 flex-1">
@@ -428,8 +424,6 @@ function TopBar({
           integrity={context.integrity_floor as 'duoc_nguoi_dung_cho_phep'}
           confidentiality={context.confidentiality_ceiling as 'cong_khai'}
         />
-        <SettingsModal />
-        <CompletionEmailNotice />
         <SearchSessionsModal />
       </div>
     </div>

@@ -4,7 +4,7 @@ import {
   Sliders,
   FileText,
   Sparkles,
-  KeyRound,
+  Route,
   Calendar,
   Cpu,
   Lock,
@@ -50,7 +50,7 @@ const SECTIONS: NavSection[] = [
       { id: 'harness', label: 'Harness', icon: Sliders },
       { id: 'instructions', label: 'Instructions', icon: FileText },
       { id: 'skills', label: 'Skills', icon: Sparkles },
-      { id: 'llm_api_keys', label: 'LLM API Keys', icon: KeyRound },
+      { id: 'provider', label: 'Provider', icon: Route },
       { id: 'scheduled_sessions', label: 'Scheduled Sessions', icon: Calendar },
       { id: 'automations', label: 'Automations', icon: Zap },
     ],
@@ -92,8 +92,8 @@ export function SettingsSidebar() {
   const closeSettings = useUiStore((s) => s.closeSettings)
 
   return (
-    <aside className="flex w-60 shrink-0 flex-col border-r border-line bg-panel select-none">
-      <div className="border-b border-line p-3">
+    <aside className="flex max-h-34 w-full shrink-0 flex-col border-b border-line bg-panel select-none sm:max-h-none sm:w-60 sm:border-r sm:border-b-0">
+      <div className="shrink-0 border-b border-line p-1.5 sm:p-3">
         <button
           type="button"
           onClick={closeSettings}
@@ -104,13 +104,13 @@ export function SettingsSidebar() {
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-2.5 space-y-4">
+      <div className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden whitespace-nowrap p-2 sm:overflow-y-auto sm:whitespace-normal sm:p-2.5 sm:space-y-4">
         {SECTIONS.map((section) => (
-          <div key={section.id}>
-            <h3 className="px-2 py-1 text-[10px] font-semibold tracking-wider text-muted/70 uppercase">
+          <div key={section.id} className="inline-block align-top sm:block">
+            <h3 className="hidden px-2 py-1 text-[10px] font-semibold tracking-wider text-muted/70 uppercase sm:block">
               {section.title}
             </h3>
-            <div className="mt-0.5 space-y-0.5">
+            <div className="mt-0.5 flex gap-1 sm:block sm:space-y-0.5">
               {section.items.map((item) => {
                 const isActive = settingsTab === item.id
                 const Icon = item.icon
@@ -119,7 +119,7 @@ export function SettingsSidebar() {
                     key={item.id}
                     type="button"
                     onClick={() => setSettingsTab(item.id, section.id)}
-                    className={`flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-xs transition cursor-pointer ${
+                    className={`flex shrink-0 items-center gap-2.5 rounded-md px-2.5 py-1.5 text-xs transition cursor-pointer sm:w-full ${
                       isActive
                         ? 'bg-panel2 font-medium text-fg shadow-xs ring-1 ring-line'
                         : 'text-muted hover:bg-panel2/60 hover:text-fg'

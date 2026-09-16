@@ -1,0 +1,343 @@
+{
+  "schema_version": 1,
+  "snapshot_kind": "curated-source-evidence",
+  "runtime_importable": false,
+  "project": {
+    "id": "claude-code-router",
+    "repository": "https://github.com/musistudio/claude-code-router",
+    "commit": "cbe5f7bb3b3511ac31274559f2e9f387cab6fe40",
+    "license": "MIT",
+    "upstream_manifest": "package.json",
+    "license_file": "LICENSE",
+    "excluded": [
+      ".env",
+      "secrets",
+      "credential databases",
+      "dependencies",
+      "generated files"
+    ]
+  },
+  "files": [
+    {
+      "upstream_path": "README.md",
+      "local_path": "upstream/README.md",
+      "pinned_blob_url": "https://github.com/musistudio/claude-code-router/blob/cbe5f7bb3b3511ac31274559f2e9f387cab6fe40/README.md",
+      "sha256": "459c4e3adf9d21aab104a97ba8d53e87d20a1d84e987c6b06d572cf4df40912f",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "overview"
+      ]
+    },
+    {
+      "upstream_path": "package.json",
+      "local_path": "upstream/package.json",
+      "pinned_blob_url": "https://github.com/musistudio/claude-code-router/blob/cbe5f7bb3b3511ac31274559f2e9f387cab6fe40/package.json",
+      "sha256": "a21335656426b60e9a421078db25ac1cd68eeba6aa06f2c515e4e16ca67f632a",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "upstream-manifest"
+      ]
+    },
+    {
+      "upstream_path": "packages/core/package.json",
+      "local_path": "upstream/packages/core/package.json",
+      "pinned_blob_url": "https://github.com/musistudio/claude-code-router/blob/cbe5f7bb3b3511ac31274559f2e9f387cab6fe40/packages/core/package.json",
+      "sha256": "ec0365c05382f413641676915a67e8d083f92bd62e14a1b709edd8e89bbd84af",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "upstream-manifest"
+      ]
+    },
+    {
+      "upstream_path": "packages/core/src/gateway/http/request-handler.ts",
+      "local_path": "upstream/packages/core/src/gateway/http/request-handler.ts",
+      "pinned_blob_url": "https://github.com/musistudio/claude-code-router/blob/cbe5f7bb3b3511ac31274559f2e9f387cab6fe40/packages/core/src/gateway/http/request-handler.ts",
+      "sha256": "91a76ad8239638ce54d2aad1e1cc043303b589416647d359fdae58f12179f870",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "ingress",
+        "gateway"
+      ]
+    },
+    {
+      "upstream_path": "packages/core/src/gateway/request/pipeline.ts",
+      "local_path": "upstream/packages/core/src/gateway/request/pipeline.ts",
+      "pinned_blob_url": "https://github.com/musistudio/claude-code-router/blob/cbe5f7bb3b3511ac31274559f2e9f387cab6fe40/packages/core/src/gateway/request/pipeline.ts",
+      "sha256": "136afe833037e70362f1a85d43b90fd4975fe3200c80a7731fe74d4bacf999cd",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "gateway",
+        "routing"
+      ]
+    },
+    {
+      "upstream_path": "packages/core/src/routing/protocol-adapter.ts",
+      "local_path": "upstream/packages/core/src/routing/protocol-adapter.ts",
+      "pinned_blob_url": "https://github.com/musistudio/claude-code-router/blob/cbe5f7bb3b3511ac31274559f2e9f387cab6fe40/packages/core/src/routing/protocol-adapter.ts",
+      "sha256": "df43e7143969a3a575206ccdc5cd8e53507a5effbd9c76aede949630c69973b7",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "protocol",
+        "translation"
+      ]
+    },
+    {
+      "upstream_path": "packages/core/src/routing/protocol-endpoints.ts",
+      "local_path": "upstream/packages/core/src/routing/protocol-endpoints.ts",
+      "pinned_blob_url": "https://github.com/musistudio/claude-code-router/blob/cbe5f7bb3b3511ac31274559f2e9f387cab6fe40/packages/core/src/routing/protocol-endpoints.ts",
+      "sha256": "31caeaefb2077559df865736daabaff74ad2cabdfe7e2f82f9ed565a4f3c881a",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "ingress",
+        "protocol"
+      ]
+    },
+    {
+      "upstream_path": "packages/core/src/routing/model-resolution.ts",
+      "local_path": "upstream/packages/core/src/routing/model-resolution.ts",
+      "pinned_blob_url": "https://github.com/musistudio/claude-code-router/blob/cbe5f7bb3b3511ac31274559f2e9f387cab6fe40/packages/core/src/routing/model-resolution.ts",
+      "sha256": "7c9e6af46304a4a286455a6b1d15e07fab8d4f815a944174928754639d1687e5",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "routing",
+        "model-alias"
+      ]
+    },
+    {
+      "upstream_path": "packages/core/src/routing/policy-engine.ts",
+      "local_path": "upstream/packages/core/src/routing/policy-engine.ts",
+      "pinned_blob_url": "https://github.com/musistudio/claude-code-router/blob/cbe5f7bb3b3511ac31274559f2e9f387cab6fe40/packages/core/src/routing/policy-engine.ts",
+      "sha256": "33c11d285f628a64c47bf7953035c315aa76277f5db996e5aeec30cce43c77f5",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "routing",
+        "policy"
+      ]
+    },
+    {
+      "upstream_path": "packages/core/src/routing/failure-classifier.ts",
+      "local_path": "upstream/packages/core/src/routing/failure-classifier.ts",
+      "pinned_blob_url": "https://github.com/musistudio/claude-code-router/blob/cbe5f7bb3b3511ac31274559f2e9f387cab6fe40/packages/core/src/routing/failure-classifier.ts",
+      "sha256": "2a2a4f8b5340543296a9872fa39e7e32fa50a01ffc775dcae1ea7e96fadf4492",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "routing",
+        "fallback"
+      ]
+    },
+    {
+      "upstream_path": "packages/core/src/gateway/upstream/executor.ts",
+      "local_path": "upstream/packages/core/src/gateway/upstream/executor.ts",
+      "pinned_blob_url": "https://github.com/musistudio/claude-code-router/blob/cbe5f7bb3b3511ac31274559f2e9f387cab6fe40/packages/core/src/gateway/upstream/executor.ts",
+      "sha256": "b43d32c97359a4800278bed6ca6bca7791864b437456b89819211ac237912568",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "providers",
+        "execution"
+      ]
+    },
+    {
+      "upstream_path": "packages/core/src/providers/credential-pool.ts",
+      "local_path": "upstream/packages/core/src/providers/credential-pool.ts",
+      "pinned_blob_url": "https://github.com/musistudio/claude-code-router/blob/cbe5f7bb3b3511ac31274559f2e9f387cab6fe40/packages/core/src/providers/credential-pool.ts",
+      "sha256": "335a6013be7ed51c9905b8065ac8a289d0ac8ac8a0b784554c7b68e239ee995c",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "credentials",
+        "security"
+      ]
+    },
+    {
+      "upstream_path": "packages/core/src/providers/oauth-plugin.ts",
+      "local_path": "upstream/packages/core/src/providers/oauth-plugin.ts",
+      "pinned_blob_url": "https://github.com/musistudio/claude-code-router/blob/cbe5f7bb3b3511ac31274559f2e9f387cab6fe40/packages/core/src/providers/oauth-plugin.ts",
+      "sha256": "5b4c359f9501311bf814347faca6a19c94901b96457db08d38bdeb14cff33492",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "credentials",
+        "oauth"
+      ]
+    },
+    {
+      "upstream_path": "packages/core/src/gateway/auth/api-key-authorizer.ts",
+      "local_path": "upstream/packages/core/src/gateway/auth/api-key-authorizer.ts",
+      "pinned_blob_url": "https://github.com/musistudio/claude-code-router/blob/cbe5f7bb3b3511ac31274559f2e9f387cab6fe40/packages/core/src/gateway/auth/api-key-authorizer.ts",
+      "sha256": "957cc6e4dcbc65661a45f957a43dd1ce01dc64442cf8402463240f1d533fd1fb",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "credentials",
+        "security"
+      ]
+    },
+    {
+      "upstream_path": "packages/core/src/gateway/core-runtime/upstream-header-sanitizer.ts",
+      "local_path": "upstream/packages/core/src/gateway/core-runtime/upstream-header-sanitizer.ts",
+      "pinned_blob_url": "https://github.com/musistudio/claude-code-router/blob/cbe5f7bb3b3511ac31274559f2e9f387cab6fe40/packages/core/src/gateway/core-runtime/upstream-header-sanitizer.ts",
+      "sha256": "a98b7f4df4cbbbe131b303235535cbee6d1a9ecf45d167e1dc2969daf20197d6",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "security",
+        "headers"
+      ]
+    },
+    {
+      "upstream_path": "packages/core/src/gateway/limits/window-limiter.ts",
+      "local_path": "upstream/packages/core/src/gateway/limits/window-limiter.ts",
+      "pinned_blob_url": "https://github.com/musistudio/claude-code-router/blob/cbe5f7bb3b3511ac31274559f2e9f387cab6fe40/packages/core/src/gateway/limits/window-limiter.ts",
+      "sha256": "7ff715604d5ec7c8c736ca7dd28a5cf5ce7fc6f64d1f06173b8a3d56f3f6d6ca",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "security",
+        "rate-limit"
+      ]
+    },
+    {
+      "upstream_path": "packages/core/src/proxy/certificates.ts",
+      "local_path": "upstream/packages/core/src/proxy/certificates.ts",
+      "pinned_blob_url": "https://github.com/musistudio/claude-code-router/blob/cbe5f7bb3b3511ac31274559f2e9f387cab6fe40/packages/core/src/proxy/certificates.ts",
+      "sha256": "7914fec806a6610ace4047f253190f46c3fbea32407f58db317013b11d8455aa",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "security",
+        "mitm"
+      ]
+    },
+    {
+      "upstream_path": "packages/core/src/observability/request-log-model.ts",
+      "local_path": "upstream/packages/core/src/observability/request-log-model.ts",
+      "pinned_blob_url": "https://github.com/musistudio/claude-code-router/blob/cbe5f7bb3b3511ac31274559f2e9f387cab6fe40/packages/core/src/observability/request-log-model.ts",
+      "sha256": "749ab1e476de0f0a613ec685c6d6dc65de45178e6c89a1337a898bf4257625e4",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "observability",
+        "security"
+      ]
+    },
+    {
+      "upstream_path": "LICENSE",
+      "local_path": "LICENSES/LICENSE",
+      "pinned_blob_url": "https://github.com/musistudio/claude-code-router/blob/cbe5f7bb3b3511ac31274559f2e9f387cab6fe40/LICENSE",
+      "sha256": "20e078455c0d684ded1ed410cbc48c59b9b1da14a3a72ba9ec6301db1fdc9bb4",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "license",
+        "provenance"
+      ]
+    },
+    {
+      "upstream_path": "packages/core/src/gateway/upstream/retry-policy.ts",
+      "local_path": "upstream/packages/core/src/gateway/upstream/retry-policy.ts",
+      "pinned_blob_url": "https://github.com/musistudio/claude-code-router/blob/cbe5f7bb3b3511ac31274559f2e9f387cab6fe40/packages/core/src/gateway/upstream/retry-policy.ts",
+      "sha256": "80bf751eeae0a46c8c893aa55e14a7e78b8b10824611f01921e81a9fc562a500",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "routing",
+        "retry"
+      ]
+    },
+    {
+      "upstream_path": "packages/core/src/routing/execution-plan.ts",
+      "local_path": "upstream/packages/core/src/routing/execution-plan.ts",
+      "pinned_blob_url": "https://github.com/musistudio/claude-code-router/blob/cbe5f7bb3b3511ac31274559f2e9f387cab6fe40/packages/core/src/routing/execution-plan.ts",
+      "sha256": "57958aacffac1531b17cdeac732b6401be4a0161a675fcc37a1a1cfa2ea3c04f",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "routing",
+        "execution-plan"
+      ]
+    },
+    {
+      "upstream_path": "packages/core/src/providers/runtime-topology.ts",
+      "local_path": "upstream/packages/core/src/providers/runtime-topology.ts",
+      "pinned_blob_url": "https://github.com/musistudio/claude-code-router/blob/cbe5f7bb3b3511ac31274559f2e9f387cab6fe40/packages/core/src/providers/runtime-topology.ts",
+      "sha256": "02d33c3047659b4151137e98f590d63281bac76d0e465827981741ccf8d72de3",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "providers",
+        "topology"
+      ]
+    },
+    {
+      "upstream_path": "packages/core/src/observability/sensitive-headers.ts",
+      "local_path": "upstream/packages/core/src/observability/sensitive-headers.ts",
+      "pinned_blob_url": "https://github.com/musistudio/claude-code-router/blob/cbe5f7bb3b3511ac31274559f2e9f387cab6fe40/packages/core/src/observability/sensitive-headers.ts",
+      "sha256": "c7619379256e4015e7315ad6fa3bdf4cbb36893bf72bc380d1773b7f4b28ef50",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "observability",
+        "security"
+      ]
+    },
+    {
+      "upstream_path": "packages/core/src/observability/route-trace.ts",
+      "local_path": "upstream/packages/core/src/observability/route-trace.ts",
+      "pinned_blob_url": "https://github.com/musistudio/claude-code-router/blob/cbe5f7bb3b3511ac31274559f2e9f387cab6fe40/packages/core/src/observability/route-trace.ts",
+      "sha256": "7236b30d643cc5be26701ed98343fbdabed407d7ca1726803aa1cc02ff0a1b0d",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "observability",
+        "routing"
+      ]
+    },
+    {
+      "upstream_path": "packages/core/src/observability/request-log-store.ts",
+      "local_path": "upstream/packages/core/src/observability/request-log-store.ts",
+      "pinned_blob_url": "https://github.com/musistudio/claude-code-router/blob/cbe5f7bb3b3511ac31274559f2e9f387cab6fe40/packages/core/src/observability/request-log-store.ts",
+      "sha256": "fbed57e7e468b2584e2ebeb860a9754cd173b555164492c2ff85545b1f730e90",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "observability",
+        "storage"
+      ]
+    },
+    {
+      "upstream_path": "packages/core/src/agents/claude-code/environment.ts",
+      "local_path": "upstream/packages/core/src/agents/claude-code/environment.ts",
+      "pinned_blob_url": "https://github.com/musistudio/claude-code-router/blob/cbe5f7bb3b3511ac31274559f2e9f387cab6fe40/packages/core/src/agents/claude-code/environment.ts",
+      "sha256": "dc1bb270d0089a3f14497b98b5e64d7924791a464c4207babd4537143a6bc5af",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "ingress",
+        "claude-code"
+      ]
+    },
+    {
+      "upstream_path": "packages/core/src/agents/codex/cli-middleware-runtime.ts",
+      "local_path": "upstream/packages/core/src/agents/codex/cli-middleware-runtime.ts",
+      "pinned_blob_url": "https://github.com/musistudio/claude-code-router/blob/cbe5f7bb3b3511ac31274559f2e9f387cab6fe40/packages/core/src/agents/codex/cli-middleware-runtime.ts",
+      "sha256": "a19facc68428aa409e52c43356476e50663d7bfdd06fbae5f6261697ef1787b1",
+      "license": "MIT",
+      "reuse_class": "reference-only",
+      "topics": [
+        "ingress",
+        "codex"
+      ]
+    }
+  ]
+}

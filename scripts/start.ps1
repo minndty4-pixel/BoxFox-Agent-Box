@@ -85,7 +85,7 @@ if ($DockerRunning) {
         Pop-Location
     }
 } else {
-    Write-Host "  -> [INFO] Docker Desktop is not active. Starting in Frontend Mock Mode." -ForegroundColor Yellow
+    Write-Host "  -> [INFO] Docker Desktop is not active. Native Router still runs on the host." -ForegroundColor Yellow
     Write-Host "     (Open Docker Desktop and re-run this script anytime for Live Sandbox)" -ForegroundColor DarkGray
 }
 
@@ -122,16 +122,40 @@ Write-Host "  -> Local Application: http://localhost:3100/" -ForegroundColor Gre
 Write-Host "  -> Press Ctrl + C or close this window to stop everything." -ForegroundColor DarkGray
 Write-Host ""
 
-Start-Job -ScriptBlock {
-    Start-Sleep -Seconds 2
-    Start-Process "http://localhost:3100/"
-} | Out-Null
+$RouterProcess = $null
+$RouterDir = Join-Path $RootDir "router"
+$RouterLogDir = Join-Path $env:LOCALAPPDATA "BoxFox\logs"
+New-Item -ItemType Directory -Path $RouterLogDir -Force | Out-Null
+try {
+    $NodeCommand = Get-Command node -ErrorAction Stop
+    $NodeMajor = [int]((& node --version).TrimStart('v').Split('.')[0])
+    if ($NodeMajor -lt 24) { throw "Native Router requires Node.js 24 or newer." }
+    $ExistingRouter = $null
+    try { $ExistingRouter = Invoke-RestMethod -Uri "http://127.0.0.1:3101/api/router/health" -TimeoutSec 2 } catch {}
+    if ($ExistingRouter.status -eq 'ok' -and $ExistingRouter.version -eq '0.1.0') {
+        Write-Host "  -> Reusing healthy BoxFox Router on :3101." -ForegroundColor Green
+    } else {
+        $RouterProcess = Start-Process -FilePath $NodeCommand.Source -ArgumentList @('src/main.mjs') -WorkingDirectory $RouterDir -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $RouterLogDir 'router.stdout.log') -RedirectStandardError (Join-Path $RouterLogDir 'router.stderr.log')
+        $RouterHealthy = $false
+        for ($Attempt = 0; $Attempt -lt 40; $Attempt++) {
+            if ($RouterProcess.HasExited) { throw "Router exited. See $RouterLogDir\router.stderr.log" }
+            try { $Health = Invoke-RestMethod -Uri "http://127.0.0.1:3101/api/router/health" -TimeoutSec 1; if ($Health.status -eq 'ok') { $RouterHealthy = $true; break } } catch {}
+            Start-Sleep -Milliseconds 250
+        }
+        if (-not $RouterHealthy) { throw "Router health check failed. See $RouterLogDir\router.stderr.log" }
+    }
+} catch {
+    if ($RouterProcess -and -not $RouterProcess.HasExited) { Stop-Process -Id $RouterProcess.Id }
+    Write-Error "BoxFox startup failed: $_"
+    exit 1
+}
 
 Push-Location $FrontendDir
 try {
     npm.cmd run dev
 } finally {
     Pop-Location
+    if ($RouterProcess -and -not $RouterProcess.HasExited) { Stop-Process -Id $RouterProcess.Id }
     if ($DockerRunning) {
         Write-Host ""
         Write-Host "Stopping Docker Sandbox containers..." -ForegroundColor Cyan
