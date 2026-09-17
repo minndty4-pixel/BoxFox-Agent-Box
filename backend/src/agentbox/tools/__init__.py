@@ -6,6 +6,7 @@ Exports all tools and pre-registers them into the default registry.
 from __future__ import annotations
 
 from .base import BaseTool, RiskTier, SmartTruncator, ToolContext, ToolResult
+from .registry import ToolRegistry, default_registry
 from .code_intelligence import (
     AstGrepSearchTool,
     LspDefinitionsTool,
@@ -21,7 +22,10 @@ from .file_ops import (
     FileReadTool,
     FileWriteTool,
 )
-from .registry import ToolRegistry, default_registry
+from .system_media import (
+    ComputerScreenCaptureTool,
+    ComputerScreenRecordTool,
+)
 from .terminal_ops import (
     ExecuteCodeTool,
     ProcessManageTool,
@@ -31,7 +35,7 @@ from .terminal_ops import (
     TerminalSpawnBackgroundTool,
 )
 
-# Register Core 17 Tools into default_registry
+# Register Core Tools into default_registry
 ALL_CORE_TOOLS = [
     # Filesystem & Code Editing (6 tools)
     FileReadTool(),
@@ -53,6 +57,9 @@ ALL_CORE_TOOLS = [
     ProcessSendInputTool(),
     TerminalOutputTruncateTool(),
     ExecuteCodeTool(),
+    # System Media & Visual (2 tools)
+    ComputerScreenCaptureTool(),
+    ComputerScreenRecordTool(),
 ]
 
 for tool_instance in ALL_CORE_TOOLS:
@@ -86,4 +93,7 @@ __all__ = [
     "ProcessSendInputTool",
     "TerminalOutputTruncateTool",
     "ExecuteCodeTool",
+    # System Media & Visual
+    "ComputerScreenCaptureTool",
+    "ComputerScreenRecordTool",
 ]

@@ -1,0 +1,114 @@
+"""Hermes-Inspired 3-Tier Context Manager & Prompt Builder for BoxFox Agent Box.
+
+Assembles the system prompt across three distinct caching tiers:
+- Tier 1 (Stable): Identity, core operating guidance, safety rules (never changes).
+- Tier 2 (Context): Workspace snapshot, environment capabilities, sandbox boundaries.
+- Tier 3 (Volatile): Active task objective, available tools summary, memory rules.
+"""
+
+from __future__ import annotations
+
+import os
+import platform
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from ..tools.base import ToolContext
+from ..tools.registry import ToolRegistry, default_registry
+
+STABLE_IDENTITY_PROMPT = """You are BoxFox Agent, an elite autonomous AI software engineer and computer-use agent.
+You operate inside a secure, dedicated environment governed by Information Flow Control (IFC) labels and capability leases.
+
+CORE OPERATIONAL PRINCIPLES:
+1. Grounding First: Always inspect files and directory layout before proposing or making changes. Never guess file paths or function signatures.
+2. Minimal & Precise Edits: Make surgical, focused edits using `file_edit_block` or `file_apply_patch`. Avoid rewriting entire files when changing a few lines.
+3. Verify Every Change: Run tests or linters (`test_runner`, `lsp_diagnostics`, or `terminal_exec`) after modifying code to verify that changes compile and pass without regressions.
+4. Security Conscious: All filesystem and shell operations are restricted to your workspace. Never attempt path traversal or dangerous system alterations.
+5. Concise & Technical: Be direct, clear, and technically precise. Omit pleasantries and filler prose.
+"""
+
+CODING_STANDARDS_BRIEF = """CODING STANDARDS:
+- Maintain syntax integrity. Match the existing indentation (tabs vs spaces) and naming conventions of the repository.
+- Do not introduce placeholder comments like "// TODO: implement this". Produce complete, working code.
+- Always check return codes of terminal commands. If a command fails, diagnose the error before retrying.
+"""
+
+
+@dataclass
+class AgentContextState:
+    """Holds the 3-tier context components for a session."""
+    workspace_dir: Path
+    task_goal: str = ""
+    active_epoch: int = 1
+    session_id: str = "default"
+    custom_system_message: Optional[str] = None
+    env_vars: Dict[str, str] = field(default_factory=dict)
+    network_enabled: bool = True
+
+
+class ContextManager:
+    """Builds and maintains the 3-tier prompt for BoxFox Agent."""
+
+    def __init__(
+        self,
+        registry: ToolRegistry = default_registry,
+        state: Optional[AgentContextState] = None,
+    ) -> None:
+        self.registry = registry
+        self.state = state or AgentContextState(workspace_dir=Path("."))
+
+    def update_task_goal(self, goal: str) -> None:
+        """Update the active task goal in volatile state."""
+        self.state.task_goal = goal
+
+    def build_stable_tier(self) -> str:
+        """Tier 1: Stable identity and immutable core guidance (optimal for LLM prompt caching)."""
+        return f"{STABLE_IDENTITY_PROMPT}\n{CODING_STANDARDS_BRIEF}".strip()
+
+    def build_environment_tier(self, tool_context: ToolContext) -> str:
+        """Tier 2: Environment capabilities, workspace snapshot, and sandbox boundaries."""
+        os_info = f"{platform.system()} {platform.release()} ({platform.machine()})"
+        ws_path = str(tool_context.workspace_dir.resolve())
+        net_mode = "ONLINE (External Egress Allowed)" if self.state.network_enabled else "AIR-GAPPED (No Internet)"
+
+        # Inspect quick top-level files
+        try:
+            top_files = [
+                f.name for f in tool_context.workspace_dir.iterdir()
+                if not f.name.startswith(".") and f.name not in ["node_modules", "__pycache__", "venv"]
+            ][:15]
+            files_preview = ", ".join(top_files) if top_files else "(empty workspace)"
+        except Exception:
+            files_preview = "(workspace scan unavailable)"
+
+        return (
+            f"=== ENVIRONMENT & WORKSPACE SNAPSHOT ===\n"
+            f"Operating System: {os_info}\n"
+            f"Workspace Directory: {ws_path}\n"
+            f"Network Mode: {net_mode}\n"
+            f"Current Workspace Files: {files_preview}\n"
+            f"Session ID: {tool_context.session_id} | Epoch: {tool_context.task_epoch}\n"
+        )
+
+    def build_volatile_tier(self) -> str:
+        """Tier 3: Active goal, tools inventory, and dynamic guidance."""
+        tool_names = self.registry.list_names()
+        tools_summary = ", ".join(tool_names) if tool_names else "none"
+
+        goal_line = f"Active Goal: {self.state.task_goal}\n" if self.state.task_goal else ""
+        custom_line = f"User Instructions: {self.state.custom_system_message}\n" if self.state.custom_system_message else ""
+
+        return (
+            f"=== CURRENT SESSION & CAPABILITIES ===\n"
+            f"{goal_line}"
+            f"{custom_line}"
+            f"Available Tool Suite ({len(tool_names)} registered): {tools_summary}\n"
+        )
+
+    def assemble_full_system_prompt(self, tool_context: ToolContext) -> str:
+        """Join the 3 tiers with double newlines, matching Hermes prompt-caching layout."""
+        tier1 = self.build_stable_tier()
+        tier2 = self.build_environment_tier(tool_context)
+        tier3 = self.build_volatile_tier()
+        return f"{tier1}\n\n{tier2}\n\n{tier3}"
