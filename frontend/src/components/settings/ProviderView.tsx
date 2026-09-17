@@ -5,10 +5,11 @@ import {
   BarChart3,
   Bot,
   Check,
+  ChevronDown,
   ChevronRight,
+  ChevronUp,
   Copy,
   Database,
-  Eye,
   Gauge,
   KeyRound,
   LoaderCircle,
@@ -16,10 +17,9 @@ import {
   Plus,
   RefreshCw,
   Save,
-  Search,
   Server,
   ShieldCheck,
-  Sparkles,
+  SlidersHorizontal,
   Trash2,
   X,
 } from 'lucide-react'
@@ -38,6 +38,7 @@ import type {
 import { ProviderIcon } from '../providers/ProviderIcon'
 import { InferenceTest } from '../providers/InferenceTest'
 import { OAuthConnectModal } from '../providers/OAuthConnectModal'
+import { ModelManagerModal } from './ModelManagerModal'
 
 type ProviderTab = 'api' | 'router'
 function run(action: Promise<unknown>) { void action.catch(error => useProviderStore.setState({ error: error instanceof Error ? error.message : 'Router request failed.' })) }
@@ -243,8 +244,22 @@ function ConnectionCard({ snapshot, connection }: { snapshot: ProviderSnapshot; 
         <button type="button" disabled={busy} onClick={() => run(remove())} className={`${secondary} text-red-600 dark:text-red-300`}><Trash2 className="size-3.5" />Delete</button>
       </div>
       {connection.error && <p className="mt-3 text-xs text-red-600 dark:text-red-300">{connection.error}</p>}
-      <InferenceTest key={connection.revision} connection={connection} />
-      {connection.models.length > 0 && <ModelToggleList connection={connection} />}
+
+      {/* Chỉ hiển thị Inference verification & Available Models khi người dùng đã nhập API key */}
+      {connection.credentialPresent && connection.authState === 'ready' ? (
+        <>
+          <InferenceTest key={connection.revision} connection={connection} />
+          {connection.models.length > 0 && <ModelToggleList connection={connection} />}
+        </>
+      ) : (
+        <div className="mt-4 rounded-xl border border-dashed border-line/70 bg-panel2/30 p-4 text-center text-xs text-muted space-y-1">
+          <KeyRound className="size-4 text-muted/60 mx-auto mb-1" />
+          <p className="font-semibold text-fg text-xs">API Key Required</p>
+          <p className="text-[11px] text-muted">
+            Paste your API key above and click <strong>Save</strong> or <strong>Discover models</strong> to load and test available models for {connection.name}.
+          </p>
+        </div>
+      )}
     </article>
   )
 }
@@ -720,9 +735,20 @@ function OAuthOrApiConnectionCard({
 
       {connection.error && <p className="mt-3 text-xs text-red-600 dark:text-red-300">{connection.error}</p>}
 
-      <InferenceTest key={connection.revision} connection={connection} />
-
-      {connection.models.length > 0 && <ModelToggleList connection={connection} />}
+      {connection.credentialPresent && connection.authState === 'ready' ? (
+        <>
+          <InferenceTest key={connection.revision} connection={connection} />
+          {connection.models.length > 0 && <ModelToggleList connection={connection} />}
+        </>
+      ) : (
+        <div className="mt-4 rounded-xl border border-dashed border-line/70 bg-panel2/30 p-4 text-center text-xs text-muted space-y-1">
+          <KeyRound className="size-4 text-muted/60 mx-auto mb-1" />
+          <p className="font-semibold text-fg text-xs">Credentials Required</p>
+          <p className="text-[11px] text-muted">
+            Configure your API key or connection details above to load and test models.
+          </p>
+        </div>
+      )}
 
       {connection.quota && (
         <div className="mt-4 border-t border-line pt-4">
@@ -1059,8 +1085,20 @@ function AntigravityAccount({ connection, onConnect }: { connection: ProviderCon
         <button type="button" disabled={busy} onClick={() => run(request(`/api/router/connections/${encodeURIComponent(connection.id)}`, 'DELETE'))} className={`${secondary} text-red-600 dark:text-red-300`}><Trash2 className="size-3.5" />Disconnect</button>
       </div>
       {connection.error && <p className="mt-3 text-xs text-red-600 dark:text-red-300">{connection.error}</p>}
-      <InferenceTest key={connection.revision} connection={connection} />
-      {connection.models.length > 0 && <ModelToggleList connection={connection} />}
+      {connection.credentialPresent && connection.authState === 'ready' ? (
+        <>
+          <InferenceTest key={connection.revision} connection={connection} />
+          {connection.models.length > 0 && <ModelToggleList connection={connection} />}
+        </>
+      ) : (
+        <div className="mt-4 rounded-xl border border-dashed border-line/70 bg-panel2/30 p-4 text-center text-xs text-muted space-y-1">
+          <LogIn className="size-4 text-muted/60 mx-auto mb-1" />
+          <p className="font-semibold text-fg text-xs">Account Authorization Required</p>
+          <p className="text-[11px] text-muted">
+            Click <strong>{connection.authState === 'ready' ? 'Reconnect' : 'Connect account'}</strong> above to authorize and discover your models.
+          </p>
+        </div>
+      )}
       <p className="mt-4 text-[11px] text-muted">Models synced: {connection.lastModelSyncAt ? new Date(connection.lastModelSyncAt).toLocaleString() : 'Never'} · Quota updated: {connection.quota?.updatedAt ? new Date(connection.quota.updatedAt).toLocaleString() : 'No data'}{connection.quota?.plan ? ` · Plan: ${connection.quota.plan}` : ''}{!connection.quota?.models.length && ' · No quota data available'}</p>
       {connection.quota && (
         <div className="mt-4 border-t border-line pt-4">
@@ -1079,453 +1117,231 @@ function _LegacyModelsSection({ snapshot }: { snapshot: ProviderSnapshot }) {
   return <div className="space-y-4"><div><h2 className="text-sm font-semibold">Model inventory</h2><p className="mt-1 text-xs text-muted">Live discovery is the source of truth for availability. Enable only models BoxFox may route to.</p></div>{models.length === 0 ? <Empty text="Discover models from a connected provider first." /> : models.map((connection) => <article key={connection.id} className="rounded-xl border border-line bg-panel p-4"><div className="flex items-center justify-between gap-3"><div className="flex items-center gap-2"><ProviderIcon providerId={connection.providerId} className="size-7" /><span className="text-xs font-semibold">{connection.name}</span></div><button type="button" disabled={busy || !connection.credentialPresent} onClick={() => run(request(`/api/router/connections/${encodeURIComponent(connection.id)}/models/refresh`, 'POST'))} className={secondary}><RefreshCw className="size-3.5" />Refresh</button></div><ModelToggleList connection={connection} /></article>)}</div>
 }
 
-function AddModelModal({
-  connection,
-  onClose,
-}: {
-  connection: ProviderConnection
-  onClose: () => void
-}) {
-  const request = useProviderStore((state) => state.request)
-  const busy = useProviderStore((state) => state.busy)
-  const enabledIds = useMemo(() => new Set(connection.models.filter((m) => m.enabled).map((m) => m.id)), [connection.models])
-
-  const [activeTab, setActiveTab] = useState<'discovered' | 'custom'>('discovered')
-  const [search, setSearch] = useState('')
-  const [customId, setCustomId] = useState('')
-  const [customName, setCustomName] = useState('')
-  const [vision, setVision] = useState(false)
-  const [reasoning, setReasoning] = useState(false)
-  const [customTesting, setCustomTesting] = useState(false)
-  const [customTestResult, setCustomTestResult] = useState<{ ok: boolean; message: string } | null>(null)
-
-  // Filter discovered models
-  const filteredDiscovered = useMemo(() => {
-    if (!search.trim()) return connection.models
-    const q = search.toLowerCase()
-    return connection.models.filter((m) => m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q))
-  }, [connection.models, search])
-
-  const toggleModel = async (modelId: string) => {
-    const next = enabledIds.has(modelId)
-      ? Array.from(enabledIds).filter((id) => id !== modelId)
-      : [...Array.from(enabledIds), modelId]
-    await request(`/api/router/connections/${encodeURIComponent(connection.id)}`, 'PATCH', {
-      enabledModelIds: next,
-    })
-  }
-
-  const handleAddCustom = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!customId.trim()) return
-    await request(`/api/router/connections/${encodeURIComponent(connection.id)}`, 'PATCH', {
-      customModel: {
-        id: customId.trim(),
-        name: customName.trim() || undefined,
-        capabilities: {
-          vision,
-          reasoning,
-        },
-      },
-    })
-    onClose()
-  }
-
-  const handleTestCustom = async () => {
-    if (!customId.trim()) return
-    setCustomTesting(true)
-    setCustomTestResult(null)
-    try {
-      await request(`/api/router/connections/${encodeURIComponent(connection.id)}`, 'PATCH', {
-        customModel: { id: customId.trim(), name: customName.trim() || undefined, capabilities: { vision, reasoning } },
-      })
-      await request(`/api/router/connections/${encodeURIComponent(connection.id)}/models/${encodeURIComponent(customId.trim())}/test`, 'POST')
-      setCustomTestResult({ ok: true, message: 'Model test passed!' })
-    } catch (err) {
-      setCustomTestResult({ ok: false, message: err instanceof Error ? err.message : 'Model test failed' })
-    } finally {
-      setCustomTesting(false)
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in duration-150">
-      <div className="w-full max-w-lg rounded-2xl border border-line bg-[#111318] p-5 shadow-2xl space-y-4 select-none animate-in zoom-in-95 duration-150">
-        {/* Header */}
-        <div className="flex items-center justify-between border-b border-line/60 pb-3">
-          <div className="flex items-center gap-2">
-            <ProviderIcon providerId={connection.providerId} className="size-5" />
-            <div>
-              <h3 className="text-sm font-semibold text-fg">Add Models to {connection.name}</h3>
-              <p className="text-[11px] text-muted">{enabledIds.size} / {connection.models.length} models currently enabled</p>
-            </div>
-          </div>
-          <button type="button" onClick={onClose} className="rounded-lg p-1 text-muted hover:text-fg hover:bg-panel cursor-pointer">
-            <X className="size-4" />
-          </button>
-        </div>
-
-        {/* Tab switcher */}
-        <div className="grid grid-cols-2 gap-1 rounded-lg border border-line/60 bg-panel p-0.5 text-xs font-medium">
-          <button
-            type="button"
-            onClick={() => setActiveTab('discovered')}
-            className={`flex items-center justify-center gap-1.5 rounded-md py-1.5 transition cursor-pointer ${
-              activeTab === 'discovered' ? 'bg-[#1c212c] text-white shadow-xs font-semibold' : 'text-muted hover:text-fg'
-            }`}
-          >
-            <Bot className="size-3.5 text-brand" />
-            <span>Discovered ({connection.models.length})</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('custom')}
-            className={`flex items-center justify-center gap-1.5 rounded-md py-1.5 transition cursor-pointer ${
-              activeTab === 'custom' ? 'bg-[#1c212c] text-white shadow-xs font-semibold' : 'text-muted hover:text-fg'
-            }`}
-          >
-            <Plus className="size-3.5 text-amber-400" />
-            <span>Custom Model</span>
-          </button>
-        </div>
-
-        {/* Tab 1: Discovered Models */}
-        {activeTab === 'discovered' && (
-          <div className="space-y-3">
-            <div className="relative flex items-center">
-              <Search className="absolute left-2.5 size-3.5 text-muted pointer-events-none" />
-              <input
-                type="text"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search discovered models..."
-                className="w-full rounded-lg border border-line/60 bg-panel px-2.5 py-1.5 pl-8 text-xs text-fg placeholder:text-muted/60 outline-hidden focus:border-zinc-500 focus:ring-1 focus:ring-zinc-600"
-                autoFocus
-              />
-              {search && (
-                <button type="button" onClick={() => setSearch('')} className="absolute right-2 text-muted hover:text-fg cursor-pointer">
-                  <X className="size-3" />
-                </button>
-              )}
-            </div>
-
-            <div className="max-h-72 overflow-y-auto space-y-1.5 pr-1 divide-y divide-line/20">
-              {filteredDiscovered.length === 0 ? (
-                <div className="py-8 text-center text-xs text-muted">No models match your search</div>
-              ) : (
-                filteredDiscovered.map((model) => {
-                  const isEnabled = enabledIds.has(model.id)
-                  return (
-                    <div
-                      key={model.id}
-                      onClick={() => void toggleModel(model.id)}
-                      className={`flex items-center justify-between gap-2.5 rounded-xl border p-2.5 transition cursor-pointer ${
-                        isEnabled
-                          ? 'border-brand/40 bg-[#16221d] text-white'
-                          : 'border-line/40 bg-panel2/40 hover:bg-panel2 text-zinc-300'
-                      }`}
-                    >
-                      <div className="min-w-0 flex-1 space-y-0.5">
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-semibold text-xs text-fg truncate">{model.name}</span>
-                          {model.source === 'custom' && (
-                            <span className="rounded bg-panel px-1 text-[9px] font-mono text-brand border border-brand/30">custom</span>
-                          )}
-                        </div>
-                        <p className="font-mono text-[10px] text-muted truncate">{model.id}</p>
-                        <div className="flex items-center gap-2 text-[9px] text-muted">
-                          {(model.capabilities.vision === 'reported' || model.capabilities.vision === 'verified') && <span className="text-blue-400">Vision</span>}
-                          {(model.capabilities.reasoning === 'reported' || model.capabilities.reasoning === 'verified') && <span className="text-amber-400">Reasoning</span>}
-                          {model.source && <span>Source: {model.source}</span>}
-                        </div>
-                      </div>
-
-                      <div className="shrink-0">
-                        {isEnabled ? (
-                          <span className="flex items-center gap-1 rounded-md bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 text-[10px] font-semibold">
-                            <Check className="size-3" /> Enabled
-                          </span>
-                        ) : (
-                          <span className="rounded-md border border-line bg-panel px-2 py-0.5 text-[10px] text-muted hover:text-fg">
-                            + Add
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  )
-                })
-              )}
-            </div>
-
-            <div className="flex items-center justify-end pt-2 border-t border-line/50">
-              <button
-                type="button"
-                onClick={onClose}
-                className="rounded-lg bg-brand px-4 py-1.5 text-xs font-semibold text-brandfg hover:opacity-90 transition cursor-pointer"
-              >
-                Done
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Tab 2: Custom Model */}
-        {activeTab === 'custom' && (
-          <form onSubmit={handleAddCustom} className="space-y-3.5">
-            <div>
-              <label className="block text-xs font-semibold text-fg mb-1">Model ID <span className="text-rose-500">*</span></label>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={customId}
-                  onChange={(e) => setCustomId(e.target.value)}
-                  placeholder="e.g. claude-opus-4-5, deepseek-v4-pro"
-                  required
-                  className="flex-1 rounded-lg border border-line/60 bg-panel px-3 py-2 font-mono text-xs text-fg placeholder:text-muted/50 outline-hidden focus:border-zinc-500 focus:ring-1 focus:ring-zinc-600"
-                />
-                <button
-                  type="button"
-                  disabled={!customId.trim() || customTesting || busy}
-                  onClick={handleTestCustom}
-                  className="rounded-lg border border-line bg-panel2 px-3 py-2 text-xs font-semibold text-fg hover:border-zinc-500 disabled:opacity-40 transition cursor-pointer"
-                >
-                  {customTesting ? 'Testing…' : 'Test'}
-                </button>
-              </div>
-              <p className="mt-1 text-[10px] text-muted">Sent to provider as: <code className="font-mono text-fg/80">{customId.trim() || 'model-id'}</code></p>
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-fg mb-1">Display Name (Optional)</label>
-              <input
-                type="text"
-                value={customName}
-                onChange={(e) => setCustomName(e.target.value)}
-                placeholder="e.g. Claude Opus 4.5 Custom"
-                className="w-full rounded-lg border border-line/60 bg-panel px-3 py-2 text-xs text-fg placeholder:text-muted/50 outline-hidden focus:border-zinc-500 focus:ring-1 focus:ring-zinc-600"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-fg mb-2">Capabilities</label>
-              <div className="grid grid-cols-2 gap-3">
-                <label className="flex items-center gap-2 rounded-xl border border-line bg-panel2 p-2.5 cursor-pointer hover:border-zinc-600 transition">
-                  <input
-                    type="checkbox"
-                    checked={vision}
-                    onChange={(e) => setVision(e.target.checked)}
-                    className="rounded accent-brand size-3.5"
-                  />
-                  <div>
-                    <span className="block text-xs font-medium text-fg">Vision</span>
-                    <span className="block text-[10px] text-muted">Supports image input</span>
-                  </div>
-                </label>
-                <label className="flex items-center gap-2 rounded-xl border border-line bg-panel2 p-2.5 cursor-pointer hover:border-zinc-600 transition">
-                  <input
-                    type="checkbox"
-                    checked={reasoning}
-                    onChange={(e) => setReasoning(e.target.checked)}
-                    className="rounded accent-brand size-3.5"
-                  />
-                  <div>
-                    <span className="block text-xs font-medium text-fg">Reasoning</span>
-                    <span className="block text-[10px] text-muted">Supports thinking</span>
-                  </div>
-                </label>
-              </div>
-            </div>
-
-            {customTestResult && (
-              <div className={`rounded-lg border p-2 text-xs ${
-                customTestResult.ok ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' : 'border-rose-500/30 bg-rose-500/10 text-rose-400'
-              }`}>
-                {customTestResult.message}
-              </div>
-            )}
-
-            <div className="flex items-center justify-end gap-2 pt-2 border-t border-line/50">
-              <button
-                type="button"
-                onClick={onClose}
-                className="rounded-lg border border-line px-3 py-1.5 text-xs text-muted hover:text-fg hover:bg-panel cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={!customId.trim() || busy}
-                className="rounded-lg bg-brand px-4 py-1.5 text-xs font-semibold text-brandfg hover:opacity-90 disabled:opacity-50 transition cursor-pointer"
-              >
-                Add Model
-              </button>
-            </div>
-          </form>
-        )}
-      </div>
-    </div>
-  )
-}
-
 function ModelToggleList({ connection }: { connection: ProviderConnection }) {
   const request = useProviderStore((state) => state.request)
   const busy = useProviderStore((state) => state.busy)
-  const [showAddModal, setShowAddModal] = useState(false)
+  const [showManagerModal, setShowManagerModal] = useState(false)
+  const [selectedModelForModal, setSelectedModelForModal] = useState<string | undefined>(undefined)
+  const [isExpanded, setIsExpanded] = useState(false)
   const [testing, setTesting] = useState<string | null>(null)
 
   const activeModels = useMemo(() => connection.models.filter((model) => model.enabled), [connection.models])
   const enabled = activeModels.map((model) => model.id)
+  const passedModels = useMemo(() => activeModels.filter((m) => m.health === 'ready'), [activeModels])
 
-  const toggle = (modelId: string) => request(`/api/router/connections/${encodeURIComponent(connection.id)}`, 'PATCH', { enabledModelIds: enabled.includes(modelId) ? enabled.filter((id) => id !== modelId) : [...enabled, modelId] })
-  const setAll = (value: boolean) => request(`/api/router/connections/${encodeURIComponent(connection.id)}`, 'PATCH', { enabledModelIds: value ? connection.models.map((model) => model.id) : [] })
+  const toggle = (modelId: string) =>
+    request(`/api/router/connections/${encodeURIComponent(connection.id)}`, 'PATCH', {
+      enabledModelIds: enabled.includes(modelId) ? enabled.filter((id) => id !== modelId) : [...enabled, modelId],
+    })
+  const setAll = (value: boolean) =>
+    request(`/api/router/connections/${encodeURIComponent(connection.id)}`, 'PATCH', {
+      enabledModelIds: value ? connection.models.map((model) => model.id) : [],
+    })
   const copyModel = (modelId: string) => navigator.clipboard?.writeText(modelId) ?? Promise.resolve()
   const testModel = async (modelId: string) => {
     setTesting(modelId)
-    try { await request(`/api/router/connections/${encodeURIComponent(connection.id)}/models/${encodeURIComponent(modelId)}/test`, 'POST') }
-    finally { setTesting(null) }
+    try {
+      await request(`/api/router/connections/${encodeURIComponent(connection.id)}/models/${encodeURIComponent(modelId)}/test`, 'POST')
+    } finally {
+      setTesting(null)
+    }
   }
+
   const probeLabel = (model: ProviderConnection['models'][number]) => {
-    if (!model.lastProbe) return 'Not tested'
     if (testing === model.id) return 'Testing…'
+    if (!model.lastProbe) return 'Not tested'
     if (model.health === 'ready') return `Passed · ${model.lastProbe.latencyMs} ms`
-    if (model.health === 'rate_limited') return 'Rate limited · retry later'
-    if (model.health === 'unavailable') return 'Unavailable · excluded from routing'
-    if (model.health === 'slow') return 'Timed out · retry later'
-    return `Failed · ${model.lastProbe.error ?? 'retry to check again'}`
+    if (model.health === 'rate_limited') return 'Rate limited'
+    if (model.health === 'unavailable') return 'Unavailable'
+    if (model.health === 'slow') return 'Timed out'
+    return `Failed`
   }
-  const probeTone = (model: ProviderConnection['models'][number]) => model.health === 'ready' ? 'text-emerald-600 dark:text-emerald-300' : ['unavailable', 'failed'].includes(model.health ?? '') ? 'text-red-600 dark:text-red-300' : model.health === 'rate_limited' || model.health === 'slow' ? 'text-amber-600 dark:text-amber-300' : 'text-muted'
+
+  const probeTone = (model: ProviderConnection['models'][number]) =>
+    model.health === 'ready'
+      ? 'text-emerald-400'
+      : ['unavailable', 'failed'].includes(model.health ?? '')
+      ? 'text-rose-400'
+      : model.health === 'rate_limited' || model.health === 'slow'
+      ? 'text-amber-400'
+      : 'text-muted'
+
+  const openManager = (modelId?: string) => {
+    setSelectedModelForModal(modelId)
+    setShowManagerModal(true)
+  }
 
   return (
-    <div className="mt-4 border-t border-line pt-3">
-      {/* Header with Title & Add Model button */}
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <div className="flex items-center gap-2">
-            <p className="text-xs font-semibold">Available Models</p>
-            <span className="rounded-full bg-panel2 border border-line px-2 py-0.5 text-[10px] font-mono text-muted">
+    <div className="mt-4 border-t border-line/60 pt-3">
+      {/* Available Models Compact Container */}
+      <div className="rounded-xl border border-line/60 bg-panel2/30 p-3 space-y-2.5">
+        {/* Header Bar */}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <p className="text-xs font-semibold text-fg">Available Models</p>
+            <span className="rounded-full bg-panel border border-line px-2 py-0.5 text-[10px] font-mono text-muted">
               {activeModels.length} / {connection.models.length} active
             </span>
-          </div>
-          <p className="mt-0.5 text-[10px] text-muted">
-            {connection.models.length} discovered · Only models enabled below appear in model pickers and routing
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2">
-          {activeModels.length > 0 && (
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => run(setAll(false))}
-              className={`${secondary} text-[11px] py-1 px-2.5`}
-            >
-              Disable all
-            </button>
-          )}
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => setShowAddModal(true)}
-            className="inline-flex items-center justify-center gap-1 rounded-md bg-brand px-2.5 py-1 text-xs font-semibold text-brandfg transition hover:opacity-90 disabled:opacity-50 cursor-pointer shadow-xs"
-          >
-            <Plus className="size-3.5" />
-            <span>Add Model</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Active Models List (Compact Cards style like 9router) */}
-      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-        {activeModels.map((model) => (
-          <div
-            key={model.id}
-            className="min-w-0 rounded-xl border border-line bg-panel2 px-3 py-2 text-xs shadow-2xs hover:border-zinc-600 transition"
-          >
-            <div className="flex items-start justify-between gap-2">
-              <div className="flex items-start gap-2 min-w-0 flex-1">
-                <Bot className="size-4 text-brand shrink-0 mt-0.5" />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5">
-                    <span className="block truncate font-semibold text-fg" title={model.name}>
-                      {model.name}
-                    </span>
-                    {model.source === 'custom' && (
-                      <span className="rounded bg-panel px-1 py-0.2 text-[9px] font-mono text-brand border border-brand/30 shrink-0">
-                        custom
-                      </span>
-                    )}
-                  </div>
-                  <span className="block truncate font-mono text-[10px] text-muted" title={model.id}>
-                    {model.id}
-                  </span>
-                  <div className="mt-1 flex items-center gap-1.5 text-[9px] text-muted">
-                    {(model.capabilities.vision === 'reported' || model.capabilities.vision === 'verified') && (
-                      <span className="flex items-center gap-0.5 text-blue-400 font-medium">
-                        <Eye className="size-2.5" /> Vision
-                      </span>
-                    )}
-                    {(model.capabilities.reasoning === 'reported' || model.capabilities.reasoning === 'verified') && (
-                      <span className="flex items-center gap-0.5 text-amber-400 font-medium">
-                        <Sparkles className="size-2.5" /> Thinking
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-0.5 shrink-0">
-                <button
-                  type="button"
-                  aria-label={`Copy ${model.id}`}
-                  title="Copy model ID"
-                  onClick={() => run(copyModel(model.id))}
-                  className="rounded p-1 text-muted hover:bg-panel hover:text-fg cursor-pointer transition"
-                >
-                  <Copy className="size-3.5" />
-                </button>
-                <button
-                  type="button"
-                  title="Remove from available models"
-                  onClick={() => run(toggle(model.id))}
-                  className="rounded p-1 text-muted hover:bg-panel hover:text-rose-400 cursor-pointer transition"
-                >
-                  <X className="size-3.5" />
-                </button>
-              </div>
-            </div>
-
-            <div className="mt-2 flex items-center justify-between gap-2 border-t border-line/30 pt-1.5">
-              <span className={`truncate text-[10px] ${probeTone(model)}`}>
-                {probeLabel(model)}
+            {passedModels.length > 0 && (
+              <span className="hidden sm:flex items-center gap-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 text-[10px] font-mono text-emerald-400">
+                <span className="size-1.5 rounded-full bg-emerald-400" />
+                {passedModels.length} verified ready
               </span>
+            )}
+          </div>
+
+          {/* Action Buttons */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            {activeModels.length > 0 && (
               <button
                 type="button"
-                disabled={busy || testing !== null}
-                onClick={() => run(testModel(model.id))}
-                className={`${secondary} text-[10px] py-0.5 px-2`}
+                disabled={busy}
+                onClick={() => run(setAll(false))}
+                className="text-[11px] text-muted hover:text-rose-400 px-2 py-1 rounded transition cursor-pointer disabled:opacity-50"
               >
-                {testing === model.id ? 'Testing…' : 'Test'}
+                Disable all
               </button>
-            </div>
-          </div>
-        ))}
+            )}
 
-        {/* Dashed Add Model Card Button (like in 9router image 2) */}
-        <button
-          type="button"
-          onClick={() => setShowAddModal(true)}
-          className="flex min-h-[72px] items-center justify-center gap-2 rounded-xl border border-dashed border-line hover:border-brand/60 bg-panel/30 hover:bg-panel/60 p-3 text-xs text-muted hover:text-brand font-medium transition cursor-pointer"
-        >
-          <Plus className="size-4 text-brand" />
-          <span>Add Model</span>
-        </button>
+            <button
+              type="button"
+              onClick={() => setIsExpanded(!isExpanded)}
+              className="inline-flex items-center gap-1 rounded-lg border border-line bg-panel px-2.5 py-1 text-xs font-medium text-fg hover:bg-panel2 transition cursor-pointer"
+              title={isExpanded ? 'Collapse inline list' : 'Expand inline list'}
+            >
+              <span>{isExpanded ? 'Collapse' : 'List view'}</span>
+              {isExpanded ? <ChevronUp className="size-3 text-muted" /> : <ChevronDown className="size-3 text-muted" />}
+            </button>
+
+            {/* Primary Action Button: Open 2-Column Split-View Modal */}
+            <button
+              type="button"
+              onClick={() => openManager()}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-brand/15 border border-brand/40 px-3 py-1 text-xs font-semibold text-brand hover:bg-brand/25 transition cursor-pointer shadow-2xs"
+            >
+              <SlidersHorizontal className="size-3.5" />
+              <span>Manage Models ({activeModels.length})</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Quick Active Model Chips Bar (Horizontal preview, click chip opens detail in modal) */}
+        {activeModels.length > 0 && !isExpanded && (
+          <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+            {activeModels.slice(0, 6).map((model) => (
+              <div
+                key={model.id}
+                onClick={() => openManager(model.id)}
+                className="group flex items-center gap-1.5 rounded-lg border border-line/60 bg-panel px-2.5 py-1 text-xs hover:border-brand/50 hover:bg-panel2 transition cursor-pointer"
+                title={`Click to manage ${model.name}`}
+              >
+                <Bot className="size-3 text-brand shrink-0" />
+                <span className="font-medium text-fg text-[11px] truncate max-w-[140px]">{model.name}</span>
+                {model.health === 'ready' && (
+                  <span className="flex items-center gap-1 text-[9px] font-mono text-emerald-400 shrink-0">
+                    <span className="size-1 rounded-full bg-emerald-400" />
+                    {model.lastProbe?.latencyMs}ms
+                  </span>
+                )}
+              </div>
+            ))}
+
+            {activeModels.length > 6 && (
+              <button
+                type="button"
+                onClick={() => openManager()}
+                className="text-[11px] font-medium text-muted hover:text-brand px-1.5 py-0.5 rounded transition cursor-pointer"
+              >
+                +{activeModels.length - 6} more…
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Inline Compact Rows List (When user toggles "List view") */}
+        {isExpanded && (
+          <div className="mt-2 border-t border-line/40 pt-2 space-y-1 max-h-72 overflow-y-auto pr-1 divide-y divide-line/10 animate-in fade-in-50 duration-150">
+            {activeModels.length === 0 ? (
+              <div className="py-6 text-center text-xs text-muted">
+                No active models. Click "Manage Models" to enable models.
+              </div>
+            ) : (
+              activeModels.map((model) => {
+                const isFree = model.id.includes(':free') || model.id === 'openrouter/free'
+                return (
+                  <div
+                    key={model.id}
+                    className="flex items-center justify-between gap-2.5 rounded-lg px-2 py-1.5 text-xs hover:bg-panel transition"
+                  >
+                    {/* Left Info */}
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <Bot className="size-3.5 text-brand shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-medium text-fg truncate text-xs">{model.name}</span>
+                          {isFree && (
+                            <span className="rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1 text-[9px] font-mono shrink-0">
+                              free
+                            </span>
+                          )}
+                          {model.source === 'custom' && (
+                            <span className="rounded bg-brand/10 text-brand border border-brand/20 px-1 text-[9px] font-mono shrink-0">
+                              custom
+                            </span>
+                          )}
+                        </div>
+                        <p className="font-mono text-[10px] text-muted truncate">{model.id}</p>
+                      </div>
+                    </div>
+
+                    {/* Right Status & Actions */}
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className={`text-[10px] font-mono ${probeTone(model)}`}>
+                        {probeLabel(model)}
+                      </span>
+
+                      <button
+                        type="button"
+                        disabled={busy || testing !== null}
+                        onClick={() => run(testModel(model.id))}
+                        className="rounded border border-line bg-panel hover:bg-panel2 px-2 py-0.5 text-[10px] font-medium text-fg hover:text-brand transition cursor-pointer"
+                      >
+                        {testing === model.id ? '…' : 'Test'}
+                      </button>
+
+                      <button
+                        type="button"
+                        aria-label={`Copy ${model.id}`}
+                        title="Copy model ID"
+                        onClick={() => run(copyModel(model.id))}
+                        className="rounded p-1 text-muted hover:text-fg hover:bg-panel2 cursor-pointer transition"
+                      >
+                        <Copy className="size-3" />
+                      </button>
+
+                      <button
+                        type="button"
+                        title="Remove from active models"
+                        onClick={() => run(toggle(model.id))}
+                        className="rounded p-1 text-muted hover:text-rose-400 hover:bg-panel2 cursor-pointer transition"
+                      >
+                        <X className="size-3" />
+                      </button>
+                    </div>
+                  </div>
+                )
+              })
+            )}
+          </div>
+        )}
       </div>
 
-      {/* Add Model Modal */}
-      {showAddModal && (
-        <AddModelModal
+      {/* Model Manager 2-Column Split-View Modal (Based on User Sketch Image 2) */}
+      {showManagerModal && (
+        <ModelManagerModal
           connection={connection}
-          onClose={() => setShowAddModal(false)}
+          initialSelectedModelId={selectedModelForModal}
+          onClose={() => setShowManagerModal(false)}
         />
       )}
     </div>

@@ -4,19 +4,32 @@
 import { jsonOrProviderError, modelRecord, normalizeFinishReason, parseJson, providerError, sseEvents } from './common.mjs';
 import { RouterError } from '../errors.mjs';
 
-const CHAT_URL = 'https://openrouter.ai/api/v1/chat/completions';
-const MODELS_URL = 'https://openrouter.ai/api/v1/models';
-const KEY_URL = 'https://openrouter.ai/api/v1/key';
-const CREDITS_URL = 'https://openrouter.ai/api/v1/credits';
+const DEFAULT_OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
 
 export const OPENROUTER_FALLBACK_MODELS = Object.freeze([
-  { ...modelRecord('google/gemini-2.0-flash-exp:free', 'Gemini 2.0 Flash (Free)'), thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
-  { ...modelRecord('meta-llama/llama-3.3-70b-instruct:free', 'Llama 3.3 70B Instruct (Free)') },
+  { ...modelRecord('openrouter/free', 'Free Models Router'), thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
+  { ...modelRecord('nex-agi/nex-n2.5-mini:free', 'Nex AGI: Nex-N2.5-Mini (Free)'), thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
+  { ...modelRecord('nex-agi/nex-n2.5-pro:free', 'Nex AGI: Nex-N2.5-Pro (Free)'), thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
+  { ...modelRecord('inclusionai/ling-3.0-flash-vl:free', 'inclusionAI: Ling 3.0 Flash VL (Free)') },
+  { ...modelRecord('liquid/lfm-2.5-2.6b:free', 'LiquidAI: LFM2.5-2.6B (Free)') },
+  { ...modelRecord('cohere/north-mini-code:free', 'Cohere: North Mini Code (Free)') },
   { ...modelRecord('deepseek/deepseek-r1:free', 'DeepSeek R1 (Free)'), thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
-  { ...modelRecord('deepseek/deepseek-chat:free', 'DeepSeek V3 (Free)') },
   { ...modelRecord('openai/gpt-4o-mini', 'GPT-4o Mini'), thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
   { ...modelRecord('anthropic/claude-3.5-sonnet', 'Claude 3.5 Sonnet'), thinkingLevels: ['auto', 'low', 'medium', 'high'] },
 ]);
+
+function resolveBaseUrl(endpoint) {
+  if (!endpoint) return DEFAULT_OPENROUTER_BASE;
+  const clean = endpoint.trim().replace(/\/+$/, '');
+  return clean.replace(/\/chat\/completions$/, '');
+}
+
+function resolveChatUrl(endpoint) {
+  if (!endpoint) return `${DEFAULT_OPENROUTER_BASE}/chat/completions`;
+  const clean = endpoint.trim().replace(/\/+$/, '');
+  if (clean.endsWith('/chat/completions')) return clean;
+  return `${clean}/chat/completions`;
+}
 
 function openRouterHeaders(apiKey) {
   const cleanKey = apiKey?.trim() || '';
@@ -39,8 +52,22 @@ export function createOpenRouterAdapter({ fetchImpl }) {
         return { models: OPENROUTER_FALLBACK_MODELS.map(m => ({ ...m, source: 'static', stale: false, enabled: true })) };
       }
 
+      const baseUrl = resolveBaseUrl(connection.endpoint);
+      let isFreeTier = false;
+
+      // Check account tier
       try {
-        const response = await fetchImpl(MODELS_URL, {
+        const authRes = await fetchImpl(`${baseUrl}/auth/key`, { headers: openRouterHeaders(apiKey), signal }).catch(() => null);
+        if (authRes?.ok) {
+          const authData = await authRes.json().catch(() => null);
+          if (authData?.data?.is_free_tier) isFreeTier = true;
+        }
+      } catch {
+        /* best effort */
+      }
+
+      try {
+        const response = await fetchImpl(`${baseUrl}/models`, {
           headers: openRouterHeaders(apiKey),
           signal,
         });
@@ -49,12 +76,24 @@ export function createOpenRouterAdapter({ fetchImpl }) {
           const data = await response.json();
           const list = Array.isArray(data?.data) ? data.data : [];
           if (list.length) {
+            // Sort: prioritize free models first
+            const sorted = [...list].sort((a, b) => {
+              const aFree = a.id?.includes(':free') || a.id === 'openrouter/free' || a.pricing?.prompt === '0';
+              const bFree = b.id?.includes(':free') || b.id === 'openrouter/free' || b.pricing?.prompt === '0';
+              if (aFree && !bFree) return -1;
+              if (!aFree && bFree) return 1;
+              return 0;
+            });
+
             return {
-              models: list.map(item => {
+              models: sorted.map(item => {
                 const isThinking = Boolean(item.architecture?.instruct_type || item.id.includes('r1') || item.id.includes('o1') || item.id.includes('o3'));
+                const isFree = item.id?.includes(':free') || item.id === 'openrouter/free' || item.pricing?.prompt === '0';
                 return {
                   ...modelRecord(item.id, item.name || item.id),
                   ...(isThinking ? { thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] } : {}),
+                  // If account is free tier, default enable free models and disable paid models to avoid 402/429
+                  ...(isFreeTier ? { enabled: Boolean(isFree) } : {}),
                 };
               }),
             };
@@ -70,8 +109,9 @@ export function createOpenRouterAdapter({ fetchImpl }) {
       const apiKey = credentials.apiKey || credentials.accessToken;
       if (!apiKey) throw new RouterError('AUTH', 'OpenRouter API key missing.', 401);
       const stream = body.stream !== false;
+      const targetUrl = resolveChatUrl(connection.endpoint);
 
-      const response = await fetchImpl(connection.endpoint || CHAT_URL, {
+      const response = await fetchImpl(targetUrl, {
         method: 'POST',
         headers: openRouterHeaders(apiKey),
         body: JSON.stringify({ ...body, stream }),
@@ -114,14 +154,16 @@ export function createOpenRouterAdapter({ fetchImpl }) {
       }
     },
 
-    async quota({ credentials, signal }) {
+    async quota({ connection, credentials, signal }) {
       const apiKey = credentials.apiKey || credentials.accessToken;
       if (!apiKey) return { updatedAt: new Date().toISOString(), models: [], consumption: null };
 
+      const baseUrl = resolveBaseUrl(connection?.endpoint);
       try {
-        const [keyRes, creditsRes] = await Promise.all([
-          fetchImpl(KEY_URL, { headers: openRouterHeaders(apiKey), signal }).catch(() => null),
-          fetchImpl(CREDITS_URL, { headers: openRouterHeaders(apiKey), signal }).catch(() => null),
+        const [keyRes, creditsRes, authRes] = await Promise.all([
+          fetchImpl(`${baseUrl}/key`, { headers: openRouterHeaders(apiKey), signal }).catch(() => null),
+          fetchImpl(`${baseUrl}/credits`, { headers: openRouterHeaders(apiKey), signal }).catch(() => null),
+          fetchImpl(`${baseUrl}/auth/key`, { headers: openRouterHeaders(apiKey), signal }).catch(() => null),
         ]);
 
         let keyData = null;
@@ -130,7 +172,10 @@ export function createOpenRouterAdapter({ fetchImpl }) {
         let creditsData = null;
         if (creditsRes?.ok) creditsData = await creditsRes.json().catch(() => null);
 
-        const keyInfo = keyData?.data || {};
+        let authData = null;
+        if (authRes?.ok) authData = await authRes.json().catch(() => null);
+
+        const keyInfo = keyData?.data || authData?.data || {};
         const creditsInfo = creditsData?.data || {};
 
         const limit = typeof keyInfo.limit === 'number' ? keyInfo.limit : null;
@@ -146,7 +191,7 @@ export function createOpenRouterAdapter({ fetchImpl }) {
         }
 
         const isFree = keyInfo.is_free_tier === true;
-        const plan = isFree ? 'OpenRouter Free' : 'OpenRouter Standard';
+        const plan = isFree ? 'OpenRouter Free (50 req/day)' : 'OpenRouter Standard';
 
         return {
           updatedAt: new Date().toISOString(),
