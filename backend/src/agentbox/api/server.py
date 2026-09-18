@@ -54,7 +54,7 @@ def create_app(runtime):
 
     async def turn(request):
         body = await request.json()
-        runtime.start(request.match_info['sid'], body.get('prompt'), body.get('image'))
+        runtime.start(request.match_info['sid'], body.get('prompt'), body.get('image'), body.get('route'))
         return web.json_response({'status': 'running'}, status=202)
 
     async def stop(request):

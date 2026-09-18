@@ -9,7 +9,7 @@
  *   + Các ảnh chụp liên tiếp được xếp liền kề sát nhau gọn gàng.
  *   + Click vào bất kỳ ảnh nào để mở trực tiếp Lightbox phóng to/thu nhỏ bằng con lăn chuột và tải về.
  */
-import { useRef, useEffect, useState, useMemo } from 'react'
+import { useRef, useEffect, useState, useMemo, useCallback } from 'react'
 import {
   ChevronRight,
   ChevronDown,
@@ -88,6 +88,7 @@ export function ChatPanel() {
   const harnessSend = useHarnessChatStore((s) => s.send)
   const harnessRefresh = useHarnessChatStore((s) => s.refresh)
   const harnessStop = useHarnessChatStore((s) => s.stop)
+  const harnessClearError = useHarnessChatStore((s) => s.clearError)
   const harnessBusy = harnessRun?.status === 'running' || harnessRun?.status === 'starting'
   useEffect(() => {
     let pending = false
@@ -121,29 +122,72 @@ export function ChatPanel() {
     if (selKey(next) !== selKey(selection)) setSelection(next)
   }, [snapshot, routerOptions, selected, selection, setSelection])
 
+  // Kiểm tra trạng thái connection của model đang chọn để cảnh báo người dùng nếu ping false
+  const selectedConnection = useMemo(() => {
+    if (!snapshot || !selection) return null
+    if (selection.kind === 'model') {
+      return snapshot.connections.find(c => c.id === selection.connectionId) || null
+    }
+    if (selection.kind === 'alias') {
+      const alias = snapshot.aliases.find(a => a.id === selection.aliasId)
+      const firstTarget = alias?.targets?.[0]
+      return firstTarget ? snapshot.connections.find(c => c.id === firstTarget.connectionId) || null : null
+    }
+    return null
+  }, [snapshot, selection])
+
+  const connectionWarning = useMemo(() => {
+    if (!selectedConnection) return null
+    if (selectedConnection.inferenceState === 'failed') {
+      return `Provider ${selectedConnection.name} connection failed (Ping error: ${selectedConnection.error || 'Connection down'}). Please check credentials in Settings.`
+    }
+    if (selectedConnection.error) {
+      return `Provider ${selectedConnection.name} warning: ${selectedConnection.error}`
+    }
+    return null
+  }, [selectedConnection])
+
+  const sendCommand = useAgentStore((s) => s.sendCommand)
+  const agentBusy = useAgentStore((s) => s.isBusy)
+  const isGlobalBusy = Boolean(harnessBusy || isSending || agentBusy)
+
+  const handleStopAll = useCallback(() => {
+    void harnessStop(chatId)
+    routerStop()
+    sendCommand({ type: 'interrupt', level: 'tam_dung' })
+  }, [harnessStop, chatId, routerStop, sendCommand])
+
+  // Khi người dùng chuyển sang model khác, lập tức xóa cảnh báo lỗi của model trước đó
+  useEffect(() => {
+    harnessClearError(chatId)
+  }, [selection, chatId, harnessClearError])
+
   // Build router adapter only when live models available
   const routerAdapter: RouterComposerAdapter | undefined = useMemo(() => {
     const models = routerOptions.map(o => ({ id: o.value, name: o.label, provider: o.providerId }))
     return {
       models,
       activeModelId: selKey(selection),
-      isBusy: activeType === 'harness' ? harnessBusy : isSending,
-      onModelChange: (id: string) => setSelection(routerOptions.find(o => o.value === id)?.selection ?? null),
+      isBusy: isGlobalBusy,
+      connectionWarning,
+      onModelChange: (id: string) => {
+        setSelection(routerOptions.find(o => o.value === id)?.selection ?? null)
+        harnessClearError(chatId)
+      },
       onSend: (prompt: string, image?: string | null) => {
         if (activeType === 'harness' || activeType === 'model') void harnessSend(chatId, prompt, selection, image)
         else if (selected) void routerSend(prompt, undefined, image)
       },
-
-      onStop: () => { if (activeType === 'harness') void harnessStop(chatId); else routerStop() },
+      onStop: handleStopAll,
     }
-  }, [routerOptions, selected, selection, isSending, setSelection, routerSend, routerStop, activeType, harnessBusy, harnessSend, harnessStop, chatId])
+  }, [routerOptions, selected, selection, isGlobalBusy, connectionWarning, setSelection, routerSend, activeType, harnessSend, handleStopAll, chatId, harnessClearError])
 
   // Escape to stop streaming
   useEffect(() => {
-    const onKey = (e: globalThis.KeyboardEvent) => { if (e.key === 'Escape' && isSending) routerStop() }
+    const onKey = (e: globalThis.KeyboardEvent) => { if (e.key === 'Escape' && isGlobalBusy) handleStopAll() }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [isSending, routerStop])
+  }, [isGlobalBusy, handleStopAll])
 
   const pendingRequestIds = Object.values(requests)
     .filter((r) => r.status === 'dang_cho')
@@ -151,9 +195,31 @@ export function ChatPanel() {
 
   const messageGroups = useMemo(() => groupMessages(messages), [messages])
 
+  const prevEventsLengthRef = useRef(0)
+  const prevTurnsLengthRef = useRef(0)
+
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages.length, routerTurns.length])
+    const currentEvents = harnessRun?.events.length ?? 0
+    const currentTurns = routerTurns.length
+    const isNewTurn = (currentEvents > 0 && prevEventsLengthRef.current === 0) || currentTurns > prevTurnsLengthRef.current
+
+    prevEventsLengthRef.current = currentEvents
+    prevTurnsLengthRef.current = currentTurns
+
+    if (isNewTurn) {
+      // Đẩy tin nhắn user mới lên trên cùng của khung nhìn (như ảnh 3)
+      setTimeout(() => {
+        const latestTurnEl = document.querySelector('[data-turn-latest="true"]') || document.querySelector('[data-turn-user="true"]:last-of-type')
+        if (latestTurnEl) {
+          latestTurnEl.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        }
+      }, 50)
+      return
+    }
+
+    // Khi đang streaming nội dung, giữ cuộn tự nhiên theo tiến trình
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  }, [messages.length, routerTurns.length, harnessRun?.events.length, harnessRun?.status])
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-bg">

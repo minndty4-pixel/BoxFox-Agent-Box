@@ -31,6 +31,7 @@ export interface RouterComposerAdapter {
   models: RouterSingleModel[]
   activeModelId: string
   isBusy: boolean
+  connectionWarning?: string | null
   onModelChange: (id: string) => void
   onSend: (prompt: string, image?: string | null) => void
   onStop: () => void
@@ -202,6 +203,13 @@ export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
           placeholder={t(compact ? 'composer.placeholderShort' : 'composer.placeholder')}
           className="w-full resize-none bg-transparent px-1.5 py-1 text-xs leading-relaxed text-fg placeholder:text-muted/60 outline-hidden select-text"
         />
+
+        {/* Provider Connection Warning: borderless, plain red text matching agent response text */}
+        {router?.connectionWarning && (
+          <div className="px-1.5 py-1 text-xs text-rose-400 select-text animate-in fade-in duration-150">
+            {router.connectionWarning}
+          </div>
+        )}
 
         {/* Toolbar below input — bỏ flex-wrap để Mic/Send không bao giờ rớt
             xuống dòng 2 khi cột chat hẹp; nhóm trái co lại (min-w-0 +

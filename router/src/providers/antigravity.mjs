@@ -182,11 +182,16 @@ function recordForSpec(spec, info = {}, overrides = {}) {
 }
 
 function applyModelThinking(translated, spec) {
-  if (!spec.thinkingLevel) return translated;
+  const m = (spec.upstreamModelId || spec.id || '').toLowerCase();
+  const inferredLevel = m.includes('high') ? 'high' : m.includes('medium') ? 'medium' : m.includes('low') ? 'low' : 'high';
+  const level = spec.thinkingLevel || (m.includes('flash') || m.includes('pro') || m.includes('gemini') ? inferredLevel : null);
+  if (!level) return translated;
   translated.generationConfig ||= {};
-  translated.generationConfig.thinkingConfig = { thinkingLevel: spec.thinkingLevel, includeThoughts: true };
-  const floor = GEMINI_OUTPUT_FLOOR[spec.thinkingLevel];
-  if (floor && (!Number.isFinite(Number(translated.generationConfig.maxOutputTokens)) || Number(translated.generationConfig.maxOutputTokens) < floor)) translated.generationConfig.maxOutputTokens = floor;
+  translated.generationConfig.thinkingConfig = { thinkingLevel: level, includeThoughts: true };
+  const floor = GEMINI_OUTPUT_FLOOR[level] || 8192;
+  if (!Number.isFinite(Number(translated.generationConfig.maxOutputTokens)) || Number(translated.generationConfig.maxOutputTokens) < floor) {
+    translated.generationConfig.maxOutputTokens = floor;
+  }
   return translated;
 }
 
@@ -387,7 +392,7 @@ export function createAntigravityAdapter({ fetchImpl }) {
                 throw providerError(status);
               }
               for (const event of geminiChunkToEvents(data, state)) {
-                if (event.type === 'delta' && (event.delta?.content || event.delta?.tool_calls?.length)) { meaningful = true; emitted = true; }
+                if (event.type === 'delta' && (event.delta?.content || event.delta?.tool_calls?.length || event.delta?.reasoning_content)) { meaningful = true; emitted = true; }
                 if (event.type === 'finish') finished = true;
                 yield event;
               }

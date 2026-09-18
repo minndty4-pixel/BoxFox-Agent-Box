@@ -114,18 +114,101 @@ class RouterClient:
     def __init__(self, url='http://127.0.0.1:3101'):
         self.url = url.rstrip('/')
 
-    async def complete(self, messages, tools, route, max_tokens=4096):
-        async with httpx.AsyncClient(timeout=90, trust_env=False) as client:
-            response = await client.post(self.url + '/api/router/chat',
-                headers={'x-boxfox-admin': '1'}, json={**route, 'messages': messages,
-                    'tools': tools, 'stream': False, 'max_tokens': max_tokens})
-            if response.is_error:
-                try:
-                    message = response.json().get('error', {}).get('message', 'Router request failed')
-                except ValueError:
-                    message = 'Router request failed'
-                raise RuntimeError(f'Router HTTP {response.status_code}: {message}')
-            return response.json()
+    async def complete(self, messages, tools, route, on_thought=None, max_tokens=4096):
+        async with httpx.AsyncClient(timeout=120, trust_env=False) as client:
+            try:
+                async with client.stream(
+                    'POST',
+                    self.url + '/api/router/chat',
+                    headers={'x-boxfox-admin': '1'},
+                    json={**route, 'messages': messages, 'tools': tools, 'stream': True, 'max_tokens': max_tokens}
+                ) as response:
+                    if response.is_error:
+                        content = await response.aread()
+                        try:
+                            message = json.loads(content).get('error', {}).get('message', 'Router request failed')
+                        except Exception:
+                            message = content.decode('utf-8', errors='ignore') or 'Router request failed'
+                        raise RuntimeError(f'Router HTTP {response.status_code}: {message}')
+
+                    content = ''
+                    reasoning_content = ''
+                    tool_calls = {}
+                    finish_reason = 'stop'
+                    req_id = 'resp_' + uuid.uuid4().hex[:12]
+                    usage = None
+                    boxfox_meta = None
+
+                    async for line in response.aiter_lines():
+                        if not line or not line.startswith('data:'):
+                            continue
+                        data_str = line[5:].strip()
+                        if data_str == '[DONE]':
+                            break
+                        try:
+                            chunk = json.loads(data_str)
+                        except Exception:
+                            continue
+                        if chunk.get('id'):
+                            req_id = chunk['id']
+                        if chunk.get('boxfox'):
+                            boxfox_meta = chunk['boxfox']
+                        if chunk.get('usage'):
+                            usage = chunk['usage']
+                        choices = chunk.get('choices') or []
+                        if not choices:
+                            continue
+                        choice = choices[0]
+                        if choice.get('finish_reason'):
+                            finish_reason = choice['finish_reason']
+                        delta = choice.get('delta') or {}
+                        if delta.get('content'):
+                            content += delta['content']
+                        if delta.get('reasoning_content'):
+                            reasoning_content += delta['reasoning_content']
+                            if on_thought and callable(on_thought):
+                                try:
+                                    res = on_thought(reasoning_content)
+                                    if asyncio.iscoroutine(res):
+                                        await res
+                                except Exception:
+                                    pass
+                        for tc in delta.get('tool_calls') or []:
+                            idx = tc.get('index', 0)
+                            old = tool_calls.setdefault(idx, {'id': '', 'type': 'function', 'function': {'name': '', 'arguments': ''}})
+                            if tc.get('id'):
+                                old['id'] = tc['id']
+                            if tc.get('function', {}).get('name'):
+                                old['function']['name'] += tc['function']['name']
+                            if tc.get('function', {}).get('arguments'):
+                                old['function']['arguments'] += tc['function']['arguments']
+
+                    return {
+                        'id': req_id,
+                        'choices': [{
+                            'index': 0,
+                            'message': {
+                                'role': 'assistant',
+                                'content': content or None,
+                                'reasoning_content': reasoning_content or None,
+                                'tool_calls': list(tool_calls.values()) if tool_calls else []
+                            },
+                            'finish_reason': finish_reason
+                        }],
+                        'usage': usage,
+                        'boxfox': boxfox_meta
+                    }
+            except Exception:
+                res = await client.post(self.url + '/api/router/chat',
+                    headers={'x-boxfox-admin': '1'}, json={**route, 'messages': messages,
+                        'tools': tools, 'stream': False, 'max_tokens': max_tokens})
+                if res.is_error:
+                    try:
+                        message = res.json().get('error', {}).get('message', 'Router request failed')
+                    except ValueError:
+                        message = 'Router request failed'
+                    raise RuntimeError(f'Router HTTP {res.status_code}: {message}')
+                return res.json()
 
 
 def route_for(value):
@@ -188,10 +271,13 @@ class HarnessRuntime:
         return self.store.get(session['id'])
 
 
-    def start(self, sid, prompt, image=None):
-        if sid in self.tasks and not self.tasks[sid].done():
-            raise ValueError('SESSION_BUSY: wait for completion or stop this session first')
+    def start(self, sid, prompt, image=None, route=None):
         session = self.store.get(sid)
+        if session['status'] == 'running':
+            raise ValueError('SESSION_BUSY: Turn in progress')
+        if route and isinstance(route, dict) and any(route.values()):
+            session['config']['route'] = route
+            self.store.update_config(sid, session['config'])
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError('Prompt is required')
         if image and (not isinstance(image, str) or not image.startswith(('data:image/png;base64,', 'data:image/jpeg;base64,', 'data:image/webp;base64,')) or len(image) > 700000):
@@ -240,7 +326,9 @@ class HarnessRuntime:
                             self.store.save(sid, messages)
                         self.store.emit(sid, 'compression', event)
                     self.store.emit(sid, 'step', {'iteration': step + 1, 'contextEstimate': estimate_tokens(messages, tools)})
-                    response = await self.client.complete(messages, tools, config['route'])
+                    def handle_thought(thought_text):
+                        self.store.emit(sid, 'thought', {'text': thought_text})
+                    response = await self.client.complete(messages, tools, config['route'], on_thought=handle_thought)
                     choice = response['choices'][0]
                     message = choice['message']
                     text, calls = message.get('content') or '', message.get('tool_calls') or []

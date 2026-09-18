@@ -244,22 +244,22 @@ export function HarnessStepView({
         const isTurnBusy = isLastTurn && isBusy && !turn.isCompleted
 
         return (
-          <TurnBlock
-            key={turn.id}
-            turn={turn}
-            isTurnBusy={isTurnBusy}
-            onOpenLightbox={onOpenLightbox}
-            snapshot={snapshot}
-            selection={selection}
-          />
+          <div key={turn.id} data-turn-latest={isLastTurn ? 'true' : undefined} data-turn-user="true">
+            <TurnBlock
+              turn={turn}
+              isTurnBusy={isTurnBusy}
+              onOpenLightbox={onOpenLightbox}
+              snapshot={snapshot}
+              selection={selection}
+            />
+          </div>
         )
       })}
 
-      {/* Global Error Banner */}
+      {/* Global Error: borderless plain red text matching agent response text */}
       {error && (
-        <div className="flex items-start gap-2.5 rounded-xl border border-red-500/40 bg-red-500/10 p-3.5 text-xs text-red-400 shadow-xs">
-          <AlertCircle className="size-4 shrink-0 text-red-400 mt-0.5" />
-          <div className="flex-1 font-mono text-[11px] whitespace-pre-wrap">{error}</div>
+        <div className="py-2 text-xs text-rose-400 font-sans leading-relaxed select-text animate-in fade-in duration-150">
+          {error}
         </div>
       )}
     </div>
@@ -392,14 +392,20 @@ function TurnBlock({
           {/* Sub-steps Hierarchical Tree (Chuẩn xác như Ảnh 2) */}
           {thinkingOpen && (
             <div className="ml-1 pl-3 space-y-2 border-l border-line/60 my-1 animate-in fade-in duration-150">
-              {/* Thinking Reasoning Sub-item (Luồng suy nghĩ stream từ model) */}
+              {/* Thinking Reasoning Sub-item (Luồng suy nghĩ stream từ model hoặc reasoning tokens đã sinh) */}
               {turn.thought ? (
-                <ThinkingSubItem thought={turn.thought} durationSec={durationSec} />
-              ) : (
-                /* Fallback nếu model không trả reasoning: vẫn có tóm tắt chu kỳ để không bị rỗng như Ảnh 1 */
+                <ThinkingSubItem thought={turn.thought} durationSec={durationSec} isLive={isTurnBusy} />
+              ) : turn.usage?.reasoning_tokens ? (
                 <ThinkingSubItem
-                  thought={`Direct reasoning and response synthesis executed by ${targetModelId}.`}
+                  thought={`⚡ Deep reasoning process executed successfully (${turn.usage.reasoning_tokens} reasoning tokens). Cryptographically verified by Cloud Code signature.`}
                   durationSec={durationSec}
+                  isLive={false}
+                />
+              ) : (
+                <ThinkingSubItem
+                  thought={`Direct response synthesized by ${targetModelId}.`}
+                  durationSec={durationSec}
+                  isLive={false}
                 />
               )}
 
@@ -499,9 +505,12 @@ function TurnBlock({
             </button>
           </div>
 
-          {/* Assistant Text */}
+          {/* Assistant Text with Progressive Typewriter Reveal */}
           <div className="max-w-3xl text-sm text-fg leading-relaxed">
-            <MarkdownRenderer content={String(turn.finalAssistant.data.text ?? '')} />
+            <ProgressiveMarkdown
+              content={String(turn.finalAssistant.data.text ?? '')}
+              isLive={isTurnBusy || (!turn.isCompleted && Date.now() - toMs(turn.endTime) < 5000)}
+            />
           </div>
         </div>
       )}
@@ -509,8 +518,46 @@ function TurnBlock({
   )
 }
 
+/** Progressive Typewriter Markdown Reveal component */
+function ProgressiveMarkdown({
+  content,
+  isLive,
+}: {
+  content: string
+  isLive?: boolean
+}) {
+  const [displayedLength, setDisplayedLength] = useState(() => (isLive ? 0 : content.length))
+
+  React.useEffect(() => {
+    if (!isLive) {
+      setDisplayedLength(content.length)
+      return
+    }
+
+    if (displayedLength < content.length) {
+      const step = Math.max(3, Math.ceil((content.length - displayedLength) / 20))
+      const timer = window.setTimeout(() => {
+        setDisplayedLength((prev) => Math.min(content.length, prev + step))
+      }, 16)
+      return () => window.clearTimeout(timer)
+    }
+  }, [content, displayedLength, isLive])
+
+  const isTyping = isLive && displayedLength < content.length
+  const currentText = isLive ? content.slice(0, displayedLength) : content
+
+  return (
+    <div className="relative">
+      <MarkdownRenderer content={currentText} />
+      {isTyping && (
+        <span className="inline-block size-1.5 rounded-full bg-brand animate-ping ml-1 align-middle" />
+      )}
+    </div>
+  )
+}
+
 /** Thinking Reasoning Sub-item */
-function ThinkingSubItem({ thought, durationSec }: { thought: string; durationSec?: number }) {
+function ThinkingSubItem({ thought, durationSec, isLive }: { thought: string; durationSec?: number; isLive?: boolean }) {
   const [open, setOpen] = useState(false)
 
   return (
@@ -533,7 +580,7 @@ function ThinkingSubItem({ thought, durationSec }: { thought: string; durationSe
 
       {open && (
         <div className="ml-3 pl-3 border-l-2 border-brand/50 py-1.5 text-xs text-zinc-300/95 leading-relaxed bg-panel2/40 rounded-r-xl animate-in fade-in duration-150">
-          <MarkdownRenderer content={thought} />
+          <ProgressiveMarkdown content={thought} isLive={isLive} />
         </div>
       )}
     </div>

@@ -22,6 +22,7 @@ interface State {
   send: (chatId: string, prompt: string, selection: RouterChatSelection | null, image?: string | null) => Promise<void>
   refresh: (chatId: string) => Promise<void>
   stop: (chatId: string) => Promise<void>
+  clearError: (chatId: string) => void
 }
 
 
@@ -37,10 +38,24 @@ export const useHarnessChatStore = create<State>((set, get) => ({
     if (!id) return
     try {
       const session = await agentApi<HarnessSession>(`/sessions/${id}?after=${current.events.at(-1)?.seq ?? 0}`)
-      set((state) => ({ sessions: { ...state.sessions, [chatId]: { id, status: session.status, error: null,
-        events: [...(state.sessions[chatId]?.events ?? []), ...session.events.filter(e => !(state.sessions[chatId]?.events ?? []).some(old => old.seq === e.seq))] } } }))
+      const prevEvents = current.events ?? []
+      const newEvents = session.events.filter(e => !prevEvents.some(old => old.seq === e.seq))
+      const allEvents = [...prevEvents, ...newEvents]
+      const errorEvent = allEvents.filter(e => e.type === 'error').at(-1)
+      const sessionError = errorEvent ? String(errorEvent.data?.message || 'Agent run error') : (session.status === 'failed' ? (current.error || 'Agent run failed') : null)
+      set((state) => ({
+        sessions: {
+          ...state.sessions,
+          [chatId]: {
+            id,
+            status: session.status,
+            error: sessionError,
+            events: allEvents,
+          },
+        },
+      }))
     } catch (error) {
-      set((state) => ({ sessions: { ...state.sessions, [chatId]: { ...current, id, error: String(error) } } }))
+      set((state) => ({ sessions: { ...state.sessions, [chatId]: { ...current, id, status: 'failed', error: String(error) } } }))
     }
   },
   fetchSavedSessions: async () => {
@@ -97,7 +112,9 @@ export const useHarnessChatStore = create<State>((set, get) => ({
         localStorage.setItem(storageKey(id), id)
       }
       set((state) => ({ sessions: { ...state.sessions, [chatId]: { ...current, id, status: 'running', error: null } } }))
-      await agentApi(`/sessions/${id}/turns`, { prompt: prompt || 'Inspect the attached image.', image })
+      const route = selection?.kind === 'model' ? { connectionId: selection.connectionId, modelId: selection.modelId }
+        : selection?.kind === 'alias' ? { aliasId: selection.aliasId } : {}
+      await agentApi(`/sessions/${id}/turns`, { prompt: prompt || 'Inspect the attached image.', image, route })
       await get().refresh(chatId)
     } catch (error) {
       set((state) => ({ sessions: { ...state.sessions, [chatId]: { ...(state.sessions[chatId] ?? current), status: 'failed', error: String(error) } } }))
@@ -109,5 +126,17 @@ export const useHarnessChatStore = create<State>((set, get) => ({
     if (!id) return
     try { await agentApi(`/sessions/${id}/stop`, {}); await get().refresh(chatId) }
     catch (error) { set((state) => ({ sessions: { ...state.sessions, [chatId]: { ...state.sessions[chatId], error: String(error) } } })) }
+  },
+
+  clearError: (chatId: string) => {
+    set((state) => ({
+      sessions: {
+        ...state.sessions,
+        [chatId]: {
+          ...(state.sessions[chatId] ?? empty()),
+          error: null,
+        },
+      },
+    }))
   },
 }))

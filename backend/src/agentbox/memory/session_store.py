@@ -52,6 +52,11 @@ class SessionStore:
             self.db.execute('UPDATE sessions SET messages=?,status=COALESCE(?,status),updated=? WHERE id=?',
                             (json.dumps(messages, ensure_ascii=False), status, time.time(), sid))
 
+    def update_config(self, sid, config):
+        with self.db:
+            self.db.execute('UPDATE sessions SET config=?,updated=? WHERE id=?',
+                            (json.dumps(config, ensure_ascii=False), time.time(), sid))
+
     def emit(self, sid, kind, payload):
         with self.db:
             cur = self.db.execute('INSERT INTO events(session_id,kind,payload,created) VALUES(?,?,?,?)',
