@@ -244,6 +244,7 @@ class HarnessRuntime:
                     choice = response['choices'][0]
                     message = choice['message']
                     text, calls = message.get('content') or '', message.get('tool_calls') or []
+                    thought = message.get('reasoning_content') or message.get('thought') or choice.get('reasoning_content') or ''
                     if not calls and (choice.get('finish_reason') not in {'stop', 'end_turn'} or not text.strip()):
                         raise ValueError('Model did not produce a complete non-empty final response')
                     # Ensure the same canonical IDs in assistant row and tool results.
@@ -251,13 +252,17 @@ class HarnessRuntime:
                     for call in calls:
                         call['id'] = call.get('id') or 'call_' + uuid.uuid4().hex
                     row = {'role': 'assistant', 'content': text}
+                    if thought:
+                        row['thought'] = thought
                     if calls:
                         row['tool_calls'] = calls
                     messages.append(row)
                     self.store.save(sid, messages)
+                    if thought:
+                        self.store.emit(sid, 'thought', {'text': thought})
                     self.store.emit(sid, 'usage', {'usage': response.get('usage'), 'target': response.get('boxfox'), 'requestId': response.get('id')})
                     if text:
-                        self.store.emit(sid, 'assistant', {'text': text, 'final': not calls})
+                        self.store.emit(sid, 'assistant', {'text': text, 'thought': thought, 'final': not calls})
                     if not calls:
                         self.store.save(sid, messages, 'completed')
                         self.store.emit(sid, 'finish', {'status': 'completed'})
@@ -268,7 +273,7 @@ class HarnessRuntime:
                         fn = call['function']
                         args, error = _parse_tool_arguments(fn.get('arguments'))
                         name = fn.get('name', '')
-                        self.store.emit(sid, 'tool_start', {'id': call['id'], 'name': name})
+                        self.store.emit(sid, 'tool_start', {'id': call['id'], 'name': name, 'args': args})
                         try:
                             if error:
                                 raise ValueError(error)
@@ -291,7 +296,7 @@ class HarnessRuntime:
                             tool_content = [{'type': 'text', 'text': text_result}, {'type': 'image_url', 'image_url': {'url': 'data:' + result.get('mime', 'image/png') + ';base64,' + result['image']}}]
                         messages.append({'role': 'tool', 'tool_call_id': call['id'], 'name': name, 'content': tool_content})
                         self.store.save(sid, messages)
-                        self.store.emit(sid, 'tool_end', {'id': call['id'], 'name': name, 'result': safe})
+                        self.store.emit(sid, 'tool_end', {'id': call['id'], 'name': name, 'args': args, 'result': safe})
                 raise ValueError('MAX_STEPS: iteration budget reached; work may be incomplete')
         except asyncio.CancelledError:
             self.store.save(sid, messages, 'cancelled')

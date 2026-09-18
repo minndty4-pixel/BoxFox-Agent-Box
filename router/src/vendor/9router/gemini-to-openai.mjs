@@ -29,7 +29,12 @@ export function geminiChunkToEvents(chunk, state = { toolIndex: 0, hadToolCall: 
   const candidate = response?.candidates?.[0];
   const events = [];
   for (const part of candidate?.content?.parts || []) {
-    if (part?.thought === true) continue;
+    if (part?.thought === true) {
+      if (typeof part?.text === 'string' && part.text) {
+        events.push({ type: 'delta', delta: { reasoning_content: part.text } });
+      }
+      continue;
+    }
     if (typeof part?.text === 'string' && part.text) events.push({ type: 'delta', delta: { content: part.text } });
     if (part?.functionCall) {
       const index = state.toolIndex++;

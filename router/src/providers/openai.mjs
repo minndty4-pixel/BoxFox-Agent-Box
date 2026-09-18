@@ -20,7 +20,8 @@ export function createOpenAIAdapter({ fetchImpl }) {
         const data = await jsonOrProviderError(response);
         const choice = data?.choices?.[0];
         const message = choice?.message || {};
-        if (message.content || message.tool_calls?.length) yield { type: 'delta', delta: { ...(message.content ? { content: message.content } : {}), ...(message.tool_calls?.length ? { tool_calls: message.tool_calls.map((call, index) => ({ index, ...call })) } : {}) } };
+        const reasoning = message.reasoning_content || message.reasoning || message.thought;
+        if (message.content || message.tool_calls?.length || reasoning) yield { type: 'delta', delta: { ...(message.content ? { content: message.content } : {}), ...(reasoning ? { reasoning_content: reasoning } : {}), ...(message.tool_calls?.length ? { tool_calls: message.tool_calls.map((call, index) => ({ index, ...call })) } : {}) } };
         if (data?.usage) yield { type: 'usage', usage: data.usage };
         if (choice?.finish_reason) yield { type: 'finish', finishReason: normalizeFinishReason(choice.finish_reason) };
         return;
@@ -29,7 +30,10 @@ export function createOpenAIAdapter({ fetchImpl }) {
         if (!event.data || event.data === '[DONE]') continue;
         const data = parseJson(event.data); if (!data || data.error) throw providerError(data?.error?.status || 502);
         const choice = data.choices?.[0];
-        if (choice?.delta && (choice.delta.content || choice.delta.tool_calls?.length)) yield { type: 'delta', delta: choice.delta };
+        const reasoning = choice?.delta?.reasoning_content || choice?.delta?.reasoning || choice?.delta?.thought;
+        if (choice?.delta && (choice.delta.content || choice.delta.tool_calls?.length || reasoning)) {
+          yield { type: 'delta', delta: { ...choice.delta, ...(reasoning ? { reasoning_content: reasoning } : {}) } };
+        }
         if (data.usage) yield { type: 'usage', usage: data.usage };
         if (choice?.finish_reason) yield { type: 'finish', finishReason: normalizeFinishReason(choice.finish_reason) };
       }

@@ -33,6 +33,7 @@ interface HarnessStepViewProps {
 interface HarnessTurn {
   id: string
   userEvent: HarnessEvent | null
+  thought: string | null
   steps: HarnessEvent[]
   finalAssistant: HarnessEvent | null
   usage: {
@@ -82,64 +83,77 @@ function resolveProvider(modelId?: string, connectionId?: string, snapshot?: Pro
   return 'antigravity'
 }
 
-function toolMeta(name: string): { icon: React.ReactNode; label: string; activeLabel: string } {
+function getToolDisplay(name: string, args: Record<string, unknown> | null, isError: boolean): {
+  actionLabel: string
+  detailLabel: string
+  icon: React.ReactNode
+} {
   switch (name) {
-    case 'computer_screen_capture':
+    case 'terminal_exec': {
+      const cmd = String(args?.command || args?.cmd || 'command')
+      const shortCmd = cmd.length > 38 ? cmd.slice(0, 35) + '...' : cmd
       return {
-        icon: <Camera className="size-3.5 text-blue-400" />,
-        label: 'Screen Capture',
-        activeLabel: 'Capturing and analyzing sandbox display...',
-      }
-    case 'computer_screen_record':
-      return {
-        icon: <Camera className="size-3.5 text-amber-400" />,
-        label: 'Screen Recording',
-        activeLabel: 'Managing sandbox video recording...',
-      }
-    case 'browser_use':
-      return {
-        icon: <Camera className="size-3.5 text-emerald-400" />,
-        label: 'Browser Automation',
-        activeLabel: 'Navigating and interacting with browser page...',
-      }
-    case 'terminal_exec':
-      return {
+        actionLabel: 'Ran',
+        detailLabel: shortCmd,
         icon: <Terminal className="size-3.5 text-brand" />,
-        label: 'Terminal Command',
-        activeLabel: 'Executing sandboxed terminal command...',
       }
-    case 'codebase_grep':
-    case 'codebase_glob':
-      return {
-        icon: <Search className="size-3.5 text-purple-400" />,
-        label: 'Codebase Search',
-        activeLabel: 'Searching workspace symbols and patterns...',
-      }
-    case 'file_read':
-      return {
-        icon: <FileText className="size-3.5 text-sky-400" />,
-        label: 'File Inspection',
-        activeLabel: 'Reading file contents...',
-      }
+    }
     case 'file_write':
-    case 'file_edit':
+    case 'file_edit': {
+      const path = String(args?.path || args?.target || 'file')
+      const fileName = path.split(/[/\\]/).pop() || path
       return {
+        actionLabel: 'Edited',
+        detailLabel: fileName,
         icon: <FileText className="size-3.5 text-amber-400" />,
-        label: 'File Modification',
-        activeLabel: 'Writing updates to workspace file...',
       }
-    case 'delegate_task':
+    }
+    case 'file_read': {
+      const path = String(args?.path || args?.target || 'file')
+      const fileName = path.split(/[/\\]/).pop() || path
       return {
+        actionLabel: 'Explored',
+        detailLabel: fileName,
+        icon: <FileText className="size-3.5 text-sky-400" />,
+      }
+    }
+    case 'codebase_grep':
+    case 'codebase_glob': {
+      const q = String(args?.query || args?.pattern || 'patterns')
+      return {
+        actionLabel: 'Explored',
+        detailLabel: `codebase (${q})`,
+        icon: <Search className="size-3.5 text-purple-400" />,
+      }
+    }
+    case 'computer_screen_capture': {
+      return {
+        actionLabel: 'Captured',
+        detailLabel: 'sandbox display',
+        icon: <Camera className="size-3.5 text-blue-400" />,
+      }
+    }
+    case 'browser_use': {
+      return {
+        actionLabel: 'Explored',
+        detailLabel: 'browser page',
+        icon: <Camera className="size-3.5 text-emerald-400" />,
+      }
+    }
+    case 'delegate_task': {
+      return {
+        actionLabel: 'Delegated',
+        detailLabel: `specialist (${String(args?.role || 'agent')})`,
         icon: <BrainCircuit className="size-3.5 text-brand" />,
-        label: 'Subagent Delegation',
-        activeLabel: 'Delegating work to autonomous specialist...',
       }
-    default:
+    }
+    default: {
       return {
+        actionLabel: isError ? 'Failed' : 'Executed',
+        detailLabel: name,
         icon: <Terminal className="size-3.5 text-brand" />,
-        label: name || 'Tool Execution',
-        activeLabel: `Executing ${name}...`,
       }
+    }
   }
 }
 
@@ -164,6 +178,7 @@ export function HarnessStepView({
         current = {
           id: `turn_${event.seq}`,
           userEvent: event,
+          thought: null,
           steps: [],
           finalAssistant: null,
           usage: null,
@@ -180,6 +195,7 @@ export function HarnessStepView({
         current = {
           id: `turn_initial`,
           userEvent: null,
+          thought: null,
           steps: [],
           finalAssistant: null,
           usage: null,
@@ -193,10 +209,15 @@ export function HarnessStepView({
 
       current.endTime = Math.max(current.endTime, event.created)
 
-      if (event.type === 'usage') {
+      if (event.type === 'thought') {
+        current.thought = String(event.data.text ?? '')
+      } else if (event.type === 'usage') {
         current.usage = event.data.usage as any
         current.target = (event.data.target as any) || (event.data.model ? { modelId: String(event.data.model) } : null)
       } else if (event.type === 'assistant') {
+        if (event.data.thought) {
+          current.thought = String(event.data.thought)
+        }
         const isFinal = event.data.final !== false
         if (isFinal) {
           current.finalAssistant = event
@@ -283,8 +304,8 @@ function TurnBlock({
   const toolEnds = turn.steps.filter((e) => e.type === 'tool_end')
   const activeCall = toolStarts.find((s) => !toolEnds.some((e) => e.data.id === s.data.id))
 
-  // Có step nào cần hiển thị trong Accordion hay không
-  const hasThinkingSteps = turn.steps.length > 0 || isTurnBusy
+  // Luôn hiển thị thanh Worked for Xs nếu đã có hoạt động hoặc đang chạy
+  const hasThinkingSteps = turn.steps.length > 0 || Boolean(turn.thought) || isTurnBusy
 
   const handleCopyUser = () => {
     const text = String(turn.userEvent?.data?.text ?? '')
@@ -368,14 +389,26 @@ function TurnBlock({
             )}
           </button>
 
-          {/* Sub-steps Hierarchical Tree */}
+          {/* Sub-steps Hierarchical Tree (Chuẩn xác như Ảnh 2) */}
           {thinkingOpen && (
             <div className="ml-1 pl-3 space-y-2 border-l border-line/60 my-1 animate-in fade-in duration-150">
-              {/* Tool Execution Sub-items with individual collapse */}
+              {/* Thinking Reasoning Sub-item (Luồng suy nghĩ stream từ model) */}
+              {turn.thought ? (
+                <ThinkingSubItem thought={turn.thought} durationSec={durationSec} />
+              ) : (
+                /* Fallback nếu model không trả reasoning: vẫn có tóm tắt chu kỳ để không bị rỗng như Ảnh 1 */
+                <ThinkingSubItem
+                  thought={`Direct reasoning and response synthesis executed by ${targetModelId}.`}
+                  durationSec={durationSec}
+                />
+              )}
+
+              {/* Tool Execution Sub-items with Devin-style labels */}
               {toolEnds.map((end) => (
                 <CompletedToolSubItem
                   key={end.seq}
                   name={String(end.data.name ?? '')}
+                  args={end.data.args as Record<string, unknown> | null}
                   result={end.data.result}
                   onOpenLightbox={onOpenLightbox}
                 />
@@ -409,7 +442,10 @@ function TurnBlock({
               {isTurnBusy && activeCall && (
                 <div className="flex items-center gap-2 py-1 text-xs text-blue-300 animate-pulse select-none">
                   <Loader2 className="size-3.5 text-blue-400 animate-spin shrink-0" />
-                  <span className="font-medium">{toolMeta(String(activeCall.data.name)).activeLabel}</span>
+                  <span className="font-medium">
+                    {getToolDisplay(String(activeCall.data.name), activeCall.data.args as any, false).actionLabel}{' '}
+                    {getToolDisplay(String(activeCall.data.name), activeCall.data.args as any, false).detailLabel}...
+                  </span>
                 </div>
               )}
 
@@ -473,20 +509,52 @@ function TurnBlock({
   )
 }
 
-/** Sub-step tool accordion item */
+/** Thinking Reasoning Sub-item */
+function ThinkingSubItem({ thought, durationSec }: { thought: string; durationSec?: number }) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <div className="space-y-1">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-1.5 text-xs text-muted hover:text-fg transition cursor-pointer select-none group"
+      >
+        <Sparkles className="size-3 text-brand/80" />
+        <span className="font-mono text-[11px] text-zinc-300">
+          Thinking {durationSec ? `(${durationSec}s)` : ''}
+        </span>
+        {open ? (
+          <ChevronDown className="size-3 text-muted group-hover:text-fg" />
+        ) : (
+          <ChevronRight className="size-3 text-muted group-hover:text-fg" />
+        )}
+      </button>
+
+      {open && (
+        <div className="ml-3 pl-3 border-l-2 border-brand/50 py-1.5 text-xs text-zinc-300/95 leading-relaxed bg-panel2/40 rounded-r-xl animate-in fade-in duration-150">
+          <MarkdownRenderer content={thought} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** Sub-step tool accordion item (Formatted like Photo 2) */
 function CompletedToolSubItem({
   name,
+  args,
   result,
   onOpenLightbox,
 }: {
   name: string
+  args: Record<string, unknown> | null
   result: unknown
   onOpenLightbox?: (media: LightboxMediaProps) => void
 }) {
   const [open, setOpen] = useState(false)
-  const meta = toolMeta(name)
-
-  const isError = result && typeof result === 'object' && Boolean((result as any).is_error)
+  const isError = Boolean(result && typeof result === 'object' && (result as Record<string, unknown>).is_error)
+  const display = getToolDisplay(name, args, isError)
 
   const resultObj = result && typeof result === 'object' ? (result as Record<string, unknown>) : null
   const artifactPath = typeof resultObj?.artifact === 'string' ? resultObj.artifact : null
@@ -505,11 +573,11 @@ function CompletedToolSubItem({
           {isError ? (
             <AlertCircle className="size-3 text-red-400 shrink-0" />
           ) : (
-            <CheckCircle2 className="size-3 text-emerald-400 shrink-0" />
+            display.icon
           )}
-          {meta.icon}
-          <span className="font-mono text-[11px] text-zinc-300">{meta.label}</span>
-          <span className="text-[10px] text-muted">· {isError ? 'failed' : 'completed'}</span>
+          <span className="text-zinc-400">{display.actionLabel}</span>
+          <span className="font-mono text-[11px] text-zinc-200 font-semibold">{display.detailLabel}</span>
+          {isError && <span className="text-[10px] text-red-400">· failed</span>}
         </div>
         {open ? (
           <ChevronDown className="size-3 text-muted group-hover:text-fg" />

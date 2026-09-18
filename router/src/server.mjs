@@ -26,7 +26,7 @@ export function createRouterServer({ service, engine, oauth, frontendDir = null,
     const controller = new AbortController();
     const cancel = () => { if (!res.writableEnded) controller.abort(new DOMException('Client disconnected', 'AbortError')); };
     res.on('close', cancel); req.on('aborted', cancel);
-    let meta = null, content = '', finishReason = null, usage = null; const toolCalls = new Map();
+    let meta = null, content = '', reasoningContent = '', finishReason = null, usage = null; const toolCalls = new Map();
     const stream = input.stream === true;
     const write = async value => {
       if (controller.signal.aborted) throw controller.signal.reason;
@@ -39,6 +39,7 @@ export function createRouterServer({ service, engine, oauth, frontendDir = null,
         if (event.type === 'start') { meta = event.meta; if (stream) await write(chunk({ role: 'assistant' }, null, { boxfox: meta })); }
         if (event.type === 'delta') {
           content += event.delta.content || '';
+          if (event.delta.reasoning_content) reasoningContent += event.delta.reasoning_content;
           for (const call of event.delta.tool_calls || []) {
             const index = call.index ?? 0, old = toolCalls.get(index) || { id: '', type: 'function', function: { name: '', arguments: '' } };
             if (call.id) old.id = call.id;
@@ -53,7 +54,7 @@ export function createRouterServer({ service, engine, oauth, frontendDir = null,
         if (event.type === 'finish') { finishReason = event.finishReason; if (stream) await write(chunk({}, finishReason)); }
       }
       if (stream) { await write('[DONE]'); res.end(); }
-      else json(res, 200, { id: `chatcmpl-${meta.requestId}`, object: 'chat.completion', created: Math.floor(Date.now() / 1000), model: `${meta.connectionId}/${meta.modelId}`, choices: [{ index: 0, message: { role: 'assistant', content: content || null, ...(toolCalls.size ? { tool_calls: [...toolCalls.values()] } : {}) }, finish_reason: finishReason }], usage, boxfox: meta });
+      else json(res, 200, { id: `chatcmpl-${meta.requestId}`, object: 'chat.completion', created: Math.floor(Date.now() / 1000), model: `${meta.connectionId}/${meta.modelId}`, choices: [{ index: 0, message: { role: 'assistant', content: content || null, ...(reasoningContent ? { reasoning_content: reasoningContent } : {}), ...(toolCalls.size ? { tool_calls: [...toolCalls.values()] } : {}) }, finish_reason: finishReason }], usage, boxfox: meta });
     } catch (e) {
       if (controller.signal.aborted) return;
       if (res.headersSent) { await write({ ...errorEnvelope(e), boxfox: meta }).catch(() => {}); res.end(); }

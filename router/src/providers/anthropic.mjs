@@ -42,6 +42,7 @@ export function createAnthropicAdapter({ fetchImpl }) {
         const data = await jsonOrProviderError(response);
         let toolIndex = 0;
         for (const block of data?.content || []) {
+          if (block.type === 'thinking' && block.thinking) yield { type: 'delta', delta: { reasoning_content: block.thinking } };
           if (block.type === 'text' && block.text) yield { type: 'delta', delta: { content: block.text } };
           if (block.type === 'tool_use') yield { type: 'delta', delta: { tool_calls: [{ index: toolIndex++, id: block.id, type: 'function', function: { name: block.name, arguments: JSON.stringify(block.input || {}) } }] } };
         }
@@ -56,6 +57,9 @@ export function createAnthropicAdapter({ fetchImpl }) {
         if (event.event === 'content_block_start' && data.content_block?.type === 'tool_use') {
           const index = nextTool++; toolIndexes.set(data.index, index);
           yield { type: 'delta', delta: { tool_calls: [{ index, id: data.content_block.id, type: 'function', function: { name: data.content_block.name, arguments: '' } }] } };
+        }
+        if (event.event === 'content_block_delta' && data.delta?.type === 'thinking_delta' && data.delta.thinking) {
+          yield { type: 'delta', delta: { reasoning_content: data.delta.thinking } };
         }
         if (event.event === 'content_block_delta' && data.delta?.type === 'text_delta' && data.delta.text) yield { type: 'delta', delta: { content: data.delta.text } };
         if (event.event === 'content_block_delta' && data.delta?.type === 'input_json_delta') yield { type: 'delta', delta: { tool_calls: [{ index: toolIndexes.get(data.index) ?? 0, function: { arguments: data.delta.partial_json || '' } }] } };
