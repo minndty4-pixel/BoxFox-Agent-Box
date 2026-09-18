@@ -54,7 +54,7 @@ export class RouterEngine {
   async *generate(body, { key = null, signal } = {}) {
     assert(Array.isArray(body.messages) && body.messages.length > 0 && body.messages.length <= 200, 'Provide 1–200 chat messages.');
     assert(body.messages.every(m => m && ['system', 'user', 'assistant', 'tool', 'developer'].includes(m.role)), 'Invalid message role.');
-    assert(body.messages.every(m => typeof m.content === 'string' || (m.role === 'assistant' && m.content == null && Array.isArray(m.tool_calls)) || (Array.isArray(m.content) && m.content.every(p => p?.type === 'text' && typeof p.text === 'string'))), 'Only text messages and tool calls are supported in Router v1.');
+    assert(body.messages.every(m => typeof m.content === 'string' || (m.role === 'assistant' && m.content == null && Array.isArray(m.tool_calls)) || (Array.isArray(m.content) && m.content.every(p => (p?.type === 'text' && typeof p.text === 'string') || (p?.type === 'image_url' && Boolean(p.image_url?.url))))), 'Invalid message content. Expected text, image_url, or tool_calls.');
     assert(body.stream === undefined || typeof body.stream === 'boolean', 'stream must be boolean.');
     assert(body.tools === undefined || (Array.isArray(body.tools) && body.tools.length <= 128 && body.tools.every(t => t.type === 'function' && typeof t.function?.name === 'string' && t.function.name.length <= 64)), 'Invalid tools.');
     assert(body.max_tokens === undefined || (Number.isInteger(body.max_tokens) && body.max_tokens > 0 && body.max_tokens <= 64000), 'max_tokens must be 1–64000.');

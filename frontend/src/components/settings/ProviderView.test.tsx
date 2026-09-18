@@ -71,7 +71,7 @@ describe('Provider UI', () => {
   })
   it('shows token analytics with unknown values until a provider reports usage', async () => {
     await render('router')
-    const usage = [...host.querySelectorAll('button')].find(button => button.textContent === 'Usage')!
+    const usage = [...host.querySelectorAll('button')].find(button => button.textContent === 'Usage & Analytics')!
     act(() => usage.click())
     expect(host.textContent).toContain('Usage & analytics')
     expect(host.textContent).toContain('Input tokens')

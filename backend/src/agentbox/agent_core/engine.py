@@ -235,7 +235,7 @@ class BoxFoxAgent:
         }
         data_bytes = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
-            f"{self.router_url}/v1/chat/completions",
+            f"{self.router_url}/api/router/chat",
             data=data_bytes,
             headers={
                 "Content-Type": "application/json",
@@ -244,6 +244,7 @@ class BoxFoxAgent:
             method="POST",
         )
 
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            resp_data = resp.read()
-            return json.loads(resp_data.decode("utf-8"))
+        def request():
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        return await asyncio.to_thread(request)

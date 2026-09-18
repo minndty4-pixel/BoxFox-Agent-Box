@@ -123,6 +123,7 @@ Write-Host "  -> Press Ctrl + C or close this window to stop everything." -Foreg
 Write-Host ""
 
 $RouterProcess = $null
+$HarnessProcess = $null
 $RouterDir = Join-Path $RootDir "router"
 $RouterLogDir = Join-Path $env:LOCALAPPDATA "BoxFox\logs"
 New-Item -ItemType Directory -Path $RouterLogDir -Force | Out-Null
@@ -150,11 +151,34 @@ try {
     exit 1
 }
 
+try {
+    $HarnessHealth = $null
+    try { $HarnessHealth = Invoke-RestMethod 'http://127.0.0.1:3102/api/agent/health' -TimeoutSec 2 } catch {}
+    if ($HarnessHealth.service -ne 'boxfox-harness') {
+        $PythonCommand = Get-Command python -ErrorAction Stop
+        $HarnessProcess = Start-Process -FilePath $PythonCommand.Source -ArgumentList @('scripts/run-harness.py') -WorkingDirectory $RootDir -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $RouterLogDir 'harness.stdout.log') -RedirectStandardError (Join-Path $RouterLogDir 'harness.stderr.log')
+        $HarnessReady = $false
+        for ($Attempt = 0; $Attempt -lt 40; $Attempt++) {
+            if ($HarnessProcess.HasExited) { throw 'Harness exited; install backend/requirements.txt and inspect harness.stderr.log.' }
+            try { $HarnessHealth = Invoke-RestMethod 'http://127.0.0.1:3102/api/agent/health' -TimeoutSec 1; if ($HarnessHealth.status -eq 'ok') { $HarnessReady = $true; break } } catch {}
+            Start-Sleep -Milliseconds 250
+        }
+        if (-not $HarnessReady) { throw 'Harness health failed on :3102.' }
+    }
+    Write-Host '  -> Harness engine available on :3102.' -ForegroundColor Green
+} catch {
+    if ($HarnessProcess -and -not $HarnessProcess.HasExited) { Stop-Process -Id $HarnessProcess.Id }
+    if ($RouterProcess -and -not $RouterProcess.HasExited) { Stop-Process -Id $RouterProcess.Id }
+    Write-Error "BoxFox harness startup failed: $_"
+    exit 1
+}
+
 Push-Location $FrontendDir
 try {
     npm.cmd run dev
 } finally {
     Pop-Location
+    if ($HarnessProcess -and -not $HarnessProcess.HasExited) { Stop-Process -Id $HarnessProcess.Id }
     if ($RouterProcess -and -not $RouterProcess.HasExited) { Stop-Process -Id $RouterProcess.Id }
     if ($DockerRunning) {
         Write-Host ""

@@ -27,6 +27,7 @@ import {
   Search,
   Settings,
   Sparkles,
+  Trash2,
   UserPlus,
   UserRound,
 } from 'lucide-react'
@@ -37,6 +38,8 @@ import { useAgentStore } from '../../store/agentStore'
 import { ASSIGNEES, MOCK_ACCOUNT } from '../../lib/mock/sessions'
 import type { SessionSummary } from '../../types/session'
 import { ShortcutsPopover } from '../chat/ShortcutsPopover'
+import { useHarnessChatStore, type SavedSessionRow } from '../../store/harnessChatStore'
+
 
 export function Sidebar() {
   const t = useT()
@@ -54,10 +57,51 @@ export function Sidebar() {
   const activeSessionId = useAgentStore((s) => s.activeSessionId)
   const setActiveSessionId = useAgentStore((s) => s.setActiveSessionId)
 
+  // Nạp session thực tế từ SQLite backend
+  const [savedDbSessions, setSavedDbSessions] = useState<SessionSummary[]>([])
+  const fetchSavedSessions = useHarnessChatStore((s) => s.fetchSavedSessions)
+
+  useEffect(() => {
+    let unmounted = false
+    const loadSessions = async () => {
+      try {
+        const rows = await fetchSavedSessions()
+        if (unmounted) return
+        if (rows.length > 0) {
+          const mapped: SessionSummary[] = rows.map((r: SavedSessionRow) => ({
+
+            session_id: r.id,
+            initials: 'BF',
+            title: `Session ${r.id.slice(0, 8)}`,
+            relative_time: 'SQLite',
+            status: r.status === 'running' ? 'dang_chay' : r.status === 'completed' ? 'xong' : 'idle',
+            mode: 'PLAN',
+
+            active_lease_count: 0,
+            step_count: 1,
+          }))
+          setSavedDbSessions(mapped)
+        }
+      } catch {
+        // Fallback
+      }
+    }
+    void loadSessions()
+    const timer = setInterval(() => { void loadSessions() }, 3000)
+    return () => { unmounted = true; clearInterval(timer) }
+  }, [fetchSavedSessions])
+
+  const handleNewSession = () => {
+    const newId = `session-${Date.now().toString(36)}`
+    setActiveSessionId(newId)
+  }
+
   // Chỉ mở 1 menu `...` tại một thời điểm, quản lý ở cấp Sidebar.
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null)
 
-  const visibleSessions = sessions.filter((s) => !s.is_archived)
+  const effectiveSessions = savedDbSessions.length > 0 ? savedDbSessions : sessions
+  const visibleSessions = effectiveSessions.filter((s) => !s.is_archived)
+
 
   if (collapsed) {
     return (
@@ -188,12 +232,14 @@ export function Sidebar() {
       <div className="px-2.5 pt-2 pb-1">
         <button
           type="button"
+          onClick={handleNewSession}
           className="flex w-full items-center justify-center gap-1.5 rounded-md bg-panel2 border border-line px-3 py-1.5 text-xs font-medium text-fg transition hover:bg-panel2/80 cursor-pointer"
         >
           <Plus className="size-3.5 text-blue-400" />
           <span>New Session</span>
         </button>
       </div>
+
 
       {/* All Sessions Navigation Header */}
       <div className="px-2.5 pt-2">
@@ -658,6 +704,28 @@ function SessionRow({
               onToggleMenu()
             }}
           />
+          <MenuItem
+            icon={<Trash2 className="size-3.5 text-red-400" />}
+            label="Delete session"
+            className="text-red-400 hover:bg-red-500/10 hover:text-red-300"
+            onClick={async () => {
+              onToggleMenu()
+              try {
+                await useHarnessChatStore.getState().deleteSession(session.session_id)
+                // If the deleted session was active, switch to another
+                if (useAgentStore.getState().activeSessionId === session.session_id) {
+                  const remaining = useAgentStore.getState().sessions.filter(s => s.session_id !== session.session_id)
+                  if (remaining.length > 0) {
+                    useAgentStore.getState().setActiveSessionId(remaining[0].session_id)
+                  } else {
+                    useAgentStore.getState().setActiveSessionId(`session-${Date.now().toString(36)}`)
+                  }
+                }
+              } catch {
+                // Handled in store
+              }
+            }}
+          />
         </div>
       )}
     </div>
@@ -669,17 +737,21 @@ function MenuItem({
   label,
   onClick,
   chevron,
+  className,
 }: {
   icon: ReactNode
   label: string
   onClick?: () => void
   chevron?: boolean
+  className?: string
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted transition hover:bg-panel2 hover:text-fg cursor-pointer"
+      className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition cursor-pointer ${
+        className || 'text-muted hover:bg-panel2 hover:text-fg'
+      }`}
     >
       {icon}
       <span className="min-w-0 flex-1 truncate">{label}</span>

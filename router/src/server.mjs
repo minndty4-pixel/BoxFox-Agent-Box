@@ -43,7 +43,9 @@ export function createRouterServer({ service, engine, oauth, frontendDir = null,
             const index = call.index ?? 0, old = toolCalls.get(index) || { id: '', type: 'function', function: { name: '', arguments: '' } };
             if (call.id) old.id = call.id;
             if (call.function?.name) old.function.name += call.function.name;
-            old.function.arguments += call.function?.arguments || ''; toolCalls.set(index, old);
+            old.function.arguments += call.function?.arguments || '';
+            if (call.thought_signature) old.thought_signature = call.thought_signature;
+            toolCalls.set(index, old);
           }
           if (stream) await write(chunk(event.delta));
         }
@@ -64,6 +66,11 @@ export function createRouterServer({ service, engine, oauth, frontendDir = null,
       const url = new URL(req.url, 'http://localhost'); const path = url.pathname; const method = req.method;
       if (path === '/api/router/health' && method === 'GET') return json(res, 200, { status: 'ok', version: '0.1.0' });
       if (path.startsWith('/api/router/') || path === '/v1/router/generate') admin(req);
+      if (path === '/api/router/chat' && method === 'POST') {
+        const input = await body(req);
+        assert(Array.isArray(input.messages) && input.messages.length > 0, 'Router requires a non-empty messages array.');
+        return await generate(req, res, input, null);
+      }
       if (path === '/v1/router/generate' && method === 'POST') {
         const input = await body(req); assert(input.messages?.length === 1 && input.messages[0].role === 'user', 'Router Test accepts exactly one user message.');
         return await generate(req, res, input, null);

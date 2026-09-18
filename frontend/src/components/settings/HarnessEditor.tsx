@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   AlertTriangle,
   Plus,
@@ -6,7 +6,8 @@ import {
   ChevronDown,
   ChevronUp,
 } from 'lucide-react'
-import { useHarnessStore, AVAILABLE_MODELS } from '../../store/harnessStore'
+import { useHarnessStore } from '../../store/harnessStore'
+import { useProviderStore } from '../../store/providerStore'
 import { useUiStore } from '../../store/uiStore'
 import type { Harness, SubagentConfig } from '../../types/harness'
 import { CustomCheckbox } from './CustomCheckbox'
@@ -16,6 +17,10 @@ interface HarnessEditorProps {
 }
 
 export function HarnessEditor({ harnessId }: HarnessEditorProps) {
+  const snapshot = useProviderStore((s) => s.snapshot)
+  const loadProviders = useProviderStore((s) => s.load)
+  useEffect(() => { void loadProviders().catch(() => {}) }, [loadProviders])
+  const models = (snapshot?.connections ?? []).filter(c => c.enabled && c.discoveryState === 'ready').flatMap(c => c.models.filter(m => m.enabled && m.health !== 'unavailable').map(m => ({ id: `model:${c.id}:${m.id}`, name: `${c.name} · ${m.name}` })))
   const getHarnessById = useHarnessStore((s) => s.getHarnessById)
   const saveHarness = useHarnessStore((s) => s.saveHarness)
   const setEditingHarnessId = useUiStore((s) => s.setEditingHarnessId)
@@ -31,7 +36,7 @@ export function HarnessEditor({ harnessId }: HarnessEditorProps) {
       name: 'New Custom Harness',
       description: '',
       isBuiltIn: false,
-      mainModel: 'DeepSeek V4 Pro (Global) 1M High',
+      mainModel: 'default',
       subagents: [],
     }
   })
@@ -51,15 +56,10 @@ export function HarnessEditor({ harnessId }: HarnessEditorProps) {
   }
 
   const handleModelChange = (modelName: string) => {
-    const selectedModel = AVAILABLE_MODELS.find((m) => m.name === modelName)
-    let warning = ''
-    if (selectedModel && !selectedModel.supportsImages) {
-      warning = `Some models in this harness do not support images (${selectedModel.name}). Sessions will continue; image inputs are replaced with placeholder text so the run does not fail.`
-    }
     setForm((f) => ({
       ...f,
       mainModel: modelName,
-      modelWarning: warning,
+      modelWarning: '',
     }))
   }
 
@@ -176,9 +176,10 @@ export function HarnessEditor({ harnessId }: HarnessEditorProps) {
               onChange={(e) => handleModelChange(e.target.value)}
               className="w-full appearance-none rounded-md border border-line bg-panel px-3 py-2 text-xs font-medium text-fg outline-hidden transition focus:border-brand focus:ring-1 focus:ring-brand"
             >
-              {AVAILABLE_MODELS.map((m) => (
-                <option key={m.id} value={m.name}>
-                  {m.name} ({m.provider})
+              <option value="default">Default router / selected Single Model</option>
+              {models.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
                 </option>
               ))}
             </select>
@@ -204,6 +205,7 @@ export function HarnessEditor({ harnessId }: HarnessEditorProps) {
             <button
               type="button"
               onClick={handleAddSubagent}
+              disabled title="v0 supports the nine built-in specialist roles"
               className="flex items-center gap-1.5 rounded-md border border-line bg-panel px-2.5 py-1 text-xs font-medium text-fg transition hover:bg-panel2 cursor-pointer"
             >
               <Plus className="size-3" />
@@ -257,8 +259,9 @@ export function HarnessEditor({ harnessId }: HarnessEditorProps) {
                         }
                         className="appearance-none rounded border border-line bg-panel px-2 py-1 text-[11px] text-fg outline-hidden transition hover:border-muted focus:border-brand"
                       >
-                        {AVAILABLE_MODELS.map((m) => (
-                          <option key={m.id} value={m.name}>
+                        <option value="inherit">Inherit parent model</option>
+                        {models.map((m) => (
+                          <option key={m.id} value={m.id}>
                             {m.name}
                           </option>
                         ))}

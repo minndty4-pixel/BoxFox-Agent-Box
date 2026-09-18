@@ -32,7 +32,7 @@ export interface RouterComposerAdapter {
   activeModelId: string
   isBusy: boolean
   onModelChange: (id: string) => void
-  onSend: (prompt: string) => void
+  onSend: (prompt: string, image?: string | null) => void
   onStop: () => void
 }
 
@@ -59,17 +59,40 @@ export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
     }
   }, [input])
 
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.indexOf('image') !== -1) {
+        const blob = items[i].getAsFile()
+        if (blob) {
+          const reader = new FileReader()
+          reader.onload = () => {
+            setAttachments((prev) => [
+              ...prev,
+              {
+                id: `pasted-${Date.now()}`,
+                name: `Pasted_Image_${Date.now().toString(36)}.png`,
+                source: 'computer',
+                size: `${(blob.size / 1024).toFixed(0)} KB`,
+                dataUrl: reader.result as string,
+              },
+            ])
+          }
+          reader.readAsDataURL(blob)
+        }
+      }
+    }
+  }
+
   const handleSend = () => {
     if (!input.trim() && attachments.length === 0 && pendingElements.length === 0) return
     const textToSend = attachments.length > 0
-      ? `${input.trim()}\n\n[Attached Files: ${attachments.map((a) => a.name).join(', ')}]`
+      ? `${input.trim()}${attachments.some(a => !a.dataUrl) ? `\n\n[Attached Files: ${attachments.filter(a => !a.dataUrl).map((a) => a.name).join(', ')}]` : ''}`
       : input.trim()
+    const firstImage = attachments.find((a) => Boolean(a.dataUrl))?.dataUrl
 
-    // `elements` đi qua trường CÓ CẤU TRÚC của `ClientCommand`, KHÔNG được
-    // nối vào `text` như file đính kèm ở trên — quyết định D3
-    // (`v1-element-selector.md` §4.2): phần tử phải đi tới agent kèm nhãn
-    // Integrity/Confidentiality của nó, nối chuỗi sẽ làm mất nhãn đó.
-    if (router) router.onSend(textToSend)
+    if (router) router.onSend(textToSend, firstImage)
     else sendCommand({
         type: 'user_message',
         text: textToSend,
@@ -175,6 +198,7 @@ export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           placeholder={t(compact ? 'composer.placeholderShort' : 'composer.placeholder')}
           className="w-full resize-none bg-transparent px-1.5 py-1 text-xs leading-relaxed text-fg placeholder:text-muted/60 outline-hidden select-text"
         />

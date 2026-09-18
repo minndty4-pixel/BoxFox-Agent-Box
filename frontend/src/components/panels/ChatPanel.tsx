@@ -38,9 +38,14 @@ import { LabelDot } from '../LabelDot'
 import { ChatInputBar, type RouterComposerAdapter } from './ChatInputBar'
 import { ContextUsageBar } from './ContextUsageBar'
 import { MediaLightboxModal, type LightboxMediaProps } from '../chat/MediaLightboxModal'
-import { Video, Play } from 'lucide-react'
+import { Video, Play, BrainCircuit } from 'lucide-react'
+
+
 import { MarkdownRenderer } from '../chat/MarkdownRenderer'
+import { HarnessStepView } from '../chat/HarnessStepView'
 import { ProviderIcon } from '../providers/ProviderIcon'
+import { useHarnessStore } from '../../store/harnessStore'
+import { useHarnessChatStore } from '../../store/harnessChatStore'
 import { routerChatOptions } from './RouterTestChat'
 
 type ChatGroup =
@@ -77,6 +82,20 @@ export function ChatPanel() {
   const proposal = useAgentStore((s) => s.proposal)
   const openTab = useUiStore((s) => s.openTab)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const chatId = useAgentStore((s) => s.activeSessionId)
+  const activeType = useHarnessStore((s) => s.activeType)
+  const harnessRun = useHarnessChatStore((s) => s.sessions[chatId])
+  const harnessSend = useHarnessChatStore((s) => s.send)
+  const harnessRefresh = useHarnessChatStore((s) => s.refresh)
+  const harnessStop = useHarnessChatStore((s) => s.stop)
+  const harnessBusy = harnessRun?.status === 'running' || harnessRun?.status === 'starting'
+  useEffect(() => {
+    let pending = false
+    const refresh = async () => { if (pending) return; pending = true; try { await harnessRefresh(chatId) } finally { pending = false } }
+    void refresh()
+    const timer = window.setInterval(() => { void refresh() }, 1200)
+    return () => window.clearInterval(timer)
+  }, [chatId, harnessRefresh])
 
   // Lightbox Modal State
   const [lightboxMedia, setLightboxMedia] = useState<LightboxMediaProps | null>(null)
@@ -104,17 +123,20 @@ export function ChatPanel() {
 
   // Build router adapter only when live models available
   const routerAdapter: RouterComposerAdapter | undefined = useMemo(() => {
-    if (routerOptions.length === 0 || !selected) return undefined
     const models = routerOptions.map(o => ({ id: o.value, name: o.label, provider: o.providerId }))
     return {
       models,
       activeModelId: selKey(selection),
-      isBusy: isSending,
+      isBusy: activeType === 'harness' ? harnessBusy : isSending,
       onModelChange: (id: string) => setSelection(routerOptions.find(o => o.value === id)?.selection ?? null),
-      onSend: (prompt: string) => { if (selected) void routerSend(prompt) },
-      onStop: routerStop,
+      onSend: (prompt: string, image?: string | null) => {
+        if (activeType === 'harness' || activeType === 'model') void harnessSend(chatId, prompt, selection, image)
+        else if (selected) void routerSend(prompt, undefined, image)
+      },
+
+      onStop: () => { if (activeType === 'harness') void harnessStop(chatId); else routerStop() },
     }
-  }, [routerOptions, selected, selection, isSending, setSelection, routerSend, routerStop])
+  }, [routerOptions, selected, selection, isSending, setSelection, routerSend, routerStop, activeType, harnessBusy, harnessSend, harnessStop, chatId])
 
   // Escape to stop streaming
   useEffect(() => {
@@ -140,7 +162,7 @@ export function ChatPanel() {
 
       {/* Scrollable conversation stream */}
       <div className="min-h-0 flex-1 overflow-y-auto p-5 space-y-6 select-text">
-        {messages.length === 0 ? (
+        {messages.length === 0 && !harnessRun?.events.length && routerTurns.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center p-8 text-center">
             <div className="max-w-sm space-y-2">
               <div className="mx-auto flex size-10 items-center justify-center rounded-xl bg-panel2 border border-line text-muted">
@@ -179,10 +201,43 @@ export function ChatPanel() {
         )}
         {/* Router Turns — hiển thị kết quả chat qua Provider */}
         {routerTurns.length > 0 && routerTurns.map(turn => (
-          <RouterTurnBubble key={turn.id} turn={turn} snapshot={snapshot} />
+          <RouterTurnBubble key={turn.id} turn={turn} snapshot={snapshot} onOpenLightbox={setLightboxMedia} />
         ))}
 
+        {/* Harness Events — hiển thị tiến trình thinking & tool execution chuyên nghiệp */}
+        {harnessRun && (
+          <HarnessStepView
+            events={harnessRun.events}
+            status={harnessRun.status}
+            error={harnessRun.error}
+            onOpenLightbox={setLightboxMedia}
+            snapshot={snapshot}
+            selection={selection}
+          />
+        )}
+        {/* Sub-agent Status Capsule — Theo dõi tiến độ sub-agent và mở SubagentInspectorPanel */}
+        {harnessRun?.events.some(e => e.type === 'child') && (
+          <div
+            onClick={() => openTab('subagents')}
+            className="flex items-center justify-between gap-3 rounded-xl border border-brand/40 bg-brand/10 p-3 text-xs text-fg cursor-pointer hover:bg-brand/15 transition shadow-xs group"
+          >
+            <div className="flex items-center gap-2">
+              <BrainCircuit className="size-4 text-brand animate-pulse" />
+              <span className="font-semibold text-brand">Autonomous Specialists Active</span>
+              <span className="text-zinc-400">·</span>
+              <span className="text-zinc-300">
+                {Array.from(new Set(harnessRun.events.filter(e => e.type === 'child').map(e => String(e.data.role)))).join(' → ')}
+              </span>
+            </div>
+            <div className="flex items-center gap-1 text-[11px] text-brand font-medium group-hover:underline">
+              <span>View Console</span>
+              <ChevronRight className="size-3" />
+            </div>
+          </div>
+        )}
+
         <div ref={messagesEndRef} />
+
       </div>
 
       {/* Fixed bottom chat input bar */}
@@ -661,9 +716,10 @@ function PermissionChatRow({
 }
 
 /** Inline router chat turn — hiển thị trong conversation stream */
-function RouterTurnBubble({ turn, snapshot }: {
+function RouterTurnBubble({ turn, snapshot, onOpenLightbox }: {
   turn: RouterChatTurn
   snapshot: import('../../types/provider').ProviderSnapshot | null
+  onOpenLightbox?: (props: LightboxMediaProps) => void
 }) {
   const [copied, setCopied] = useState(false)
   const connId = turn.meta?.connectionId ?? (turn.selection.kind === 'model' ? turn.selection.connectionId : null)
@@ -674,6 +730,19 @@ function RouterTurnBubble({ turn, snapshot }: {
       {/* User prompt — right aligned */}
       <div className="flex flex-col items-end gap-1.5">
         <div className="max-w-[85%] rounded-2xl bg-panel2 border border-line px-4 py-3 text-xs leading-relaxed text-fg shadow-xs">
+          {turn.imageUrl && (
+            <div
+              onClick={() => onOpenLightbox?.({ src: turn.imageUrl!, caption: 'Ảnh người dùng đính kèm' })}
+              className="mb-2.5 max-w-sm cursor-pointer overflow-hidden rounded-xl border border-line/80 bg-panel hover:border-brand/60 transition shadow-xs group"
+              title="Nhấp vào để phóng to ảnh"
+            >
+              <img
+                src={turn.imageUrl}
+                alt="Ảnh đính kèm"
+                className="w-full object-cover max-h-56 rounded-lg group-hover:scale-[1.02] transition duration-200"
+              />
+            </div>
+          )}
           <MarkdownRenderer content={turn.prompt} />
         </div>
         <div className="flex items-center gap-2 text-[10px] text-muted pr-1 select-none">

@@ -24,8 +24,36 @@ export function extractTextContent(content, separator = '') {
 }
 
 export function convertOpenAIContentToParts(content) {
-  const text = extractTextContent(content);
-  return text ? [{ text }] : [];
+  if (typeof content === 'string') {
+    return content ? [{ text: content }] : [];
+  }
+  if (!Array.isArray(content)) return [];
+  const parts = [];
+  for (const part of content) {
+    if (!part || typeof part !== 'object') continue;
+    if (part.type === 'text' && typeof part.text === 'string') {
+      if (part.text) parts.push({ text: part.text });
+    } else if (part.type === 'image_url' && part.image_url?.url) {
+      const url = part.image_url.url;
+      const match = url.match(/^data:([^;]+);base64,(.+)$/);
+      if (match) {
+        parts.push({
+          inlineData: {
+            mimeType: match[1],
+            data: match[2],
+          },
+        });
+      } else {
+        parts.push({
+          fileData: {
+            fileUri: url,
+            mimeType: 'image/jpeg',
+          },
+        });
+      }
+    }
+  }
+  return parts;
 }
 
 function walk(value, visitor) {

@@ -46,18 +46,49 @@ export function openAIToGeminiRequest(model, body, { antigravity = false, projec
       if (text) parts.push({ text });
       for (const call of message.tool_calls || []) {
         if (call?.type !== 'function' || !call.function?.name) continue;
-        parts.push({ functionCall: { id: call.id, name: sanitizeGeminiFunctionName(call.function.name), args: tryParseJSON(call.function.arguments || '{}', {}) } });
+        const part = { functionCall: { id: call.id, name: sanitizeGeminiFunctionName(call.function.name), args: tryParseJSON(call.function.arguments || '{}', {}) } };
+        const sig = call.thought_signature || call.thoughtSignature;
+        if (sig) part.thoughtSignature = sig;
+        parts.push(part);
       }
       if (parts.length) result.contents.push({ role: 'model', parts });
       continue;
     }
     if (message.role === 'tool' && message.tool_call_id) {
-      const parsed = tryParseJSON(toolResponses.get(message.tool_call_id), null);
-      result.contents.push({ role: 'user', parts: [{ functionResponse: {
-        id: message.tool_call_id,
-        name: sanitizeGeminiFunctionName(names.get(message.tool_call_id) || 'tool'),
-        response: parsed && typeof parsed === 'object' ? parsed : { result: message.content ?? '' },
-      } }] });
+      const raw = toolResponses.get(message.tool_call_id) ?? message.content;
+      const extraParts = [];
+      let textContent = '';
+
+      if (Array.isArray(raw)) {
+        for (const item of raw) {
+          if (item?.type === 'text' && typeof item.text === 'string') {
+            textContent += (textContent ? '\n' : '') + item.text;
+          } else if (item?.type === 'image_url' && item.image_url?.url) {
+            const url = item.image_url.url;
+            const match = url.match(/^data:([^;]+);base64,(.+)$/);
+            if (match) {
+              extraParts.push({ inlineData: { mimeType: match[1], data: match[2] } });
+            }
+          }
+        }
+      } else if (typeof raw === 'string') {
+        textContent = raw;
+      }
+
+      let parsed = tryParseJSON(textContent, null);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        parsed = { result: textContent || (extraParts.length ? 'Media capture processed' : '') };
+      }
+
+      const fnPart = {
+        functionResponse: {
+          id: message.tool_call_id,
+          name: sanitizeGeminiFunctionName(names.get(message.tool_call_id) || 'tool'),
+          response: parsed,
+        },
+      };
+
+      result.contents.push({ role: 'user', parts: [fnPart, ...extraParts] });
     }
   }
 

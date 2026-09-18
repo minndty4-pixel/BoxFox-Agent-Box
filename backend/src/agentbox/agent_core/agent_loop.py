@@ -178,7 +178,7 @@ class AgentTurnExecutor:
         }
         data_bytes = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
-            f"{self.router_url}/v1/chat/completions",
+            f"{self.router_url}/api/router/chat",
             data=data_bytes,
             headers={
                 "Content-Type": "application/json",

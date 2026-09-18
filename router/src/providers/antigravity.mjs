@@ -146,6 +146,7 @@ async function antigravityResponseError(response) {
   const body = parseJson(bodyText);
   const raw = [body?.error?.message, body?.message, typeof body?.error === 'string' ? body.error : null, bodyText].filter(Boolean).join('\n');
   const message = raw.slice(0, 2000);
+  console.error(`[Antigravity Upstream Error HTTP ${response.status}]`, message);
   const retryMs = retryAfterMs(response, message);
   let error;
   if (response.status === 401 || response.status === 403) error = providerError(response.status);

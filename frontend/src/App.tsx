@@ -18,6 +18,7 @@ import {
   Plus,
   ChevronDown,
   FolderOpen,
+  BrainCircuit,
 } from 'lucide-react'
 import { useT } from './i18n/context'
 import { useAgentStore } from './store/agentStore'
@@ -29,6 +30,7 @@ import { PlanPanel } from './components/panels/PlanPanel'
 import { DecisionsPanel } from './components/panels/DecisionsPanel'
 import { TerminalPanel } from './components/panels/TerminalPanel'
 import { SandboxScreenPanel } from './components/panels/SandboxScreenPanel'
+import { SubagentInspectorPanel } from './components/panels/SubagentInspectorPanel'
 import { IdePanel } from './components/panels/IdePanel'
 import { LabelsLeasesPanel } from './components/panels/LabelsLeasesPanel'
 import { ModeSwitchCard } from './components/ModeSwitchCard'
@@ -46,6 +48,7 @@ import { useCompletionEmail } from './hooks/useCompletionEmail'
 const TAB_LABEL_KEY: Record<PanelTabId, string> = {
   plan: 'tabs.plan',
   sandbox: 'tabs.sandbox',
+  subagents: 'tabs.subagents',
   ide: 'tabs.ide',
   terminal: 'tabs.terminal',
   design: 'tabs.design',
@@ -59,6 +62,7 @@ const TAB_LABEL_KEY: Record<PanelTabId, string> = {
 const TAB_ICON: Record<PanelTabId, React.ComponentType<{ className?: string }>> = {
   plan: FileText,
   sandbox: Monitor,
+  subagents: BrainCircuit,
   ide: Code2,
   terminal: Terminal,
   design: Shapes,
@@ -72,6 +76,7 @@ const TAB_ICON: Record<PanelTabId, React.ComponentType<{ className?: string }>> 
 const AVAILABLE_PANEL_TABS: { id: PanelTabId; label: string; desc: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 'plan', label: 'Plan Document', desc: 'Architecture blueprint & step review', icon: FileText },
   { id: 'sandbox', label: 'Sandbox Machine', desc: 'Live container vision & browser frame', icon: Monitor },
+  { id: 'subagents', label: 'Sub-agents Console', desc: 'Autonomous specialists activity & thinking', icon: BrainCircuit },
   { id: 'ide', label: 'IDE (VS Code Web)', desc: 'code-server running inside the box', icon: Code2 },
   { id: 'terminal', label: 'Integrated Terminal', desc: 'Interactive shell in sandbox container', icon: Terminal },
   { id: 'design', label: 'Design Canvas', desc: 'Interactive UI canvas, visual flow & mockup editor', icon: Shapes },
@@ -81,6 +86,7 @@ const AVAILABLE_PANEL_TABS: { id: PanelTabId; label: string; desc: string; icon:
   { id: 'audit', label: 'Audit Logs', desc: 'Immutable security action ledger', icon: ScrollText },
   { id: 'files', label: 'Workspace Files', desc: 'Browse, preview & manage workspace files', icon: FolderOpen },
 ]
+
 
 export default function App() {
   const t = useT()
@@ -128,8 +134,11 @@ export default function App() {
         return <PlanPanel />
       case 'sandbox':
         return <SandboxScreenPanel />
+      case 'subagents':
+        return <SubagentInspectorPanel />
       case 'ide':
         return <IdePanel />
+
       case 'terminal':
         return <TerminalPanel />
       case 'design':
@@ -211,7 +220,8 @@ export default function App() {
                             : 'text-muted'
                         }`}
                     />
-                    <span>{tab === 'decisions' ? 'Decisions' : t(TAB_LABEL_KEY[tab] as 'tabs.plan')}</span>
+                    <span>{tab === 'decisions' ? 'Decisions' : tab === 'subagents' ? 'Sub-agents' : t(TAB_LABEL_KEY[tab] as 'tabs.plan')}</span>
+
                     {isDecisionsWithPending && (
                       <span className="flex size-4 items-center justify-center rounded-full bg-amber-500/20 font-mono text-[9px] font-bold text-amber-300">
                         {pendingRequestsCount}

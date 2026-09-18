@@ -371,12 +371,6 @@ export class OAuthManager {
       att.status === 'pending' && att.state && stateBytes.length === Buffer.byteLength(att.state) && timingSafeEqual(stateBytes, Buffer.from(att.state))
     );
 
-    if (!a) {
-      // Fallback: if there is only one pending attempt, match it
-      const pendingList = [...this.attempts.values()].filter(att => att.status === 'pending');
-      if (pendingList.length === 1) a = pendingList[0];
-    }
-
     if (!a || Date.now() >= a.expires) {
       res.writeHead(400);
       res.end(callbackHtml('Invalid, expired, or already-used authorization state. Return to BoxFox.', false));

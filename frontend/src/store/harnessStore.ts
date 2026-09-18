@@ -1,4 +1,6 @@
 import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
+import { expandSubagents } from '../lib/harnessRoles'
 import type { Harness, ModelOption, SubagentConfig } from '../types/harness'
 
 export const AVAILABLE_MODELS: ModelOption[] = [
@@ -193,8 +195,8 @@ export interface HarnessState {
   deleteHarness: (id: string) => void
 }
 
-export const useHarnessStore = create<HarnessState>((set, get) => ({
-  harnesses: INITIAL_HARNESSES,
+export const useHarnessStore = create<HarnessState>()(persist((set, get) => ({
+  harnesses: INITIAL_HARNESSES.map((h) => ({ ...h, mainModel: 'default', modelWarning: undefined, subagents: expandSubagents(h.subagents) })),
   teamDefaultId: 'open-model-harness-copy-1',
   myDefaultId: 'open-model-harness-copy-1',
   activeHarnessId: 'open-model-harness-copy-1',
@@ -216,10 +218,10 @@ export const useHarnessStore = create<HarnessState>((set, get) => ({
       const exists = state.harnesses.some((h) => h.id === updatedHarness.id)
       if (exists) {
         return {
-          harnesses: state.harnesses.map((h) => (h.id === updatedHarness.id ? updatedHarness : h)),
+          harnesses: state.harnesses.map((h) => (h.id === updatedHarness.id ? { ...updatedHarness, subagents: expandSubagents(updatedHarness.subagents) } : h)),
         }
       }
-      return { harnesses: [...state.harnesses, updatedHarness] }
+      return { harnesses: [...state.harnesses, { ...updatedHarness, subagents: expandSubagents(updatedHarness.subagents) }] }
     }),
 
   createHarness: (base) => {
@@ -229,17 +231,8 @@ export const useHarnessStore = create<HarnessState>((set, get) => ({
       name: base?.name || 'New Custom Harness',
       description: base?.description || 'Custom configured agent and sub-agents pipeline.',
       isBuiltIn: false,
-      mainModel: base?.mainModel || 'DeepSeek V4 Pro (Global) 1M High',
-      subagents: base?.subagents || [
-        {
-          id: `sub-${Date.now()}-1`,
-          name: 'Explore',
-          isBuiltIn: true,
-          enabled: true,
-          model: 'DeepSeek V4 Flash',
-          systemPromptAppended: '',
-        },
-      ],
+      mainModel: base?.mainModel || 'default',
+      subagents: expandSubagents(base?.subagents),
       createdAt: new Date().toISOString(),
     }
     set((state) => ({ harnesses: [...state.harnesses, newHarness] }))
@@ -253,6 +246,7 @@ export const useHarnessStore = create<HarnessState>((set, get) => ({
 
     const cloned: Harness = {
       ...source,
+      subagents: source.subagents.map((subagent) => ({ ...subagent })),
       id: newId,
       name: `${source.name} (Copy)`,
       isBuiltIn: false,
@@ -266,4 +260,4 @@ export const useHarnessStore = create<HarnessState>((set, get) => ({
     set((state) => ({
       harnesses: state.harnesses.filter((h) => h.id !== id || h.isBuiltIn),
     })),
-}))
+}), { name: 'boxfox_harness_v0', partialize: (state) => ({ harnesses: state.harnesses, activeHarnessId: state.activeHarnessId, activeType: state.activeType, activeModelId: state.activeModelId, teamDefaultId: state.teamDefaultId, myDefaultId: state.myDefaultId }) }))

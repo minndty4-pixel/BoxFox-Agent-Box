@@ -1,5 +1,4 @@
 import { useEffect, useRef } from 'react'
-import { Globe, Terminal } from 'lucide-react'
 import { useUiStore } from '../../store/uiStore'
 import { SettingsSidebar } from './SettingsSidebar'
 import { HarnessList } from './HarnessList'
@@ -16,6 +15,7 @@ import { UsageView } from './UsageView'
 import { ReferralsView } from './ReferralsView'
 import { ProviderView } from './ProviderView'
 import { SupportView } from './SupportView'
+import { SkillsView } from './SkillsView'
 
 export function SettingsModal() {
   const isSettingsOpen = useUiStore((s) => s.isSettingsOpen)
@@ -65,30 +65,7 @@ export function SettingsModal() {
           </div>
         )
       case 'skills':
-        return (
-          <div className="p-8 max-w-4xl select-text">
-            <h1 className="text-lg font-semibold mb-1 text-fg">Skills & Capabilities</h1>
-            <p className="text-xs text-muted mb-4">
-              Manage custom toolkits and reusable skill packages.
-            </p>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="p-4 rounded-lg border border-line bg-panel">
-                <div className="flex items-center gap-2 mb-1 text-blue-400">
-                  <Globe className="size-4" />
-                  <span className="font-medium text-fg text-xs">Web Search & Fetch</span>
-                </div>
-                <p className="text-xs text-muted">Fetch web page markdown and search queries.</p>
-              </div>
-              <div className="p-4 rounded-lg border border-line bg-panel">
-                <div className="flex items-center gap-2 mb-1 text-emerald-400">
-                  <Terminal className="size-4" />
-                  <span className="font-medium text-fg text-xs">Sandbox Docker Shell</span>
-                </div>
-                <p className="text-xs text-muted">Isolated command execution with security leases.</p>
-              </div>
-            </div>
-          </div>
-        )
+        return <SkillsView />
       case 'llm_api_keys':
         return <ProviderView initialTab="api" />
       case 'router':

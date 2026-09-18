@@ -34,11 +34,13 @@ export function geminiChunkToEvents(chunk, state = { toolIndex: 0, hadToolCall: 
     if (part?.functionCall) {
       const index = state.toolIndex++;
       state.hadToolCall = true;
+      const sig = part.thoughtSignature || part.thought_signature || null;
       events.push({ type: 'delta', delta: { tool_calls: [{
         index,
         id: part.functionCall.id || `call_${index}_${Date.now().toString(36)}`,
         type: 'function',
         function: { name: part.functionCall.name || 'tool', arguments: JSON.stringify(part.functionCall.args || {}) },
+        ...(sig ? { thought_signature: sig } : {}),
       }] } });
     }
   }

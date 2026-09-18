@@ -36,8 +36,8 @@ describe('routerChatStore', () => {
     resetRouterChatStoreForTests()
   })
 
-  it('sends every turn as a fresh one-message payload', async () => {
-    const bodies: unknown[] = []
+  it('accumulates multi-turn conversation memory across successive turns', async () => {
+    const bodies: any[] = []
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       bodies.push(JSON.parse(String(init?.body)))
       return successResponse(`req-${bodies.length}`, `answer-${bodies.length}`)
@@ -48,24 +48,15 @@ describe('routerChatStore', () => {
     await useRouterChatStore.getState().send('first prompt')
     await useRouterChatStore.getState().send('second prompt')
 
-    expect(bodies).toEqual([
-      {
-        connectionId: 'conn-1',
-        modelId: 'model-1',
-        messages: [{ role: 'user', content: 'first prompt' }],
-        stream: true,
-        max_tokens: 256,
-      },
-      {
-        connectionId: 'conn-1',
-        modelId: 'model-1',
-        messages: [{ role: 'user', content: 'second prompt' }],
-        stream: true,
-        max_tokens: 256,
-      },
-    ])
+    expect(bodies).toHaveLength(2)
+    // Turn 1 should have system + first prompt
+    expect(bodies[0].messages[1]).toEqual({ role: 'user', content: 'first prompt' })
+    // Turn 2 should have system + first prompt + first answer + second prompt
+    expect(bodies[1].messages).toHaveLength(4)
+    expect(bodies[1].messages[1]).toEqual({ role: 'user', content: 'first prompt' })
+    expect(bodies[1].messages[2]).toEqual({ role: 'assistant', content: 'answer-1' })
+    expect(bodies[1].messages[3]).toEqual({ role: 'user', content: 'second prompt' })
     expect(useRouterChatStore.getState().turns.map((turn) => turn.response)).toEqual(['answer-1', 'answer-2'])
-    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it('keeps partial output when an SSE error fails the turn', async () => {

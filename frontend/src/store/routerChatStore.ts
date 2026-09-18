@@ -17,6 +17,7 @@ export type RouterChatTurnStatus = 'streaming' | 'completed' | 'failed' | 'cance
 export interface RouterChatTurn {
   id: string
   prompt: string
+  imageUrl?: string | null
   response: string
   selection: RouterChatSelection
   status: RouterChatTurnStatus
@@ -32,13 +33,15 @@ export interface RouterChatTurn {
 
 interface RouterChatState {
   draft: string
+  attachedImage: string | null
   selection: RouterChatSelection | null
   turns: RouterChatTurn[]
   isSending: boolean
   activeTurnId: string | null
   setDraft: (draft: string) => void
+  setAttachedImage: (url: string | null) => void
   setSelection: (selection: RouterChatSelection | null) => void
-  send: (prompt?: string, selectionOverride?: RouterChatSelection) => Promise<boolean>
+  send: (prompt?: string, selectionOverride?: RouterChatSelection, imageOverride?: string | null) => Promise<boolean>
   retry: (turnId: string) => Promise<boolean>
   stop: () => void
   clear: () => void
@@ -79,6 +82,7 @@ function isAbortError(error: unknown) {
 
 const initialData = {
   draft: '',
+  attachedImage: null as string | null,
   selection: null as RouterChatSelection | null,
   turns: [] as RouterChatTurn[],
   isSending: false,
@@ -88,13 +92,16 @@ const initialData = {
 export const useRouterChatStore = create<RouterChatState>((set, get) => ({
   ...initialData,
   setDraft: (draft) => set({ draft }),
+  setAttachedImage: (attachedImage) => set({ attachedImage }),
   setSelection: (selection) => set({ selection }),
 
-  send: async (prompt, selectionOverride) => {
+  send: async (prompt, selectionOverride, imageOverride) => {
     if (get().isSending) return false
     const text = (prompt ?? get().draft).trim()
     const selection = selectionOverride ?? get().selection
-    if (!text || !selection) return false
+    const activeImage = imageOverride !== undefined ? imageOverride : get().attachedImage
+    if (!text && !activeImage) return false
+    if (!selection) return false
 
     const turnId = makeId()
     const startedAtMs = nowMs()
@@ -105,6 +112,7 @@ export const useRouterChatStore = create<RouterChatState>((set, get) => ({
     const turn: RouterChatTurn = {
       id: turnId,
       prompt: text,
+      imageUrl: activeImage,
       response: '',
       selection,
       status: 'streaming',
@@ -121,15 +129,52 @@ export const useRouterChatStore = create<RouterChatState>((set, get) => ({
     set((state) => ({
       turns: [...state.turns, turn],
       draft: prompt === undefined ? '' : state.draft,
+      attachedImage: null,
       isSending: true,
       activeTurnId: turnId,
     }))
 
+    // Build multi-turn conversational history with memory
+    const historyMessages: RouterGenerateBody['messages'] = [
+      {
+        role: 'system',
+        content:
+          'You are BoxFox Agent, an elite autonomous AI software engineer and computer-use agent.\n' +
+          'Maintain continuity across conversational turns. Remember facts, code, and instructions mentioned earlier in this session.',
+      },
+    ]
+
+    for (const prev of get().turns) {
+      if (prev.id !== turnId && prev.status === 'completed' && prev.response) {
+        if (prev.imageUrl) {
+          historyMessages.push({
+            role: 'user',
+            content: [
+              { type: 'text', text: prev.prompt },
+              { type: 'image_url', image_url: { url: prev.imageUrl } },
+            ],
+          })
+        } else {
+          historyMessages.push({ role: 'user', content: prev.prompt })
+        }
+        historyMessages.push({ role: 'assistant', content: prev.response })
+      }
+    }
+
+    const currentContent = activeImage
+      ? [
+          { type: 'text' as const, text: text || 'Please inspect this image.' },
+          { type: 'image_url' as const, image_url: { url: activeImage } },
+        ]
+      : text
+
+    historyMessages.push({ role: 'user', content: currentContent })
+
     const body: RouterGenerateBody = {
       ...selectionBody(selection),
-      messages: [{ role: 'user', content: text }],
+      messages: historyMessages,
       stream: true,
-      max_tokens: 256,
+      max_tokens: 4096,
     }
 
     try {

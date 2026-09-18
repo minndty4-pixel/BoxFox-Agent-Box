@@ -1,10 +1,21 @@
 import type { RouterRequestMeta } from '../types/provider'
 
+export type RouterMessageContent =
+  | string
+  | Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }>
+
+export interface RouterChatMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool'
+  content: RouterMessageContent | null
+  tool_calls?: RouterToolCallDelta[]
+  tool_call_id?: string
+}
+
 export interface RouterGenerateBody {
   connectionId?: string
   modelId?: string
   aliasId?: string
-  messages: Array<{ role: 'user'; content: string }>
+  messages: RouterChatMessage[]
   stream: true
   max_tokens: number
 }
@@ -247,7 +258,7 @@ export async function streamRouterGenerate(
 ) {
   assertNotAborted(options.signal)
   const fetchImpl = options.fetchImpl ?? fetch
-  const response = await fetchImpl('/v1/router/generate', {
+  const response = await fetchImpl('/api/router/chat', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

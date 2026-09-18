@@ -8,11 +8,16 @@ import {
   ChevronDown,
   Layers,
   Bot,
+  Network,
+  List,
 } from 'lucide-react'
+import { useState } from 'react'
 import { useHarnessStore } from '../../store/harnessStore'
 import { useUiStore } from '../../store/uiStore'
+import { HarnessFlowVisualizer } from './HarnessFlowVisualizer'
 
 export function HarnessList() {
+  const [viewMode, setViewMode] = useState<'topology' | 'list'>('topology')
   const harnesses = useHarnessStore((s) => s.harnesses)
   const teamDefaultId = useHarnessStore((s) => s.teamDefaultId)
   const myDefaultId = useHarnessStore((s) => s.myDefaultId)
@@ -96,18 +101,47 @@ export function HarnessList() {
         </div>
       </div>
 
-      {/* Search & Actions Bar */}
-      <div className="mb-5 flex items-center justify-between gap-4">
-        <div className="relative max-w-xs flex-1">
-          <Search className="absolute left-3 top-2.5 size-3.5 text-muted" />
-          <input
-            type="text"
-            placeholder="Search harnesses..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full rounded-md border border-line bg-panel px-3 py-2 pl-9 text-xs text-fg placeholder:text-muted/60 outline-hidden transition focus:border-brand focus:ring-1 focus:ring-brand"
-          />
+      {/* View Mode & Actions Bar */}
+      <div className="mb-5 flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-1 rounded-lg border border-line bg-panel2 p-1">
+          <button
+            type="button"
+            onClick={() => setViewMode('topology')}
+            className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition cursor-pointer ${
+              viewMode === 'topology'
+                ? 'bg-brand text-brandfg shadow-xs'
+                : 'text-muted hover:text-fg'
+            }`}
+          >
+            <Network className="size-3.5" />
+            <span>Topology Flow</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode('list')}
+            className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition cursor-pointer ${
+              viewMode === 'list'
+                ? 'bg-brand text-brandfg shadow-xs'
+                : 'text-muted hover:text-fg'
+            }`}
+          >
+            <List className="size-3.5" />
+            <span>List View</span>
+          </button>
         </div>
+
+        {viewMode === 'list' && (
+          <div className="relative max-w-xs flex-1">
+            <Search className="absolute left-3 top-2.5 size-3.5 text-muted" />
+            <input
+              type="text"
+              placeholder="Search harnesses..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full rounded-md border border-line bg-panel px-3 py-2 pl-9 text-xs text-fg placeholder:text-muted/60 outline-hidden transition focus:border-brand focus:ring-1 focus:ring-brand"
+            />
+          </div>
+        )}
 
         <button
           type="button"
@@ -119,8 +153,13 @@ export function HarnessList() {
         </button>
       </div>
 
-      {/* Harness Table / List */}
-      <div className="overflow-hidden rounded-lg border border-line bg-panel shadow-xs">
+      {viewMode === 'topology' ? (
+        <div className="space-y-4">
+          <HarnessFlowVisualizer />
+        </div>
+      ) : (
+        /* Harness Table / List */
+        <div className="overflow-hidden rounded-lg border border-line bg-panel shadow-xs">
         <div className="border-b border-line bg-panel2/40 px-4 py-2.5 text-[11px] font-medium uppercase tracking-wider text-muted">
           Name
         </div>
@@ -203,6 +242,7 @@ export function HarnessList() {
           )}
         </div>
       </div>
+      )}
     </div>
   )
 }
