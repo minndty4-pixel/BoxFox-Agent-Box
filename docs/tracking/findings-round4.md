@@ -2,7 +2,7 @@
 
 Nguồn: vòng kiểm thử độc lập `test-part4` chạy trên hệ thống thật (trình duyệt thật, box thật) sau khi đợt 4 hoàn thành.
 
-Kết quả tổng: **PARTIAL PASS** — luồng quyết định, duyệt plan, thao tác file, chip trong transcript và nút Compact đều chạy đúng khi được kiểm; nhưng luật "agent tự mở tab nhưng không cướp tab" chạy **không tất định** ở cấu hình mặc định.
+Kết quả tổng: **PARTIAL PASS** — mọi luồng đã kiểm đều chạy đúng; luật "agent tự mở tab nhưng không cướp tab" chạy không tất định ở cấu hình mặc định (B12) và đã được sửa ở commit 51f1452, có chứng minh chạy thật ở cấu hình mặc định.
 
 ## A. Việc đã xác nhận chạy đúng trên hệ thống thật
 
@@ -23,11 +23,11 @@ Kết quả tổng: **PARTIAL PASS** — luồng quyết định, duyệt plan, 
 
 | Mã | Mức | Mô tả | Nơi | Trạng thái |
 |---|---|---|---|---|
-| B12 | Trung bình–Cao | Luật tự mở tab không tất định ở cấu hình mặc định: tắt điều kiện "chỉ mở khi tôi rảnh" thì tab mở trong ≤3 giây, nhưng để mặc định thì 4 lần chạy chỉ 2 lần mở (t≈20–24 giây) và 2 lần không bao giờ mở, kể cả khi người dùng không làm gì suốt 64 giây. Hai nguyên nhân: (a) `ChatPanel.tsx` gọi `noteUserActivity()` **trước** chốt bỏ qua cuộn lập trình, nên chính việc tự cuộn của agent lại gia hạn cửa sổ 15 giây mãi mãi; (b) `uiStore.ts` xếp hàng đợi intent nhưng **không bao giờ** xả hàng khi điều kiện chặn hết hiệu lực | `ChatPanel.tsx:228-233`, `uiStore.ts:288-303` | ĐANG SỬA |
-| B13 | Thấp–Trung bình | `thinkingLevel` sai vẫn lọt khi lượt chạy đổi model: nhánh đổi route đặt `metadata=None` nên bỏ qua kiểm tra, giá trị `"ultrapower"` được lưu nguyên và lượt kết thúc `failed` | `runtime.py:541-556` | ĐANG SỬA |
-| B2c | Thấp | Trong tab Files, thẻ dạng lưới hiện nhãn chấm integrity bằng tiếng Anh trong khi chấm ở thanh công cụ cùng panel hiện tiếng Việt; dạng lưới không hiện `confidentiality` | `ExplorerGrid.tsx:180` vs `entryView.tsx:93` | ĐANG SỬA |
-| B4 | Thấp | Kéo thanh chia panel không được tính là hoạt động của người dùng, nên tab có thể tự mở trong lúc người dùng đang kéo | thanh chia panel | ĐANG SỬA |
-| B6 | Thấp | `tabIntentTargets.files` được ghi lại nhưng không component nào dùng, nên intent cho tab Files mở tab mà không chọn file | `WorkspaceFilesPanel` | ĐANG SỬA |
+| B12 | Trung bình–Cao | Luật tự mở tab không tất định ở cấu hình mặc định: tắt điều kiện "chỉ mở khi tôi rảnh" thì tab mở trong ≤3 giây, nhưng để mặc định thì 4 lần chạy chỉ 2 lần mở (t≈20–24 giây) và 2 lần không bao giờ mở, kể cả khi người dùng không làm gì suốt 64 giây. Hai nguyên nhân: (a) `ChatPanel.tsx` gọi `noteUserActivity()` **trước** chốt bỏ qua cuộn lập trình, nên chính việc tự cuộn của agent lại gia hạn cửa sổ 15 giây mãi mãi; (b) `uiStore.ts` xếp hàng đợi intent nhưng **không bao giờ** xả hàng khi điều kiện chặn hết hiệu lực | `ChatPanel.tsx:228-233`, `uiStore.ts:288-303` | ĐÃ SỬA |
+| B13 | Thấp–Trung bình | `thinkingLevel` sai vẫn lọt khi lượt chạy đổi model: nhánh đổi route đặt `metadata=None` nên bỏ qua kiểm tra, giá trị `"ultrapower"` được lưu nguyên và lượt kết thúc `failed` | `runtime.py:541-556` | ĐÃ SỬA |
+| B2c | Thấp | Trong tab Files, thẻ dạng lưới hiện nhãn chấm integrity bằng tiếng Anh trong khi chấm ở thanh công cụ cùng panel hiện tiếng Việt; dạng lưới không hiện `confidentiality` | `ExplorerGrid.tsx:180` vs `entryView.tsx:93` | ĐÃ SỬA |
+| B4 | Thấp | Kéo thanh chia panel không được tính là hoạt động của người dùng, nên tab có thể tự mở trong lúc người dùng đang kéo | thanh chia panel | ĐÃ SỬA |
+| B6 | Thấp | `tabIntentTargets.files` được ghi lại nhưng không component nào dùng, nên intent cho tab Files mở tab mà không chọn file | `WorkspaceFilesPanel` | ĐÃ SỬA |
 | B7 | — | Rút lại: không thể có hai yêu cầu quyết định cùng lúc trong một phiên gốc vì lượt thứ hai bị chặn bằng 409 `SESSION_BUSY` | — | ĐÃ RÚT |
 
 ## C. Việc còn nợ
