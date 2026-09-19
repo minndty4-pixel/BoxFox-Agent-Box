@@ -30,8 +30,26 @@ Kết quả tổng: **PARTIAL PASS** — mọi luồng đã kiểm đều chạy
 | B6 | Thấp | `tabIntentTargets.files` được ghi lại nhưng không component nào dùng, nên intent cho tab Files mở tab mà không chọn file | `WorkspaceFilesPanel` | ĐÃ SỬA |
 | B7 | — | Rút lại: không thể có hai yêu cầu quyết định cùng lúc trong một phiên gốc vì lượt thứ hai bị chặn bằng 409 `SESSION_BUSY` | — | ĐÃ RÚT |
 
-## C. Việc còn nợ
+## C. Xác minh lại (vòng 6, 2026-09-19 23:25)
 
-1. **Ảnh container phải được dựng lại.** Các endpoint ghi mới đã được đưa vào container đang chạy bằng cách chép tệp và khởi động lại tiến trình proxy (đã kiểm: `sha256` khớp repo, luật bảo vệ `.plans`/`.trash`/`.generated_artifacts` trả 409 đúng). Nhưng `docker compose build` vẫn còn nợ để bản triển khai thật có các tệp đó trong ảnh.
-2. **Không có bản ghi hình (`.webm`) cho đợt 4** — chỉ có ảnh chụp.
+Vòng kiểm chứng độc lập thứ sáu chạy trên đúng năm bản sửa của `51f1452`, không sửa mã nguồn. Kết quả: **PASSED toàn bộ**.
+
+| Ca | Kết quả | Số đo chính |
+|---|---|---|
+| B12a — tự cuộn của agent không gia hạn cửa sổ | PASS | `lastUserActivityAt` giữ 0 qua 6 đợt cuộn; `ui_intent` → tab hoạt động = **1 ms** |
+| B12b — intent trong cửa sổ được xếp hàng rồi xả | PASS | intent ở Δt 6914 ms ⇒ xếp hàng; xả **15002 ms** sau lần gõ thật cuối |
+| B12c — tab ghim không bị cướp | PASS | xếp hàng 24 giây, `activeTab` vẫn `decisions`, huy hiệu `1` |
+| B12d — tắt điều kiện "chỉ mở khi rảnh" | PASS | mở 7594 ms sau lần gõ cuối |
+| B13 — mức thinking khi đổi model | PASS | **400 `THINKING_LEVEL_UNSUPPORTED`**, route không đổi, phiên `completed`; model không có mức ⇒ bỏ im lặng |
+| B2c — chấm trên lưới khớp thanh công cụ | PASS | hổ phách "Integrity: Out of scope — unverified" + đỏ "Confidentiality: Secret" |
+| B4 — kéo thanh chia tính là hoạt động | PASS | xả **15001 ms** sau lần kéo cuối |
+| B6 — intent Files chọn đúng tệp | PASS | breadcrumb `workspace > fixtures > vendor` + khung xem trước |
+| Hồi quy R1–R6 | PASS | thinking stream, `/compact` (`8580→3641`), 0 thẻ lượt ma, Stop khi đang chờ, 403/404/400, băng lỗi 409 trong chat |
+
+Không phát hiện lỗi mới trong năm bản sửa. Hai ghi chú không chặn: (1) dạng cây và huy hiệu vẫn in chuỗi tiếng Việt cứng từ `lib/labels.ts` trong khi tiêu đề chấm đã theo i18n — chia tách có từ trước; (2) `agent-browser record stop` treo lần thứ hai, phải diệt daemon rồi ghép lại bằng `ffmpeg -c copy`.
+
+## D. Việc còn nợ
+
+1. ~~Ảnh container phải được dựng lại.~~ **ĐÃ XONG ở vòng 7**: `docker compose build` tạo `agentbox-sandbox:latest` (manifest `sha256:cf06992844d6…`); ba tệp trong ảnh khớp hash repo (`ide-proxy.py a7a83b02…`, `plan_files.py de901085…`, `workspace_files.py fc391ce1…`).
+2. **Không có bản ghi hình (`.webm`) cho đợt 4** — chỉ có ảnh chụp; vòng 6 đã bù bằng `recordings/r6_walkthrough.webm` (283,7 giây).
 3. **Xác thực CLI Claude Code thật** vẫn không kiểm được trong môi trường này (không có binary, không có thông tin đăng nhập).
