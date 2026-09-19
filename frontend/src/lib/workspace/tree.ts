@@ -48,6 +48,12 @@ export function childPath(parentPath: string, name: string): string {
   return parentPath ? `${parentPath}/${name}` : name
 }
 
+/** Thư mục cha của một đường dẫn tương đối; đường dẫn gốc (`''`) giữ nguyên `''`. */
+export function parentPath(path: string): string {
+  const i = path.lastIndexOf('/')
+  return i < 0 ? '' : path.slice(0, i)
+}
+
 /** Phần tên cuối của một đường dẫn tương đối (sau dấu `/` cuối cùng). */
 export function basename(path: string): string {
   const i = path.lastIndexOf('/')

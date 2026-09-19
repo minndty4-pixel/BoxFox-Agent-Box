@@ -147,6 +147,9 @@ export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Gõ trong ô soạn tin = người dùng đang thao tác → ý định tự mở tab của
+    // agent chỉ xếp hàng (hợp đồng §3). Không ảnh hưởng gì tới giao diện.
+    useUiStore.getState().noteUserActivity()
     // Lệnh điều khiển đã gõ đủ (vd `/stop`) phải gửi được ngay ở lần Enter đầu;
     // popup gợi ý không được "ăn" phím này (BUG-21/U5).
     const controlSubmit = e.key === 'Enter' && !e.shiftKey && isControlCommand(input)

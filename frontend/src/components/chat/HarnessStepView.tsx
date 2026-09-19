@@ -19,6 +19,7 @@ import {
   Maximize2,
   Layers,
   Film,
+  ShieldAlert,
 } from 'lucide-react'
 import type { HarnessEvent } from '../../store/harnessChatStore'
 import type { ProviderSnapshot } from '../../types/provider'
@@ -26,6 +27,9 @@ import type { RouterChatSelection } from '../../store/routerChatStore'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { ProviderIcon } from '../providers/ProviderIcon'
 import type { LightboxMediaProps } from './MediaLightboxModal'
+
+/** Tab mà một chip trong transcript có thể mở (hợp đồng §3 — gợi ý, không ra lệnh). */
+export type TranscriptTabId = 'plan' | 'decisions' | 'subagents'
 
 interface HarnessStepViewProps {
   events: HarnessEvent[]
@@ -36,6 +40,8 @@ interface HarnessStepViewProps {
   onOpenLightbox?: (media: LightboxMediaProps) => void
   snapshot?: ProviderSnapshot | null
   selection?: RouterChatSelection | null
+  /** Mở tab tại chỗ khi người dùng bấm chip kế hoạch / sub-agent / quyết định. */
+  onOpenTab?: (tab: TranscriptTabId, target?: Record<string, unknown> | null) => void
 }
 
 /**
@@ -46,6 +52,8 @@ type TurnTimelineItem =
   | { kind: 'text'; id: string; seq: number; text: string; live: boolean }
   | { kind: 'tool'; id: string; seq: number; start: HarnessEvent | null; end: HarnessEvent | null }
   | { kind: 'child'; id: string; seq: number; event: HarnessEvent }
+  | { kind: 'plan'; id: string; seq: number; event: HarnessEvent }
+  | { kind: 'decision'; id: string; seq: number; event: HarnessEvent; resolution?: HarnessEvent }
   | { kind: 'compression'; id: string; seq: number; event: HarnessEvent }
 
 interface HarnessTurn {
@@ -418,6 +426,38 @@ function applyTimelineEvent(turn: HarnessTurn, event: HarnessEvent) {
       turn.items.push({ kind: 'child', id: `child_${event.seq}`, seq: event.seq, event })
       return
     }
+    case 'plan_written': {
+      // Chip kế hoạch trong transcript — bấm để mở đúng bản vừa ghi ở tab Plan.
+      turn.items.push({ kind: 'plan', id: `plan_${event.seq}`, seq: event.seq, event })
+      return
+    }
+    case 'decision_requested': {
+      turn.items.push({
+        kind: 'decision',
+        id: `decision_${String(event.data.decisionId ?? event.seq)}`,
+        seq: event.seq,
+        event,
+      })
+      return
+    }
+    case 'decision_resolved': {
+      // Một hàng duy nhất cho mỗi quyết định: cập nhật tại chỗ, không thêm hàng mới.
+      const existing = turn.items.find(
+        (item): item is Extract<TurnTimelineItem, { kind: 'decision' }> =>
+          item.kind === 'decision' && item.event.data.decisionId === event.data.decisionId,
+      )
+      if (existing) existing.resolution = event
+      else {
+        turn.items.push({
+          kind: 'decision',
+          id: `decision_${String(event.data.decisionId ?? event.seq)}`,
+          seq: event.seq,
+          event,
+          resolution: event,
+        })
+      }
+      return
+    }
     case 'compression': {
       turn.items.push({ kind: 'compression', id: `compaction_${event.seq}`, seq: event.seq, event })
       return
@@ -444,6 +484,74 @@ function findPendingTool(turn: HarnessTurn, callId: unknown): Extract<TurnTimeli
     if (item.kind === 'tool' && !item.end && (item.start?.data.id === callId || callId === undefined)) return item
   }
   return null
+}
+
+/**
+ * Một hàng cho mỗi quyết định của agent: câu hỏi nằm ngay chỗ nó được hỏi, và
+ * một nút mở tab Decisions tại đúng yêu cầu đó. Trạng thái đọc từ
+ * `decision_resolved` thật — không có bộ đếm hạn nào do giao diện bịa.
+ */
+function DecisionRow({
+  event,
+  resolution,
+  onOpenTab,
+}: {
+  event: HarnessEvent
+  resolution?: HarnessEvent
+  onOpenTab?: (tab: TranscriptTabId, target?: Record<string, unknown> | null) => void
+}) {
+  const t = useT()
+  const data = event.data ?? {}
+  const decisionId = String(data.decisionId ?? '')
+  const question = String(data.question ?? data.action ?? '')
+  const kind = String(data.kind ?? 'question')
+  const status = resolution ? String(resolution.data?.status ?? '') : 'pending'
+  const timedOut = resolution ? String(resolution.data?.reason ?? '') === 'timeout' : false
+
+  const statusLabel = timedOut
+    ? t('decisions.status.expired')
+    : status === 'approved'
+      ? t('decisions.status.approved')
+      : status === 'rejected'
+        ? t('decisions.status.rejected')
+        : status === 'cancelled'
+          ? t('decisions.status.cancelled')
+          : t('decisions.status.pending')
+
+  return (
+    <div
+      data-timeline="decision"
+      data-decision-id={decisionId || undefined}
+      data-decision-status={status}
+      className="max-w-2xl rounded-lg border border-amber-500/45 bg-amber-500/5 px-2.5 py-2"
+    >
+      <div className="flex items-center gap-2 text-[11px] font-semibold text-amber-700 dark:text-amber-300">
+        <span
+          className={`size-1.5 rounded-full bg-amber-500 ${status === 'pending' ? 'animate-pulse' : 'opacity-50'}`}
+        />
+        <span>
+          {status === 'pending'
+            ? t('chat.decisionWaiting')
+            : `${kind === 'approval' ? t('decisions.kind.approval') : t('decisions.kind.question')} · ${statusLabel}`}
+        </span>
+      </div>
+      {question && <p className="mt-1 text-xs leading-relaxed text-fg select-text">{question}</p>}
+      <div className="mt-1.5 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => onOpenTab?.('decisions', decisionId ? { requestId: decisionId } : null)}
+          className="group inline-flex items-center gap-1 rounded-md border border-line bg-panel px-2 py-0.5 text-[11px] font-medium text-muted transition hover:bg-panel2 hover:text-fg cursor-pointer"
+        >
+          <ShieldAlert className="size-3" />
+          <span className="group-hover:underline">{t('chat.openDecisionTab')}</span>
+          <ChevronRight className="size-3 opacity-0 transition group-hover:opacity-100" />
+        </button>
+        {resolution && (
+          <span className="font-mono text-[10px] text-muted">{statusLabel}</span>
+        )}
+      </div>
+    </div>
+  )
 }
 
 function emptyTurn(id: string, modelChange: { from: string; to: string } | null, userEvent: HarnessEvent | null, created: number): HarnessTurn {
@@ -528,6 +636,7 @@ export function HarnessStepView({
   onOpenLightbox,
   snapshot,
   selection,
+  onOpenTab,
 }: HarnessStepViewProps) {
   const isBusy = status === 'running' || status === 'starting'
 
@@ -547,6 +656,7 @@ export function HarnessStepView({
               onOpenLightbox={onOpenLightbox}
               snapshot={snapshot}
               selection={selection}
+              onOpenTab={onOpenTab}
             />
           </div>
         )
@@ -585,13 +695,16 @@ function TurnBlock({
   onOpenLightbox,
   snapshot,
   selection,
+  onOpenTab,
 }: {
   turn: HarnessTurn
   isTurnBusy: boolean
   onOpenLightbox?: (media: LightboxMediaProps) => void
   snapshot?: ProviderSnapshot | null
   selection?: RouterChatSelection | null
+  onOpenTab?: (tab: TranscriptTabId, target?: Record<string, unknown> | null) => void
 }) {
+  const t = useT()
   const [copiedUser, setCopiedUser] = useState(false)
   const [copiedAssistant, setCopiedAssistant] = useState(false)
 
@@ -740,17 +853,51 @@ function TurnBlock({
             )
           }
           if (item.kind === 'child') {
+            const childSessionId = String(item.event.data.sessionId ?? item.event.data.role ?? '')
             return (
-              <div
+              <button
                 key={item.id}
+                type="button"
                 data-timeline="child"
-                className="inline-flex items-center gap-1.5 rounded-md border border-brand/30 bg-brand/5 px-2 py-0.5 text-[11px] text-brand font-medium select-none"
+                aria-label={t('chat.openSubagentTab')}
+                onClick={() => onOpenTab?.('subagents', childSessionId ? { sessionId: childSessionId } : null)}
+                className="group inline-flex items-center gap-1.5 rounded-md border border-brand/30 bg-brand/5 px-2 py-0.5 text-[11px] text-brand font-medium select-none transition hover:bg-brand/10 cursor-pointer"
               >
                 <BrainCircuit className="size-3 animate-pulse" />
-                <span>
+                <span className="group-hover:underline">
                   Specialist: {String(item.event.data.role)} ({String(item.event.data.status)})
                 </span>
-              </div>
+                <ChevronRight className="size-3 opacity-0 transition group-hover:opacity-100" />
+              </button>
+            )
+          }
+          if (item.kind === 'plan') {
+            const identity = String(item.event.data.identity ?? '')
+            return (
+              <button
+                key={item.id}
+                type="button"
+                data-timeline="plan"
+                data-plan-identity={identity || undefined}
+                aria-label={t('chat.openPlanTab')}
+                onClick={() => onOpenTab?.('plan', identity ? { identity } : null)}
+                className="group inline-flex items-center gap-1.5 rounded-md border border-brand/30 bg-brand/5 px-2 py-0.5 text-[11px] text-brand font-medium select-none transition hover:bg-brand/10 cursor-pointer"
+              >
+                <FileText className="size-3" />
+                <span className="group-hover:underline">{t('chat.planWritten')}</span>
+                {identity && <span className="font-mono text-[10px] text-muted">{identity}</span>}
+                <ChevronRight className="size-3 opacity-0 transition group-hover:opacity-100" />
+              </button>
+            )
+          }
+          if (item.kind === 'decision') {
+            return (
+              <DecisionRow
+                key={item.id}
+                event={item.event}
+                resolution={item.resolution}
+                onOpenTab={onOpenTab}
+              />
             )
           }
           return <CompactionNotice key={item.id} event={item.event} />

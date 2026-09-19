@@ -200,6 +200,8 @@ export function ChatPanel() {
   // nút mũi tên, nên việc bám không phụ thuộc vào nhịp re-render.
   const followingRef = useRef(true)
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
+  /** Số mục mới của transcript nhận được kể từ lúc người dùng rời đáy. */
+  const [unseenCount, setUnseenCount] = useState(0)
   // Bỏ qua sự kiện `scroll` do chính mình phát ra: cuộn mượt bắn nhiều sự kiện
   // trung gian ở xa đáy, nếu tính là "người dùng kéo lên" thì việc bám sẽ tự tắt.
   const programmaticScrollRef = useRef(false)
@@ -220,15 +222,22 @@ export function ChatPanel() {
   const handleChatScroll = useCallback(() => {
     const el = chatScrollRef.current
     if (!el) return
+    // Cuộn trong khung chat là hoạt động thật của người dùng → ý định tự mở tab
+    // của agent chỉ xếp hàng (hợp đồng §3). Không ảnh hưởng tới giao diện.
+    useUiStore.getState().noteUserActivity()
     if (programmaticScrollRef.current) return
     const atBottom = isNearBottom(el)
     followingRef.current = atBottom
     setShowJumpToLatest(!atBottom)
-  }, [])
+    if (atBottom) setUnseenCount((count) => (count === 0 ? count : 0))
+    // Nhớ vị trí đọc của phiên này để quay lại là về đúng chỗ.
+    useUiStore.getState().rememberSessionScroll(chatId, el.scrollTop)
+  }, [chatId])
 
   const jumpToLatest = useCallback(() => {
     followingRef.current = true
     setShowJumpToLatest(false)
+    setUnseenCount(0)
     scrollToLatest('smooth')
   }, [scrollToLatest])
 
@@ -383,6 +392,22 @@ export function ChatPanel() {
     return () => window.removeEventListener('keydown', onKey)
   }, [isGlobalBusy, handleStopAll])
 
+  // End / Shift+G: nhảy xuống cuối transcript và bám lại đáy. Escape vẫn là
+  // "dừng agent" — không đổi nghĩa. Bỏ qua khi con trỏ đang ở ô nhập liệu.
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      const isEnd = e.key === 'End' || (e.shiftKey && (e.key === 'G' || e.key === 'g'))
+      if (!isEnd) return
+      const target = e.target as HTMLElement | null
+      const tag = target?.tagName?.toLowerCase()
+      if (tag === 'input' || tag === 'textarea' || target?.isContentEditable) return
+      e.preventDefault()
+      jumpToLatest()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [jumpToLatest])
+
   const pendingRequestIds = Object.values(requests)
     .filter((r) => r.status === 'dang_cho')
     .map((r) => r.request_id)
@@ -391,25 +416,59 @@ export function ChatPanel() {
 
   const prevEventsLengthRef = useRef(0)
   const prevTurnsLengthRef = useRef(0)
+  const prevTotalRef = useRef(0)
 
   useEffect(() => {
     const currentEvents = harnessRun?.events.length ?? 0
     const currentTurns = routerTurns.length
+    const total = currentEvents + currentTurns + messages.length
+    const delta = Math.max(0, total - prevTotalRef.current)
     const isNewTurn = (currentEvents > 0 && prevEventsLengthRef.current === 0) || currentTurns > prevTurnsLengthRef.current
 
     prevEventsLengthRef.current = currentEvents
     prevTurnsLengthRef.current = currentTurns
+    prevTotalRef.current = total
 
     // Gửi tin mới → bám lại đáy rồi đi theo nội dung agent sinh ra.
     if (isNewTurn) {
       followingRef.current = true
       setShowJumpToLatest(false)
     }
-    // Người dùng đã kéo lên đọc → không giật khung nhìn về đáy nữa.
-    if (!followingRef.current) return
+    // Người dùng đã kéo lên đọc → không giật khung nhìn về đáy nữa, nhưng đếm
+    // số mục mới để nút "xuống cuối" nói đúng đang có bao nhiêu thứ chờ.
+    if (!followingRef.current) {
+      if (delta > 0) setUnseenCount((count) => count + delta)
+      return
+    }
+    setUnseenCount((count) => (count === 0 ? count : 0))
 
     scrollToLatest(isNewTurn ? 'smooth' : 'auto')
   }, [messages.length, routerTurns.length, harnessRun?.events.length, harnessRun?.status, scrollToLatest])
+
+  // Đổi phiên: khôi phục đúng vị trí đọc đã nhớ của phiên đó (nếu có), ngược
+  // lại thì bám đáy. Chạy sau khi transcript của phiên mới đã dựng.
+  const restoredSessionRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (restoredSessionRef.current === chatId) return
+    // Chờ transcript của phiên có nội dung rồi mới đặt lại vị trí — đặt trước
+    // khi có nội dung thì trình duyệt kẹp về 0 và lần cuộn tự động sau đó thắng.
+    const hasContent =
+      (harnessRun?.events.length ?? 0) > 0 || messages.length > 0 || routerTurns.length > 0
+    if (!hasContent) return
+    restoredSessionRef.current = chatId
+    const saved = useUiStore.getState().sessionScrollOffsets[chatId]
+    const el = chatScrollRef.current
+    if (saved === undefined || saved <= 0 || !el) {
+      followingRef.current = true
+      setShowJumpToLatest(false)
+      scrollToLatest('auto')
+      return
+    }
+    el.scrollTop = saved
+    const atBottom = isNearBottom(el)
+    followingRef.current = atBottom
+    setShowJumpToLatest(!atBottom)
+  }, [chatId, scrollToLatest, harnessRun?.events.length, messages.length, routerTurns.length])
 
   useEffect(() => () => {
     if (programmaticScrollTimer.current !== null) window.clearTimeout(programmaticScrollTimer.current)
@@ -499,6 +558,9 @@ export function ChatPanel() {
             onOpenLightbox={setLightboxMedia}
             snapshot={snapshot}
             selection={selection}
+            // Chip kế hoạch / sub-agent / quyết định trong transcript đều mở tab
+            // tại chỗ — người dùng đọc chat không bị mất vị trí (giữ nguyên khung cuộn).
+            onOpenTab={(tab, target) => openTab(tab, target ?? null)}
           />
         )}
         {/* Sub-agent Status Capsule — Theo dõi tiến độ sub-agent và mở SubagentInspectorPanel */}
@@ -532,11 +594,23 @@ export function ChatPanel() {
             type="button"
             onClick={jumpToLatest}
             data-testid="chat-jump-to-latest"
-            aria-label={t('chat.scrollToBottom')}
-            title={t('chat.scrollToBottom')}
-            className="absolute bottom-4 left-1/2 z-20 flex size-8 -translate-x-1/2 items-center justify-center rounded-full border border-line bg-panel text-fg shadow-lg transition hover:bg-panel2 hover:text-brand cursor-pointer"
+            data-unseen-count={unseenCount}
+            aria-label={
+              unseenCount > 0
+                ? `${t('chat.scrollToBottom')} — ${t('chat.newMessages', { count: unseenCount })}`
+                : t('chat.scrollToBottom')
+            }
+            title={
+              unseenCount > 0 ? t('chat.newMessages', { count: unseenCount }) : t('chat.scrollToBottom')
+            }
+            className={`absolute bottom-4 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-line bg-panel text-fg shadow-lg transition hover:bg-panel2 hover:text-brand cursor-pointer ${
+              unseenCount > 0 ? 'h-8 pl-2 pr-3' : 'size-8 justify-center'
+            }`}
           >
             <ArrowDown className="size-4" />
+            {unseenCount > 0 && (
+              <span className="font-mono text-[11px] font-bold tabular-nums">{unseenCount}</span>
+            )}
           </button>
         )}
       </div>

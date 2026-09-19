@@ -18,6 +18,12 @@ import uuid
 
 ROOT = Path('/home/agent/workspace').resolve()
 
+# Plan filename rules, identical to deploy/docker/plan_files.py:18-22 (the reader that enforces them).
+PLAN_FILENAME = re.compile(r'^v([1-9][0-9]{0,9})-([a-z0-9]+(-[a-z0-9]+)*)\.md$')
+PLAN_SLUG = re.compile(r'^[a-z0-9]+(-[a-z0-9]+)*$')
+PLAN_ROOM = '.plans'
+PLAN_MAX_BYTES = 1048576
+
 
 def path(value):
     resolved = (ROOT / value).resolve()
@@ -121,6 +127,50 @@ def browser(args, session):
         return {'url': page.url, 'title': page.title(), 'content': page.locator('body').inner_text()[:12000], 'elements': elements}
 
 
+def write_text(target, content, exclusive=False):
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if exclusive:
+        with open(target, 'x', encoding='utf-8') as handle:
+            handle.write(content)
+    else:
+        target.write_text(content, encoding='utf-8')
+    return target
+
+
+def write_plan(args):
+    """Write .plans/vN-slug.md at the next free version. Never overwrites an existing version."""
+    slug = str(args.get('slug') or '').strip()
+    if not PLAN_SLUG.fullmatch(slug):
+        raise ValueError('Plan slug must be lowercase words separated by single dashes (e.g. workspace-plan)')
+    content = args.get('markdown')
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError('Plan markdown must not be empty')
+    size = len(content.encode('utf-8'))
+    if size > PLAN_MAX_BYTES:
+        raise ValueError('Plan exceeds the 1 MiB plan-file limit')
+    directory = path(PLAN_ROOM)
+    directory.mkdir(parents=True, exist_ok=True)
+    if not directory.is_dir():
+        raise ValueError(PLAN_ROOM + ' is not a directory')
+    used = {int(match.group(1)) for match in (PLAN_FILENAME.fullmatch(item.name) for item in directory.iterdir())
+            if match and (directory / match.group(0)).is_file()}
+    version = max(used or {0}) + 1
+    while True:
+        target = directory / f'v{version}-{slug}.md'
+        if target.exists():
+            version += 1
+            continue
+        try:
+            write_text(target, content, exclusive=True)
+            break
+        except FileExistsError:
+            version += 1
+    relative = target.relative_to(ROOT).as_posix()
+    return {'content': 'Written ' + relative, 'identity': f'v{version}-{slug}', 'version': version,
+            'slug': slug, 'relativePath': relative, 'title': str(args.get('title') or '')[:120],
+            'bytes': size}
+
+
 def execute(name, args, session):
     if name == '__skill_readiness':
         package = Path(args['basePath']).resolve()
@@ -152,9 +202,10 @@ def execute(name, args, session):
         return {'content': path(args['path']).read_text(encoding='utf-8')[:30000]}
     if name == 'file_write':
         target = path(args['path'])
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(args['content'], encoding='utf-8')
+        write_text(target, args['content'])
         return {'content': 'Written ' + str(target.relative_to(ROOT))}
+    if name == 'write_plan':
+        return write_plan(args)
     if name == 'file_edit_block':
         target = path(args['path'])
         content = target.read_text(encoding='utf-8')

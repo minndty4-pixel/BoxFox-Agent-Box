@@ -1,8 +1,10 @@
 /**
  * Giao diện công khai của gói workspace: kiểu, adapter, factory chọn nguồn.
  *
- * Sandbox là mặc định; mock chỉ bật tường minh qua `VITE_WORKSPACE_SOURCE=mock`
- * (test/demo) — giống `createPlanRepository`.
+ * Sandbox là đường chạy thật DUY NHẤT. Mock chỉ được dựng khi vừa ở chế độ phát
+ * triển (`import.meta.env.DEV`) vừa được bật tường minh bằng
+ * `VITE_WORKSPACE_SOURCE=mock` — bản dựng sản phẩm không bao giờ chạm tới nhánh
+ * này, nên không có dữ liệu giả trên đường chạy thật.
  */
 import { resolveBoxApiKey, resolveBoxApiUrl } from '../boxApi'
 import { SandboxWorkspaceRepository } from './http'
@@ -22,9 +24,12 @@ export * from './tree'
 
 export type WorkspaceSource = 'sandbox' | 'mock'
 
-/** Sandbox mặc định; `VITE_WORKSPACE_SOURCE=mock` → mock. */
+/**
+ * Sandbox mặc định. Mock CHỈ khi `import.meta.env.DEV` và
+ * `VITE_WORKSPACE_SOURCE=mock` — bản sản phẩm luôn dùng sandbox thật.
+ */
 export function createWorkspaceRepository(env: ImportMetaEnv = import.meta.env): WorkspaceRepository {
   const source = env.VITE_WORKSPACE_SOURCE?.trim().toLowerCase()
-  if (source === 'mock') return new MockWorkspaceRepository()
+  if (env.DEV && source === 'mock') return new MockWorkspaceRepository()
   return new SandboxWorkspaceRepository(resolveBoxApiUrl(env), resolveBoxApiKey(env))
 }

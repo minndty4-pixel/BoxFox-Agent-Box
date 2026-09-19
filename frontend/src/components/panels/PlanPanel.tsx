@@ -24,8 +24,6 @@ import { usePlanFiles } from '../../hooks/usePlanFiles'
 import { useT } from '../../i18n/context'
 import type { DiffLine } from '../../types/agent'
 
-const PLAN_VERSIONS = ['v3 (latest)', 'v2', 'v1']
-
 export function PlanPanel() {
   const t = useT()
   const mode = useAgentStore((s) => s.mode)
@@ -38,33 +36,31 @@ export function PlanPanel() {
   const setPlanViewMode = useUiStore((s) => s.setPlanViewMode)
   const planSubTab = useUiStore((s) => s.planSubTab)
   const setPlanSubTab = useUiStore((s) => s.setPlanSubTab)
-  const planVersion = useUiStore((s) => s.planVersion)
-  const setPlanVersion = useUiStore((s) => s.setPlanVersion)
   const showFeedbackBanner = useUiStore((s) => s.showFeedbackBanner)
   const setShowFeedbackBanner = useUiStore((s) => s.setShowFeedbackBanner)
+  /** Ý định tự mở tab của agent có thể chỉ đích danh một identity/version. */
+  const planTarget = useUiStore((s) => s.tabIntentTargets.plan)
 
-  /** Nguồn plan từ filesystem sandbox (đọc-only). */
+  /** Nguồn plan duy nhất: thư mục .plans của sandbox (không còn danh sách version giả). */
   const planFiles = usePlanFiles()
   const selectedPlan = planFiles.manifest?.plans.find((p) => p.identity === planFiles.selection?.identity)
   const selectedFileVersion = selectedPlan?.versions.find((v) => v.version === planFiles.selection?.version)
 
-  /** Danh sách version để render trong dropdown: file thật nếu có, ngược lại dùng mock. */
-  const versionItems = selectedPlan?.versions.length
-    ? selectedPlan.versions.map((v) => ({
-        key: v.version,
-        label: `${v.label} (${v.status})`,
-        isCurrent: v.version === planFiles.selection?.version,
-        onSelect: () => planFiles.selectVersion(v.version),
-      }))
-    : PLAN_VERSIONS.map((v) => {
-        const val = v.split(' ')[0]
-        return {
-          key: val,
-          label: v,
-          isCurrent: planVersion === val,
-          onSelect: () => setPlanVersion(val),
-        }
-      })
+  /** Danh sách version để render trong dropdown: chỉ lấy từ manifest thật. */
+  const versionItems = (selectedPlan?.versions ?? []).map((v) => ({
+    key: v.version,
+    label: `${v.label} (${v.status})`,
+    isCurrent: v.version === planFiles.selection?.version,
+    onSelect: () => planFiles.selectVersion(v.version),
+  }))
+
+  const targetIdentity = typeof planTarget?.identity === 'string' ? planTarget.identity : null
+  const targetVersion = typeof planTarget?.version === 'number' ? planTarget.version : undefined
+  const selectIdentity = planFiles.selectIdentity
+  useEffect(() => {
+    if (!targetIdentity) return
+    selectIdentity(targetIdentity, targetVersion)
+  }, [selectIdentity, targetIdentity, targetVersion])
 
   const [copied, setCopied] = useState(false)
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null)
@@ -116,7 +112,15 @@ export function PlanPanel() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [identityMenuOpen, versionMenuOpen])
 
+  /**
+   * Duyệt kế hoạch thật: ghi vào container (`POST /__box/plans/review`) khi tab
+   * đang xem một file kế hoạch thật; đường demo cũ chỉ còn khi không có file.
+   */
   const handleApprove = () => {
+    if (planFiles.document) {
+      void planFiles.submitReview('approved')
+      return
+    }
     if (proposal) {
       sendCommand({
         type: 'mode_switch_confirm',
@@ -125,6 +129,11 @@ export function PlanPanel() {
     } else if (mode === 'PLAN') {
       sendCommand({ type: 'scenario_step' })
     }
+  }
+
+  const handleRequestChanges = () => {
+    if (!planFiles.document) return
+    void planFiles.submitReview('changes_requested')
   }
 
   const handleCopy = () => {
@@ -198,13 +207,16 @@ export function PlanPanel() {
               <span>
                 {selectedFileVersion
                   ? `${selectedFileVersion.label} (${selectedFileVersion.status})`
-                  : planVersion}
+                  : t('plan.noVersions')}
               </span>
               <ChevronDown className="size-3 text-muted" />
             </button>
 
             {versionMenuOpen && (
               <div className="absolute left-0 top-full z-40 mt-1 w-36 overflow-hidden rounded-lg border border-line bg-panel2 p-1 shadow-xl animate-in fade-in zoom-in-95 duration-100">
+                {versionItems.length === 0 && (
+                  <p className="px-2.5 py-1.5 text-xs text-muted">{t('plan.noVersions')}</p>
+                )}
                 {versionItems.map((item) => (
                   <button
                     key={item.key}
@@ -272,19 +284,48 @@ export function PlanPanel() {
             {copied ? <Check className="size-3.5 text-emerald-400" /> : <Copy className="size-3.5" />}
           </button>
 
+          {/* Yêu cầu sửa — chỉ có nghĩa khi đang xem một file kế hoạch thật. */}
+          {planFiles.document && (
+            <button
+              type="button"
+              data-testid="plan-request-changes"
+              onClick={handleRequestChanges}
+              disabled={planFiles.reviewStatus === 'saving'}
+              className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${
+                planFiles.selectedReview?.decision === 'changes_requested'
+                  ? 'border-amber-500/40 bg-amber-500/15 text-amber-300'
+                  : 'border-line text-muted hover:bg-panel2 hover:text-fg'
+              }`}
+            >
+              <ArrowLeft className="size-3" />
+              <span>
+                {planFiles.selectedReview?.decision === 'changes_requested'
+                  ? t('plan.changesRequestedStored')
+                  : t('plan.requestChanges')}
+              </span>
+            </button>
+          )}
+
           {/* Approve Button in Sleek Solid Tone */}
           <button
             type="button"
+            data-testid="plan-approve"
             onClick={handleApprove}
-            disabled={mode === 'ACT'}
-            className={`flex items-center gap-1.5 rounded-md px-3.5 py-1 text-xs font-semibold transition shadow-xs cursor-pointer ${
-              mode === 'ACT'
+            disabled={mode === 'ACT' || planFiles.reviewStatus === 'saving'}
+            className={`flex items-center gap-1.5 rounded-md px-3.5 py-1 text-xs font-semibold transition shadow-xs cursor-pointer disabled:cursor-not-allowed ${
+              mode === 'ACT' || planFiles.selectedReview?.decision === 'approved'
                 ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
                 : 'bg-zinc-100 text-zinc-900 hover:bg-white active:scale-98'
             }`}
           >
             <Check className="size-3.5" />
-            <span>{mode === 'ACT' ? 'Approved (ACT)' : 'Approve Plan'}</span>
+            <span>
+              {mode === 'ACT'
+                ? 'Approved (ACT)'
+                : planFiles.selectedReview?.decision === 'approved'
+                  ? t('plan.approvedStored')
+                  : t('plan.approvePlan')}
+            </span>
           </button>
         </div>
       </div>
@@ -334,6 +375,19 @@ export function PlanPanel() {
         </div>
       )}
 
+      {/* Lỗi ghi quyết định duyệt kế hoạch (route container chưa có → 404/400). */}
+      {planFiles.reviewStatus === 'error' && planFiles.reviewError && (
+        <div
+          data-testid="plan-review-error"
+          className="flex items-center gap-2 border-b border-line bg-panel2/40 px-4 py-1.5 text-xs text-rose-400"
+        >
+          <Shield className="size-3.5 shrink-0" />
+          <span className="truncate">
+            {t('plan.reviewError')}: {planFiles.reviewError}
+          </span>
+        </div>
+      )}
+
       {/* Main Content Area */}
       <div className="min-h-0 flex-1 overflow-hidden">
         {planViewMode === 'diff' ? (
@@ -374,9 +428,18 @@ export function PlanPanel() {
             </div>
           )
         ) : !currentPlan && !planFiles.document ? (
-          /* Empty State */
-          <div className="flex h-full items-center justify-center p-8 text-center">
-            <p className="text-xs text-muted">No plan artifact generated yet.</p>
+          /* Empty State — nói thật là thư mục .plans chưa có gì. */
+          <div
+            data-testid="plan-empty"
+            className="flex h-full flex-col items-center justify-center p-8 text-center"
+          >
+            <FileCode className="mb-2 size-8 text-muted/40" />
+            <p className="text-xs font-semibold text-fg">
+              {planFiles.status === 'loading' ? t('plan.loading') : t('plan.emptyTitle')}
+            </p>
+            <p className="mt-0.5 max-w-md text-[11px] text-muted">
+              {planFiles.status === 'error' ? (planFiles.error ?? t('plan.emptyBody')) : t('plan.emptyBody')}
+            </p>
           </div>
         ) : planSubTab === 'overview' ? (
           /* Overview View (Split view if step selected) */

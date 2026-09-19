@@ -28,7 +28,7 @@ class SessionStore:
                 reason TEXT NOT NULL, created REAL NOT NULL);
             CREATE INDEX IF NOT EXISTS event_session ON events(session_id, seq);
         ''')
-        self.db.execute("UPDATE sessions SET status='interrupted' WHERE status='running'")
+        self.db.execute("UPDATE sessions SET status='interrupted' WHERE status IN ('running','awaiting_decision')")
         self.db.commit()
 
     def create(self, config, role='orchestrator', parent_id=None):

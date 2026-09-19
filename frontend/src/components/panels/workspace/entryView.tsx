@@ -1,12 +1,14 @@
 /**
- * Tiện ích hiển thị chung cho lưới Explorer và cây Tree: định dạng dung lượng
- * và chọn icon+màu theo loại file. Tiếng Việt ở comment, English ở định danh.
+ * Tiện ích hiển thị chung cho lưới Explorer và cây Tree: định dạng dung lượng,
+ * chọn icon+màu theo loại file, huy hiệu provenance và ô đổi tên tại chỗ.
+ * Tiếng Việt ở comment, English ở định danh.
  */
 import { File, FileCode, FileText, Film, Folder, Image as ImageIcon, Music } from 'lucide-react'
-import type { ComponentType } from 'react'
+import { useRef, type ComponentType } from 'react'
 import { useT } from '../../../i18n/context'
 import { INTEGRITY_META } from '../../../lib/labels'
-import { previewKindFor } from '../../../lib/workspace'
+import { previewKindFor, type WorkspaceEntry } from '../../../lib/workspace'
+import { ConfidentialityBadge, IntegrityBadge } from '../../LabelDot'
 import type { Integrity } from '../../../types/labels'
 
 export function formatBytes(bytes: number): string {
@@ -68,6 +70,73 @@ export function IntegrityDot({ integrity, className = '' }: { integrity: Integri
       title={title}
       aria-label={title}
       role="img"
+    />
+  )
+}
+
+/**
+ * Huy hiệu provenance (integrity + confidentiality) cho một entry — dùng NGUYÊN
+ * mẫu badge của component anh em `LabelDot` (`IntegrityBadge` / `ConfidentialityBadge`),
+ * không thêm màu mới. Backend đã tính hai nhãn này (workspace_files.py).
+ */
+export function EntryLabelBadges({
+  entry,
+  className = '',
+}: {
+  entry: Pick<WorkspaceEntry, 'integrity' | 'confidentiality'>
+  className?: string
+}) {
+  if (!entry.integrity && !entry.confidentiality) return null
+  return (
+    <span className={`flex shrink-0 items-center gap-1 ${className}`}>
+      {entry.integrity && <IntegrityBadge value={entry.integrity} />}
+      {entry.confidentiality && <ConfidentialityBadge value={entry.confidentiality} />}
+    </span>
+  )
+}
+
+/**
+ * Ô nhập tên TẠI CHỖ cho hàng cây / thẻ lưới: cùng mẫu với ô đổi tên phiên ở
+ * Sidebar (`session-rename-input`) — Enter ghi, Escape huỷ, rời ô thì ghi.
+ * `defaultValue` giữ ô không bị điều khiển lại mỗi phím bấm; cờ `doneRef` chặn
+ * ghi hai lần khi Enter kéo theo cả sự kiện blur.
+ */
+export function RenameInput({
+  initialValue,
+  ariaLabel,
+  onCommit,
+  onCancel,
+  className = '',
+}: {
+  initialValue: string
+  ariaLabel: string
+  onCommit: (name: string) => void
+  onCancel: () => void
+  className?: string
+}) {
+  const doneRef = useRef(false)
+  const finish = (name: string) => {
+    if (doneRef.current) return
+    doneRef.current = true
+    onCommit(name)
+  }
+  return (
+    <input
+      autoFocus
+      defaultValue={initialValue}
+      aria-label={ariaLabel}
+      onClick={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        e.stopPropagation()
+        if (e.key === 'Enter') finish(e.currentTarget.value)
+        else if (e.key === 'Escape') {
+          doneRef.current = true
+          onCancel()
+        }
+      }}
+      onBlur={(e) => finish(e.currentTarget.value)}
+      className={`min-w-0 flex-1 rounded border border-brand/60 bg-panel px-1 py-0.5 text-fg outline-none ${className}`}
     />
   )
 }

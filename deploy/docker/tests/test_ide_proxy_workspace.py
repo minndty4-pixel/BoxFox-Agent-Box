@@ -288,5 +288,249 @@ class IdeProxyWorkspaceTest(unittest.TestCase):
         self.assertEqual(status, 405)
 
 
+class IdeProxyWorkspaceWriteTest(unittest.TestCase):
+    """Đợt 3: POST /__box/files/{mkdir,touch,rename,move,delete} qua HTTP thật.
+
+    Cùng idiom với ``IdeProxyWorkspaceTest``: spin ``ThreadingHTTPServer`` trên port 0,
+    trỏ ``WORKSPACE_ROOT`` vào thư mục tạm, rồi kiểm cả payload hợp đồng §2 lẫn trạng
+    thái thật trên đĩa. Nhóm này bắt buộc header ``X-BoxFox-Api-Key`` → 401 khi thiếu.
+    """
+
+    ENDPOINTS = (
+        "/__box/files/mkdir",
+        "/__box/files/touch",
+        "/__box/files/rename",
+        "/__box/files/move",
+        "/__box/files/delete",
+    )
+
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary_directory.name)
+        (self.root / "src").mkdir()
+        (self.root / "src" / "a.md").write_text("# a\n", encoding="utf-8")
+        (self.root / "docs").mkdir()
+        (self.root / ".plans").mkdir()
+
+        self._previous_root = ide_proxy.workspace_files.WORKSPACE_ROOT
+        ide_proxy.workspace_files.WORKSPACE_ROOT = self.root
+        self._previous_key = ide_proxy.BOXFOX_API_KEY
+        ide_proxy.BOXFOX_API_KEY = SECRET_OK
+
+        self.server = ide_proxy.ThreadingHTTPServer(("127.0.0.1", 0), ide_proxy.ProxyHandler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base_url = f"http://127.0.0.1:{self.server.server_port}"
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join()
+        ide_proxy.workspace_files.WORKSPACE_ROOT = self._previous_root
+        ide_proxy.BOXFOX_API_KEY = self._previous_key
+        self.temporary_directory.cleanup()
+
+    def _request(self, path: str, *, method: str = "POST", headers: dict | None = None,
+                 data: bytes | None = None):
+        request = urllib.request.Request(
+            f"{self.base_url}{path}", data=data, method=method, headers=headers or {}
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return response.status, dict(response.headers), response.read()
+        except urllib.error.HTTPError as error:
+            return error.code, dict(error.headers), error.read()
+
+    def write_call(self, endpoint: str, payload: dict, *, key: str | None = SECRET_OK,
+                   method: str = "POST"):
+        headers = {"Content-Type": "application/json"}
+        if key is not None:
+            headers["X-BoxFox-Api-Key"] = key
+        return self._request(
+            endpoint, method=method, headers=headers,
+            data=json.dumps(payload).encode("utf-8"),
+        )
+
+    @staticmethod
+    def payload_of(body: bytes) -> dict:
+        return json.loads(body.decode("utf-8"))
+
+    # --- auth ---
+    def test_all_write_endpoints_require_api_key(self) -> None:
+        payloads = {
+            "/__box/files/mkdir": {"path": "x"},
+            "/__box/files/touch": {"path": "x.md"},
+            "/__box/files/rename": {"path": "src/a.md", "name": "b.md"},
+            "/__box/files/move": {"path": "src/a.md", "destination": "docs"},
+            "/__box/files/delete": {"path": "src/a.md"},
+        }
+        for endpoint, payload in payloads.items():
+            with self.subTest(endpoint=endpoint, key="missing"):
+                status, _headers, body = self.write_call(endpoint, payload, key=None)
+                self.assertEqual(status, 401)
+                self.assertEqual(self.payload_of(body)["error"], "Cần X-BoxFox-Api-Key hợp lệ")
+            with self.subTest(endpoint=endpoint, key="wrong"):
+                status, _headers, _body = self.write_call(endpoint, payload, key="sai-khoa")
+                self.assertEqual(status, 401)
+            with self.subTest(endpoint=endpoint, origin_only=True):
+                status, _headers, _body = self._request(
+                    endpoint, headers={"Origin": ORIGIN_OK, "Content-Type": "application/json"},
+                    data=json.dumps(payload).encode("utf-8"),
+                )
+                self.assertEqual(status, 401)
+        # không có thao tác nào chạy: file gốc còn nguyên, chưa có thư mục/thùng rác mới
+        self.assertTrue((self.root / "src" / "a.md").is_file())
+        self.assertFalse((self.root / "x").exists())
+        self.assertFalse((self.root / ".trash").exists())
+
+    def test_write_endpoint_get_not_allowed(self) -> None:
+        for endpoint in self.ENDPOINTS:
+            with self.subTest(endpoint=endpoint):
+                status, _h, _b = self._request(
+                    endpoint, method="GET", headers={"X-BoxFox-Api-Key": SECRET_OK}
+                )
+                self.assertEqual(status, 405)
+
+    # --- happy paths (đọc lại từ đĩa thật) ---
+    def test_mkdir_creates_directory(self) -> None:
+        status, _headers, body = self.write_call("/__box/files/mkdir", {"path": "src/new"})
+        self.assertEqual(status, 200)
+        self.assertEqual(self.payload_of(body), {"path": "src/new", "type": "directory"})
+        self.assertTrue((self.root / "src" / "new").is_dir())
+        # 409 khi đã tồn tại, trừ khi exist_ok
+        status, _h, _b = self.write_call("/__box/files/mkdir", {"path": "src/new"})
+        self.assertEqual(status, 409)
+        status, _h, body = self.write_call(
+            "/__box/files/mkdir", {"path": "src/new", "exist_ok": True}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(self.payload_of(body)["type"], "directory")
+        status, _h, body = self.write_call(
+            "/__box/files/mkdir", {"path": "src/new", "exist_ok": "yes"}
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("exist_ok", self.payload_of(body)["error"])
+
+    def test_touch_creates_file(self) -> None:
+        status, _h, body = self.write_call("/__box/files/touch", {"path": "src/new.md"})
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            self.payload_of(body), {"path": "src/new.md", "type": "file", "size": 0}
+        )
+        self.assertEqual((self.root / "src" / "new.md").read_bytes(), b"")
+        status, _h, body = self.write_call(
+            "/__box/files/touch", {"path": "docs/note.md", "content": "# hi\n"}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(self.payload_of(body)["size"], len("# hi\n".encode("utf-8")))
+        self.assertEqual((self.root / "docs" / "note.md").read_text(encoding="utf-8"), "# hi\n")
+        # đích đã tồn tại → 409, nội dung cũ không bị ghi đè
+        status, _h, _b = self.write_call(
+            "/__box/files/touch", {"path": "docs/note.md", "content": "ghi đè"}
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual((self.root / "docs" / "note.md").read_text(encoding="utf-8"), "# hi\n")
+
+    def test_rename_returns_new_path(self) -> None:
+        status, _h, body = self.write_call(
+            "/__box/files/rename", {"path": "src/a.md", "name": "b.md"}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(self.payload_of(body), {"path": "src/a.md", "newPath": "src/b.md"})
+        self.assertFalse((self.root / "src" / "a.md").exists())
+        self.assertEqual((self.root / "src" / "b.md").read_text(encoding="utf-8"), "# a\n")
+        # đích đã tồn tại → 409
+        status, _h, _b = self.write_call(
+            "/__box/files/rename", {"path": "src/b.md", "name": "b.md"}
+        )
+        self.assertEqual(status, 409)
+        # tên sai (có '/', rỗng, '.', '..') → 400
+        for bad_name in ("sub/b.md", "", ".", ".."):
+            with self.subTest(name=bad_name):
+                status, _h, _b = self.write_call(
+                    "/__box/files/rename", {"path": "src/b.md", "name": bad_name}
+                )
+                self.assertEqual(status, 400)
+        self.assertTrue((self.root / "src" / "b.md").is_file())
+
+    def test_move_returns_new_path(self) -> None:
+        status, _h, body = self.write_call(
+            "/__box/files/move", {"path": "src/a.md", "destination": "docs"}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(self.payload_of(body), {"path": "src/a.md", "newPath": "docs/a.md"})
+        self.assertFalse((self.root / "src" / "a.md").exists())
+        self.assertEqual((self.root / "docs" / "a.md").read_text(encoding="utf-8"), "# a\n")
+        # đích đã tồn tại → 409
+        (self.root / "src" / "a.md").write_text("x", encoding="utf-8")
+        status, _h, _b = self.write_call(
+            "/__box/files/move", {"path": "src/a.md", "destination": "docs"}
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual((self.root / "src" / "a.md").read_text(encoding="utf-8"), "x")
+
+    def test_delete_trashes_entry_and_listing_hides_trash(self) -> None:
+        status, _h, body = self.write_call("/__box/files/delete", {"path": "src/a.md"})
+        self.assertEqual(status, 200)
+        payload = self.payload_of(body)
+        self.assertEqual(payload["path"], "src/a.md")
+        self.assertTrue(payload["trashPath"].startswith(".trash/"))
+        self.assertTrue(payload["trashPath"].endswith("-a.md"))
+        self.assertFalse((self.root / "src" / "a.md").exists())
+        self.assertTrue((self.root / payload["trashPath"]).is_file())
+        self.assertEqual((self.root / payload["trashPath"]).read_text(encoding="utf-8"), "# a\n")
+        # GET /__box/files ẩn `.trash`
+        status, _h, body = self._request("/__box/files?path=", method="GET",
+                                        headers={"Origin": ORIGIN_OK})
+        self.assertEqual(status, 200)
+        names = [entry["name"] for entry in self.payload_of(body)["entries"]]
+        self.assertNotIn(".trash", names)
+        self.assertIn("src", names)
+        # xoá lần hai → 404
+        status, _h, _b = self.write_call("/__box/files/delete", {"path": "src/a.md"})
+        self.assertEqual(status, 404)
+
+    # --- refusal paths ---
+    def test_write_endpoints_reject_path_escape(self) -> None:
+        cases = (
+            ("/__box/files/mkdir", {"path": "../escaped"}),
+            ("/__box/files/mkdir", {"path": "/etc/escaped"}),
+            ("/__box/files/touch", {"path": "../escaped.md"}),
+            ("/__box/files/rename", {"path": "../escaped.md", "name": "x.md"}),
+            ("/__box/files/move", {"path": "../escaped.md", "destination": "docs"}),
+            ("/__box/files/move", {"path": "src/a.md", "destination": "../escaped"}),
+            ("/__box/files/delete", {"path": "../escaped.md"}),
+            ("/__box/files/delete", {"path": "/etc/passwd"}),
+        )
+        for endpoint, payload in cases:
+            with self.subTest(endpoint=endpoint, payload=payload):
+                status, _h, body = self.write_call(endpoint, payload)
+                self.assertEqual(status, 400)
+                self.assertIn("error", self.payload_of(body))
+        self.assertFalse((self.root.parent / "escaped").exists())
+        self.assertFalse((self.root.parent / "escaped.md").exists())
+        self.assertTrue((self.root / "src" / "a.md").is_file())
+
+    def test_delete_refuses_protected_paths(self) -> None:
+        (self.root / ".plans" / "v1-pilot.md").write_text("# plan\n", encoding="utf-8")
+        for protected in ("", ".plans", ".trash", ".generated_artifacts"):
+            with self.subTest(path=protected):
+                status, _h, _b = self.write_call("/__box/files/delete", {"path": protected})
+                self.assertEqual(status, 409)
+        self.assertTrue((self.root / ".plans" / "v1-pilot.md").is_file())
+        self.assertFalse((self.root / ".trash").exists())
+
+    def test_write_endpoints_reject_malformed_body(self) -> None:
+        # thiếu 'path' → 400 chứ không phải 500
+        status, _h, _b = self.write_call("/__box/files/mkdir", {})
+        self.assertEqual(status, 400)
+        status, _h, _b = self._request(
+            "/__box/files/touch",
+            headers={"X-BoxFox-Api-Key": SECRET_OK, "Content-Type": "application/json"},
+            data=b"{not json",
+        )
+        self.assertEqual(status, 400)
+
+
 if __name__ == "__main__":
     unittest.main()

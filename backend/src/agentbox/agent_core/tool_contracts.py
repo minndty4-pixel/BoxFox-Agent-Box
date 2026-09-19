@@ -7,6 +7,13 @@ def tool(name, description, properties, required=()):
 
 
 STRING = {'type': 'string'}
+# One selectable answer for ask_user / request_approval. The runtime always guarantees at least one
+# 'approve' and one 'reject' option and rewrites their ids to exactly 'approve' / 'reject'.
+DECISION_OPTION = {'type': 'object', 'properties': {
+    'id': STRING,
+    'label': STRING,
+    'kind': {'type': 'string', 'enum': ['approve', 'reject', 'alternative']}}, 'required': ['label']}
+DECISION_OPTIONS = {'type': 'array', 'items': DECISION_OPTION}
 SCHEMAS = [
     tool('file_read', 'Read a UTF-8 file inside the sandbox workspace.', {'path': STRING}, ['path']),
     tool('file_write', 'Write a file inside the sandbox workspace.', {'path': STRING, 'content': STRING}, ['path', 'content']),
@@ -27,6 +34,12 @@ SCHEMAS = [
     tool('session_search', 'Search this session durable checkpoint history for a literal term.', {'query': STRING}, ['query']),
     tool('delegate_task', 'Run one enabled specialist with isolated context. Return its real result/evidence. Never assume success.',
          {'role': {'type': 'string', 'enum': ['explore', 'plan', 'design', 'build', 'debug', 'review', 'simplify', 'testing', 'research']}, 'goal': STRING, 'context': STRING}, ['role', 'goal']),
+    tool('ask_user', 'Ask the user a question and BLOCK this turn until they answer. Give 2-5 options; the runtime always adds the approve/reject pair when you omit it. If nobody answers before the deadline (default 300 s) the answer is a rejection, so ask only when the answer changes what you do next.',
+         {'question': STRING, 'options': DECISION_OPTIONS, 'deadlineSeconds': {'type': 'integer'}}, ['question', 'options']),
+    tool('request_approval', 'Ask the user to approve ONE concrete risky action (delete, overwrite, command outside the allowlist) BEFORE you run it, and BLOCK this turn until they answer. Default deadline 600 s; no answer means rejected, so never assume approval.',
+         {'action': STRING, 'reason': STRING, 'options': DECISION_OPTIONS, 'deadlineSeconds': {'type': 'integer'}}, ['action', 'reason']),
+    tool('write_plan', 'Write a plan document into the workspace plan folder as the next free version vN-slug.md (never overwrites an existing version) and tell the UI. Use a lowercase dash-separated slug; the markdown is the real plan body.',
+         {'slug': STRING, 'markdown': STRING, 'title': STRING}, ['slug', 'markdown']),
 ]
 
 

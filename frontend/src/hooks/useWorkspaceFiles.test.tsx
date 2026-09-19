@@ -53,6 +53,11 @@ function makeRepo(overrides?: Partial<WorkspaceRepository>): WorkspaceRepository
     zip: vi.fn(async () => new Blob(['zip'])),
     upload: vi.fn(async (targetDir: string, filename: string) => ({ path: `${targetDir}/${filename}`, sizeBytes: 0 })),
     unzip: vi.fn(async () => ({ extracted: 0, skipped: 0, warnings: [] })),
+    mkdir: vi.fn(async (path: string) => ({ path, type: 'directory' as const })),
+    touch: vi.fn(async (path: string) => ({ path, type: 'file' as const, size: 0 })),
+    rename: vi.fn(async (path: string, name: string) => ({ path, newPath: name })),
+    move: vi.fn(async (path: string, destination: string) => ({ path, newPath: `${destination}/${path}` })),
+    deleteEntry: vi.fn(async (path: string) => ({ path, trashPath: `.trash/0-${path}` })),
   }
   return { ...base, ...overrides }
 }

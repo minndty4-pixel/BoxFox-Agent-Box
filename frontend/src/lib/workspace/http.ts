@@ -1,12 +1,21 @@
 /**
  * Adapter HTTP cho endpoint file workspace của ide-proxy (`/__box/files...`).
  *
- * Ba endpoint điều khiển (`upload`, `unzip`) gửi `X-BoxFox-Api-Key` vì trình
- * duyệt không gửi Origin cho cross-origin write một cách tin cậy được; endpoint
- * đọc (`list`, `readText`, `zip`) vẫn qua `fetch` thường. Các URL media/
- * thumbnail/download KHÔNG kèm auth — chúng là subresource.
+ * Mọi endpoint ĐIỀU KHIỂN (`upload`, `unzip`, `mkdir`, `touch`, `rename`, `move`,
+ * `delete`) gửi `X-BoxFox-Api-Key` vì trình duyệt không gửi Origin cho
+ * cross-origin write một cách tin cậy được; endpoint đọc (`list`, `readText`,
+ * `zip`) vẫn qua `fetch` thường. Các URL media/thumbnail/download KHÔNG kèm auth
+ * — chúng là subresource.
  */
-import type { WorkspaceContent, WorkspaceListing, WorkspaceRepository } from './types'
+import type {
+  WorkspaceContent,
+  WorkspaceDeleteResult,
+  WorkspaceListing,
+  WorkspaceMkdirResult,
+  WorkspaceMoveResult,
+  WorkspaceRepository,
+  WorkspaceTouchResult,
+} from './types'
 
 export class WorkspaceRepositoryHttpError extends Error {
   constructor(
@@ -88,6 +97,42 @@ export class SandboxWorkspaceRepository implements WorkspaceRepository {
     })
     await ensureOk(response)
     return (await response.json()) as { extracted: number; skipped: number; warnings: string[] }
+  }
+
+  async mkdir(path: string, signal?: AbortSignal): Promise<WorkspaceMkdirResult> {
+    return this.postJson<WorkspaceMkdirResult>('/__box/files/mkdir', { path }, signal)
+  }
+
+  async touch(path: string, content = '', signal?: AbortSignal): Promise<WorkspaceTouchResult> {
+    return this.postJson<WorkspaceTouchResult>('/__box/files/touch', { path, content }, signal)
+  }
+
+  async rename(path: string, name: string, signal?: AbortSignal): Promise<WorkspaceMoveResult> {
+    return this.postJson<WorkspaceMoveResult>('/__box/files/rename', { path, name }, signal)
+  }
+
+  async move(path: string, destination: string, signal?: AbortSignal): Promise<WorkspaceMoveResult> {
+    return this.postJson<WorkspaceMoveResult>('/__box/files/move', { path, destination }, signal)
+  }
+
+  async deleteEntry(path: string, signal?: AbortSignal): Promise<WorkspaceDeleteResult> {
+    return this.postJson<WorkspaceDeleteResult>('/__box/files/delete', { path }, signal)
+  }
+
+  /**
+   * POST JSON tới một route ghi của container: luôn kèm `X-BoxFox-Api-Key`
+   * (hợp đồng §0.4 — thiếu khoá là 401). Lỗi vẫn ném
+   * `WorkspaceRepositoryHttpError` kèm thông báo `{"error": "..."}` của server.
+   */
+  private async postJson<T>(route: string, body: unknown, signal?: AbortSignal): Promise<T> {
+    const response = await fetch(`${this.baseUrl}${route}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-BoxFox-Api-Key': this.apiKey },
+      body: JSON.stringify(body),
+      signal,
+    })
+    await ensureOk(response)
+    return (await response.json()) as T
   }
 }
 

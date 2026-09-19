@@ -128,6 +128,12 @@ export default function App() {
 
   const requests = useAgentStore((s) => s.requests)
   const pendingRequestsCount = Object.values(requests).filter((r) => r.status === 'dang_cho').length
+  // Người dùng tự bấm tab nào thì tab đó được "ghim": ý định tự mở của agent
+  // nhắm đúng tab ấy sẽ chỉ xếp hàng (hợp đồng §3).
+  const pinTab = useUiStore((s) => s.pinTab)
+  const pendingIntents = useUiStore((s) => s.pendingIntents)
+  const intentCountFor = (tab: PanelTabId) =>
+    pendingIntents.filter((intent) => intent.tab === tab).length
 
   function renderActiveTab() {
     if (showModeSwitch && activeTab === 'plan') {
@@ -207,13 +213,19 @@ export default function App() {
               {openTabs.map((tab) => {
                 const Icon = TAB_ICON[tab]
                 const isActive = activeTab === tab
-                const isDecisionsWithPending = tab === 'decisions' && pendingRequestsCount > 0
+                // Huy hiệu đếm = yêu cầu mock đang chờ (tab Decisions) + số ý định
+                // tự mở đang xếp hàng cho tab này.
+                const badgeCount = intentCountFor(tab) + (tab === 'decisions' ? pendingRequestsCount : 0)
+                const isDecisionsWithPending = badgeCount > 0
 
                 return (
                   <button
                     key={tab}
                     type="button"
-                    onClick={() => openTab(tab)}
+                    onClick={() => {
+                      pinTab(tab)
+                      openTab(tab)
+                    }}
                     aria-selected={isActive}
                     className={`group flex items-center gap-1.5 rounded-t-md border-t border-x px-3 py-1.5 text-xs font-medium transition cursor-pointer ${isActive
                         ? 'border-line bg-panel2 text-fg shadow-xs'
@@ -231,8 +243,11 @@ export default function App() {
                     <span>{tab === 'decisions' ? 'Decisions' : tab === 'subagents' ? 'Sub-agents' : t(TAB_LABEL_KEY[tab] as 'tabs.plan')}</span>
 
                     {isDecisionsWithPending && (
-                      <span className="flex size-4 items-center justify-center rounded-full bg-amber-500/20 font-mono text-[9px] font-bold text-amber-300">
-                        {pendingRequestsCount}
+                      <span
+                        data-testid={`tab-badge-${tab}`}
+                        className="flex size-4 items-center justify-center rounded-full bg-amber-500/20 font-mono text-[9px] font-bold text-amber-300"
+                      >
+                        {badgeCount}
                       </span>
                     )}
                     <span
@@ -343,6 +358,8 @@ function TopBar({
   const addMenuRef = useRef<HTMLDivElement>(null)
   const openTab = useUiStore((s) => s.openTab)
   const openTabs = useUiStore((s) => s.openTabs)
+  // Chọn tab từ menu này cũng là người dùng tự chọn → ghim tab đó.
+  const pinTab = useUiStore((s) => s.pinTab)
 
   // Close add tab popup menu when clicking outside
   useEffect(() => {
@@ -417,6 +434,7 @@ function TopBar({
                       key={tabItem.id}
                       type="button"
                       onClick={() => {
+                        pinTab(tabItem.id)
                         openTab(tabItem.id)
                         setAddMenuOpen(false)
                       }}

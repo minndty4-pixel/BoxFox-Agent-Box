@@ -12,7 +12,7 @@
  *      - Cảnh báo lỗi inline nếu có.
  *   3. Thanh Footer Read-only Guard: Khóa không cho user gõ phím vào tiến trình con.
  */
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import {
   Bot,
   Terminal,
@@ -31,6 +31,7 @@ import {
 } from 'lucide-react'
 import { useHarnessChatStore, type HarnessEvent } from '../../store/harnessChatStore'
 import { useAgentStore } from '../../store/agentStore'
+import { useUiStore } from '../../store/uiStore'
 import { MarkdownRenderer } from '../chat/MarkdownRenderer'
 
 const ROLE_DESCRIPTIONS: Record<string, string> = {
@@ -204,6 +205,18 @@ export function SubagentInspectorPanel() {
     return childrenList[0] ?? null
   }, [selectedSessionId, childrenMap, childrenList])
 
+  // Chip chuyên gia trong transcript mở tab này kèm `sessionId` của em đó → chọn
+  // đúng em. Chỉ áp dụng một lần cho mỗi đích để người dùng vẫn tự đổi được sau.
+  const subagentsTarget = useUiStore((s) => s.tabIntentTargets.subagents)
+  const targetChildId = typeof subagentsTarget?.sessionId === 'string' ? subagentsTarget.sessionId : null
+  const appliedChildTargetRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!targetChildId || appliedChildTargetRef.current === targetChildId) return
+    if (!childrenList.some((child) => child.sessionId === targetChildId)) return
+    appliedChildTargetRef.current = targetChildId
+    setSelectedSessionId(targetChildId)
+  }, [targetChildId, childrenList])
+
   // Live poll child events từ endpoint /api/agent/sessions/{childSessionId}
   useEffect(() => {
     if (!activeChild || !activeChild.sessionId || activeChild.sessionId === 'unknown') {
@@ -346,6 +359,8 @@ export function SubagentInspectorPanel() {
                   <button
                     key={child.sessionId}
                     type="button"
+                    data-child-session-id={child.sessionId}
+                    data-selected={isSelected}
                     onClick={() => setSelectedSessionId(child.sessionId)}
                     className={`flex w-full items-center gap-2.5 rounded-lg p-2 text-left transition cursor-pointer ${
                       isSelected

@@ -24,7 +24,7 @@ class RuntimeCommands:
         settings = self.commands.settings()
         enabled = settings['enabled'] if settings['initialized'] else session['config']['skills']
         resolved = self.commands.resolve(prompt, enabled, session['config']['subagents'])
-        busy = session['status'] == 'running'
+        busy = session['status'] in {'running', 'awaiting_decision'}
         if busy and not (resolved.kind == 'control' and resolved.command in INFO | {'stop'}):
             raise ValueError('SESSION_BUSY: Turn in progress')
         result = {'status': 'running', 'invocationId': invocation_id, 'resolution': asdict(resolved)}

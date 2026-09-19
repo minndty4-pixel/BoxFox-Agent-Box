@@ -29,6 +29,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 import zipfile
 
 # ---------------------------------------------------------------------------
@@ -50,6 +51,21 @@ MAX_ZIP_PATHS = 200
 
 # Cache thumbnail nằm dưới thư mục máy sinh — cũng là thư mục bị ẩn khỏi listing.
 THUMBNAIL_DIR = WORKSPACE_ROOT / ".generated_artifacts" / "thumbnails"
+
+# Thư mục bookkeeping của box: KHÔNG hiện trong listing/zip (người dùng không tạo ra
+# chúng và không nên thấy nhiễu). `.trash` là thùng rác mềm của API delete.
+GENERATED_DIR_NAME = ".generated_artifacts"
+TRASH_DIR_NAME = ".trash"
+HIDDEN_DIR_NAMES = frozenset({GENERATED_DIR_NAME, TRASH_DIR_NAME})
+
+# Mục cấp 1 không bao giờ được xoá (thư mục gốc workspace tự nó bị chặn riêng vì
+# không có segment nào để tách tên).
+PROTECTED_PATHS = frozenset({".plans", TRASH_DIR_NAME, GENERATED_DIR_NAME})
+
+# `touch` tạo file nhỏ (rỗng hoặc nội dung ngắn) chứ không phải đường upload thứ hai.
+# Giữ trần bằng MAX_FILE_SIZE để mọi file do `touch` tạo ra vẫn đọc được qua
+# `read_content` (file lớn hơn 1 MiB vẫn bị 413 khi đọc — xem :429-461).
+MAX_TOUCH_CONTENT_BYTES = MAX_FILE_SIZE
 
 # Các segment đánh dấu "không tin được" (placeholder heuristic — xem integrity_for).
 _UNTRUSTED_SEGMENTS = frozenset(
@@ -284,6 +300,16 @@ def _open_file_fd(dir_rel: str, name: str) -> tuple[int, int, float]:
     return fd, metadata.st_size, metadata.st_mtime
 
 
+def _fd_entry_exists(dir_fd: int, name: str) -> bool:
+    """Có mục tên ``name`` trong ``dir_fd`` không (không đi theo symlink)."""
+
+    try:
+        os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        return True
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Mapping file / provenance (placeholder heuristic — đồng bộ mock frontend)
 # ---------------------------------------------------------------------------
@@ -370,8 +396,8 @@ def list_directory(rel: object) -> dict:
                     if entry.is_symlink():
                         continue
                     if entry.is_dir(follow_symlinks=False):
-                        if name == ".generated_artifacts":
-                            continue  # ẩn cache máy sinh khỏi explorer
+                        if name in HIDDEN_DIR_NAMES:
+                            continue  # ẩn cache máy sinh + thùng rác khỏi explorer
                         metadata = entry.stat(follow_symlinks=False)
                         entries.append({
                             "name": name,
@@ -705,6 +731,296 @@ def write_upload(target_dir_rel: object, filename: object, body_iter, size_hint:
 
 
 # ---------------------------------------------------------------------------
+# Ghi cấu trúc: mkdir / touch / rename / move / delete (đợt 3)
+#
+# Hợp đồng: docs/plan/next-batch-contract.md §2 (bảng route container). Mọi hàm ở
+# đây CHỈ nhận đường dẫn tương đối đi qua đúng guard có sẵn ``validate_rel_path``
+# (:153-171) và thao tác qua ``dir_fd`` + ``O_NOFOLLOW`` như phần còn lại của
+# module — không có đường nào tạo/đổi tên/di chuyển/xoá được mục ngoài
+# ``WORKSPACE_ROOT``. Không có hàm nào xoá thẳng: ``delete`` là xoá mềm vào
+# ``.trash``.
+# ---------------------------------------------------------------------------
+def _apply_agent_dir_metadata(fd: int) -> None:
+    """Thư mục do box tạo thuộc user agent (ide-proxy chạy root). Best-effort."""
+
+    try:
+        os.fchown(fd, AGENT_UID, AGENT_GID)
+    except OSError:
+        pass
+    try:
+        os.fchmod(fd, 0o750)
+    except OSError:
+        pass
+
+
+def _split_entry_path(
+    path: object, *, root_message: str, validate_name: bool = False
+) -> tuple[str, str, str]:
+    """Chuẩn hoá ``path`` qua guard có sẵn → (thư mục cha, tên, đường dẫn chuẩn hoá)."""
+
+    normalized = validate_rel_path(path)
+    segments = split_segments(normalized)
+    if not segments:
+        raise InvalidWorkspacePath(root_message)
+    dir_rel = "/".join(segments[:-1])
+    name = segments[-1]
+    if validate_name:
+        name = _validate_filename(name)
+    return dir_rel, name, f"{dir_rel}/{name}" if dir_rel else name
+
+
+def _rename_at(
+    src_fd: int, src_name: str, dst_fd: int, dst_name: str, *, source: str, target: str
+) -> None:
+    """``os.rename`` qua dir_fd, ánh xạ lỗi POSIX sang WorkspaceFileError."""
+
+    try:
+        os.rename(src_name, dst_name, src_dir_fd=src_fd, dst_dir_fd=dst_fd)
+    except FileNotFoundError:
+        raise WorkspaceNotFound(f"Không tìm thấy «{source}».")
+    except NotADirectoryError:
+        raise WorkspaceNotFound("Đường dẫn nguồn/đích không phải thư mục.")
+    except OSError as error:
+        if error.errno in (errno.EEXIST, errno.ENOTEMPTY, errno.EISDIR):
+            raise WorkspaceConflict(f"«{target}» đã tồn tại.") from error
+        if error.errno == errno.EXDEV:
+            raise WorkspaceConflict("Không di chuyển được sang ổ đĩa khác.") from error
+        if error.errno == errno.EINVAL:
+            raise WorkspaceConflict("Không di chuyển được thư mục vào chính nó.") from error
+        print(f"workspace_files: không đổi tên/di chuyển {source!r}: {error}", file=sys.stderr)
+        raise WorkspaceFileError("Không đổi tên/di chuyển được.") from error
+
+
+def make_directory(path: object, *, exist_ok: bool = False) -> dict:
+    """Tạo thư mục trong workspace (tạo cả thư mục cha còn thiếu, như ``mkdir -p``).
+
+    409 nếu đích đã tồn tại (trừ khi ``exist_ok``); 400 nếu đường dẫn là thư mục gốc.
+    """
+
+    dir_rel, name, rel = _split_entry_path(
+        path, root_message="Không tạo được thư mục gốc workspace.", validate_name=True
+    )
+    if dir_rel:
+        # Hợp đồng ví dụ `{"path": "src/new"}` — box không seed sẵn `src/`, nên chuỗi
+        # thư mục cha còn thiếu được tạo trước (cùng idiom `_ensure_dirs` của unzip).
+        _ensure_dirs("", split_segments(dir_rel))
+    parent_fd = _open_dir_fd(dir_rel)
+    created = False
+    try:
+        try:
+            os.mkdir(name, 0o750, dir_fd=parent_fd)
+            created = True
+        except FileExistsError:
+            if not exist_ok:
+                raise WorkspaceConflict(f"«{rel}» đã tồn tại.")
+            # exist_ok chỉ hợp lệ khi đích thật sự là thư mục (không phải file/symlink).
+            try:
+                existing_fd = os.open(
+                    name, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=parent_fd
+                )
+            except OSError as error:
+                raise WorkspaceConflict(f"«{rel}» đã tồn tại và không phải thư mục.") from error
+            os.close(existing_fd)
+        except OSError as error:
+            if error.errno == errno.ELOOP:
+                raise WorkspaceConflict(f"«{rel}» là liên kết tượng trưng.") from error
+            if error.errno in (errno.EACCES, errno.EROFS, errno.ENOSPC):
+                raise WorkspaceConflict(f"Không tạo được thư mục «{rel}».") from error
+            print(f"workspace_files: không tạo được thư mục {name!r}: {error}", file=sys.stderr)
+            raise WorkspaceFileError("Không tạo được thư mục.") from error
+        if created:
+            try:
+                new_fd = os.open(
+                    name, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=parent_fd
+                )
+            except OSError:
+                new_fd = None
+            if new_fd is not None:
+                _apply_agent_dir_metadata(new_fd)
+                os.close(new_fd)
+    finally:
+        os.close(parent_fd)
+    return {"path": rel, "type": "directory"}
+
+
+def touch_file(path: object, content: object = "") -> dict:
+    """Tạo file MỚI (409 nếu đã tồn tại) với nội dung text ≤ ``MAX_TOUCH_CONTENT_BYTES``.
+
+    Thư mục cha còn thiếu được tạo trước (cùng luật với ``make_directory``) để ví dụ
+    ``{"path": "src/new.md"}`` của hợp đồng chạy được trong box chưa có ``src/``.
+    """
+
+    if content is None:
+        content = ""
+    if not isinstance(content, str):
+        raise InvalidWorkspacePath("Nội dung file phải là chuỗi.")
+    raw = content.encode("utf-8")
+    if len(raw) > MAX_TOUCH_CONTENT_BYTES:
+        raise WorkspaceTooLarge(f"Nội dung vượt giới hạn {MAX_TOUCH_CONTENT_BYTES} byte.")
+    dir_rel, name, rel = _split_entry_path(
+        path, root_message="Thư mục gốc workspace không phải file.", validate_name=True
+    )
+    if dir_rel:
+        _ensure_dirs("", split_segments(dir_rel))
+    parent_fd = _open_dir_fd(dir_rel)
+    try:
+        try:
+            fd = os.open(
+                name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW, 0o640, dir_fd=parent_fd
+            )
+        except FileExistsError:
+            raise WorkspaceConflict(f"«{rel}» đã tồn tại.")
+        except OSError as error:
+            if error.errno == errno.ELOOP:
+                raise WorkspaceConflict(f"«{rel}» là liên kết tượng trưng.") from error
+            if error.errno in (errno.EACCES, errno.EROFS, errno.ENOSPC):
+                raise WorkspaceConflict(f"Không tạo được file «{rel}».") from error
+            print(f"workspace_files: không tạo được file {name!r}: {error}", file=sys.stderr)
+            raise WorkspaceFileError("Không tạo được file.") from error
+    finally:
+        os.close(parent_fd)
+    try:
+        if raw:
+            _write_full(fd, raw)
+        try:
+            os.fchown(fd, AGENT_UID, AGENT_GID)
+        except OSError:
+            pass
+        try:
+            os.fchmod(fd, 0o640)
+        except OSError:
+            pass
+    finally:
+        os.close(fd)
+    return {"path": rel, "type": "file", "size": len(raw)}
+
+
+def rename_entry(path: object, name: object) -> dict:
+    """Đổi tên trong CÙNG thư mục. 400 nếu ``name`` sai; 409 nếu đích đã tồn tại."""
+
+    dir_rel, old_name, rel = _split_entry_path(
+        path, root_message="Không đổi tên được thư mục gốc workspace."
+    )
+    # `name` là tên đơn: `_validate_filename` từ chối rỗng/`.`/`..`/`/`/`\\`/NUL.
+    new_name = _validate_filename(name)
+    new_rel = f"{dir_rel}/{new_name}" if dir_rel else new_name
+    parent_fd = _open_dir_fd(dir_rel)
+    try:
+        if _fd_entry_exists(parent_fd, new_name):
+            raise WorkspaceConflict(f"«{new_rel}» đã tồn tại.")
+        _rename_at(parent_fd, old_name, parent_fd, new_name, source=rel, target=new_rel)
+    finally:
+        os.close(parent_fd)
+    return {"path": rel, "newPath": new_rel}
+
+
+def move_entry(path: object, destination: object) -> dict:
+    """Chuyển mục vào thư mục ``destination`` (giữ nguyên tên). 404 nếu đích thiếu."""
+
+    src_dir_rel, name, rel = _split_entry_path(
+        path, root_message="Không di chuyển được thư mục gốc workspace."
+    )
+    dest_rel = validate_rel_path(destination)
+    new_rel = f"{dest_rel}/{name}" if dest_rel else name
+    src_fd = _open_dir_fd(src_dir_rel)
+    try:
+        dst_fd = _open_dir_fd(dest_rel)  # 404 nếu thư mục đích không tồn tại
+        try:
+            if _fd_entry_exists(dst_fd, name):
+                raise WorkspaceConflict(f"«{new_rel}» đã tồn tại.")
+            _rename_at(src_fd, name, dst_fd, name, source=rel, target=new_rel)
+        finally:
+            os.close(dst_fd)
+    finally:
+        os.close(src_fd)
+    return {"path": rel, "newPath": new_rel}
+
+
+def _ensure_trash_dir() -> int:
+    """fd của ``<workspace>/.trash`` (tạo nếu thiếu, chown về agent). Caller đóng fd."""
+
+    root_fd = _open_root_fd()
+    if root_fd is None:
+        raise WorkspaceNotFound("Thư mục workspace không tồn tại.")
+    created = False
+    try:
+        try:
+            return os.open(
+                TRASH_DIR_NAME, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=root_fd
+            )
+        except FileNotFoundError:
+            try:
+                os.mkdir(TRASH_DIR_NAME, 0o750, dir_fd=root_fd)
+                created = True
+            except OSError as error:
+                raise WorkspaceConflict(f"Không tạo được thư mục «{TRASH_DIR_NAME}».") from error
+            try:
+                trash_fd = os.open(
+                    TRASH_DIR_NAME, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=root_fd
+                )
+            except OSError as error:
+                raise WorkspaceFileError(
+                    f"Không mở được thư mục «{TRASH_DIR_NAME}»."
+                ) from error
+        except OSError as error:
+            if error.errno == errno.ELOOP:
+                raise WorkspaceConflict(f"«{TRASH_DIR_NAME}» là liên kết tượng trưng.") from error
+            if error.errno == errno.ENOTDIR:
+                raise WorkspaceConflict(f"«{TRASH_DIR_NAME}» không phải thư mục.") from error
+            print(f"workspace_files: không mở được {TRASH_DIR_NAME!r}: {error}", file=sys.stderr)
+            raise WorkspaceFileError(f"Không mở được thư mục «{TRASH_DIR_NAME}».") from error
+    finally:
+        os.close(root_fd)
+    if created:
+        _apply_agent_dir_metadata(trash_fd)
+    return trash_fd
+
+
+def _unique_trash_name(trash_fd: int, name: str) -> str:
+    """``<epoch>-<tên gốc>``; thêm số thứ tự khi trùng trong cùng một giây."""
+
+    stamp = int(time.time())
+    candidate = f"{stamp}-{name}"
+    counter = 0
+    while _fd_entry_exists(trash_fd, candidate):
+        counter += 1
+        if counter > 1000:
+            raise WorkspaceConflict("Thùng rác có quá nhiều bản trùng tên.")
+        candidate = f"{stamp}-{counter}-{name}"
+    return candidate
+
+
+def delete_entry(path: object) -> dict:
+    """Xoá MỀM: chuyển mục vào ``.trash/<epoch>-<tên gốc>``; trả {path, trashPath}."""
+
+    normalized = validate_rel_path(path)
+    segments = split_segments(normalized)
+    if not segments:
+        raise WorkspaceConflict("Không xoá được thư mục gốc workspace.")
+    if len(segments) == 1 and segments[0] in PROTECTED_PATHS:
+        raise WorkspaceConflict(f"«{segments[0]}» là mục được bảo vệ, không xoá được.")
+    dir_rel = "/".join(segments[:-1])
+    name = segments[-1]
+    rel = f"{dir_rel}/{name}" if dir_rel else name
+    src_fd = _open_dir_fd(dir_rel)
+    try:
+        if not _fd_entry_exists(src_fd, name):
+            raise WorkspaceNotFound(f"Không tìm thấy «{rel}».")
+        trash_fd = _ensure_trash_dir()
+        try:
+            trash_name = _unique_trash_name(trash_fd, name)
+            _rename_at(
+                src_fd, name, trash_fd, trash_name,
+                source=rel, target=f"{TRASH_DIR_NAME}/{trash_name}",
+            )
+        finally:
+            os.close(trash_fd)
+        return {"path": rel, "trashPath": f"{TRASH_DIR_NAME}/{trash_name}"}
+    finally:
+        os.close(src_fd)
+
+
+# ---------------------------------------------------------------------------
 # ZIP — dựng
 # ---------------------------------------------------------------------------
 def _read_all(fd: int, size: int) -> bytes:
@@ -731,7 +1047,7 @@ def _walk_dir_fd(rel_prefix: str, dir_fd: int, depth: int = 0):
         return
     for entry in entries:
         name = entry.name
-        if name == ".generated_artifacts":
+        if name in HIDDEN_DIR_NAMES:
             continue
         try:
             if entry.is_symlink():
@@ -859,6 +1175,10 @@ def _ensure_dirs(base_rel: str, segments: list[str]) -> None:
                     pass
             except NotADirectoryError:
                 raise WorkspaceConflict(f"«{seg}» đang là file, không tạo thư mục được.")
+            except OSError as error:
+                if error.errno == errno.ELOOP:
+                    raise WorkspaceConflict("Đường dẫn chứa liên kết tượng trưng.") from error
+                raise
             os.close(current_fd)
             current_fd = nxt
     finally:
@@ -873,11 +1193,7 @@ def _path_exists(dir_rel: str, name: str) -> bool:
     if dir_fd is None:
         return False
     try:
-        try:
-            os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-            return True
-        except FileNotFoundError:
-            return False
+        return _fd_entry_exists(dir_fd, name)
     finally:
         os.close(dir_fd)
 
