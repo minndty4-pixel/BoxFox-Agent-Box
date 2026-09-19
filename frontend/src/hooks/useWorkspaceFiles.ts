@@ -287,16 +287,59 @@ export function useWorkspaceFiles(repository?: WorkspaceRepository): UseWorkspac
     }
   }, [resolveEntry, loadList])
 
+  /**
+   * Đích của ý định mở tab Files (`tabIntentTargets.files = {path}`, hợp đồng §1):
+   * agent mở tab kèm đúng file cần xem. Ý định có thể tới lúc panel ĐÃ mở sẵn, nên
+   * phải tiêu thụ ngay tại chỗ chứ không chỉ ở lần mount như `selectedFilePath`.
+   *
+   * `selectedFilePath` (người dùng bấm chip trong transcript) là lựa chọn TRỰC
+   * TIẾP nên luôn thắng khi cả hai cùng có mặt; mỗi đích chỉ áp dụng MỘT lần để
+   * người dùng vẫn tự đổi được sau đó.
+   */
+  const filesIntentTarget = useUiStore((s) => s.tabIntentTargets.files)
+  const filesIntentPath = typeof filesIntentTarget?.path === 'string' ? filesIntentTarget.path : ''
+  const appliedIntentPathRef = useRef<string | null>(null)
+
+  const openIntentPath = useCallback(
+    (path: string) => {
+      appliedIntentPathRef.current = path
+      void loadList(parentOf(path), false).then(() => {
+        void open(path)
+      })
+    },
+    [loadList, open],
+  )
+
+  useEffect(() => {
+    if (!filesIntentPath || appliedIntentPathRef.current === filesIntentPath) return
+    // Lựa chọn trực tiếp của người dùng chưa được tiêu thụ → nhường cho nó. Đích
+    // này coi như đã xét: người dùng vừa nói rõ muốn xem gì, không kéo họ đi nơi
+    // khác ngay sau đó.
+    if (useUiStore.getState().selectedFilePath) {
+      appliedIntentPathRef.current = filesIntentPath
+      return
+    }
+    openIntentPath(filesIntentPath)
+  }, [filesIntentPath, openIntentPath])
+
   // Lần mount đầu: nếu có selectedFilePath (từ ChatPanel) → mở thư mục cha rồi
-  // mở file; ngược lại liệt kê gốc. Sau đó abort mọi request khi unmount.
+  // mở file; nếu không mà có ý định Files của agent → mở file agent chỉ định;
+  // ngược lại liệt kê gốc. Sau đó abort mọi request khi unmount.
   useEffect(() => {
     const initialFile = useUiStore.getState().selectedFilePath
+    const initialIntent = useUiStore.getState().tabIntentTargets.files
+    const initialIntentPath =
+      typeof initialIntent?.path === 'string' && initialIntent.path ? initialIntent.path : ''
     if (initialFile) {
       useUiStore.getState().clearSelectedFile()
       const parent = parentOf(initialFile)
       void loadList(parent, false).then(() => {
         void open(initialFile)
       })
+    } else if (initialIntentPath) {
+      // Cùng đường với hiệu ứng trên, nhưng chạy trước `loadList('')` để không
+      // liệt kê gốc rồi bị thay bằng thư mục cha (một lần nạp thắng theo thế hệ).
+      openIntentPath(initialIntentPath)
     } else {
       void loadList('', false)
     }

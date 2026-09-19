@@ -228,10 +228,14 @@ export function ChatPanel() {
   const handleChatScroll = useCallback(() => {
     const el = chatScrollRef.current
     if (!el) return
-    // Cuộn trong khung chat là hoạt động thật của người dùng → ý định tự mở tab
-    // của agent chỉ xếp hàng (hợp đồng §3). Không ảnh hưởng tới giao diện.
-    useUiStore.getState().noteUserActivity()
+    // Cuộn do CHÍNH MÌNH phát ra (agent mọc thêm hàng → `scrollToLatest`) không
+    // phải hoạt động của người dùng: phải thoát TRƯỚC khi ghi mốc, nếu không thì
+    // mỗi hàng agent sinh ra lại gia hạn cửa sổ rảnh 15s và ý định tự mở tab
+    // không bao giờ tới hạn (B12). Chỉ thao tác thật mới được ghi mốc (§3).
     if (programmaticScrollRef.current) return
+    // Cuộn thật trong khung chat là hoạt động thật của người dùng → ý định tự mở
+    // tab của agent chỉ xếp hàng (hợp đồng §3). Không ảnh hưởng tới giao diện.
+    useUiStore.getState().noteUserActivity()
     const atBottom = isNearBottom(el)
     followingRef.current = atBottom
     setShowJumpToLatest(!atBottom)

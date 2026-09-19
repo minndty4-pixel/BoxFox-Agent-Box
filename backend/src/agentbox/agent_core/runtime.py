@@ -529,7 +529,31 @@ class HarnessRuntime(RuntimeCommands):
         return self.store.get(session['id'])
 
 
-    def start(self, sid, prompt, image=None, route=None):
+    async def route_metadata(self, session, route):
+        """Router record của model mà route của LƯỢT trỏ tới, khi nó khác model của phiên.
+
+        `start()` là hàm đồng bộ nên người gọi async (`submit`) tra trước rồi truyền
+        vào. Trả `None` khi model không đổi (metadata đã lưu của phiên là đúng), khi
+        lượt không gửi `thinkingLevel` (không có gì phải đối chiếu), hoặc khi không
+        tra được (router tắt / client giả trong test) — lúc đó `start()` giữ nguyên
+        hành vi cũ thay vì đoán.
+        """
+        if not isinstance(route, dict) or 'thinkingLevel' not in route:
+            return None
+        model_id = route.get('modelId')
+        stored = session['config'].get('modelMetadata')
+        if isinstance(stored, dict) and stored.get('id') == model_id:
+            return None
+        lookup = getattr(self.client, 'model_metadata', None)
+        if not callable(lookup):
+            return None
+        try:
+            record = await lookup(route.get('connectionId'), model_id)
+        except Exception:
+            return None
+        return record if isinstance(record, dict) else None
+
+    def start(self, sid, prompt, image=None, route=None, route_metadata=None):
         session = self.store.get(sid)
         if session['status'] in {'running', 'awaiting_decision'}:
             raise ValueError('SESSION_BUSY: Turn in progress')
@@ -540,10 +564,17 @@ class HarnessRuntime(RuntimeCommands):
             updated = dict(route)
             metadata = session['config'].get('modelMetadata')
             metadata = metadata if isinstance(metadata, dict) else None
-            # Metadata chỉ dùng được khi nó mô tả ĐÚNG model của route này; đổi
-            # model ở lượt (route trỏ nơi khác) thì giữ hành vi cũ.
-            if metadata and updated.get('modelId') != metadata.get('id'):
-                metadata = None
+            # Metadata chỉ dùng được khi nó mô tả ĐÚNG model của route này. Route
+            # đổi model ở lượt thì KHÔNG bỏ qua kiểm tra: người gọi đã tra sẵn
+            # metadata của chính model mà route trỏ tới (`route_metadata`, cùng
+            # nguồn `/api/router/state` như lúc tạo phiên) và truyền vào đây, nên
+            # mức thinking vẫn được đối chiếu với danh sách provider công bố cho
+            # model MỚI (B13: trước đây `metadata = None` khiến mức sai được lưu
+            # nguyên văn và lượt chết ở provider). Không tra được (router tắt,
+            # model lạ) thì giữ hành vi cũ: `resolve_thinking_level` không có cơ
+            # sở để phán nên trả nguyên giá trị.
+            if metadata is None or updated.get('modelId') != metadata.get('id'):
+                metadata = route_metadata if isinstance(route_metadata, dict) else None
             if 'thinkingLevel' in updated:
                 thinking_level = resolve_thinking_level(updated['thinkingLevel'], metadata)
                 if thinking_level is None:

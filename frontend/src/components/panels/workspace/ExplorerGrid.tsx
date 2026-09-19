@@ -12,7 +12,7 @@ import { childPath } from '../../../lib/workspace/tree'
 import { previewKindFor, type WorkspaceEntry, type WorkspaceRepository } from '../../../lib/workspace'
 import type { WorkspaceStatus } from '../../../hooks/useWorkspaceFiles'
 import { acceptsPathDrop, draggedPath, startPathDrag, useDropZone } from './DragDrop'
-import { IntegrityDot, RenameInput, entryIcon, formatBytes } from './entryView'
+import { EntryLabelDots, RenameInput, entryIcon, formatBytes } from './entryView'
 
 const EMPTY_PENDING: ReadonlySet<string> = new Set()
 const EMPTY_ERRORS: ReadonlyMap<string, string> = new Map()
@@ -176,9 +176,9 @@ export function ExplorerGrid({
                   ) : (
                     <Icon className={`size-7 ${iconClass}`} />
                   )}
-                  {entry.integrity && (
-                    <IntegrityDot integrity={entry.integrity} className="absolute right-1 top-1" />
-                  )}
+                  {/* Cả hai nhãn provenance — cùng nhãn i18n với chấm của thanh
+                      công cụ (`LabelDot`), không còn chỉ integrity như trước. */}
+                  <EntryLabelDots entry={entry} className="absolute right-1 top-1" />
                 </div>
                 {isRenaming ? (
                   <RenameInput

@@ -74,7 +74,10 @@ class RuntimeCommands:
             self.store.emit(sid, 'assistant', {'text': result.get('output', ''), 'final': True, 'control': True})
         elif resolved.kind == 'message':
             self._next_turn_skills(session, enabled)
-            self.start(sid, prompt, image, route)
+            # Route của lượt có thể đổi model; tra metadata của CHÍNH model đó (cùng
+            # nguồn như lúc tạo phiên) để `start()` vẫn đối chiếu được `thinkingLevel`
+            # thay vì bỏ qua kiểm tra (B13).
+            self.start(sid, prompt, image, route, await self.route_metadata(session, route))
         else:
             self._next_turn_skills(session, enabled)
             session = self.store.get(sid)

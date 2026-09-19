@@ -6,10 +6,15 @@
 import { File, FileCode, FileText, Film, Folder, Image as ImageIcon, Music } from 'lucide-react'
 import { useRef, type ComponentType } from 'react'
 import { useT } from '../../../i18n/context'
-import { INTEGRITY_META } from '../../../lib/labels'
+import { CONFIDENTIALITY_META, INTEGRITY_META } from '../../../lib/labels'
 import { previewKindFor, type WorkspaceEntry } from '../../../lib/workspace'
-import { ConfidentialityBadge, IntegrityBadge } from '../../LabelDot'
-import type { Integrity } from '../../../types/labels'
+import {
+  ConfidentialityBadge,
+  IntegrityBadge,
+  confidentialityDotTitle,
+  integrityDotTitle,
+} from '../../LabelDot'
+import type { Confidentiality, Integrity } from '../../../types/labels'
 
 export function formatBytes(bytes: number): string {
   if (!bytes) return '0 B'
@@ -55,15 +60,13 @@ export function entryIcon(entry: EntryLike): EntryIcon {
 /**
  * Chấm provenance cho file workspace. Dùng màu của `INTEGRITY_META` (emerald =
  * sạch, amber = ngoài/chưa xác minh — GIỮ amber theo quy ước app, không đổi đỏ)
- * kèm `title` tiếng Việt để không bao giờ chỉ truyền bằng màu.
+ * kèm `title` lấy từ CÙNG khoá i18n với chấm của thanh công cụ (`LabelDot`), nên
+ * hai bề mặt không bao giờ lệch ngôn ngữ (B2c) và không bao giờ chỉ truyền bằng màu.
  */
 export function IntegrityDot({ integrity, className = '' }: { integrity: Integrity; className?: string }) {
   const t = useT()
   const meta = INTEGRITY_META[integrity]
-  const title =
-    integrity === 'duoc_nguoi_dung_cho_phep'
-      ? t('workspace.integrity.clean')
-      : t('workspace.integrity.unverified')
+  const title = integrityDotTitle(integrity, t)
   return (
     <span
       className={`size-2 shrink-0 rounded-full ${meta.dotClass} ${className}`}
@@ -71,6 +74,48 @@ export function IntegrityDot({ integrity, className = '' }: { integrity: Integri
       aria-label={title}
       role="img"
     />
+  )
+}
+
+/** Chấm confidentiality của một file — cùng nhãn i18n và cùng mẫu chấm với integrity. */
+export function ConfidentialityDot({
+  confidentiality,
+  className = '',
+}: {
+  confidentiality: Confidentiality
+  className?: string
+}) {
+  const t = useT()
+  const meta = CONFIDENTIALITY_META[confidentiality]
+  const title = confidentialityDotTitle(confidentiality, t)
+  return (
+    <span
+      className={`size-2 shrink-0 rounded-full ${meta.dotClass} ${className}`}
+      title={title}
+      aria-label={title}
+      role="img"
+    />
+  )
+}
+
+/**
+ * Cặp chấm provenance cho thẻ lưới Explorer: hiện CẢ integrity LẪN confidentiality
+ * (trước đây thẻ lưới chỉ có integrity — B2c). Giữ nguyên mẫu chấm của
+ * `IntegrityDot`/`LabelDot`, chỉ gộp hai chấm vào một cụm.
+ */
+export function EntryLabelDots({
+  entry,
+  className = '',
+}: {
+  entry: Pick<WorkspaceEntry, 'integrity' | 'confidentiality'>
+  className?: string
+}) {
+  if (!entry.integrity && !entry.confidentiality) return null
+  return (
+    <span className={`flex shrink-0 items-center gap-1 ${className}`}>
+      {entry.integrity && <IntegrityDot integrity={entry.integrity} />}
+      {entry.confidentiality && <ConfidentialityDot confidentiality={entry.confidentiality} />}
+    </span>
   )
 }
 

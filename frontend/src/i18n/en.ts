@@ -265,6 +265,17 @@ const en: SameShape<typeof vi> = {
       clean: 'Clean — within user-authorized scope',
       unverified: 'Out of scope — unverified',
     },
+    /**
+     * Word labels for the confidentiality axis — shared by every dot/badge
+     * (`LabelDot`, the Explorer grid card dots) so the two surfaces can never
+     * disagree on language. The axis words themselves stay in
+     * `fileTree.integrityLabel` / `fileTree.confidentialityLabel`.
+     */
+    confidentiality: {
+      public: 'Public',
+      internal: 'Internal',
+      secret: 'Secret',
+    },
   },
   terminal: {
     title: 'Terminal',

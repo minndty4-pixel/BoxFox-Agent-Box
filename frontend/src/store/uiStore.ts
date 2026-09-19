@@ -66,6 +66,22 @@ export const AUTO_OPEN_IDLE_MS = 15000
 /** Trần số ý định chờ giữ lại; ý định cũ nhất bị bỏ trước (hợp đồng §3). */
 export const MAX_PENDING_TAB_INTENTS = 20
 
+/**
+ * Hẹn một lần thử mở lại hàng đợi đúng lúc cửa sổ rảnh kết thúc (B12).
+ *
+ * Không giữ trạng thái ở cấp module: mỗi ý định bị chặn vì người dùng đang bận
+ * tự hẹn một lần thử, và mỗi lần thử vẫn bị chặn sẽ hẹn tiếp cho hết cửa sổ
+ * HIỆN TẠI — nhờ vậy dù người dùng tiếp tục gõ/cuộn thì ý định cũng không bị bỏ
+ * quên (trước đây hàng đợi không có ai mở hộ). Số lần thử bị chặn là rất nhỏ
+ * (tối đa 20 ý định trong hàng đợi, mỗi lần thử cách nhau trọn một cửa sổ rảnh).
+ */
+function armIntentFlush(get: () => UiState): void {
+  const delay = Math.max(0, get().lastUserActivityAt + AUTO_OPEN_IDLE_MS - Date.now()) + 1
+  setTimeout(() => {
+    get().flushPendingIntents()
+  }, delay)
+}
+
 /** Cờ bật/tắt của người dùng, lưu cùng chỗ với `boxfox_theme`. */
 function getInitialFlag(key: string, fallback: boolean): boolean {
   if (typeof window === 'undefined') return fallback
@@ -137,6 +153,13 @@ interface UiState {
   /** Ý định bị chặn, mới nhất ở cuối; tab đích hiện huy hiệu đếm. */
   pendingIntents: TabIntent[]
   requestTabIntent: (intent: TabIntent) => 'opened' | 'queued'
+  /**
+   * Mở lại các ý định đang xếp hàng khi điều kiện chặn đã hết (B12): hết cửa sổ
+   * rảnh, hoặc người dùng vừa bật lại công tắc. Vẫn đi qua ĐÚNG luật §3 tại thời
+   * điểm gọi (tab bị ghim thì ở lại hàng đợi), và chỉ xoá những ý định thật sự
+   * được mở.
+   */
+  flushPendingIntents: () => void
   /** Ngữ cảnh của lần mở tab gần nhất, cho panel tự chọn đúng mục. */
   tabIntentTargets: Partial<Record<PanelTabId, Record<string, unknown> | null>>
 
@@ -277,11 +300,16 @@ export const useUiStore = create<UiState>((set, get) => ({
   setAutoOpenTabs: (enabled) => {
     if (typeof localStorage !== 'undefined') localStorage.setItem(AUTO_OPEN_TABS_KEY, String(enabled))
     set({ autoOpenTabs: enabled })
+    // Công tắc là điều kiện 1 của §3: bật lại thì hàng đợi phải được mở, không
+    // để nó nằm đó chờ người dùng tình cờ bấm đúng tab (B12).
+    if (enabled) get().flushPendingIntents()
   },
   autoOpenOnlyWhenIdle: getInitialFlag(AUTO_OPEN_IDLE_ONLY_KEY, true),
   setAutoOpenOnlyWhenIdle: (enabled) => {
     if (typeof localStorage !== 'undefined') localStorage.setItem(AUTO_OPEN_IDLE_ONLY_KEY, String(enabled))
     set({ autoOpenOnlyWhenIdle: enabled })
+    // Tắt "chỉ khi rảnh" là điều kiện 3 hết chặn → mở luôn hàng đợi.
+    if (!enabled) get().flushPendingIntents()
   },
 
   pendingIntents: [],
@@ -296,10 +324,34 @@ export const useUiStore = create<UiState>((set, get) => ({
     if (!state.autoOpenTabs) return queue()
     if (state.pinnedTab === intent.tab) return queue()
     if (state.autoOpenOnlyWhenIdle && Date.now() - state.lastUserActivityAt < AUTO_OPEN_IDLE_MS) {
+      // Chỉ bị chặn vì người dùng đang bận → hẹn mở lại khi cửa sổ rảnh kết thúc.
+      armIntentFlush(get)
       return queue()
     }
     state.openTab(intent.tab, intent.target ?? null)
     return 'opened' as const
+  },
+  flushPendingIntents: () => {
+    const state = get()
+    if (state.pendingIntents.length === 0) return
+    // Điều kiện 1: công tắc tắt — không có gì để làm, hàng đợi chờ lần bật lại.
+    if (!state.autoOpenTabs) return
+    // Điều kiện 3: người dùng vừa hoạt động lại → hẹn tiếp cho hết cửa sổ hiện
+    // tại (nếu không, một lần thử trượt là ý định bị bỏ quên vĩnh viễn).
+    if (state.autoOpenOnlyWhenIdle && Date.now() - state.lastUserActivityAt < AUTO_OPEN_IDLE_MS) {
+      armIntentFlush(get)
+      return
+    }
+    // Điều kiện 2: tab người dùng đã ghim thì KHÔNG bao giờ bị cướp — ý định của
+    // nó ở lại hàng đợi (mở tab đó bằng tay vẫn là cách tiêu thụ nó).
+    const openable: PanelTabId[] = []
+    for (const intent of state.pendingIntents) {
+      if (intent.tab === state.pinnedTab) continue
+      if (!openable.includes(intent.tab)) openable.push(intent.tab)
+    }
+    // `openTab` tự lấy đích của ý định MỚI NHẤT của tab đó và tự xoá hàng đợi của
+    // đúng tab ấy — nên chỉ những ý định thật sự được mở mới biến mất.
+    for (const tab of openable) get().openTab(tab)
   },
   tabIntentTargets: {},
 

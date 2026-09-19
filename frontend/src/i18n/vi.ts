@@ -265,6 +265,17 @@ const vi = {
       clean: 'Sạch — trong phạm vi người dùng cho phép',
       unverified: 'Ngoài phạm vi — chưa xác minh',
     },
+    /**
+     * Nhãn chữ của trục confidentiality — dùng CHUNG cho mọi chấm/huy hiệu
+     * (`LabelDot`, chấm trên thẻ lưới Explorer) để hai bề mặt không lệch ngôn ngữ.
+     * Từ của trục (Integrity/Confidentiality) nằm ở `fileTree.integrityLabel` /
+     * `fileTree.confidentialityLabel` như trước.
+     */
+    confidentiality: {
+      public: 'Công khai',
+      internal: 'Nội bộ',
+      secret: 'Bí mật',
+    },
   },
   terminal: {
     title: 'Terminal',

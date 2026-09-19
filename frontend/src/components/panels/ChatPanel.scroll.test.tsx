@@ -366,3 +366,73 @@ describe('ChatPanel — vị trí đọc theo từng phiên (đợt 5)', () => {
     expect(offsets[OTHER_CHAT]).toBe(500)
   })
 })
+
+/**
+ * B12(a) — cửa sổ 15 giây của luật tự mở tab (§3) chỉ được gia hạn bởi thao tác
+ * THẬT của người dùng. Cuộn do chính app phát ra (agent mọc thêm hàng →
+ * `scrollToLatest`) không phải thao tác của người dùng; nếu tính nhầm thì agent
+ * vừa stream một hàng là tự khoá cửa sổ của chính nó và tab không bao giờ mở.
+ */
+describe('ChatPanel — cuộn tự động không phải hoạt động người dùng (B12)', () => {
+  it('sự kiện `scroll` trong cửa sổ cuộn tự động không ghi mốc hoạt động', async () => {
+    seedEvents(3)
+    const host = render(<ChatPanel />)
+    const scroller = scrollHost(host)
+    await act(async () => {
+      for (let i = 0; i < 6; i++) await Promise.resolve()
+    })
+    // `scrollToLatest` vừa chạy (bám đáy) ⇒ đang trong cửa sổ 400ms.
+    expect(scrollIntoViewMock).toHaveBeenCalled()
+
+    act(() => {
+      scroller.dispatchEvent(new Event('scroll', { bubbles: true }))
+    })
+
+    expect(useUiStore.getState().lastUserActivityAt).toBe(0)
+  })
+
+  it('agent stream nhiều hàng (nhiều cú cuộn tự động) vẫn không gia hạn cửa sổ', async () => {
+    seedEvents(2)
+    const host = render(<ChatPanel />)
+    const scroller = scrollHost(host)
+
+    for (const count of [4, 6, 8, 10]) {
+      act(() => {
+        seedEvents(count)
+      })
+      act(() => {
+        scroller.dispatchEvent(new Event('scroll', { bubbles: true }))
+      })
+    }
+
+    expect(useUiStore.getState().lastUserActivityAt).toBe(0)
+    // Ý định của agent vì thế mở được NGAY, không bị xếp hàng chờ một cửa sổ
+    // sống mãi vì chính các hàng của agent.
+    let outcome = ''
+    act(() => {
+      useUiStore.setState({ autoOpenTabs: true, autoOpenOnlyWhenIdle: true })
+      outcome = useUiStore
+        .getState()
+        .requestTabIntent({ tab: 'decisions', target: { requestId: 'r1' }, reason: 'decision_requested' })
+    })
+    expect(outcome).toBe('opened')
+  })
+
+  it('cuộn thật của người dùng (sau cửa sổ tự động) vẫn ghi mốc', async () => {
+    seedEvents(2)
+    const host = render(<ChatPanel />)
+    const scroller = scrollHost(host)
+    await waitForProgrammaticScrollWindow()
+
+    userScrollsTo(scroller, 120)
+
+    expect(useUiStore.getState().lastUserActivityAt).toBeGreaterThan(0)
+    let outcome = ''
+    act(() => {
+      outcome = useUiStore
+        .getState()
+        .requestTabIntent({ tab: 'decisions', target: { requestId: 'r1' }, reason: 'decision_requested' })
+    })
+    expect(outcome).toBe('queued')
+  })
+})

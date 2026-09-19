@@ -1,6 +1,6 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useWorkspaceFiles } from './useWorkspaceFiles'
 import type { UseWorkspaceFilesResult } from './useWorkspaceFiles'
 import { useUiStore } from '../store/uiStore'
@@ -69,10 +69,10 @@ async function settle() {
   })
 }
 
-async function mount(repository: WorkspaceRepository) {
+async function mount(repository: WorkspaceRepository, options?: { keepSelection?: boolean }) {
   ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   // Tránh selectedFilePath còn sót từ test trước can thiệp vào mount đầu.
-  useUiStore.getState().clearSelectedFile()
+  if (!options?.keepSelection) useUiStore.getState().clearSelectedFile()
   const host = document.createElement('div')
   document.body.append(host)
   const root = createRoot(host)
@@ -286,6 +286,108 @@ describe('useWorkspaceFiles', () => {
     })
     expect(hook.state.mode).toBe('tree')
     expect(hook.state.previewPath).toBeNull()
+    await hook.unmount()
+  })
+})
+
+/**
+ * B6 — ý định mở tab Files của agent (`tabIntentTargets.files = {path}`, hợp đồng
+ * §1) phải được TIÊU THỤ: mở tab kèm file cần xem, không chỉ mở tab trống.
+ */
+describe('useWorkspaceFiles — đích của ý định Files (B6)', () => {
+  afterEach(() => {
+    useUiStore.setState({ tabIntentTargets: {}, selectedFilePath: null })
+  })
+
+  /** Đặt đích ý định như `harnessChatStore`/`openTab` làm khi agent gợi ý tab. */
+  async function setFilesIntent(path: string | null) {
+    await act(async () => {
+      useUiStore.setState({ tabIntentTargets: path ? { files: { path } } : {} })
+    })
+    await settle()
+  }
+
+  it('panel đã mở sẵn: ý định Files mở đúng file agent chỉ định', async () => {
+    const repo = makeRepo()
+    const hook = await mount(repo)
+    await settle()
+    expect(hook.state.cwd).toBe('')
+
+    await setFilesIntent('src/parser.py')
+
+    expect(hook.state.cwd).toBe('src')
+    expect(hook.state.previewPath).toBe('src/parser.py')
+    expect(hook.state.previewEntry?.name).toBe('parser.py')
+    expect(repo.readText).toHaveBeenCalledWith('src/parser.py', expect.any(AbortSignal))
+    await hook.unmount()
+  })
+
+  it('mount khi ý định đang chờ: mở thẳng file đó, không liệt kê gốc trước', async () => {
+    const repo = makeRepo()
+    await setFilesIntent('src/auth.py')
+    const hook = await mount(repo)
+    await settle()
+
+    expect(hook.state.cwd).toBe('src')
+    expect(hook.state.previewPath).toBe('src/auth.py')
+    expect(repo.list).not.toHaveBeenCalledWith('', expect.anything())
+    await hook.unmount()
+  })
+
+  it('mỗi đích chỉ áp dụng một lần — người dùng vẫn tự đổi được sau đó', async () => {
+    const repo = makeRepo()
+    const hook = await mount(repo)
+    await settle()
+
+    await setFilesIntent('src/parser.py')
+    expect(hook.state.previewPath).toBe('src/parser.py')
+
+    await act(async () => {
+      hook.state.navigateTo('docs')
+    })
+    await settle()
+    expect(hook.state.previewPath).toBeNull()
+
+    // CÙNG đường dẫn được ghi lại (poll mới dựng lại object) → không kéo người dùng về.
+    await setFilesIntent('src/parser.py')
+    expect(hook.state.previewPath).toBeNull()
+    expect(hook.state.cwd).toBe('docs')
+
+    // Đích MỚI thì vẫn được tôn trọng.
+    await setFilesIntent('App.tsx')
+    expect(hook.state.previewPath).toBe('App.tsx')
+    await hook.unmount()
+  })
+
+  it('lựa chọn trực tiếp của người dùng (`selectedFilePath`) thắng ý định của agent', async () => {
+    const repo = makeRepo()
+    await act(async () => {
+      useUiStore.setState({ selectedFilePath: 'plan.md', tabIntentTargets: { files: { path: 'src/parser.py' } } })
+    })
+    const hook = await mount(repo, { keepSelection: true })
+    await settle()
+
+    expect(hook.state.previewPath).toBe('plan.md')
+    expect(hook.state.cwd).toBe('')
+    expect(useUiStore.getState().selectedFilePath).toBeNull()
+    // Đích của agent không được áp SAU khi lựa chọn của người dùng đã tiêu thụ.
+    expect(hook.state.cwd).toBe('')
+    expect(repo.list).not.toHaveBeenCalledWith('src', expect.anything())
+    await hook.unmount()
+  })
+
+  it('đích không có `path` (target null) thì không mở gì thêm', async () => {
+    const repo = makeRepo()
+    const hook = await mount(repo)
+    await settle()
+
+    await act(async () => {
+      useUiStore.setState({ tabIntentTargets: { files: {} } })
+    })
+    await settle()
+
+    expect(hook.state.previewPath).toBeNull()
+    expect(hook.state.cwd).toBe('')
     await hook.unmount()
   })
 })
