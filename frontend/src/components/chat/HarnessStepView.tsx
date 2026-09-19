@@ -13,6 +13,9 @@ import {
   Sparkles,
   Copy,
   Check,
+  Hexagon,
+  X,
+  Maximize2,
 } from 'lucide-react'
 import type { HarnessEvent } from '../../store/harnessChatStore'
 import type { ProviderSnapshot } from '../../types/provider'
@@ -25,6 +28,8 @@ interface HarnessStepViewProps {
   events: HarnessEvent[]
   status: string
   error: string | null
+  connectionWarning?: string | null
+  onDismissWarning?: () => void
   onOpenLightbox?: (media: LightboxMediaProps) => void
   snapshot?: ProviderSnapshot | null
   selection?: RouterChatSelection | null
@@ -32,9 +37,11 @@ interface HarnessStepViewProps {
 
 interface HarnessTurn {
   id: string
+  modelChange?: { from: string; to: string } | null
   userEvent: HarnessEvent | null
   thought: string | null
   steps: HarnessEvent[]
+  streamingText?: string | null
   finalAssistant: HarnessEvent | null
   usage: {
     prompt_tokens?: number
@@ -51,6 +58,7 @@ interface HarnessTurn {
   startTime: number
   endTime: number
   isCompleted: boolean
+  error?: string | null
 }
 
 function toMs(t?: number): number {
@@ -161,6 +169,8 @@ export function HarnessStepView({
   events,
   status,
   error,
+  connectionWarning,
+  onDismissWarning,
   onOpenLightbox,
   snapshot,
   selection,
@@ -171,15 +181,23 @@ export function HarnessStepView({
   const turns = useMemo(() => {
     const list: HarnessTurn[] = []
     let current: HarnessTurn | null = null
+    let pendingModelChange: { from: string; to: string } | null = null
 
     for (const event of events) {
+      if (event.type === 'model_change') {
+        pendingModelChange = { from: String(event.data.from || ''), to: String(event.data.to || '') }
+        continue
+      }
+
       if (event.type === 'user') {
         if (current) list.push(current)
         current = {
           id: `turn_${event.seq}`,
+          modelChange: pendingModelChange,
           userEvent: event,
           thought: null,
           steps: [],
+          streamingText: null,
           finalAssistant: null,
           usage: null,
           target: null,
@@ -188,15 +206,18 @@ export function HarnessStepView({
           endTime: event.created,
           isCompleted: false,
         }
+        pendingModelChange = null
         continue
       }
 
       if (!current) {
         current = {
           id: `turn_initial`,
+          modelChange: pendingModelChange,
           userEvent: null,
           thought: null,
           steps: [],
+          streamingText: null,
           finalAssistant: null,
           usage: null,
           target: null,
@@ -205,6 +226,7 @@ export function HarnessStepView({
           endTime: event.created,
           isCompleted: false,
         }
+        pendingModelChange = null
       }
 
       current.endTime = Math.max(current.endTime, event.created)
@@ -214,6 +236,8 @@ export function HarnessStepView({
       } else if (event.type === 'usage') {
         current.usage = event.data.usage as any
         current.target = (event.data.target as any) || (event.data.model ? { modelId: String(event.data.model) } : null)
+      } else if (event.type === 'assistant_delta') {
+        current.streamingText = String(event.data.text ?? '')
       } else if (event.type === 'assistant') {
         if (event.data.thought) {
           current.thought = String(event.data.thought)
@@ -227,6 +251,9 @@ export function HarnessStepView({
         }
       } else if (event.type === 'finish') {
         current.finish = event
+        current.isCompleted = true
+      } else if (event.type === 'error') {
+        current.error = String(event.data?.message ?? 'Turn execution error')
         current.isCompleted = true
       } else {
         current.steps.push(event)
@@ -256,9 +283,26 @@ export function HarnessStepView({
         )
       })}
 
-      {/* Global Error: borderless plain red text matching agent response text */}
-      {error && (
-        <div className="py-2 text-xs text-rose-400 font-sans leading-relaxed select-text animate-in fade-in duration-150">
+      {/* Provider Connection Warning / Error: báo cùng chữ đỏ inline, không tạo box mới, tự động ẩn khi chat mới / đang chạy */}
+      {!isBusy && connectionWarning && (
+        <div className="flex items-center justify-between gap-2 py-1 text-xs text-rose-400 font-sans leading-relaxed select-text animate-in fade-in duration-150">
+          <span className="flex-1">{connectionWarning}</span>
+          {onDismissWarning && (
+            <button
+              type="button"
+              onClick={onDismissWarning}
+              className="text-zinc-500 hover:text-zinc-300 transition p-0.5 rounded cursor-pointer shrink-0"
+              title="Đóng cảnh báo"
+            >
+              <X className="size-3.5" />
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Global Error: only show if the session is currently failed AND error is not already shown in any turn AND not busy */}
+      {!isBusy && status === 'failed' && error && !turns.some(t => t.error === error) && (
+        <div className="py-1.5 text-xs text-rose-400 font-sans leading-relaxed select-text animate-in fade-in duration-150">
           {error}
         </div>
       )}
@@ -304,6 +348,56 @@ function TurnBlock({
   const toolEnds = turn.steps.filter((e) => e.type === 'tool_end')
   const activeCall = toolStarts.find((s) => !toolEnds.some((e) => e.data.id === s.data.id))
 
+  // Trích xuất ảnh chụp màn hình trực tiếp từ các tool bước thực thi hoặc yêu cầu screenshot
+  const capturedScreenshots = useMemo(() => {
+    const list: Array<{
+      id: string
+      src: string
+      caption: string
+      artifactPath?: string
+      sourceUrl?: string
+    }> = []
+
+    for (const end of toolEnds) {
+      const name = String(end.data.name ?? '')
+      const args = end.data.args as Record<string, unknown> | null
+      const res = end.data.result
+      const resObj = res && typeof res === 'object' ? (res as Record<string, unknown>) : null
+      const artifactPath = typeof resObj?.artifact === 'string' ? resObj.artifact : null
+      const hasImage = typeof resObj?.image === 'string'
+      const mime = typeof resObj?.mime === 'string' ? resObj.mime : 'image/png'
+
+      let imgSrc: string | null = hasImage ? `data:${mime};base64,${resObj!.image}` : null
+      if (
+        !imgSrc &&
+        artifactPath &&
+        (artifactPath.endsWith('.png') ||
+          artifactPath.endsWith('.jpg') ||
+          artifactPath.endsWith('.jpeg') ||
+          artifactPath.endsWith('.webp') ||
+          artifactPath.endsWith('.svg'))
+      ) {
+        const relPath = artifactPath.replace(/^\/home\/agent\/workspace\//, '')
+        imgSrc = `/__box/file/media?path=${encodeURIComponent(relPath)}`
+      }
+
+      if (imgSrc) {
+        list.push({
+          id: `ss_${end.seq}`,
+          src: imgSrc,
+          caption:
+            name === 'browser_use'
+              ? 'Browser Page Screenshot'
+              : 'Sandbox Desktop Screen Capture',
+          artifactPath: artifactPath || undefined,
+          sourceUrl: typeof args?.url === 'string' ? args.url : undefined,
+        })
+      }
+    }
+
+    return list
+  }, [toolEnds])
+
   // Luôn hiển thị thanh Worked for Xs nếu đã có hoạt động hoặc đang chạy
   const hasThinkingSteps = turn.steps.length > 0 || Boolean(turn.thought) || isTurnBusy
 
@@ -327,6 +421,18 @@ function TurnBlock({
 
   return (
     <div className="space-y-4">
+      {/* 0. Model Changed Notice (if model was changed before this turn) */}
+      {turn.modelChange && (
+        <div className="flex items-center justify-center gap-2 py-1.5 select-none animate-in fade-in duration-200">
+          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-panel2 border border-line text-zinc-400 text-[11px] shadow-2xs">
+            <Hexagon className="size-3.5 text-brand" />
+            <span>
+              Model changed from <strong className="text-zinc-200 font-medium">{turn.modelChange.from}</strong> to <strong className="text-zinc-200 font-medium">{turn.modelChange.to}</strong>
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* 1. User Prompt Bubble — Căn phải, chiếm tối đa 2/3 khung chat */}
       {turn.userEvent && (
         <div className="flex flex-col items-end gap-1.5 ml-auto max-w-[68%]">
@@ -467,19 +573,70 @@ function TurnBlock({
         </div>
       )}
 
-      {/* 3. Assistant Final Response & Model Header */}
-      {turn.finalAssistant && (
+      {/* 2.5 Inline Captured Screenshots — Nhả ảnh trực tiếp ra đoạn chat */}
+      {capturedScreenshots.length > 0 && (
+        <div className="space-y-2.5 max-w-2xl pl-0.5 my-2 animate-in fade-in slide-in-from-bottom-2 duration-200">
+          <div className="flex items-center justify-between text-xs text-muted select-none">
+            <div className="flex items-center gap-1.5 font-semibold text-fg">
+              <Camera className="size-3.5 text-brand" />
+              <span>
+                Sandbox Screen Capture{capturedScreenshots.length > 1 ? ` (${capturedScreenshots.length})` : ''}
+              </span>
+            </div>
+            <span className="text-[10px] text-zinc-500 font-mono">1280 × 720 · PNG</span>
+          </div>
+          <div className="grid grid-cols-1 gap-3">
+            {capturedScreenshots.map((item, idx) => (
+              <div
+                key={item.id || idx}
+                className="group relative overflow-hidden rounded-xl border border-line bg-panel2 shadow-xs transition hover:border-brand/50 hover:shadow-md cursor-pointer"
+                onClick={() => onOpenLightbox?.({ src: item.src, caption: item.caption || 'Sandbox Screen Capture' })}
+                title="Nhấp để phóng to / tải về"
+              >
+                <img
+                  src={item.src}
+                  alt={item.caption || 'Sandbox Screen Capture'}
+                  onError={(e) => {
+                    (e.currentTarget as HTMLElement).style.display = 'none'
+                  }}
+                  className="w-full object-contain max-h-96 rounded-lg transition group-hover:scale-[1.01]"
+                />
+                <div className="absolute top-2 right-2 flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition bg-black/75 backdrop-blur-xs px-2.5 py-1 rounded-md text-[11px] text-white shadow-xs">
+                  <Maximize2 className="size-3 text-zinc-200" />
+                  <span>Phóng to</span>
+                </div>
+                {item.artifactPath && (
+                  <div className="px-3 py-1.5 border-t border-line/40 bg-panel/80 text-[10px] text-zinc-400 font-mono truncate flex items-center justify-between">
+                    <span className="truncate">{item.artifactPath}</span>
+                    <span className="text-brand shrink-0 ml-2">Click để phóng to</span>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 3. Assistant Response & Model Header (Supports both live streamingText and finalAssistant) */}
+      {(turn.finalAssistant || turn.streamingText) && (
         <div className="space-y-1.5 pl-0.5">
           {/* Model Info Header */}
           <div className="flex items-center gap-1.5 text-[11px] text-muted select-none">
             <ProviderIcon providerId={providerId} className="size-3.5" />
             <span className="font-semibold text-fg">{targetModelId}</span>
             <span className="text-zinc-500">·</span>
-            <span>{formatTime(turn.finalAssistant.created)}</span>
-            <span className="flex items-center gap-1 text-emerald-400 font-medium">
-              <CheckCircle2 className="size-3" />
-              <span>done</span>
-            </span>
+            <span>{formatTime(turn.finalAssistant?.created || turn.endTime)}</span>
+            {turn.finalAssistant ? (
+              <span className="flex items-center gap-1 text-emerald-400 font-medium">
+                <CheckCircle2 className="size-3" />
+                <span>done</span>
+              </span>
+            ) : (
+              <span className="flex items-center gap-1 text-brand font-medium animate-pulse">
+                <Loader2 className="size-3 animate-spin" />
+                <span>streaming</span>
+              </span>
+            )}
 
             {/* Token Usage Metrics (↑ prompt_tokens ↓ completion_tokens) */}
             {turn.usage && (
@@ -495,23 +652,32 @@ function TurnBlock({
             )}
 
             {/* Copy Response Button */}
-            <button
-              type="button"
-              onClick={handleCopyAssistant}
-              className="ml-auto hover:text-fg text-muted transition cursor-pointer p-0.5"
-              title="Copy response"
-            >
-              {copiedAssistant ? <Check className="size-3 text-emerald-500" /> : <Copy className="size-3" />}
-            </button>
+            {turn.finalAssistant && (
+              <button
+                type="button"
+                onClick={handleCopyAssistant}
+                className="ml-auto hover:text-fg text-muted transition cursor-pointer p-0.5"
+                title="Copy response"
+              >
+                {copiedAssistant ? <Check className="size-3 text-emerald-500" /> : <Copy className="size-3" />}
+              </button>
+            )}
           </div>
 
           {/* Assistant Text with Progressive Typewriter Reveal */}
           <div className="max-w-3xl text-sm text-fg leading-relaxed">
             <ProgressiveMarkdown
-              content={String(turn.finalAssistant.data.text ?? '')}
-              isLive={isTurnBusy || (!turn.isCompleted && Date.now() - toMs(turn.endTime) < 5000)}
+              content={String(turn.finalAssistant?.data?.text ?? turn.streamingText ?? '')}
+              isLive={!turn.isCompleted || (Date.now() - toMs(turn.endTime) < 4000)}
             />
           </div>
+        </div>
+      )}
+
+      {/* 4. Turn Error: Rendered cleanly within the specific turn where it occurred */}
+      {turn.error && (
+        <div className="py-2 text-xs text-rose-400 font-sans leading-relaxed select-text animate-in fade-in duration-150">
+          {turn.error}
         </div>
       )}
     </div>
@@ -535,10 +701,12 @@ function ProgressiveMarkdown({
     }
 
     if (displayedLength < content.length) {
-      const step = Math.max(3, Math.ceil((content.length - displayedLength) / 20))
+      // Natural cadence: between 2 and 8 characters per tick (approx 1 word every 1-2 ticks)
+      const remaining = content.length - displayedLength
+      const step = Math.min(remaining, Math.max(2, Math.ceil(remaining / 12)))
       const timer = window.setTimeout(() => {
         setDisplayedLength((prev) => Math.min(content.length, prev + step))
-      }, 16)
+      }, 18)
       return () => window.clearTimeout(timer)
     }
   }, [content, displayedLength, isLive])
@@ -550,7 +718,7 @@ function ProgressiveMarkdown({
     <div className="relative">
       <MarkdownRenderer content={currentText} />
       {isTyping && (
-        <span className="inline-block size-1.5 rounded-full bg-brand animate-ping ml-1 align-middle" />
+        <span className="inline-block w-1.5 h-3.5 bg-brand animate-pulse ml-0.5 align-middle rounded-xs" />
       )}
     </div>
   )
@@ -607,7 +775,11 @@ function CompletedToolSubItem({
   const artifactPath = typeof resultObj?.artifact === 'string' ? resultObj.artifact : null
   const hasImage = typeof resultObj?.image === 'string'
   const mime = typeof resultObj?.mime === 'string' ? resultObj.mime : 'image/png'
-  const imgSrc = hasImage ? `data:${mime};base64,${resultObj.image}` : null
+  let imgSrc = hasImage ? `data:${mime};base64,${resultObj.image}` : null
+  if (!imgSrc && artifactPath && (artifactPath.endsWith('.png') || artifactPath.endsWith('.jpg') || artifactPath.endsWith('.webp') || artifactPath.endsWith('.svg'))) {
+    const relPath = artifactPath.replace(/^\/home\/agent\/workspace\//, '')
+    imgSrc = `/__box/file/media?path=${encodeURIComponent(relPath)}`
+  }
 
   return (
     <div className="space-y-1">
@@ -644,15 +816,19 @@ function CompletedToolSubItem({
               <img
                 src={imgSrc}
                 alt="Captured Display"
-                onClick={() => onOpenLightbox?.({ src: imgSrc, caption: 'Sandbox Screen Capture' })}
+                onError={(e) => {
+                  (e.currentTarget as HTMLElement).style.display = 'none'
+                }}
+                onClick={() => onOpenLightbox?.({ src: imgSrc!, caption: 'Sandbox Screen Capture' })}
                 className="max-h-48 max-w-full rounded-lg border border-line object-contain cursor-pointer hover:opacity-90 transition shadow-xs"
               />
             </div>
           )}
 
-          {artifactPath && !imgSrc && (
-            <div className="text-[11px] text-blue-400 font-mono">
-              Artifact: {artifactPath}
+          {artifactPath && (
+            <div className="text-[11px] text-zinc-400 font-mono flex items-center gap-1">
+              <span className="text-zinc-500">Artifact:</span>
+              <span className="text-blue-400 truncate">{artifactPath}</span>
             </div>
           )}
 

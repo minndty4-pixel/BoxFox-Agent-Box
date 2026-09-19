@@ -11,6 +11,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { Command, Keyboard, X, Terminal } from 'lucide-react'
 import { useUiStore } from '../../store/uiStore'
+import { useCommandsStore } from '../../store/commandsStore'
 
 export interface ShortcutItem {
   keys: string[]
@@ -37,15 +38,6 @@ const SHORTCUTS: ShortcutItem[] = [
   { keys: ['Shift', 'Tab'], label: 'Toggle Autopilot', mock: true },
 ]
 
-const SLASH_COMMANDS: SlashCommandItem[] = [
-  { command: '/goal', description: 'Run long-running autonomous task with rigorous completion criteria' },
-  { command: '/btw', description: 'Quick side note to agent without interrupting active execution flow' },
-  { command: '/plan', description: 'Generate comprehensive architectural implementation blueprint' },
-  { command: '/compact', description: 'Manually trigger instant context window memory compaction' },
-  { command: '/learn', description: 'Save custom guidelines & preferences to persistent system memory' },
-  { command: '/clear', description: 'Clear current conversation stream and reset focus' },
-]
-
 export function ShortcutsPopover({
   variant = 'toolbar',
   customOpen,
@@ -56,6 +48,8 @@ export function ShortcutsPopover({
   onCustomToggle?: (open: boolean) => void
 }) {
   const [internalOpen, setInternalOpen] = useState(false)
+  const commands = useCommandsStore(s => s.commands)
+  const loadCommands = useCommandsStore(s => s.load)
   const [activeTab, setActiveTab] = useState<'shortcuts' | 'commands'>('shortcuts')
   const popoverRef = useRef<HTMLDivElement>(null)
   const openSearch = useUiStore((s) => s.openSearch)
@@ -68,6 +62,7 @@ export function ShortcutsPopover({
 
   const isControlled = customOpen !== undefined
   const open = isControlled ? customOpen : internalOpen
+  useEffect(() => { if (open) void loadCommands() }, [open, loadCommands])
   const setOpen = (val: boolean) => {
     if (isControlled && onCustomToggle) {
       onCustomToggle(val)
@@ -212,14 +207,14 @@ export function ShortcutsPopover({
             <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
               <span className="text-[11px] font-semibold text-muted px-1">Agent Slash commands</span>
               <div className="space-y-1 pt-1">
-                {SLASH_COMMANDS.map((item, i) => (
+                {commands.filter(c => c.enabled).map((item, i) => (
                   <div
                     key={i}
                     className="rounded-xl border border-line/60 bg-panel2/40 p-2 text-xs space-y-0.5 hover:border-brand/40 hover:bg-panel2/80 transition"
                   >
                     <div className="flex items-center gap-1.5 font-mono font-bold text-brand text-[12px]">
                       <Terminal className="size-3" />
-                      <span>{item.command}</span>
+                      <span>/{item.slug}</span>
                     </div>
                     <p className="text-[11px] text-muted leading-relaxed">{item.description}</p>
                   </div>

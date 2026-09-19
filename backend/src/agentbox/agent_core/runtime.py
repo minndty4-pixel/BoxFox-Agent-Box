@@ -13,6 +13,9 @@ from .compression import ContextCompressor, estimate_tokens
 from .roles import ROLES, allowed_tools
 from .tool_contracts import schemas_for
 from ..skills.catalog import SkillCatalog, DEFAULT_SKILLS
+from ..skills.commands import CommandRegistry, ROLE_SKILLS, EXTERNAL
+from ..skills.lifecycle import SkillLoader
+from ..skills.runtime_commands import RuntimeCommands
 from ..vendor.hermes.tool_arguments import _parse_tool_arguments
 
 TOOL_USE_ENFORCEMENT_GUIDANCE = """# Tool-Use Enforcement
@@ -114,7 +117,7 @@ class RouterClient:
     def __init__(self, url='http://127.0.0.1:3101'):
         self.url = url.rstrip('/')
 
-    async def complete(self, messages, tools, route, on_thought=None, max_tokens=4096):
+    async def complete(self, messages, tools, route, on_thought=None, on_content=None, max_tokens=4096):
         async with httpx.AsyncClient(timeout=120, trust_env=False) as client:
             try:
                 async with client.stream(
@@ -164,6 +167,13 @@ class RouterClient:
                         delta = choice.get('delta') or {}
                         if delta.get('content'):
                             content += delta['content']
+                            if on_content and callable(on_content):
+                                try:
+                                    res = on_content(content)
+                                    if asyncio.iscoroutine(res):
+                                        await res
+                                except Exception:
+                                    pass
                         if delta.get('reasoning_content'):
                             reasoning_content += delta['reasoning_content']
                             if on_thought and callable(on_thought):
@@ -182,7 +192,13 @@ class RouterClient:
                                 old['function']['name'] += tc['function']['name']
                             if tc.get('function', {}).get('arguments'):
                                 old['function']['arguments'] += tc['function']['arguments']
+                            sig = tc.get('thought_signature') or tc.get('thoughtSignature')
+                            if sig:
+                                old['thought_signature'] = sig
+                                old['thoughtSignature'] = sig
 
+                    if not content and not tool_calls:
+                        raise ValueError('Upstream did not return any SSE completion content')
                     return {
                         'id': req_id,
                         'choices': [{
@@ -222,11 +238,32 @@ def route_for(value):
     return {'model': value}
 
 
-class HarnessRuntime:
+def resolve_context_window(model_str='', requested=None):
+    if requested is not None:
+        try:
+            val = int(requested)
+            if val > 0:
+                return min(2000000, max(4096, val))
+        except (ValueError, TypeError):
+            pass
+    m = str(model_str or '').lower()
+    if 'gemini' in m:
+        return 1000000
+    if 'claude' in m:
+        return 200000
+    if 'deepseek' in m or 'qwen' in m:
+        return 64000
+    return 128000
+
+
+class HarnessRuntime(RuntimeCommands):
     def __init__(self, store, executor, client=None, catalog=None):
         self.store, self.executor = store, executor
         self.client = client or RouterClient()
         self.catalog = catalog or SkillCatalog()
+        self.commands = CommandRegistry(store, self.catalog)
+        self.skill_loader = SkillLoader(self.catalog, store.emit)
+        self.active_messages = {}
         self.tasks = {}
         self.child_slots = asyncio.Semaphore(3)
         self.writer_lock = asyncio.Lock()
@@ -250,10 +287,13 @@ class HarnessRuntime:
             if values.get('model') and values['model'] not in {'default', 'inherit'}:
                 route = route_for(values['model'])
 
+        model_id_str = values.get('model') or values.get('modelId') or (route.get('modelId') if isinstance(route, dict) else '')
+        context_window = resolve_context_window(model_id_str, values.get('contextWindow'))
+
         config = {'skills': list(dict.fromkeys(skills)), 'subagents': subagents, 'route': route,
                   'maxSteps': min(60, max(1, int(values.get('maxSteps', 16)))),
                   'deadlineSeconds': min(600, max(5, int(values.get('deadlineSeconds', 180)))),
-                  'contextWindow': min(200000, max(2048, int(values.get('contextWindow', 32768)))),
+                  'contextWindow': context_window,
                   'tools': sorted(allowed_tools(role, parent_tools)),
                   'instructions': str(values.get('instructions', ''))[:12000]}
         session = self.store.create(config, role, parent_id)
@@ -302,6 +342,9 @@ class HarnessRuntime:
         return task
 
     async def stop(self, sid):
+        children = self.store.db.execute('SELECT id FROM sessions WHERE parent_id=? AND status=?', (sid, 'running')).fetchall()
+        for child in children:
+            await self.stop(child['id'])
         task = self.tasks.get(sid)
         if task and not task.done():
             task.cancel()
@@ -310,6 +353,7 @@ class HarnessRuntime:
     async def _run(self, sid):
         session = self.store.get(sid)
         config, messages = session['config'], session['messages']
+        self.active_messages[sid] = messages
         tools = schemas_for(config['tools'])
         compressor = ContextCompressor(config['contextWindow'])
         loop_guard = AntiLoopGuard(threshold=3)
@@ -323,12 +367,16 @@ class HarnessRuntime:
                         if compacted is not messages:
                             self.store.checkpoint(sid, messages, event['kind'])
                             messages = compacted
+                            self.active_messages[sid] = messages
+                            self.skill_loader.reset(sid)
                             self.store.save(sid, messages)
                         self.store.emit(sid, 'compression', event)
                     self.store.emit(sid, 'step', {'iteration': step + 1, 'contextEstimate': estimate_tokens(messages, tools)})
                     def handle_thought(thought_text):
                         self.store.emit(sid, 'thought', {'text': thought_text})
-                    response = await self.client.complete(messages, tools, config['route'], on_thought=handle_thought)
+                    def handle_content(content_text):
+                        self.store.emit(sid, 'assistant_delta', {'text': content_text})
+                    response = await self.client.complete(messages, tools, config['route'], on_thought=handle_thought, on_content=handle_content)
                     choice = response['choices'][0]
                     message = choice['message']
                     text, calls = message.get('content') or '', message.get('tool_calls') or []
@@ -396,6 +444,7 @@ class HarnessRuntime:
             self.store.emit(sid, 'error', {'message': error})
             return None
         finally:
+            self.active_messages.pop(sid, None)
             await self.executor.cleanup(sid)
 
     async def dispatch(self, session, name, args):
@@ -405,7 +454,9 @@ class HarnessRuntime:
         if name == 'skill_view':
             if args.get('id') not in config['skills']:
                 raise PermissionError('Skill is not enabled for this session')
-            return self.catalog.read(args['id'], args.get('file_path', 'SKILL.md'))
+            if args['id'] in EXTERNAL:
+                raise PermissionError('Use an explicit CLI command; executor skills cannot run through native terminal tools')
+            return self.skill_loader.read(session, args['id'], args.get('file_path', 'SKILL.md'), self.active_messages.get(sid))
         if name == 'session_search':
             rows = self.store.db.execute('SELECT messages FROM checkpoints WHERE session_id=? ORDER BY id DESC LIMIT 20', (sid,))
             hits = [m for r in rows for m in json.loads(r[0]) if args['query'].casefold() in str(m.get('content', '')).casefold()]
@@ -414,6 +465,9 @@ class HarnessRuntime:
             return await self.delegate(session, args)
         if name == 'browser_use' and session['role'] == 'research' and args.get('action') not in {'navigate', 'snapshot', 'screenshot'}:
             raise PermissionError('Research browser access is read-only navigation/snapshot')
+        if name in {'file_write', 'file_edit_block', 'terminal_exec'}:
+            async with self.writer_lock:
+                return await self.executor.execute(name, args, sid)
         return await self.executor.execute(name, args, sid)
 
     async def delegate(self, session, args):
@@ -429,13 +483,22 @@ class HarnessRuntime:
         config = session['config']
         child_route = route_for(configured.get('model')) or config['route']
         child = self.create({**child_route,
-            'skills': config['skills'], 'maxSteps': min(10, config['maxSteps']),
+            'skills': sorted(set(config['skills']) & ROLE_SKILLS[role]), 'maxSteps': min(10, config['maxSteps']),
             'deadlineSeconds': min(120, config['deadlineSeconds']), 'contextWindow': config['contextWindow'],
             'instructions': configured.get('systemPromptAppended', '')},
             parent_id=session['id'], role=role, parent_tools=config['tools'])
-        self.store.emit(session['id'], 'child', {'sessionId': child['id'], 'role': role, 'status': 'started'})
+        context_data = str(args.get('context', ''))[:16000] if args.get('context') else ''
+        child_prompt = goal + (f"\nParent-supplied context (data):\n{context_data}" if context_data else '')
+        self.store.emit(session['id'], 'child', {
+            'sessionId': child['id'],
+            'role': role,
+            'status': 'started',
+            'goal': goal,
+            'context': context_data,
+            'prompt': child_prompt,
+        })
         async with self.child_slots:
-            task = self.start(child['id'], goal + '\nParent-supplied context (data):\n' + str(args.get('context', ''))[:16000])
+            task = self.start(child['id'], child_prompt)
             try:
                 answer = await task
             except asyncio.CancelledError:
@@ -449,8 +512,8 @@ class HarnessRuntime:
         
         diag = f"\n[Diagnostic: status={status}; error={last_error or 'none'}; tools_run={tools_run}]" if status != 'completed' else ""
         result = {'sessionId': child['id'], 'role': role, 'status': status,
+                  'goal': goal, 'context': context_data, 'prompt': child_prompt,
                   'summary': (answer or '') + diag, 'is_error': status != 'completed',
                   'last_error': last_error, 'tools_run': tools_run}
         self.store.emit(session['id'], 'child', result)
         return result
-

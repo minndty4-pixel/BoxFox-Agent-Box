@@ -28,10 +28,10 @@ import {
 } from 'lucide-react'
 import { useAgentStore } from '../../store/agentStore'
 import { useUiStore } from '../../store/uiStore'
+import { useHarnessChatStore } from '../../store/harnessChatStore'
+import { useHarnessStore, AVAILABLE_MODELS } from '../../store/harnessStore'
 import { LabelDot } from '../LabelDot'
 import type { ContextChunk } from '../../types/context'
-
-const CONTEXT_LIMIT_TOKENS = 128_000
 
 export interface DisplayChunk {
   id: string
@@ -48,7 +48,29 @@ export interface DisplayChunk {
   lineCount: number
 }
 
+function resolveModelLimit(modelIdOrName?: string | null): number {
+  if (!modelIdOrName) return 128_000
+  const found = AVAILABLE_MODELS.find(m => m.id === modelIdOrName || m.name === modelIdOrName)
+  if (found?.contextWindow) {
+    if (found.contextWindow === '2M') return 2_000_000
+    if (found.contextWindow === '1M') return 1_000_000
+    if (found.contextWindow === '256k') return 256_000
+    if (found.contextWindow === '200k') return 200_000
+    if (found.contextWindow === '128k') return 128_000
+  }
+  const m = modelIdOrName.toLowerCase()
+  if (m.includes('gemini')) return 1_000_000
+  if (m.includes('claude')) return 200_000
+  if (m.includes('deepseek') || m.includes('qwen')) return 64_000
+  return 128_000
+}
+
 export function ContextUsageBar() {
+  const activeSessionId = useAgentStore((s) => s.activeSessionId)
+  const harnessRun = useHarnessChatStore((s) => s.sessions[activeSessionId])
+  const sendHarnessCommand = useHarnessChatStore((s) => s.send)
+  const activeModelId = useHarnessStore((s) => s.activeModelId)
+
   const context = useAgentStore((s) => s.context)
   const contextChunks = context?.chunks || []
   const autopilotEnabled = useUiStore((s) => s.autopilotEnabled)
@@ -63,6 +85,11 @@ export function ContextUsageBar() {
   const [compactedSuccess, setCompactedSuccess] = useState(false)
   const [dismissed, setDismissed] = useState(false)
 
+  // Context limit thực tế theo model đang chạy
+  const contextLimitTokens = useMemo(() => {
+    return resolveModelLimit(harnessRun?.lastModelLabel || activeModelId)
+  }, [harnessRun?.lastModelLabel, activeModelId])
+
   // Lắng nghe phím ESC để đóng Modal
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -74,13 +101,28 @@ export function ContextUsageBar() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [inspectorModalOpen])
 
-  // Tính toán tokens ước lượng từ contextChunks thực tế (bắt đầu từ 0)
+  // Tính toán tokens ước lượng từ event step của harnessRun hoặc fallback contextChunks
   const currentTokens = useMemo(() => {
+    if (harnessRun?.events && harnessRun.events.length > 0) {
+      const stepEvents = harnessRun.events.filter(e => e.type === 'step')
+      const lastStep = stepEvents.at(-1)
+      if (lastStep && typeof lastStep.data?.contextEstimate === 'number') {
+        return lastStep.data.contextEstimate
+      }
+      // Ước lượng từ tổng độ dài text của các event assistant + user nếu chưa có step event
+      const textLen = harnessRun.events.reduce((acc, ev) => {
+        const t = String(ev.data?.text || ev.data?.thought || '')
+        return acc + t.length
+      }, 0)
+      if (textLen > 0) {
+        return Math.max(100, Math.round(textLen / 3.5))
+      }
+    }
     if (!contextChunks || contextChunks.length === 0) return 0
     return contextChunks.reduce((acc: number, c: ContextChunk) => acc + Math.round((c.content || '').length / 4), 0)
-  }, [contextChunks])
+  }, [harnessRun?.events, contextChunks])
 
-  const percent = Math.min(Math.round((currentTokens / CONTEXT_LIMIT_TOKENS) * 100), 100)
+  const percent = Math.min(Math.round((currentTokens / contextLimitTokens) * 100), 100)
 
   // Chunks hiển thị chuẩn hóa tiêu đề và định dạng từ contextChunks thực tế
   const displayChunks: DisplayChunk[] = useMemo(() => {
@@ -157,10 +199,13 @@ export function ContextUsageBar() {
   }
 
   const handleCompactAll = () => {
+    if (activeSessionId) {
+      void sendHarnessCommand(activeSessionId, '/compact', null)
+    }
     setCompactedSuccess(true)
     setTimeout(() => {
       setCompactedSuccess(false)
-    }, 1200)
+    }, 1500)
   }
 
   const handleCompactSingleChunk = (id: string) => {
@@ -215,7 +260,7 @@ export function ContextUsageBar() {
         <div className="flex items-center gap-2 shrink-0">
           <span className="font-mono text-[11px] text-muted">
             <strong className="text-fg">{(currentTokens / 1000).toFixed(1)}k</strong>
-            <span className="hidden xl:inline"> / {(CONTEXT_LIMIT_TOKENS / 1000).toFixed(0)}k</span> ({percent}%)
+            <span className="hidden xl:inline"> / {contextLimitTokens >= 1_000_000 ? `${(contextLimitTokens / 1_000_000).toFixed(1)}M` : `${(contextLimitTokens / 1000).toFixed(0)}k`}</span> ({percent}%)
           </span>
 
           <button
@@ -260,7 +305,7 @@ export function ContextUsageBar() {
                   <div className="flex items-center gap-2">
                     <h2 className="text-sm font-bold text-fg">Context Breakdown & Chunk Inspector</h2>
                     <span className="rounded-md bg-panel px-2 py-0.5 text-[10px] font-mono font-semibold text-muted border border-line">
-                      {(currentTokens / 1000).toFixed(1)}k / {(CONTEXT_LIMIT_TOKENS / 1000).toFixed(0)}k tokens ({percent}%)
+                      {(currentTokens / 1000).toFixed(1)}k / {contextLimitTokens >= 1_000_000 ? `${(contextLimitTokens / 1_000_000).toFixed(1)}M` : `${(contextLimitTokens / 1000).toFixed(0)}k`} tokens ({percent}%)
                     </span>
                   </div>
                   <p className="text-xs text-muted mt-0.5">

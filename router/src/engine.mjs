@@ -121,7 +121,15 @@ export class RouterEngine {
           const safe = combined.aborted ? safeError(combined.reason) : safeError(error);
           lastError = safe;
           const current = this.store.get('connection', connection.id);
-          if (current && current.revision === connection.revision) { current.inferenceState = 'failed'; current.error = safe.message; if (safe.code === 'AUTH') current.authState = 'expired'; this.store.put('connection', current); }
+          if (current && current.revision === connection.revision && !combined.aborted) {
+            const isFatalConnection = safe.code === 'AUTH' || safe.code === 'UNAVAILABLE' || safe.status === 502 || safe.status === 503 || safe.status === 504;
+            if (isFatalConnection) {
+              current.inferenceState = 'failed';
+              current.error = safe.message;
+              if (safe.code === 'AUTH') current.authState = 'expired';
+              this.store.put('connection', current);
+            }
+          }
           if (safe.code === 'RATE_LIMIT') {
             const strikeKey = `${connection.id}/${model.id}`;
             const prior = this.rateLimitStrikes.get(strikeKey);

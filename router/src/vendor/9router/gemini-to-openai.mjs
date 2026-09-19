@@ -27,8 +27,14 @@ export function geminiUsage(response) {
 export function geminiChunkToEvents(chunk, state = { toolIndex: 0, hadToolCall: false }) {
   const response = chunk?.response || chunk;
   const candidate = response?.candidates?.[0];
+  const candidateSig = candidate?.thoughtSignature || candidate?.thought_signature || null;
+  if (candidateSig) state.lastThoughtSignature = candidateSig;
   const events = [];
   for (const part of candidate?.content?.parts || []) {
+    const sigFound = part?.thoughtSignature || part?.thought_signature || part?.functionCall?.thoughtSignature || part?.functionCall?.thought_signature || candidateSig || null;
+    if (sigFound) {
+      state.lastThoughtSignature = sigFound;
+    }
     if (part?.thought === true) {
       if (typeof part?.text === 'string' && part.text) {
         events.push({ type: 'delta', delta: { reasoning_content: part.text } });
@@ -39,13 +45,13 @@ export function geminiChunkToEvents(chunk, state = { toolIndex: 0, hadToolCall: 
     if (part?.functionCall) {
       const index = state.toolIndex++;
       state.hadToolCall = true;
-      const sig = part.thoughtSignature || part.thought_signature || null;
+      const sig = part.functionCall?.thoughtSignature || part.functionCall?.thought_signature || part.thoughtSignature || part.thought_signature || state.lastThoughtSignature || null;
       events.push({ type: 'delta', delta: { tool_calls: [{
         index,
         id: part.functionCall.id || `call_${index}_${Date.now().toString(36)}`,
         type: 'function',
         function: { name: part.functionCall.name || 'tool', arguments: JSON.stringify(part.functionCall.args || {}) },
-        ...(sig ? { thought_signature: sig } : {}),
+        ...(sig ? { thought_signature: sig, thoughtSignature: sig } : {}),
       }] } });
     }
   }

@@ -45,7 +45,8 @@ export function createRouterServer({ service, engine, oauth, frontendDir = null,
             if (call.id) old.id = call.id;
             if (call.function?.name) old.function.name += call.function.name;
             old.function.arguments += call.function?.arguments || '';
-            if (call.thought_signature) old.thought_signature = call.thought_signature;
+            const sig = call.thought_signature || call.thoughtSignature;
+            if (sig) { old.thought_signature = sig; old.thoughtSignature = sig; }
             toolCalls.set(index, old);
           }
           if (stream) await write(chunk(event.delta));

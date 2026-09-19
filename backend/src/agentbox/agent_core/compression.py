@@ -20,10 +20,10 @@ class ContextCompressor:
         self.context_window = max(2048, context_window)
         self.output_reserve = min(output_reserve, self.context_window // 4)
 
-    async def compact(self, messages, tools, summarize):
+    async def compact(self, messages, tools, summarize, force=False):
         threshold = int((self.context_window - self.output_reserve) * 0.7)
         before = estimate_tokens(messages, tools)
-        if before < threshold:
+        if before < threshold and not force:
             return messages, None
         result = copy.deepcopy(messages)
         # Keep the entire last two user turns. Tool boundaries cannot be split.
@@ -34,12 +34,33 @@ class ContextCompressor:
             if m['role'] == 'tool' and m.get('name') != 'skill_view' and len(str(m.get('content', ''))) > 1500:
                 m['content'] = str(m['content'])[:1000] + '\n[Old tool output pruned; original retained in checkpoint.]'
                 pruned += 1
-        if estimate_tokens(result, tools) < threshold:
+        if estimate_tokens(result, tools) < threshold and not force:
             return result, {'kind': 'prune', 'beforeEstimate': before, 'afterEstimate': estimate_tokens(result, tools), 'pruned': pruned}
+
+        # Emergency pruning for large tool results in current turn if still overflowing
+        current_est = estimate_tokens(result, tools)
+        if current_est > self.context_window - self.output_reserve:
+            for m in result:
+                if m['role'] == 'tool' and len(str(m.get('content', ''))) > 1500:
+                    content_str = str(m.get('content', ''))
+                    artifact_hint = ''
+                    if '"artifact":' in content_str or "'artifact':" in content_str:
+                        try:
+                            data = json.loads(content_str)
+                            if isinstance(data, dict) and data.get('artifact'):
+                                artifact_hint = f"\nArtifact preserved at: {data['artifact']}"
+                        except Exception:
+                            pass
+                    m['content'] = content_str[:1000] + f'\n[Tool output truncated to fit context budget.{artifact_hint}]'
+                    pruned += 1
+            current_est = estimate_tokens(result, tools)
+            if current_est < self.context_window - self.output_reserve and cut <= 1:
+                return result, {'kind': 'prune', 'beforeEstimate': before, 'afterEstimate': current_est, 'pruned': pruned}
+
         if cut <= 1:
-            if before > self.context_window - self.output_reserve:
+            if estimate_tokens(result, tools) > self.context_window - self.output_reserve:
                 raise ValueError('CONTEXT_LIMIT: current turn/tools exceed the context budget; start a new session or reduce input.')
-            return messages, None
+            return result if pruned > 0 else messages, ({'kind': 'prune', 'beforeEstimate': before, 'afterEstimate': estimate_tokens(result, tools), 'pruned': pruned} if pruned > 0 else None)
         try:
             summary = await summarize([
                 {'role': 'system', 'content': SUMMARY_PROMPT},

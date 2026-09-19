@@ -95,8 +95,21 @@ CSP_HEADER = "Content-Security-Policy"
 # ExpectOrigin của Ubuntu 24.04 vốn tách bằng dấu cách — hai grammar khác nhau,
 # đừng nhầm).
 ALLOWED_ANCESTORS = (
-    "http://localhost:3100 http://127.0.0.1:3100"
+    "http://localhost:3100 http://127.0.0.1:3100 "
+    "http://localhost:8081 http://127.0.0.1:8081 'self'"
 )
+
+HOP_BY_HOP_HEADERS = frozenset({
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailers",
+    "transfer-encoding",
+    "upgrade",
+    "content-length",
+})
 
 # Origin được phép MỞ KÊNH WebSocket: ngoài trang cha (:3100) còn gồm origin
 # CỦA CHÍNH editor trong iframe (:8081) — workbench nối WS về cùng origin của nó.
@@ -701,37 +714,58 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 
         try:
             with urllib.request.urlopen(req, timeout=60) as resp:
+                content = resp.read()
                 self.send_response(resp.status)
 
+                content_type = resp.headers.get("Content-Type", "").lower()
+                is_html = "text/html" in content_type
+
                 for key, value in resp.headers.items():
-                    if key == CSP_HEADER:
+                    if key.lower() in HOP_BY_HOP_HEADERS:
+                        continue
+                    if key == CSP_HEADER and is_html:
                         value = f"{value}; frame-ancestors {ALLOWED_ANCESTORS}"
                     self.send_header(key, value)
 
-                if CSP_HEADER not in resp.headers:
+                if CSP_HEADER not in resp.headers and is_html:
                     self.send_header(
                         CSP_HEADER,
-                        f"default-src 'self'; frame-ancestors {ALLOWED_ANCESTORS}",
+                        f"frame-ancestors {ALLOWED_ANCESTORS}",
                     )
 
+                self.send_header("Content-Length", str(len(content)))
+                self.send_header("Connection", "close")
                 self.end_headers()
-                while True:
-                    chunk = resp.read(64 * 1024)
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
+                self.wfile.write(content)
         except urllib.error.HTTPError as e:
+            content = e.read()
             self.send_response(e.code)
-            for key, value in e.headers.items():
-                if key == CSP_HEADER:
-                    value = f"{value}; frame-ancestors {ALLOWED_ANCESTORS}"
-                self.send_header(key, value)
+            content_type = e.headers.get("Content-Type", "").lower() if e.headers else ""
+            is_html = "text/html" in content_type
+            if e.headers:
+                for key, value in e.headers.items():
+                    if key.lower() in HOP_BY_HOP_HEADERS:
+                        continue
+                    if key == CSP_HEADER and is_html:
+                        value = f"{value}; frame-ancestors {ALLOWED_ANCESTORS}"
+                    self.send_header(key, value)
+            if (not e.headers or CSP_HEADER not in e.headers) and is_html:
+                self.send_header(
+                    CSP_HEADER,
+                    f"frame-ancestors {ALLOWED_ANCESTORS}",
+                )
+            self.send_header("Content-Length", str(len(content)))
+            self.send_header("Connection", "close")
             self.end_headers()
-            self.wfile.write(e.read())
+            self.wfile.write(content)
         except Exception as e:
+            err_msg = f"Proxy error: {e}".encode()
             self.send_response(502)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(err_msg)))
+            self.send_header("Connection", "close")
             self.end_headers()
-            self.wfile.write(f"Proxy error: {e}".encode())
+            self.wfile.write(err_msg)
 
     def _dispatch(self) -> None:
         if self.path.startswith("/__box/"):

@@ -19,7 +19,6 @@ import type { AuditRecord, Budget, ScreenState, SessionSummary } from '../types/
 import type { ClientCommand, ServerEvent } from '../types/transport'
 import { computeConfidentialityCeiling, computeIntegrityFloor } from '../lib/labels'
 import { createTransport, type AgentTransport, type TransportStatus } from '../lib/transport'
-import { ACTIVE_SESSION_ID, MOCK_SESSIONS } from '../lib/mock/sessions'
 import { SCENARIO_TOTAL } from '../lib/mock/scenario'
 
 const EMPTY_CONTEXT: ContextState = {
@@ -100,8 +99,8 @@ const initialState = () => ({
   planWorkspace: null as PlanArtifact | null,
   planEndorsed: null as PlanArtifact | null,
   audit: [] as AuditRecord[],
-  sessions: MOCK_SESSIONS,
-  activeSessionId: ACTIVE_SESSION_ID,
+  sessions: [] as SessionSummary[],
+  activeSessionId: '',
   scenarioIndex: 0,
   scenarioTotal: SCENARIO_TOTAL,
   rejectBundle: false,

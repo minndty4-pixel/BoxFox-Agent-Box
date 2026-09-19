@@ -13,6 +13,8 @@ import {
   Power,
 } from 'lucide-react'
 import { useSkillsStore } from '../../store/skillsStore'
+import { CommandsView } from './CommandsView'
+import { agentApi } from '../../lib/agentApi'
 
 const SKILL_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   'systematic-debugging': Bug,
@@ -26,6 +28,8 @@ const SKILL_ICONS: Record<string, React.ComponentType<{ className?: string }>> =
 }
 
 export function SkillsView() {
+  const [tab, setTab] = useState<'skills' | 'commands'>('skills')
+  const [readiness, setReadiness] = useState('')
   const load = useSkillsStore((s) => s.load)
   const loadInstructions = useSkillsStore((s) => s.loadInstructions)
   const error = useSkillsStore((s) => s.error)
@@ -98,6 +102,10 @@ export function SkillsView() {
         </div>
       </div>
       {error && <p role="alert" className="mb-4 text-xs text-red-500">{error}</p>}
+      <div role="tablist" aria-label="Skills settings" className="mb-4 flex gap-3">
+        {(['skills', 'commands'] as const).map(value => <button key={value} role="tab" aria-selected={tab === value} onClick={() => setTab(value)} className={`rounded-lg px-4 py-2 text-sm ${tab === value ? 'bg-brand text-brandfg' : 'bg-panel2 text-fg'}`}>{value === 'skills' ? 'Skills' : 'Commands'}</button>)}
+      </div>
+      {tab === 'commands' ? <CommandsView /> : <>
 
       {/* Search & Filter Bar */}
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
@@ -254,8 +262,10 @@ export function SkillsView() {
 
               <div className="rounded-lg border border-line bg-panel2/50 p-3 text-xs text-muted flex items-center gap-2">
                 <CheckCircle2 className="size-4 text-emerald-400 shrink-0" />
-                <span>Automatically active in all BoxFox agent sessions when enabled.</span>
+                <span>Available from the next turn when enabled. Full instructions load only when selected. {activeSkill.readiness}</span>
               </div>
+              <button className="rounded border border-line px-3 py-2 text-xs" onClick={() => { setReadiness('Checking sandbox…'); void agentApi(`/skills/${encodeURIComponent(activeSkill.id)}/readiness`).then(r => setReadiness(JSON.stringify(r, null, 2))).catch(e => setReadiness(String(e))) }}>Check sandbox readiness</button>
+              {readiness && <pre className="whitespace-pre-wrap break-words text-xs">{readiness}</pre>}
             </div>
           ) : (
             <div className="rounded-xl border border-line bg-panel p-8 text-center text-xs text-muted">
@@ -264,6 +274,7 @@ export function SkillsView() {
           )}
         </div>
       </div>
+      </>}
     </div>
   )
 }

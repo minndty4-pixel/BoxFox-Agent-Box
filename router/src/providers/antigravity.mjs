@@ -149,7 +149,7 @@ async function antigravityResponseError(response) {
   console.error(`[Antigravity Upstream Error HTTP ${response.status}]`, message);
   const retryMs = retryAfterMs(response, message);
   let error;
-  if (response.status === 401 || response.status === 403) error = providerError(response.status);
+  if (response.status === 401 || response.status === 403) error = providerError(response.status, undefined, message);
   else if (/model.{0,40}(?:not found|not supported|unsupported|invalid|unknown|does not exist)|(?:not found|unsupported).{0,40}model/i.test(message)) {
     error = new RouterError('MODEL_NOT_FOUND', 'The provider no longer exposes this model. Refreshing model inventory may resolve it.', 404, true);
   } else if (/policy|safety|blocked|permission denied/i.test(message)) {
@@ -160,20 +160,27 @@ async function antigravityResponseError(response) {
     error = new RouterError('RATE_LIMIT', 'The provider confirmed that a quota or rate limit was reached.', 429, true);
   } else if (response.status === 429) {
     error = new RouterError('CAPACITY', 'The provider temporarily rejected the request; account quota could not be confirmed.', 503, true);
-  } else error = providerError(response.status);
+  } else error = providerError(response.status, undefined, message);
   error.providerStatus = response.status;
   error.retryAfterMs = retryMs;
   return error;
 }
 
 function recordForSpec(spec, info = {}, overrides = {}) {
+  // If model is explicitly named/spec'd with a fixed tier (low, medium, high),
+  // its level is already predetermined and it should NOT display a flyout to switch tiers.
+  const hasFixedTierSuffix = /-(?:low|medium|high)$/i.test(spec.id) || /\((?:Low|Medium|High)\)$/i.test(spec.name || '');
+  let levels = undefined;
+  if (!hasFixedTierSuffix && (spec.thinkingLevel || spec.capabilities?.reasoning === 'reported' || spec.id === 'gemini-3.8-flash' || overrides.source === 'probe')) {
+    levels = ['low', 'medium', 'high'];
+  }
   return {
     ...modelRecord(spec.id, spec.name, spec.capabilities),
     source: overrides.source || 'registry',
     stale: false,
     upstreamModelId: spec.upstreamModelId,
     thinkingLevel: spec.thinkingLevel,
-    thinkingLevels: spec.thinkingLevel ? [spec.thinkingLevel] : [],
+    thinkingLevels: levels,
     quotaFamily: spec.quotaFamily,
     upstreamDisplayName: displayName(overrides.liveId || spec.id, info),
     probeStatus: overrides.probeStatus || 'registry',
@@ -181,11 +188,13 @@ function recordForSpec(spec, info = {}, overrides = {}) {
   };
 }
 
-function applyModelThinking(translated, spec) {
+function applyModelThinking(translated, spec, requestedLevel = null) {
   const m = (spec.upstreamModelId || spec.id || '').toLowerCase();
   const inferredLevel = m.includes('high') ? 'high' : m.includes('medium') ? 'medium' : m.includes('low') ? 'low' : 'high';
-  const level = spec.thinkingLevel || (m.includes('flash') || m.includes('pro') || m.includes('gemini') ? inferredLevel : null);
-  if (!level) return translated;
+  const level = (requestedLevel && requestedLevel !== 'none' && requestedLevel !== 'auto')
+    ? requestedLevel
+    : spec.thinkingLevel || (m.includes('flash') || m.includes('pro') || m.includes('gemini') ? inferredLevel : null);
+  if (!level || level === 'none') return translated;
   translated.generationConfig ||= {};
   translated.generationConfig.thinkingConfig = { thinkingLevel: level, includeThoughts: true };
   const floor = GEMINI_OUTPUT_FLOOR[level] || 8192;
@@ -363,7 +372,8 @@ export function createAntigravityAdapter({ fetchImpl }) {
       if (!projectId) throw new RouterError('PROJECT_REQUIRED', 'This account requires a Google Cloud project ID. Enter it in Provider.', 409);
       const spec = resolveAntigravityModel(body.model);
       const model = spec.upstreamModelId;
-      const translated = applyModelThinking(openAIToGeminiRequest(model, body), spec);
+      const level = body.thinkingLevel || body.reasoning_effort;
+      const translated = applyModelThinking(openAIToGeminiRequest(model, body), spec, level);
       const identity = requestIdentity(connection, model, translated.contents);
       const request = {
         project: projectId, model, userAgent: 'antigravity', requestType: 'agent', requestId: identity.requestId,

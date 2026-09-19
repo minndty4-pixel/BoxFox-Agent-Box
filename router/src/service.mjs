@@ -3,6 +3,7 @@ import { RouterError, assert, safeError } from './errors.mjs';
 import { validateEndpoint } from './network.mjs';
 import { PROVIDER_CATALOG, PROVIDER_ENDPOINTS } from './catalog.mjs';
 import { isAntigravityModelValid } from './providers/antigravity-models.mjs';
+import { isReasoningModel } from './providers/common.mjs';
 export { PROVIDER_CATALOG };
 function label(value, fallback) {
   assert(value === undefined || typeof value === 'string', 'Name must be text.');
@@ -34,17 +35,37 @@ export class ProviderService {
     this.sanitizeAllConnections();
   }
   sanitizeConnection(c) {
-    if (!c || c.providerId !== 'antigravity') return c;
+    if (!c) return c;
     let modified = false;
-    if (Array.isArray(c.models)) {
-      const originalCount = c.models.length;
-      c.models = c.models.filter(m => isAntigravityModelValid(m.id));
-      if (c.models.length !== originalCount) modified = true;
+    if (c.providerId === 'antigravity') {
+      if (Array.isArray(c.models)) {
+        const originalCount = c.models.length;
+        c.models = c.models.filter(m => isAntigravityModelValid(m.id));
+        if (c.models.length !== originalCount) modified = true;
+      }
+      if (c.quota && Array.isArray(c.quota.models)) {
+        const originalQuotaCount = c.quota.models.length;
+        c.quota.models = c.quota.models.filter(m => isAntigravityModelValid(m.modelId));
+        if (c.quota.models.length !== originalQuotaCount) modified = true;
+      }
     }
-    if (c.quota && Array.isArray(c.quota.models)) {
-      const originalQuotaCount = c.quota.models.length;
-      c.quota.models = c.quota.models.filter(m => isAntigravityModelValid(m.modelId));
-      if (c.quota.models.length !== originalQuotaCount) modified = true;
+    if (Array.isArray(c.models)) {
+      for (const m of c.models) {
+        if (c.providerId === 'antigravity') {
+          if (/-(?:low|medium|high)$/i.test(m.id) || /\((?:Low|Medium|High)\)/i.test(m.name || '')) {
+            if (m.thinkingLevels && m.thinkingLevels.length > 0) {
+              m.thinkingLevels = [];
+              modified = true;
+            }
+          }
+        } else {
+          const isReasoning = isReasoningModel(m.id, m.name, m.capabilities);
+          if (isReasoning && (!Array.isArray(m.thinkingLevels) || m.thinkingLevels.length === 0)) {
+            m.thinkingLevels = ['low', 'medium', 'high'];
+            modified = true;
+          }
+        }
+      }
     }
     if (modified) {
       this.store.put('connection', c);

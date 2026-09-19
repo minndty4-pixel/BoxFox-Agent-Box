@@ -136,16 +136,23 @@ export function ChatPanel() {
     return null
   }, [snapshot, selection])
 
+  const [dismissedWarning, setDismissedWarning] = useState<string | null>(null)
+
   const connectionWarning = useMemo(() => {
     if (!selectedConnection) return null
+    const err = selectedConnection.error || ''
+    // Ignore parameter/functionCall schema errors that do not mean connection or credentials are down
+    if (err.includes('thought_signature') || err.includes('functionCall')) return null
+
+    let msg: string | null = null
     if (selectedConnection.inferenceState === 'failed') {
-      return `Provider ${selectedConnection.name} connection failed (Ping error: ${selectedConnection.error || 'Connection down'}). Please check credentials in Settings.`
+      msg = `Provider ${selectedConnection.name} connection failed (Ping error: ${selectedConnection.error || 'Connection down'}). Please check credentials in Settings.`
+    } else if (selectedConnection.error) {
+      msg = `Provider ${selectedConnection.name} warning: ${selectedConnection.error}`
     }
-    if (selectedConnection.error) {
-      return `Provider ${selectedConnection.name} warning: ${selectedConnection.error}`
-    }
-    return null
-  }, [selectedConnection])
+    if (msg && dismissedWarning === msg) return null
+    return msg
+  }, [selectedConnection, dismissedWarning])
 
   const sendCommand = useAgentStore((s) => s.sendCommand)
   const agentBusy = useAgentStore((s) => s.isBusy)
@@ -157,14 +164,24 @@ export function ChatPanel() {
     sendCommand({ type: 'interrupt', level: 'tam_dung' })
   }, [harnessStop, chatId, routerStop, sendCommand])
 
-  // Khi người dùng chuyển sang model khác, lập tức xóa cảnh báo lỗi của model trước đó
+  // Clear harness error when switching sessions
   useEffect(() => {
     harnessClearError(chatId)
-  }, [selection, chatId, harnessClearError])
+  }, [chatId, harnessClearError])
+
+  // Reset dismissed warning only when user switches to a different model/connection
+  useEffect(() => {
+    setDismissedWarning(null)
+  }, [selection])
 
   // Build router adapter only when live models available
   const routerAdapter: RouterComposerAdapter | undefined = useMemo(() => {
-    const models = routerOptions.map(o => ({ id: o.value, name: o.label, provider: o.providerId }))
+    const models = routerOptions.map(o => ({
+      id: o.value,
+      name: o.label,
+      provider: o.providerId,
+      thinkingLevels: (o as any).thinkingLevels,
+    }))
     return {
       models,
       activeModelId: selKey(selection),
@@ -173,9 +190,20 @@ export function ChatPanel() {
       onModelChange: (id: string) => {
         setSelection(routerOptions.find(o => o.value === id)?.selection ?? null)
         harnessClearError(chatId)
+        setDismissedWarning(null)
       },
       onSend: (prompt: string, image?: string | null) => {
-        if (activeType === 'harness' || activeType === 'model') void harnessSend(chatId, prompt, selection, image)
+        harnessClearError(chatId)
+        if (connectionWarning) setDismissedWarning(connectionWarning)
+        const thinkingLevel = useHarnessStore.getState().thinkingLevel
+        const baseLabel = selected?.label || (selection?.kind === 'model' ? selection.modelId : selection?.kind === 'alias' ? selection.aliasId : 'Gemini 3.7 Flash')
+        const activeOption = routerOptions.find(o => o.value === selKey(selection))
+        const hasThinking = Boolean(
+          ((activeOption as any)?.thinkingLevels?.length > 1) ||
+          (/deepseek|r1|qwq|o1|o3|claude-3[-.]7.*think/i.test(baseLabel) && !/\((?:Low|Medium|High)\)/i.test(baseLabel))
+        )
+        const modelLabel = hasThinking ? `${baseLabel} (${thinkingLevel.charAt(0).toUpperCase() + thinkingLevel.slice(1)})` : baseLabel
+        if (activeType === 'harness' || activeType === 'model') void harnessSend(chatId, prompt, selection, image, modelLabel)
         else if (selected) void routerSend(prompt, undefined, image)
       },
       onStop: handleStopAll,
@@ -271,11 +299,13 @@ export function ChatPanel() {
         ))}
 
         {/* Harness Events — hiển thị tiến trình thinking & tool execution chuyên nghiệp */}
-        {harnessRun && (
+        {harnessRun && (harnessRun.events.length > 0 || harnessBusy) && (
           <HarnessStepView
             events={harnessRun.events}
             status={harnessRun.status}
             error={harnessRun.error}
+            connectionWarning={connectionWarning}
+            onDismissWarning={() => setDismissedWarning(connectionWarning)}
             onOpenLightbox={setLightboxMedia}
             snapshot={snapshot}
             selection={selection}

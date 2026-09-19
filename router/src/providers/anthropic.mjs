@@ -1,4 +1,4 @@
-import { jsonOrProviderError, modelRecord, normalizeFinishReason, parseJson, providerError, sseEvents, baseUrl } from './common.mjs';
+import { jsonOrProviderError, modelRecord, normalizeFinishReason, parseJson, providerError, sseEvents, baseUrl, withThinkingLevels } from './common.mjs';
 
 const ANTHROPIC_VERSION = '2023-06-01';
 function headers(apiKey) { return { 'x-api-key': apiKey, 'anthropic-version': ANTHROPIC_VERSION, 'content-type': 'application/json' }; }
@@ -24,6 +24,15 @@ function toAnthropic(body) {
   if (body.top_p !== undefined) request.top_p = body.top_p;
   if (body.tools?.length) request.tools = body.tools.map(tool => ({ name: tool.function.name, description: tool.function.description || '', input_schema: tool.function.parameters || { type: 'object', properties: {} } }));
   if (body.tool_choice && request.tools) request.tool_choice = typeof body.tool_choice === 'object' ? { type: 'tool', name: body.tool_choice.function?.name } : { type: body.tool_choice === 'required' ? 'any' : body.tool_choice };
+
+  const level = body.thinkingLevel;
+  if (level && level !== 'none' && level !== 'auto') {
+    const budget = level === 'low' ? 2048 : level === 'medium' ? 8192 : 16384;
+    request.thinking = { type: 'enabled', budget_tokens: budget };
+    if (request.max_tokens <= budget) {
+      request.max_tokens = budget + 4096;
+    }
+  }
   return request;
 }
 
@@ -32,7 +41,7 @@ export function createAnthropicAdapter({ fetchImpl }) {
     async discover({ connection, credentials, signal }) {
       const data = await jsonOrProviderError(await fetchImpl(`${baseUrl(connection.endpoint)}/models`, { headers: headers(credentials.apiKey), signal }));
       const list = Array.isArray(data?.data) ? data.data : [];
-      return { models: list.map(item => modelRecord(item?.id, item?.display_name || item?.id, { tools: 'reported' })).filter(m => m.id) };
+      return { models: list.map(item => withThinkingLevels(modelRecord(item?.id, item?.display_name || item?.id, { tools: 'reported' }))).filter(m => m.id) };
     },
     async *generate({ connection, credentials, body, signal }) {
       const stream = body.stream !== false;

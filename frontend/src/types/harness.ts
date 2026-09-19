@@ -55,4 +55,5 @@ export interface ModelOption {
   provider: string
   supportsImages: boolean
   contextWindow?: string
+  thinkingLevels?: string[]
 }

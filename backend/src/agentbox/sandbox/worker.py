@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import signal
+import shutil
 import socket
 import subprocess
 import sys
@@ -121,6 +122,23 @@ def browser(args, session):
 
 
 def execute(name, args, session):
+    if name == '__skill_readiness':
+        package = Path(args['basePath']).resolve()
+        base = Path('/opt/boxfox-skills').resolve()
+        if not package.is_relative_to(base):
+            raise ValueError('Invalid skill package')
+        requirements = args.get('requirements', {})
+        def names(items):
+            return [v if isinstance(v, str) else v.get('name', '') for v in items if isinstance(v, (str, dict)) and not (isinstance(v, dict) and v.get('optional'))]
+        commands = names(requirements.get('commands', []))
+        environment = names(requirements.get('environment', []))
+        files = names(requirements.get('files', []))
+        missing = {'commands': [n for n in commands if not shutil.which(n)],
+                   'environment': [n for n in environment if not os.environ.get(n)],
+                   'files': [n for n in files if not Path(os.path.expandvars(n)).expanduser().is_file()]}
+        supported = not args.get('platforms') or 'linux' in args['platforms']
+        return {'status': 'ready' if package.is_dir() and supported and not any(missing.values()) else 'setup_required',
+                'packageMounted': package.is_dir(), 'platformSupported': supported, 'missing': missing}
     if name == '__cancel':
         marker = process_marker(session)
         if marker.exists():

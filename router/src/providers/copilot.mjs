@@ -1,7 +1,7 @@
 // GitHub Copilot Provider Adapter for BoxFox Router
 // Adapted from 9Router MIT-licensed open-sse/providers/registry/github.js and open-sse/executors/github.js
 
-import { jsonOrProviderError, modelRecord, normalizeFinishReason, parseJson, providerError, sseEvents } from './common.mjs';
+import { jsonOrProviderError, modelRecord, withThinkingLevels, normalizeFinishReason, parseJson, providerError, sseEvents } from './common.mjs';
 import { RouterError } from '../errors.mjs';
 
 const COPILOT_CHAT_URL = 'https://api.githubcopilot.com/chat/completions';
@@ -169,7 +169,7 @@ export function createCopilotAdapter({ fetchImpl }) {
           const list = Array.isArray(data?.data) ? data.data : [];
           if (list.length) {
             return {
-              models: list.map(item => modelRecord(item.id, item.name || item.id)),
+              models: list.map(item => withThinkingLevels(modelRecord(item.id, item.name || item.id))),
             };
           }
         }

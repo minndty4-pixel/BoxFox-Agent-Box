@@ -10,6 +10,7 @@ export const AVAILABLE_MODELS: ModelOption[] = [
     provider: 'DeepSeek',
     supportsImages: false,
     contextWindow: '1M',
+    thinkingLevels: ['low', 'medium', 'high'],
   },
   {
     id: 'deepseek-v4-flash',
@@ -17,6 +18,7 @@ export const AVAILABLE_MODELS: ModelOption[] = [
     provider: 'DeepSeek',
     supportsImages: false,
     contextWindow: '128k',
+    thinkingLevels: ['low', 'medium', 'high'],
   },
   {
     id: 'glm-5.2',
@@ -52,6 +54,7 @@ export const AVAILABLE_MODELS: ModelOption[] = [
     provider: 'Anthropic',
     supportsImages: true,
     contextWindow: '200k',
+    thinkingLevels: ['low', 'medium', 'high'],
   },
 ]
 
@@ -179,6 +182,7 @@ export interface HarnessState {
   activeHarnessId: string
   activeType: 'harness' | 'model'
   activeModelId: string
+  thinkingLevel: 'low' | 'medium' | 'high'
   searchQuery: string
 
   setSearchQuery: (query: string) => void
@@ -186,6 +190,7 @@ export interface HarnessState {
   setMyDefault: (id: string) => void
   setActiveHarness: (id: string) => void
   setActiveModel: (id: string) => void
+  setThinkingLevel: (thinkingLevel: 'low' | 'medium' | 'high') => void
   setActiveType: (type: 'harness' | 'model') => void
 
   getHarnessById: (id: string) => Harness | undefined
@@ -202,6 +207,7 @@ export const useHarnessStore = create<HarnessState>()(persist((set, get) => ({
   activeHarnessId: 'open-model-harness-copy-1',
   activeType: 'harness',
   activeModelId: 'claude-3.7-sonnet',
+  thinkingLevel: 'medium',
   searchQuery: '',
 
   setSearchQuery: (searchQuery) => set({ searchQuery }),
@@ -209,6 +215,7 @@ export const useHarnessStore = create<HarnessState>()(persist((set, get) => ({
   setMyDefault: (myDefaultId) => set({ myDefaultId }),
   setActiveHarness: (activeHarnessId) => set({ activeHarnessId, activeType: 'harness' }),
   setActiveModel: (activeModelId) => set({ activeModelId, activeType: 'model' }),
+  setThinkingLevel: (thinkingLevel) => set({ thinkingLevel }),
   setActiveType: (activeType) => set({ activeType }),
 
   getHarnessById: (id) => get().harnesses.find((h) => h.id === id),
@@ -224,18 +231,18 @@ export const useHarnessStore = create<HarnessState>()(persist((set, get) => ({
       return { harnesses: [...state.harnesses, { ...updatedHarness, subagents: expandSubagents(updatedHarness.subagents) }] }
     }),
 
-  createHarness: (base) => {
+  createHarness: (baseHarness) => {
     const newId = `harness-${Date.now()}`
-    const newHarness: Harness = {
+    const created: Harness = {
       id: newId,
-      name: base?.name || 'New Custom Harness',
-      description: base?.description || 'Custom configured agent and sub-agents pipeline.',
+      name: baseHarness?.name || 'New Custom Harness',
+      description: baseHarness?.description || 'Custom configured AI workflow',
+      mainModel: baseHarness?.mainModel || 'default',
       isBuiltIn: false,
-      mainModel: base?.mainModel || 'default',
-      subagents: expandSubagents(base?.subagents),
       createdAt: new Date().toISOString(),
+      subagents: expandSubagents(baseHarness?.subagents || INITIAL_HARNESSES[0].subagents),
     }
-    set((state) => ({ harnesses: [...state.harnesses, newHarness] }))
+    set((state) => ({ harnesses: [...state.harnesses, created], activeHarnessId: newId }))
     return newId
   },
 
@@ -260,4 +267,4 @@ export const useHarnessStore = create<HarnessState>()(persist((set, get) => ({
     set((state) => ({
       harnesses: state.harnesses.filter((h) => h.id !== id || h.isBuiltIn),
     })),
-}), { name: 'boxfox_harness_v0', partialize: (state) => ({ harnesses: state.harnesses, activeHarnessId: state.activeHarnessId, activeType: state.activeType, activeModelId: state.activeModelId, teamDefaultId: state.teamDefaultId, myDefaultId: state.myDefaultId }) }))
+}), { name: 'boxfox_harness_v0', partialize: (state) => ({ harnesses: state.harnesses, activeHarnessId: state.activeHarnessId, activeType: state.activeType, activeModelId: state.activeModelId, thinkingLevel: state.thinkingLevel, teamDefaultId: state.teamDefaultId, myDefaultId: state.myDefaultId }) }))

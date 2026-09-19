@@ -1,29 +1,37 @@
 /**
- * Subagent Inspector Dashboard (Thiết kế theo chuẩn Ảnh 3 của người dùng).
+ * Subagent Inspector Dashboard — Thiết kế lại thành Luồng Hội Thoại (Chat Stream).
  * 
- * - Panel bên phải rộng rãi chia 2 cột:
- *   + Cột trái (~220px): Danh sách các Sub-agent đã kích hoạt (Explore, Plan, Build, Testing, v.v...)
- *     kèm status badge (Running 🟡, Done 🟢, Error 🔴), thời gian chạy và số tool calls.
- *   + Cột phải (flex-1): Khung chi tiết "Thinking Console":
- *     - Header: Tên vai trò, Model được cấp phát, Goal của nhiệm vụ con.
- *     - Tabs con: [ 🧠 Thinking / Suy luận ] | [ 🛠️ Tools đã gọi ] | [ 📋 Kết quả tóm tắt ]
- *     - Banner cảnh báo: "Chế độ quan sát tự trị. User không thể gửi tin nhắn vào tiến trình con."
+ * - Cột trái (~240px): Danh sách Specialists Pipeline (Explore, Plan, Build, Testing, v.v...)
+ *   kèm status badge (Running 🟡, Done 🟢, Error 🔴), số tool calls.
+ * - Cột phải: Khung Chat Stream đồng bộ với luồng hội thoại chính:
+ *   1. Tin nhắn Prompt từ Main Agent (Orchestrator): Bong bóng giao việc với huy hiệu 🧠 Main Agent.
+ *   2. Phản hồi từ Sub-agent:
+ *      - Accordion Thinking (suy nghĩ nội tâm).
+ *      - Accordion Tools Executed (danh sách công cụ đã chạy kèm arguments, stdout).
+ *      - Báo cáo Markdown hoàn chỉnh qua MarkdownRenderer.
+ *      - Cảnh báo lỗi inline nếu có.
+ *   3. Thanh Footer Read-only Guard: Khóa không cho user gõ phím vào tiến trình con.
  */
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import {
   Bot,
   Terminal,
-  FileCode2,
   CheckCircle2,
   AlertCircle,
   ChevronRight,
+  ChevronDown,
   ShieldAlert,
   BrainCircuit,
-  Eye,
-  Layers,
+  Sparkles,
+  Copy,
+  Check,
+  FileCode2,
+  Search,
+  Camera,
 } from 'lucide-react'
 import { useHarnessChatStore, type HarnessEvent } from '../../store/harnessChatStore'
 import { useAgentStore } from '../../store/agentStore'
+import { MarkdownRenderer } from '../chat/MarkdownRenderer'
 
 const ROLE_DESCRIPTIONS: Record<string, string> = {
   explore: 'Inspect the repository. Return file/symbol evidence, dependencies and unknowns.',
@@ -37,16 +45,111 @@ const ROLE_DESCRIPTIONS: Record<string, string> = {
   research: 'Research using observed repository or browser sources with grounded citations.',
 }
 
-
 interface ChildSessionView {
   sessionId: string
   role: string
   status: 'running' | 'completed' | 'failed'
   goal?: string
+  prompt?: string
+  context?: string
   summary?: string
   lastError?: string
   toolsRun: string[]
   events: HarnessEvent[]
+}
+
+interface ParsedToolCall {
+  id: string
+  name: string
+  args: Record<string, unknown> | null
+  result?: string | null
+  isError?: boolean
+  isRunning?: boolean
+}
+
+function getToolIcon(name: string) {
+  switch (name) {
+    case 'terminal_exec':
+      return <Terminal className="size-3.5 text-brand" />
+    case 'file_read':
+    case 'file_write':
+    case 'file_edit':
+      return <FileCode2 className="size-3.5 text-brand" />
+    case 'codebase_search':
+    case 'codebase_glob':
+      return <Search className="size-3.5 text-brand" />
+    case 'browser_action':
+      return <Camera className="size-3.5 text-brand" />
+    default:
+      return <Terminal className="size-3.5 text-brand" />
+  }
+}
+
+function SubagentToolItem({ tool }: { tool: ParsedToolCall }) {
+  const [expanded, setExpanded] = useState(false)
+  const cmd = tool.args ? (tool.args.command || tool.args.cmd || tool.args.path || JSON.stringify(tool.args)) : ''
+
+  return (
+    <div className="rounded-lg border border-line/60 bg-[#11151c] overflow-hidden text-xs">
+      <button
+        type="button"
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center justify-between p-2 text-left hover:bg-panel2/40 transition cursor-pointer"
+      >
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          {getToolIcon(tool.name)}
+          <span className="font-semibold text-fg text-[11px]">{tool.name}</span>
+          {cmd && (
+            <span className="text-[10px] font-mono text-zinc-500 truncate max-w-[280px]">
+              {String(cmd)}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0 ml-2">
+          {tool.isRunning ? (
+            <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[9px] text-amber-400 font-mono flex items-center gap-1">
+              <span className="size-1.5 rounded-full bg-amber-400 animate-ping" />
+              running
+            </span>
+          ) : tool.isError ? (
+            <span className="rounded bg-red-500/15 px-1.5 py-0.5 text-[9px] text-red-400 font-mono">
+              failed
+            </span>
+          ) : (
+            <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[9px] text-emerald-400 font-mono">
+              exit 0
+            </span>
+          )}
+          <ChevronDown className={`size-3 text-zinc-500 transition ${expanded ? 'rotate-180' : ''}`} />
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="border-t border-line/40 bg-black/30 p-2.5 space-y-2 font-mono text-[11px]">
+          {tool.args && (
+            <div>
+              <div className="text-[10px] text-zinc-500 font-sans font-medium uppercase tracking-wider mb-1">
+                Arguments:
+              </div>
+              <pre className="rounded bg-panel/70 p-2 text-zinc-300 overflow-x-auto whitespace-pre-wrap">
+                {JSON.stringify(tool.args, null, 2)}
+              </pre>
+            </div>
+          )}
+          {tool.result && (
+            <div>
+              <div className="text-[10px] text-zinc-500 font-sans font-medium uppercase tracking-wider mb-1">
+                Result Output:
+              </div>
+              <pre className="rounded bg-panel/70 p-2 text-zinc-300 overflow-x-auto whitespace-pre-wrap max-h-48 overflow-y-auto">
+                {tool.result}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
 }
 
 export function SubagentInspectorPanel() {
@@ -68,12 +171,17 @@ export function SubagentInspectorPanel() {
           role,
           status,
           goal: String(ev.data.goal ?? ''),
+          prompt: String(ev.data.prompt ?? ev.data.goal ?? ''),
+          context: ev.data.context ? String(ev.data.context) : undefined,
           summary: String(ev.data.summary ?? ''),
           lastError: ev.data.last_error ? String(ev.data.last_error) : undefined,
           toolsRun: Array.isArray(ev.data.tools_run) ? ev.data.tools_run.map(String) : [],
           events: [],
         }
         existing.status = status
+        if (ev.data.goal) existing.goal = String(ev.data.goal)
+        if (ev.data.prompt) existing.prompt = String(ev.data.prompt)
+        if (ev.data.context) existing.context = String(ev.data.context)
         if (ev.data.summary) existing.summary = String(ev.data.summary)
         if (ev.data.last_error) existing.lastError = String(ev.data.last_error)
         if (Array.isArray(ev.data.tools_run)) existing.toolsRun = ev.data.tools_run.map(String)
@@ -85,7 +193,9 @@ export function SubagentInspectorPanel() {
 
   const childrenList = useMemo(() => Object.values(childrenMap), [childrenMap])
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
-  const [detailTab, setDetailTab] = useState<'thinking' | 'tools' | 'summary'>('thinking')
+  const [thinkingExpanded, setThinkingExpanded] = useState(false)
+  const [childEvents, setChildEvents] = useState<HarnessEvent[]>([])
+  const [copied, setCopied] = useState(false)
 
   const activeChild = useMemo(() => {
     if (selectedSessionId && childrenMap[selectedSessionId]) {
@@ -94,7 +204,100 @@ export function SubagentInspectorPanel() {
     return childrenList[0] ?? null
   }, [selectedSessionId, childrenMap, childrenList])
 
+  // Live poll child events từ endpoint /api/agent/sessions/{childSessionId}
+  useEffect(() => {
+    if (!activeChild || !activeChild.sessionId || activeChild.sessionId === 'unknown') {
+      setChildEvents([])
+      return
+    }
+
+    let isMounted = true
+    const fetchChildEvents = async () => {
+      try {
+        const res = await fetch(`/api/agent/sessions/${encodeURIComponent(activeChild.sessionId)}`, {
+          headers: { 'X-BoxFox-Admin': '1' },
+        })
+        if (!res.ok) return
+        const data = await res.json()
+        if (isMounted && Array.isArray(data.events)) {
+          setChildEvents(data.events)
+        }
+      } catch {
+        /* best effort */
+      }
+    }
+
+    void fetchChildEvents()
+    if (activeChild.status === 'running') {
+      const timer = setInterval(() => {
+        void fetchChildEvents()
+      }, 1000)
+      return () => {
+        isMounted = false
+        clearInterval(timer)
+      }
+    }
+    return () => {
+      isMounted = false
+    }
+  }, [activeChild?.sessionId, activeChild?.status])
+
+  // Phân tách luồng suy nghĩ (thought), tool calls và assistant output từ child events
+  const { thoughtText, toolCalls, assistantOutput } = useMemo(() => {
+    let thought = ''
+    const tools: ParsedToolCall[] = []
+    let output = ''
+
+    const toolStarts = new Map<string, { name: string; args: Record<string, unknown> | null }>()
+
+    for (const ev of childEvents) {
+      if (ev.type === 'thought') {
+        const t = String(ev.data.thought ?? ev.data.text ?? '')
+        if (t) thought += (thought ? '\n' : '') + t
+      } else if (ev.type === 'tool_start') {
+        const name = String(ev.data.name ?? 'tool')
+        const args = typeof ev.data.args === 'object' && ev.data.args !== null ? (ev.data.args as Record<string, unknown>) : null
+        const callId = String(ev.data.tool_call_id ?? `${name}-${tools.length}`)
+        toolStarts.set(callId, { name, args })
+        tools.push({
+          id: callId,
+          name,
+          args,
+          isRunning: true,
+        })
+      } else if (ev.type === 'tool_end') {
+        const callId = String(ev.data.tool_call_id ?? '')
+        const res = ev.data.result ? (typeof ev.data.result === 'object' ? JSON.stringify(ev.data.result, null, 2) : String(ev.data.result)) : null
+        const isError = Boolean(ev.data.is_error)
+        const item = tools.find((t) => t.id === callId)
+        if (item) {
+          item.result = res
+          item.isError = isError
+          item.isRunning = false
+        }
+      } else if (ev.type === 'assistant_delta' || ev.type === 'assistant') {
+        const text = String(ev.data.text ?? '')
+        if (text) output += text
+      }
+    }
+
+    return {
+      thoughtText: thought.trim(),
+      toolCalls: tools,
+      assistantOutput: output.trim(),
+    }
+  }, [childEvents])
+
   const roleDescription = activeChild ? (ROLE_DESCRIPTIONS[activeChild.role] ?? 'Specialized subagent execution.') : ''
+
+  const finalResponseText = assistantOutput || activeChild?.summary || ''
+
+  const handleCopy = () => {
+    if (!finalResponseText) return
+    void navigator.clipboard.writeText(finalResponseText)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
 
   return (
     <div className="flex h-full w-full flex-col bg-[#0d1117] text-fg select-none">
@@ -109,16 +312,16 @@ export function SubagentInspectorPanel() {
             Autonomous Specialists
           </span>
         </div>
-        <div className="flex items-center gap-1.5 text-[11px] text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">
+        <div className="flex items-center gap-1.5 text-[11px] text-amber-400 bg-amber-500/10 px-2.5 py-0.5 rounded border border-amber-500/20">
           <ShieldAlert className="size-3" />
-          <span>Read-only Inspection (User cannot send input to child agents)</span>
+          <span>Read-only Stream (Autonomous execution delegated by Main Agent)</span>
         </div>
       </div>
 
-      {/* Main 2-Column Area (Bố cục theo chuẩn Ảnh 3) */}
+      {/* Main 2-Column Area: Specialists Pipeline (Trái) & Chat Stream (Phải) */}
       <div className="flex min-h-0 flex-1">
-        {/* Left Column: Subagents List (Ảnh 3: danh sách [plan], [plan], [plan]...) */}
-        <div className="flex w-60 shrink-0 flex-col border-r border-line/60 bg-[#11141a]">
+        {/* Left Column: Subagents List Pipeline */}
+        <div className="flex w-64 shrink-0 flex-col border-r border-line/60 bg-[#11141a]">
           <div className="border-b border-line/40 px-3 py-2 text-[10px] font-semibold text-muted uppercase tracking-wider flex items-center justify-between">
             <span>Specialists Pipeline</span>
             <span className="font-mono text-[9px] bg-panel2 px-1.5 py-0.2 rounded text-zinc-400">
@@ -137,7 +340,7 @@ export function SubagentInspectorPanel() {
               </div>
             ) : (
               childrenList.map((child) => {
-                const isSelected = (activeChild?.sessionId === child.sessionId)
+                const isSelected = activeChild?.sessionId === child.sessionId
 
                 return (
                   <button
@@ -146,27 +349,26 @@ export function SubagentInspectorPanel() {
                     onClick={() => setSelectedSessionId(child.sessionId)}
                     className={`flex w-full items-center gap-2.5 rounded-lg p-2 text-left transition cursor-pointer ${
                       isSelected
-                        ? 'bg-[#1c222d] text-white border border-brand/40 shadow-xs'
+                        ? 'bg-[#1c222d] text-white border border-brand/40 shadow-xs ring-1 ring-brand/30'
                         : 'text-zinc-300 hover:bg-panel2/50 border border-transparent'
                     }`}
                   >
                     <div
                       className={`flex size-7 shrink-0 items-center justify-center rounded-md ${
                         child.status === 'completed'
-                          ? 'bg-emerald-500/10 text-emerald-400'
+                          ? 'bg-emerald-500/15 text-emerald-400'
                           : child.status === 'running'
-                            ? 'bg-amber-500/10 text-amber-400'
-                            : 'bg-red-500/10 text-red-400'
+                            ? 'bg-amber-500/15 text-amber-400'
+                            : 'bg-red-500/15 text-red-400'
                       }`}
                     >
                       <Bot className="size-4" />
                     </div>
 
-
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center justify-between">
                         <span className="font-semibold text-xs capitalize truncate">
-                          {child.role}
+                          {child.role} Specialist
                         </span>
                         {child.status === 'completed' ? (
                           <CheckCircle2 className="size-3 text-emerald-400 shrink-0" />
@@ -177,7 +379,7 @@ export function SubagentInspectorPanel() {
                         )}
                       </div>
                       <div className="text-[10px] text-zinc-500 truncate mt-0.5">
-                        {child.toolsRun.length > 0 ? `${child.toolsRun.length} tools executed` : 'Ready'}
+                        {child.toolsRun.length > 0 ? `${child.toolsRun.length} tools executed` : 'Autonomous run'}
                       </div>
                     </div>
 
@@ -189,15 +391,16 @@ export function SubagentInspectorPanel() {
           </div>
         </div>
 
-        {/* Right Column: Thinking & Console Area (Ảnh 3: "thinking in here") */}
+        {/* Right Column: Sub-agent Chat Stream */}
         <div className="flex min-w-0 flex-1 flex-col bg-[#090d13]">
           {activeChild ? (
             <>
               {/* Header Info */}
-              <div className="border-b border-line/60 bg-[#12161f] p-3">
+              <div className="border-b border-line/60 bg-[#12161f] px-4 py-2.5">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <span className="text-sm font-bold text-fg capitalize">
+                    <span className="text-sm font-bold text-fg capitalize flex items-center gap-1.5">
+                      <Bot className="size-4 text-brand" />
                       {activeChild.role} Specialist
                     </span>
                     <span
@@ -213,7 +416,7 @@ export function SubagentInspectorPanel() {
                     </span>
                   </div>
                   <span className="text-[10px] font-mono text-zinc-500">
-                    SID: {activeChild.sessionId.slice(0, 12)}…
+                    SID: {activeChild.sessionId.slice(0, 14)}…
                   </span>
                 </div>
 
@@ -222,112 +425,142 @@ export function SubagentInspectorPanel() {
                     {roleDescription}
                   </p>
                 )}
+              </div>
 
+              {/* Chat Stream Body */}
+              <div className="flex-1 overflow-y-auto p-4 space-y-4 select-text">
+                {/* 1. Tin nhắn Prompt từ Main Agent (Orchestrator) */}
+                <div className="flex flex-col items-end gap-1.5">
+                  <div className="flex items-center gap-1.5 text-[11px] text-brand font-medium">
+                    <BrainCircuit className="size-3.5 text-brand" />
+                    <span>Main Agent (Orchestrator)</span>
+                  </div>
+                  <div className="max-w-[88%] rounded-2xl bg-panel2 border border-line px-4 py-3 text-xs leading-relaxed text-fg shadow-xs">
+                    <MarkdownRenderer
+                      content={activeChild.prompt || activeChild.goal || 'Inspect repository and report findings.'}
+                    />
+                  </div>
+                </div>
 
-                {/* Sub-tabs switch */}
-                <div className="mt-3 flex items-center gap-1 border-t border-line/40 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => setDetailTab('thinking')}
-                    className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition cursor-pointer ${
-                      detailTab === 'thinking'
-                        ? 'bg-panel2 text-brand font-semibold shadow-xs'
-                        : 'text-muted hover:text-fg'
-                    }`}
-                  >
-                    <BrainCircuit className="size-3.5" />
-                    <span>Thinking & Reasoning</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setDetailTab('tools')}
-                    className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition cursor-pointer ${
-                      detailTab === 'tools'
-                        ? 'bg-panel2 text-brand font-semibold shadow-xs'
-                        : 'text-muted hover:text-fg'
-                    }`}
-                  >
-                    <Terminal className="size-3.5" />
-                    <span>Tools Executed ({activeChild.toolsRun.length})</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setDetailTab('summary')}
-                    className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition cursor-pointer ${
-                      detailTab === 'summary'
-                        ? 'bg-panel2 text-brand font-semibold shadow-xs'
-                        : 'text-muted hover:text-fg'
-                    }`}
-                  >
-                    <FileCode2 className="size-3.5" />
-                    <span>Outcome Summary</span>
-                  </button>
+                {/* 2. Luồng phản hồi của Sub-agent */}
+                <div className="space-y-3.5 pt-2">
+                  <div className="flex items-center justify-between text-xs text-muted pb-1 border-b border-line/40">
+                    <div className="flex items-center gap-2">
+                      <div className="flex size-5 items-center justify-center rounded bg-brand/10 text-brand">
+                        <Bot className="size-3.5" />
+                      </div>
+                      <span className="font-semibold text-fg capitalize">
+                        {activeChild.role} Specialist Output
+                      </span>
+                    </div>
+                    {finalResponseText && (
+                      <button
+                        type="button"
+                        onClick={handleCopy}
+                        className="flex items-center gap-1 text-[11px] text-zinc-400 hover:text-white transition cursor-pointer"
+                        title="Copy response"
+                      >
+                        {copied ? (
+                          <>
+                            <Check className="size-3 text-emerald-400" />
+                            <span className="text-emerald-400">Copied</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="size-3" />
+                            <span>Copy</span>
+                          </>
+                        )}
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Thinking Accordion */}
+                  {thoughtText && (
+                    <div className="rounded-xl border border-line/60 bg-[#0f131a] overflow-hidden text-xs">
+                      <button
+                        type="button"
+                        onClick={() => setThinkingExpanded(!thinkingExpanded)}
+                        className="w-full flex items-center justify-between px-3 py-2 text-muted hover:text-fg transition cursor-pointer"
+                      >
+                        <div className="flex items-center gap-2">
+                          <Sparkles className="size-3.5 text-brand" />
+                          <span className="font-medium text-[11px] text-zinc-300">
+                            Thinking & Internal Reasoning
+                          </span>
+                        </div>
+                        <ChevronDown
+                          className={`size-3 text-zinc-500 transition ${thinkingExpanded ? 'rotate-180' : ''}`}
+                        />
+                      </button>
+                      {thinkingExpanded && (
+                        <div className="px-3 pb-3 text-zinc-400 font-mono text-[11px] leading-relaxed whitespace-pre-wrap border-t border-line/30 pt-2 bg-black/20 max-h-60 overflow-y-auto">
+                          {thoughtText}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Tools Executed Accordion List */}
+                  {toolCalls.length > 0 && (
+                    <div className="space-y-1.5">
+                      <div className="text-[11px] font-semibold text-zinc-400 flex items-center gap-1.5">
+                        <Terminal className="size-3 text-brand" />
+                        <span>Tools Executed ({toolCalls.length})</span>
+                      </div>
+                      <div className="space-y-1">
+                        {toolCalls.map((tool) => (
+                          <SubagentToolItem key={tool.id} tool={tool} />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Final Markdown Report */}
+                  <div className="rounded-2xl border border-line/70 bg-[#0f141d] p-4 text-xs leading-relaxed text-fg shadow-xs">
+                    {finalResponseText ? (
+                      <MarkdownRenderer content={finalResponseText} />
+                    ) : (
+                      <div className="text-zinc-500 italic py-2">
+                        {activeChild.status === 'running'
+                          ? 'Specialist is processing instructions autonomously in the sandbox...'
+                          : 'No synthesis text returned from sub-agent.'}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Error Box if any */}
+                  {activeChild.lastError && (
+                    <div className="rounded-xl border border-red-500/40 bg-red-500/10 p-3 text-xs text-red-400 flex items-start gap-2">
+                      <AlertCircle className="size-4 shrink-0 mt-0.5" />
+                      <div>
+                        <div className="font-semibold">Execution Issue Encountered:</div>
+                        <div className="mt-0.5 text-[11px] leading-relaxed font-mono">
+                          {activeChild.lastError}
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
-              {/* Body: "thinking in here" */}
-              <div className="flex-1 overflow-y-auto p-4 font-mono text-xs select-text">
-                {detailTab === 'thinking' && (
-                  <div className="rounded-xl border border-line/70 bg-[#0f131a] p-4 text-zinc-300 leading-relaxed whitespace-pre-wrap">
-                    <div className="flex items-center gap-2 pb-2 mb-3 border-b border-line/40 text-muted font-sans text-xs">
-                      <Eye className="size-3.5 text-brand" />
-                      <span>Specialist internal thought stream:</span>
-                    </div>
-                    {activeChild.summary ? (
-                      <div>{activeChild.summary}</div>
-                    ) : (
-                      <div className="text-zinc-500 italic">
-                        Sub-agent is processing instructions autonomously in the sandbox...
-                      </div>
-                    )}
-                    {activeChild.lastError && (
-                      <div className="mt-3 rounded-lg border border-red-500/40 bg-red-500/10 p-2.5 text-red-400 text-xs">
-                        <strong>Error encountered:</strong> {activeChild.lastError}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {detailTab === 'tools' && (
-                  <div className="space-y-2">
-                    {activeChild.toolsRun.length === 0 ? (
-                      <div className="p-6 text-center text-xs text-muted">
-                        No tools called by this specialist yet.
-                      </div>
-                    ) : (
-                      activeChild.toolsRun.map((toolName, idx) => (
-                        <div
-                          key={`${toolName}-${idx}`}
-                          className="flex items-center justify-between rounded-lg border border-line/60 bg-[#11151c] px-3 py-2 text-xs"
-                        >
-                          <div className="flex items-center gap-2">
-                            <Terminal className="size-3.5 text-brand" />
-                            <span className="font-semibold text-fg">{toolName}</span>
-                          </div>
-                          <span className="rounded bg-panel px-1.5 py-0.5 text-[10px] text-emerald-400 font-mono">
-                            executed
-                          </span>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                )}
-
-                {detailTab === 'summary' && (
-                  <div className="rounded-xl border border-line/70 bg-[#0f131a] p-4 text-zinc-300 leading-relaxed whitespace-pre-wrap">
-                    <div className="flex items-center gap-2 pb-2 mb-3 border-b border-line/40 text-muted font-sans text-xs">
-                      <Layers className="size-3.5 text-brand" />
-                      <span>Returned synthesis to parent Orchestrator:</span>
-                    </div>
-                    <p>{activeChild.summary || 'Work in progress.'}</p>
-                  </div>
-                )}
+              {/* Bottom Footer: Read-only Guard */}
+              <div className="border-t border-line/70 bg-[#12161f] px-4 py-2.5 flex items-center justify-between text-xs text-muted">
+                <div className="flex items-center gap-2 text-zinc-400">
+                  <ShieldAlert className="size-3.5 text-amber-400" />
+                  <span className="text-[11px]">
+                    🔒 Read-only sub-agent stream · Autonomous execution delegated by Main Agent
+                  </span>
+                </div>
+                <span className="text-[10px] font-mono text-zinc-500 bg-panel px-2 py-0.5 rounded border border-line/50">
+                  Sandbox Protected
+                </span>
               </div>
             </>
           ) : (
             <div className="flex h-full flex-col items-center justify-center p-8 text-center text-muted">
-              <Bot className="size-10 mb-2 text-zinc-600" />
-              <p className="text-xs">Select a specialist from the list to inspect its activity.</p>
+              <Bot className="size-10 mb-2 text-zinc-600 animate-pulse" />
+              <p className="text-xs">Select a specialist from the list to inspect its chat stream.</p>
             </div>
           )}
         </div>

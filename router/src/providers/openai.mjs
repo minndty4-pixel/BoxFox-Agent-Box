@@ -1,4 +1,4 @@
-import { jsonOrProviderError, modelRecord, normalizeFinishReason, parseJson, providerError, sseEvents, baseUrl } from './common.mjs';
+import { jsonOrProviderError, modelRecord, normalizeFinishReason, parseJson, providerError, sseEvents, baseUrl, withThinkingLevels } from './common.mjs';
 
 function headers(apiKey) {
   return { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', Accept: 'application/json' };
@@ -9,12 +9,18 @@ export function createOpenAIAdapter({ fetchImpl }) {
     async discover({ connection, credentials, signal }) {
       const data = await jsonOrProviderError(await fetchImpl(`${baseUrl(connection.endpoint)}/models`, { headers: headers(credentials.apiKey), signal }));
       const list = Array.isArray(data?.data) ? data.data : Array.isArray(data?.models) ? data.models : [];
-      return { models: list.map(item => typeof item === 'string' ? modelRecord(item) : modelRecord(item?.id, item?.name || item?.id)).filter(m => m.id) };
+      return { models: list.map(item => withThinkingLevels(typeof item === 'string' ? modelRecord(item) : modelRecord(item?.id, item?.name || item?.id))).filter(m => m.id) };
     },
     async *generate({ connection, credentials, body, signal }) {
       const stream = body.stream !== false;
+      const requestPayload = { ...body, stream, ...(stream && connection.providerId === 'openai' ? { stream_options: { ...body.stream_options, include_usage: true } } : {}) };
+      const level = body.thinkingLevel || body.reasoning_effort;
+      if (level && level !== 'none' && level !== 'auto') {
+        requestPayload.reasoning_effort = level;
+      }
+      delete requestPayload.thinkingLevel;
       const response = await fetchImpl(`${baseUrl(connection.endpoint)}/chat/completions`, {
-        method: 'POST', headers: headers(credentials.apiKey), body: JSON.stringify({ ...body, stream, ...(stream && connection.providerId === 'openai' ? { stream_options: { ...body.stream_options, include_usage: true } } : {}) }), signal,
+        method: 'POST', headers: headers(credentials.apiKey), body: JSON.stringify(requestPayload), signal,
       });
       if (!stream) {
         const data = await jsonOrProviderError(response);

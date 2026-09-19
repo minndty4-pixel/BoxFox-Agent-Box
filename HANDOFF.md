@@ -59,3 +59,94 @@ For handling heavy streaming data, large log files, or rich documents (>2,000 li
 - **Frontend (Vitest):** `127 / 127 tests passed` across 18 test files (`npm run test`).
 - **Frontend Typecheck & Lint:** `0 errors` (`npm run typecheck`, `npm run lint`).
 - **Python Unit Tests:** `13 / 13 tests passed` (`conda run -n DL python -m unittest discover -s deploy/docker/tests -p "test_*.py"`).
+
+---
+
+## 5. Chẩn Đoán & Kiến Trúc: Xử Lý `/claude-code` & Cơ Chế Nạp Skill BoxFox
+
+### 5.1. Vấn Đề Hiện Tại Với `/claude-code`
+- **Triệu chứng:** Khi người dùng gửi lệnh có tag `/claude-code` (ví dụ: `/claude-code day la test`), hệ thống lập tức mở sub-agent `Build Specialist` [FAILED 🔴], đồng thời chat chính báo lỗi:
+  `CHILD_FAILED: inspect child events for setup/error details`.
+- **Nguyên nhân gốc rễ:**
+  1. **Ép cứng vai trò (Hardcoded Role & Executor):** Trong [`backend/src/agentbox/skills/commands.py`](file:///d:/create/BoxFox-Agent-Box/backend/src/agentbox/skills/commands.py) (dòng 172-175):
+     ```python
+     elif key in {'claude-code', 'claude-design'}:
+         result.kind, result.skills = 'task', [key]
+         result.executor = 'claude-code' if key == 'claude-code' else 'native'
+         result.role = 'build' if key == 'claude-code' else 'orchestrator'
+     ```
+     Lệnh `/claude-code` bị gán cứng vào vai trò `build` và ép executor sang `claude-code` CLI.
+  2. **Thiếu kiểm tra tiền khả thi (Pre-flight Check Failure):** Khi executor là `claude-code`, backend gọi [`ClaudeExecutor`](file:///d:/create/BoxFox-Agent-Box/backend/src/agentbox/sandbox/claude_executor.py) thực thi lệnh docker vào container `agentbox-box`. Nếu container chưa chạy, hoặc binary `claude` chưa được cài đặt / chưa đăng nhập (`claude auth login`) bên trong sandbox:
+     - Worker ném ngoại lệ `setup_required: Check sandbox login, CLI version...`
+     - Backend bắt lỗi, đánh dấu session con thất bại và ném `CHILD_FAILED`, làm sập toàn bộ luồng xử lý của Main Agent mà không có hướng dẫn thân thiện cho người dùng.
+
+### 5.2. Giải Pháp Kiến Trúc: Luồng Riêng Cho Claude Code
+1. **Tách biệt Executor khỏi Role:**
+   - Không ép `/claude-code` thành vai trò `build`. Cho phép người dùng hoặc Orchestrator chỉ định vai trò linh hoạt (`explore`, `review`, `build`, v.v.).
+2. **Cơ chế Kiểm Tra Tiền Khả Thi & Graceful Fallback:**
+   - Trước khi dispatch sang docker CLI, hệ thống thực hiện probe trạng thái:
+     - Trạng thái Docker container (`agentbox-box` có đang active?).
+     - Trạng thái CLI binary & Authentication (`claude auth status`).
+   - **Nếu chưa sẵn sàng:** Không tạo sub-agent lỗi để làm bẩn pipeline. Trả về thông điệp hướng dẫn rõ ràng trên UI:
+     - Hướng dẫn mở Terminal Sandbox để chạy `claude auth login`.
+     - Hoặc cung cấp tùy chọn chuyển đổi tự động sang **Native Claude Model** (sử dụng API Anthropic qua BoxFox Router thay vì phụ thuộc CLI bên trong docker).
+
+### 5.3. Cơ Chế Nạp Skill Riêng Biệt Cho BoxFox & Phân Bổ Sub-Agent
+- **Thực trạng nạp Skill:**
+  - Hiện tại [`SkillCatalog`](file:///d:/create/BoxFox-Agent-Box/backend/src/agentbox/skills/catalog.py) chỉ quét thư mục `vendor/hermes/skills`.
+  - Thư mục `.skills/` của BoxFox (chứa các skill chuyên biệt: `browser-testing`, `electron-testing`, `web-preview`, `planning-workflow`, `canvas-spec`, `secrets-catalog`...) chưa được tự động tích hợp vào catalog.
+  - Bảng `ROLE_SKILLS` đang gán tĩnh danh sách skill Hermes cho từng role, không linh hoạt.
+- **Chiến lược nâng cấp:**
+  1. **Dual-source Skill Catalog:** Mở rộng `SkillCatalog` để quét cả `d:\create\BoxFox-Agent-Box\.skills` và `/home/agent/workspace/.skills`, gán namespace `source: 'boxfox'`.
+  2. **Sub-agent với Model & Skill Riêng Biệt:**
+     - Cho phép từng Specialist trong `Specialists Pipeline` được cấu hình model độc lập (ví dụ: `Explore` dùng model nhẹ/rẻ như `gemini-2.5-flash`, `Build` dùng `claude-3.7-sonnet`, `Review` dùng `deepseek-r1`).
+     - Cho phép gắn thẻ kỹ năng (skill tags) phù hợp cho từng vai trò:
+       - `Testing Specialist` ➔ nạp `browser-testing`, `web-preview`, `electron-testing`.
+       - `Plan Specialist` ➔ nạp `planning-workflow`, `canvas-spec`.
+       - `Review Specialist` ➔ nạp `git-pr-workflow`, `pr-description`.
+
+---
+
+## 6. Phân Tích & Chiến Lược Chuẩn Hóa Thinking Levels Cho Từng Model & Provider
+
+### 6.1. Thực Trạng Hiện Tại (Mock / Hardcode)
+- Trong [`router/src/providers/common.mjs`](file:///d:/create/BoxFox-Agent-Box/router/src/providers/common.mjs) và [`router/src/service.mjs`](file:///d:/create/BoxFox-Agent-Box/router/src/service.mjs), hệ thống dùng regex kiểm tra tên model (nếu có chứa `r1`, `o1`, `think`, `reason`...) rồi gán cứng:
+  `thinkingLevels: ['low', 'medium', 'high']`
+- Điều này dẫn đến sự vô lý khi:
+  - Một số model không hỗ trợ thay đổi mức độ suy nghĩ (như DeepSeek R1 luôn bật, không có 3 mức).
+  - Một số model không có tính năng suy nghĩ nhưng vẫn hiển thị selector.
+  - Các provider sử dụng định dạng tham số hoàn toàn khác nhau nhưng bị ép chung một danh sách tĩnh.
+
+### 6.2. Ma Trận Thinking Giữa Các Provider
+| Provider | Đại diện Model | Cơ chế Thinking | Tham số API Thực Tế | Mức độ hỗ trợ |
+| :--- | :--- | :--- | :--- | :--- |
+| **OpenAI** | `o1`, `o3-mini`, `gpt-5` | Discrete Effort | `reasoning_effort: 'low' \| 'medium' \| 'high'` | Chuẩn 3 mức |
+| **Anthropic** | `claude-3-7-sonnet` | Token Budget | `thinking: { type: 'enabled', budget_tokens: <number> }` hoặc `type: 'disabled'` | Budget linh hoạt (1024 - 128k), có thể tắt |
+| **Google Gemini** | `gemini-2.5-flash`, `gemini-2.5-pro` | Token Budget | `generationConfig.thinkingConfig = { thinkingBudget: <number> }` (0 để tắt, -1 auto) | Budget số nguyên, có thể tắt |
+| **Google DeepMind (Antigravity)** | `gemini-3.8-flash-high`, `gemini-3.8-pro` | Tier / Effort | `generationConfig.thinkingConfig = { thinkingLevel: 'low' \| 'medium' \| 'high' }` | Mức phân cấp theo tier định danh |
+| **DeepSeek** | `deepseek-reasoner` (R1) | Inherent Reasoning | Luôn sinh `reasoning_content`, không có tham số bật/tắt hoặc điều chỉnh mức | Cố định (`fixed`), không chọn mức |
+
+### 6.3. Chiến Lược Chuẩn Hóa Kiến Trúc
+1. **Phân loại Model Thinking Capability (Capability Registry):**
+   Thay vì regex chung chung, mỗi model metadata sẽ có cấu trúc năng lực rõ ràng:
+   - `thinkingType`:
+     - `'effort'`: Hỗ trợ các mức định danh (`['low', 'medium', 'high']`).
+     - `'budget'`: Hỗ trợ cấu hình số lượng token (`budget_tokens` hoặc `thinkingBudget`).
+     - `'fixed'`: Luôn suy nghĩ, không cho phép đổi mức (ví dụ DeepSeek R1).
+     - `'none'`: Model thông thường không có reasoning.
+   - `defaultThinking`: Mức mặc định khi kích hoạt.
+2. **Translation Layer Tại Từng Provider Adapter:**
+   - Adapter của Provider chịu trách nhiệm dịch mức quy ước từ UI (`low`, `medium`, `high`, `off`) thành payload chính xác của Upstream:
+     - Anthropic Adapter: `low` ➔ `2048`, `medium` ➔ `8192`, `high` ➔ `16384`, `off` ➔ `{ type: 'disabled' }`.
+     - Gemini Adapter: `low` ➔ `1024`, `medium` ➔ `4096`, `high` ➔ `16384`, `off` ➔ `thinkingBudget: 0`.
+     - OpenAI Adapter: Chuyển trực tiếp sang `reasoning_effort`.
+     - DeepSeek Adapter: Bỏ qua trường reasoning_effort (không gửi tham số không hợp lệ).
+3. **Đồng Bộ Lên Giao Diện (Frontend):**
+   - Chỉ hiển thị bộ chọn Thinking khi `m.thinkingLevels` có giá trị hợp lệ từ provider metadata thực tế.
+   - Ẩn hoàn toàn thanh chọn Thinking đối với model `thinkingType: 'fixed'` hoặc `thinkingType: 'none'`.
+
+---
+
+## 7. Vấn Đề Tồn Đọng Với CUA (Computer Use Agent)
+- CUA (Computer Use Agent) hiện tại chưa hoạt động đúng.
+

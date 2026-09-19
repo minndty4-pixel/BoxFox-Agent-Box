@@ -18,13 +18,29 @@ function toolNameMap(messages) {
   return result;
 }
 
+function toolSignatureMap(messages) {
+  const result = new Map();
+  for (const message of messages || []) {
+    for (const call of message?.tool_calls || []) {
+      const sig = call?.thought_signature || call?.thoughtSignature || call?.thought || null;
+      if (call?.id && sig) result.set(call.id, sig);
+    }
+  }
+  return result;
+}
+
 export function openAIToGeminiRequest(model, body, { antigravity = false, projectId = null, sessionId = null } = {}) {
   const result = { contents: [], generationConfig: {} };
   if (body.temperature !== undefined) result.generationConfig.temperature = body.temperature;
   if (body.top_p !== undefined) result.generationConfig.topP = body.top_p;
   if (body.max_tokens !== undefined) result.generationConfig.maxOutputTokens = Math.min(body.max_tokens, 64000);
+  const thinkingEffort = body.thinkingLevel || body.reasoning_effort;
+  if (thinkingEffort && thinkingEffort !== 'none' && thinkingEffort !== 'auto') {
+    result.generationConfig.thinkingConfig = { thinkingLevel: thinkingEffort, includeThoughts: true };
+  }
 
   const names = toolNameMap(body.messages);
+  const signatures = toolSignatureMap(body.messages);
   const toolResponses = new Map((body.messages || []).filter(m => m.role === 'tool' && m.tool_call_id).map(m => [m.tool_call_id, m.content]));
   for (const message of body.messages || []) {
     if (['system', 'developer'].includes(message.role)) {
@@ -47,8 +63,11 @@ export function openAIToGeminiRequest(model, body, { antigravity = false, projec
       for (const call of message.tool_calls || []) {
         if (call?.type !== 'function' || !call.function?.name) continue;
         const part = { functionCall: { id: call.id, name: sanitizeGeminiFunctionName(call.function.name), args: tryParseJSON(call.function.arguments || '{}', {}) } };
-        const sig = call.thought_signature || call.thoughtSignature;
-        if (sig) part.thoughtSignature = sig;
+        const sig = call.thought_signature || call.thoughtSignature || call.thought || null;
+        if (sig) {
+          part.thoughtSignature = sig;
+          part.thought_signature = sig;
+        }
         parts.push(part);
       }
       if (parts.length) result.contents.push({ role: 'model', parts });
@@ -83,10 +102,15 @@ export function openAIToGeminiRequest(model, body, { antigravity = false, projec
       const fnPart = {
         functionResponse: {
           id: message.tool_call_id,
-          name: sanitizeGeminiFunctionName(names.get(message.tool_call_id) || 'tool'),
+          name: sanitizeGeminiFunctionName(names.get(message.tool_call_id) || message.name || 'tool'),
           response: parsed,
         },
       };
+      const sig = signatures.get(message.tool_call_id);
+      if (sig) {
+        fnPart.thoughtSignature = sig;
+        fnPart.thought_signature = sig;
+      }
 
       result.contents.push({ role: 'user', parts: [fnPart, ...extraParts] });
     }

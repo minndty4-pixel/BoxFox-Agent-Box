@@ -16,7 +16,7 @@ function eligible(c: ProviderConnection) { return c.enabled && c.authState === '
 export function routerChatOptions(snapshot: ProviderSnapshot) {
   // A live inventory alone does not prove inference works. Preserve models
   // pending their first probe, but never offer a model known unavailable.
-  const models = snapshot.connections.filter(eligible).flatMap(c => c.models.filter(m => m.enabled && m.health !== 'unavailable').map(m => ({ value: `model:${c.id}:${m.id}`, label: `${c.name} · ${m.name}`, providerId: c.providerId, selection: { kind: 'model', connectionId: c.id, modelId: m.id } as RouterChatSelection })))
+  const models = snapshot.connections.filter(eligible).flatMap(c => c.models.filter(m => m.enabled && m.health !== 'unavailable').map(m => ({ value: `model:${c.id}:${m.id}`, label: `${c.name} · ${m.name}`, providerId: c.providerId, thinkingLevels: m.thinkingLevels, selection: { kind: 'model', connectionId: c.id, modelId: m.id } as RouterChatSelection })))
   const aliases = snapshot.aliases.filter(a => a.enabled && a.targets.some(t => models.some(m => m.selection.kind === 'model' && m.selection.connectionId === t.connectionId && m.selection.modelId === t.modelId))).map(a => ({ value: `alias:${a.id}`, label: a.name, providerId: snapshot.connections.find(c => c.id === a.targets[0]?.connectionId)?.providerId ?? 'router', selection: { kind: 'alias', aliasId: a.id } as RouterChatSelection }))
   return [...aliases, ...models]
 }

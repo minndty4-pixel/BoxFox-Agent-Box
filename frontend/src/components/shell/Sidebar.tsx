@@ -53,7 +53,6 @@ export function Sidebar() {
   const openSettings = useUiStore((s) => s.openSettings)
   const userEmail = useUiStore((s) => s.userEmail)
   const notifyOnComplete = useUiStore((s) => s.notifyOnComplete)
-  const sessions = useAgentStore((s) => s.sessions)
   const activeSessionId = useAgentStore((s) => s.activeSessionId)
   const setActiveSessionId = useAgentStore((s) => s.setActiveSessionId)
 
@@ -61,27 +60,43 @@ export function Sidebar() {
   const [savedDbSessions, setSavedDbSessions] = useState<SessionSummary[]>([])
   const fetchSavedSessions = useHarnessChatStore((s) => s.fetchSavedSessions)
 
+  const handleDeleteSession = async (sessionId: string) => {
+    try {
+      await useHarnessChatStore.getState().deleteSession(sessionId)
+      setSavedDbSessions((prev) => {
+        const remaining = prev.filter((s) => s.session_id !== sessionId)
+        if (useAgentStore.getState().activeSessionId === sessionId) {
+          if (remaining.length > 0) {
+            useAgentStore.getState().setActiveSessionId(remaining[0].session_id)
+          } else {
+            useAgentStore.getState().setActiveSessionId(`session-${Date.now().toString(36)}`)
+          }
+        }
+        return remaining
+      })
+    } catch {
+      // Handled in store
+    }
+  }
+
   useEffect(() => {
     let unmounted = false
     const loadSessions = async () => {
       try {
         const rows = await fetchSavedSessions()
         if (unmounted) return
-        if (rows.length > 0) {
-          const mapped: SessionSummary[] = rows.map((r: SavedSessionRow) => ({
-
-            session_id: r.id,
-            initials: 'BF',
-            title: `Session ${r.id.slice(0, 8)}`,
-            relative_time: 'SQLite',
-            status: r.status === 'running' ? 'dang_chay' : r.status === 'completed' ? 'xong' : 'idle',
-            mode: 'PLAN',
-
-            active_lease_count: 0,
-            step_count: 1,
-          }))
-          setSavedDbSessions(mapped)
-        }
+        const mapped: SessionSummary[] = rows.map((r: SavedSessionRow) => ({
+          session_id: r.id,
+          initials: 'BF',
+          title: `Session ${r.id.slice(0, 8)}`,
+          relative_time: 'SQLite',
+          status: r.status === 'running' ? 'dang_chay' : r.status === 'completed' ? 'xong' : 'idle',
+          mode: 'PLAN',
+          active_lease_count: 0,
+          step_count: 1,
+        }))
+        setSavedDbSessions(mapped)
+        useAgentStore.setState({ sessions: mapped })
       } catch {
         // Fallback
       }
@@ -99,7 +114,12 @@ export function Sidebar() {
   // Chỉ mở 1 menu `...` tại một thời điểm, quản lý ở cấp Sidebar.
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null)
 
-  const effectiveSessions = savedDbSessions.length > 0 ? savedDbSessions : sessions
+  const storeSessions = useAgentStore((s) => s.sessions)
+  // Xóa bỏ hoàn toàn mock session khi session trống (chỉ lấy session DB hoặc session không phải mock s-0x)
+  const effectiveSessions =
+    savedDbSessions.length > 0
+      ? savedDbSessions
+      : storeSessions.filter((s) => !s.session_id.startsWith('s-0'))
   const visibleSessions = effectiveSessions.filter((s) => !s.is_archived)
 
 
@@ -282,13 +302,19 @@ export function Sidebar() {
 
       {/* Sessions List */}
       <div className="mt-1 min-h-0 flex-1 overflow-y-auto px-2 space-y-0.5">
-        {sessionTab === 'groups' ? (
+        {visibleSessions.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-10 px-3 text-center text-xs text-muted/60 select-none">
+            <span className="text-zinc-400">No active sessions</span>
+            <span className="text-[11px] text-zinc-500 mt-1">Click + New Session to start</span>
+          </div>
+        ) : sessionTab === 'groups' ? (
           <GroupsAccordion
             sessions={visibleSessions}
             activeSessionId={activeSessionId}
             menuOpenId={menuOpenId}
             setMenuOpenId={setMenuOpenId}
             onOpen={setActiveSessionId}
+            onDeleteSession={handleDeleteSession}
           />
         ) : (
           visibleSessions.map((session) => (
@@ -301,6 +327,7 @@ export function Sidebar() {
                 setMenuOpenId(menuOpenId === session.session_id ? null : session.session_id)
               }
               onOpen={() => setActiveSessionId(session.session_id)}
+              onDeleteSession={handleDeleteSession}
             />
           ))
         )}
@@ -329,12 +356,14 @@ function GroupsAccordion({
   menuOpenId,
   setMenuOpenId,
   onOpen,
+  onDeleteSession,
 }: {
   sessions: SessionSummary[]
   activeSessionId: string
   menuOpenId: string | null
   setMenuOpenId: (id: string | null) => void
   onOpen: (id: string) => void
+  onDeleteSession?: (id: string) => void
 }) {
   const t = useT()
   const groupNames = [...new Set(sessions.map((s) => s.group_name).filter((g): g is string => !!g))]
@@ -351,6 +380,7 @@ function GroupsAccordion({
           menuOpenId={menuOpenId}
           setMenuOpenId={setMenuOpenId}
           onOpen={onOpen}
+          onDeleteSession={onDeleteSession}
         />
       ))}
       {ungrouped.length > 0 && (
@@ -361,6 +391,7 @@ function GroupsAccordion({
           menuOpenId={menuOpenId}
           setMenuOpenId={setMenuOpenId}
           onOpen={onOpen}
+          onDeleteSession={onDeleteSession}
         />
       )}
     </div>
@@ -374,6 +405,7 @@ function GroupSection({
   menuOpenId,
   setMenuOpenId,
   onOpen,
+  onDeleteSession,
 }: {
   name: string
   sessions: SessionSummary[]
@@ -381,6 +413,7 @@ function GroupSection({
   menuOpenId: string | null
   setMenuOpenId: (id: string | null) => void
   onOpen: (id: string) => void
+  onDeleteSession?: (id: string) => void
 }) {
   const [open, setOpen] = useState(false)
 
@@ -413,6 +446,7 @@ function GroupSection({
                 setMenuOpenId(menuOpenId === session.session_id ? null : session.session_id)
               }
               onOpen={() => onOpen(session.session_id)}
+              onDeleteSession={onDeleteSession}
             />
           ))}
         </div>
@@ -427,12 +461,14 @@ function SessionRow({
   menuOpen,
   onToggleMenu,
   onOpen,
+  onDeleteSession,
 }: {
   session: SessionSummary
   active: boolean
   menuOpen: boolean
   onToggleMenu: () => void
   onOpen: () => void
+  onDeleteSession?: (id: string) => void
 }) {
   const t = useT()
   const pinSession = useAgentStore((s) => s.pinSession)
@@ -710,19 +746,10 @@ function SessionRow({
             className="text-red-400 hover:bg-red-500/10 hover:text-red-300"
             onClick={async () => {
               onToggleMenu()
-              try {
+              if (onDeleteSession) {
+                await onDeleteSession(session.session_id)
+              } else {
                 await useHarnessChatStore.getState().deleteSession(session.session_id)
-                // If the deleted session was active, switch to another
-                if (useAgentStore.getState().activeSessionId === session.session_id) {
-                  const remaining = useAgentStore.getState().sessions.filter(s => s.session_id !== session.session_id)
-                  if (remaining.length > 0) {
-                    useAgentStore.getState().setActiveSessionId(remaining[0].session_id)
-                  } else {
-                    useAgentStore.getState().setActiveSessionId(`session-${Date.now().toString(36)}`)
-                  }
-                }
-              } catch {
-                // Handled in store
               }
             }}
           />

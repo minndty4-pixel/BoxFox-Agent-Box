@@ -6,7 +6,7 @@ import type { RouterChatSelection } from './routerChatStore'
 
 export interface HarnessEvent { seq: number; type: string; data: Record<string, unknown>; created: number }
 interface HarnessSession { id: string; status: string; events: HarnessEvent[] }
-interface RunView { id: string | null; status: string; events: HarnessEvent[]; error: string | null }
+interface RunView { id: string | null; status: string; events: HarnessEvent[]; error: string | null; lastModelLabel?: string }
 export interface SavedSessionRow {
   id: string
   role: string
@@ -19,7 +19,7 @@ interface State {
   sessions: Record<string, RunView>
   fetchSavedSessions: () => Promise<SavedSessionRow[]>
   deleteSession: (id: string) => Promise<void>
-  send: (chatId: string, prompt: string, selection: RouterChatSelection | null, image?: string | null) => Promise<void>
+  send: (chatId: string, prompt: string, selection: RouterChatSelection | null, image?: string | null, modelLabel?: string) => Promise<void>
   refresh: (chatId: string) => Promise<void>
   stop: (chatId: string) => Promise<void>
   clearError: (chatId: string) => void
@@ -37,16 +37,22 @@ export const useHarnessChatStore = create<State>((set, get) => ({
     const id = current.id ?? (isHexId(chatId) ? chatId : localStorage.getItem(storageKey(chatId)))
     if (!id) return
     try {
-      const session = await agentApi<HarnessSession>(`/sessions/${id}?after=${current.events.at(-1)?.seq ?? 0}`)
+      const lastServerSeq = current.events.filter(e => e.type !== 'model_change').at(-1)?.seq ?? 0
+      const session = await agentApi<HarnessSession>(`/sessions/${id}?after=${lastServerSeq}`)
       const prevEvents = current.events ?? []
-      const newEvents = session.events.filter(e => !prevEvents.some(old => old.seq === e.seq))
+      const newEvents = session.events.filter(e => !prevEvents.some(old => old.seq === e.seq && old.type === e.type))
       const allEvents = [...prevEvents, ...newEvents]
-      const errorEvent = allEvents.filter(e => e.type === 'error').at(-1)
-      const sessionError = errorEvent ? String(errorEvent.data?.message || 'Agent run error') : (session.status === 'failed' ? (current.error || 'Agent run failed') : null)
+      const isFailed = session.status === 'failed'
+      const lastEvent = allEvents.at(-1)
+      const lastIsError = lastEvent?.type === 'error'
+      const sessionError = isFailed && lastIsError
+        ? String(lastEvent?.data?.message || 'Agent run failed')
+        : null
       set((state) => ({
         sessions: {
           ...state.sessions,
           [chatId]: {
+            ...current,
             id,
             status: session.status,
             error: sessionError,
@@ -55,7 +61,17 @@ export const useHarnessChatStore = create<State>((set, get) => ({
         },
       }))
     } catch (error) {
-      set((state) => ({ sessions: { ...state.sessions, [chatId]: { ...current, id, status: 'failed', error: String(error) } } }))
+      const errStr = String(error)
+      if (errStr.includes('404') || errStr.toLowerCase().includes('not found')) {
+        // Session was deleted or not found in database: cleanly purge from cache without displaying red error
+        set((state) => {
+          const next = { ...state.sessions }
+          delete next[chatId]
+          return { sessions: next }
+        })
+        return
+      }
+      set((state) => ({ sessions: { ...state.sessions, [chatId]: { ...current, id, status: 'failed', error: errStr } } }))
     }
   },
   fetchSavedSessions: async () => {
@@ -80,10 +96,46 @@ export const useHarnessChatStore = create<State>((set, get) => ({
       throw error
     }
   },
-  send: async (chatId, prompt, selection, image) => {
+  send: async (chatId, prompt, selection, image, modelLabel) => {
     const current = get().sessions[chatId] ?? empty()
-    if (current.status === 'running' || current.status === 'starting') return
-    set((state) => ({ sessions: { ...state.sessions, [chatId]: { ...current, status: 'starting', error: null } } }))
+    const control = /^\/(help|skills|agents|status|context|stop)\s*$/.test(prompt)
+    if ((current.status === 'running' || current.status === 'starting') && !control) return
+    if (control && current.id) {
+      try {
+        await agentApi(`/sessions/${current.id}/turns`, { prompt, invocationId: crypto.randomUUID() })
+        await get().refresh(chatId)
+      } catch (error) {
+        set(state => ({ sessions: { ...state.sessions, [chatId]: { ...current, error: String(error) } } }))
+      }
+      return
+    }
+
+    const prevModel = current.lastModelLabel
+    const newModel = modelLabel || (selection?.kind === 'model' ? selection.modelId : selection?.kind === 'alias' ? selection.aliasId : undefined)
+
+    let updatedEvents = [...current.events]
+    if (prevModel && newModel && prevModel !== newModel && updatedEvents.length > 0) {
+      const changeEvent: HarnessEvent = {
+        seq: Date.now(),
+        type: 'model_change',
+        data: { from: prevModel, to: newModel },
+        created: Date.now(),
+      }
+      updatedEvents.push(changeEvent)
+    }
+
+    set((state) => ({
+      sessions: {
+        ...state.sessions,
+        [chatId]: {
+          ...current,
+          events: updatedEvents,
+          lastModelLabel: newModel || current.lastModelLabel,
+          status: 'starting',
+          error: null,
+        },
+      },
+    }))
     try {
       let id = current.id ?? (isHexId(chatId) ? chatId : localStorage.getItem(storageKey(chatId)))
       if (!id) {
@@ -111,10 +163,13 @@ export const useHarnessChatStore = create<State>((set, get) => ({
         localStorage.setItem(storageKey(chatId), id)
         localStorage.setItem(storageKey(id), id)
       }
-      set((state) => ({ sessions: { ...state.sessions, [chatId]: { ...current, id, status: 'running', error: null } } }))
-      const route = selection?.kind === 'model' ? { connectionId: selection.connectionId, modelId: selection.modelId }
-        : selection?.kind === 'alias' ? { aliasId: selection.aliasId } : {}
-      await agentApi(`/sessions/${id}/turns`, { prompt: prompt || 'Inspect the attached image.', image, route })
+      const thinkingLevel = useHarnessStore.getState().thinkingLevel
+      const route = selection?.kind === 'model'
+        ? { connectionId: selection.connectionId, modelId: selection.modelId, thinkingLevel }
+        : selection?.kind === 'alias'
+        ? { aliasId: selection.aliasId, thinkingLevel }
+        : {}
+      await agentApi(`/sessions/${id}/turns`, { prompt: prompt || 'Inspect the attached image.', image, route, invocationId: crypto.randomUUID() })
       await get().refresh(chatId)
     } catch (error) {
       set((state) => ({ sessions: { ...state.sessions, [chatId]: { ...(state.sessions[chatId] ?? current), status: 'failed', error: String(error) } } }))

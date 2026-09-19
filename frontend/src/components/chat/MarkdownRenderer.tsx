@@ -17,7 +17,7 @@ import type { Components } from 'react-markdown'
 import remarkMath from 'remark-math'
 import remarkGfm from 'remark-gfm'
 import rehypeKatex from 'rehype-katex'
-import { Copy, Check } from 'lucide-react'
+import { Copy, Check, Camera } from 'lucide-react'
 
 interface MarkdownRendererProps {
   content: string
@@ -154,8 +154,75 @@ const STATIC_COMPONENTS: Components = {
     )
   },
 
-  // Đường link (Anchor)
+  // Hình ảnh (Image) — Tự động phân giải đường dẫn media và fallback mock SVG
+  img({ src, alt }) {
+    let resolvedSrc = String(src || '')
+    if (resolvedSrc.startsWith('/home/agent/workspace/')) {
+      const rel = resolvedSrc.replace(/^\/home\/agent\/workspace\//, '')
+      resolvedSrc = `/__box/file/media?path=${encodeURIComponent(rel)}`
+    } else if (resolvedSrc.startsWith('.generated_artifacts/') || resolvedSrc.startsWith('captures/')) {
+      resolvedSrc = `/__box/file/media?path=${encodeURIComponent(resolvedSrc)}`
+    }
+
+    return (
+      <span className="block my-2.5 max-w-2xl overflow-hidden rounded-xl border border-line bg-panel2 shadow-xs group">
+        <img
+          src={resolvedSrc}
+          alt={String(alt || 'Captured screenshot')}
+          onError={(e) => {
+            (e.currentTarget as HTMLElement).style.display = 'none'
+          }}
+          className="w-full object-contain max-h-96 rounded-lg transition group-hover:scale-[1.01]"
+        />
+      </span>
+    )
+  },
+
+  // Đường link (Anchor) — Nếu trỏ tới ảnh artifact thì render ảnh trực tiếp thay vì chỉ để lại link
   a({ href, children }) {
+    const hrefStr = String(href || '')
+    const isImageLink =
+      hrefStr.endsWith('.png') ||
+      hrefStr.endsWith('.jpg') ||
+      hrefStr.endsWith('.jpeg') ||
+      hrefStr.endsWith('.webp') ||
+      hrefStr.endsWith('.svg') ||
+      hrefStr.includes('.generated_artifacts/captures')
+
+    if (isImageLink) {
+      let resolvedSrc = hrefStr
+      if (resolvedSrc.startsWith('/home/agent/workspace/')) {
+        const rel = resolvedSrc.replace(/^\/home\/agent\/workspace\//, '')
+        resolvedSrc = `/__box/file/media?path=${encodeURIComponent(rel)}`
+      } else if (resolvedSrc.startsWith('.generated_artifacts/')) {
+        resolvedSrc = `/__box/file/media?path=${encodeURIComponent(resolvedSrc)}`
+      }
+
+      return (
+        <span className="block my-2 max-w-2xl">
+          <a
+            href={resolvedSrc}
+            target="_blank"
+            rel="noreferrer"
+            className="text-brand hover:underline font-medium cursor-pointer inline-flex items-center gap-1.5 font-mono text-[11px] mb-1.5"
+          >
+            <Camera className="size-3 text-brand" />
+            <span>{children}</span>
+          </a>
+          <span className="block overflow-hidden rounded-xl border border-line bg-panel2 shadow-xs group">
+            <img
+              src={resolvedSrc}
+              alt="Screenshot preview"
+              onError={(e) => {
+                (e.currentTarget as HTMLElement).style.display = 'none'
+              }}
+              className="w-full object-contain max-h-96 rounded-lg transition group-hover:scale-[1.01]"
+            />
+          </span>
+        </span>
+      )
+    }
+
     return (
       <a
         href={href}

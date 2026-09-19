@@ -17,6 +17,7 @@ import { HarnessModelPicker, type RouterSingleModel } from '../chat/HarnessModel
 import { RepoPicker } from '../chat/RepoPicker'
 import { AttachmentPicker, type AttachedFile } from '../chat/AttachmentPicker'
 import { ShortcutsPopover } from '../chat/ShortcutsPopover'
+import { useSlashCompletion } from '../chat/useSlashCompletion'
 import { LabelDot } from '../LabelDot'
 import { inspectChipLabel } from '../../lib/inspect/format'
 
@@ -40,6 +41,7 @@ export interface RouterComposerAdapter {
 export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
   const t = useT()
   const [input, setInput] = useState('')
+  const slash = useSlashCompletion(input, setInput)
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const barRef = useRef<HTMLDivElement>(null)
@@ -116,6 +118,7 @@ export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (slash.keyDown(e)) return
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSend()
@@ -125,6 +128,7 @@ export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
   return (
     <div ref={barRef} className="border-t border-line bg-panel p-3 select-none">
       <div className="relative rounded-xl border border-line bg-panel2/70 p-2.5 shadow-xs transition-all focus-within:border-zinc-500 focus-within:ring-1 focus-within:ring-zinc-600/40">
+        {slash.popup}
         {/* Attached files chips */}
         {attachments.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-1.5 px-1">
@@ -194,6 +198,12 @@ export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
         )}
 
         <textarea
+          role="combobox"
+          aria-label="Message"
+          aria-autocomplete="list"
+          aria-expanded={slash.expanded}
+          aria-controls={slash.expanded ? 'slash-completions' : undefined}
+          aria-activedescendant={slash.activeId}
           ref={textareaRef}
           rows={1}
           value={input}
@@ -203,13 +213,6 @@ export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
           placeholder={t(compact ? 'composer.placeholderShort' : 'composer.placeholder')}
           className="w-full resize-none bg-transparent px-1.5 py-1 text-xs leading-relaxed text-fg placeholder:text-muted/60 outline-hidden select-text"
         />
-
-        {/* Provider Connection Warning: borderless, plain red text matching agent response text */}
-        {router?.connectionWarning && (
-          <div className="px-1.5 py-1 text-xs text-rose-400 select-text animate-in fade-in duration-150">
-            {router.connectionWarning}
-          </div>
-        )}
 
         {/* Toolbar below input — bỏ flex-wrap để Mic/Send không bao giờ rớt
             xuống dòng 2 khi cột chat hẹp; nhóm trái co lại (min-w-0 +

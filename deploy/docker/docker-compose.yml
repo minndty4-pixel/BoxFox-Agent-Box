@@ -51,6 +51,7 @@ services:
     volumes:
       # Workspace nằm ngoài vòng đời container: xóa container, giữ workspace (mục 7.6)
       - agentbox-workspace:/home/agent/workspace
+      - ../../backend/src/agentbox/vendor/hermes:/opt/boxfox-skills:ro
     restart: unless-stopped
 
 networks:

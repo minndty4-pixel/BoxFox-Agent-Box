@@ -22,6 +22,7 @@ export default defineConfig({
       '/api/agent': { target: 'http://127.0.0.1:3102', changeOrigin: true },
       '/api/router': { target: 'http://127.0.0.1:3101', changeOrigin: true },
       '/v1': { target: 'http://127.0.0.1:3101', changeOrigin: true },
+      '/__box': { target: 'http://127.0.0.1:8081', changeOrigin: true },
     },
   },
 })

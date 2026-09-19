@@ -27,7 +27,7 @@ class FixtureModel:
         self.responses = iter(responses)
         self.requests = []
 
-    async def complete(self, messages, tools, route, max_tokens=4096):
+    async def complete(self, messages, tools, route, max_tokens=4096, on_thought=None, on_content=None):
         self.requests.append(copy.deepcopy((messages, tools, route)))
         return next(self.responses)
 

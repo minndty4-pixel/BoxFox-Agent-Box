@@ -1,0 +1,195 @@
+import asyncio
+import copy
+import json
+from pathlib import Path
+import pytest
+from agentbox.skills.commands import CommandRegistry, BUILTINS, ROLE_COMMANDS, ROLE_SKILLS
+from agentbox.skills.catalog import SkillCatalog
+from agentbox.skills.lifecycle import SkillLoader
+from agentbox.memory.session_store import SessionStore
+from agentbox.agent_core.runtime import HarnessRuntime
+
+INTENTS = json.loads((Path(__file__).parents[1] / 'fixtures/skill_intents_v1.json').read_text(encoding='utf-8'))
+
+
+@pytest.fixture
+def registry(tmp_path):
+    store = SessionStore(tmp_path / 'commands.sqlite')
+    registry = CommandRegistry(store, SkillCatalog())
+    registry.configure({'enabled': list(registry.catalog.items), 'revision': 0})
+    yield registry
+    store.close()
+
+
+@pytest.mark.parametrize('prompt,expected', INTENTS)
+def test_intent_policy(registry, prompt, expected):
+    if expected in {'unavailable', 'conflict'}:
+        with pytest.raises(ValueError, match='ADAPTER_UNAVAILABLE' if expected == 'unavailable' else 'EXECUTOR_CONFLICT'):
+            registry.resolve(prompt)
+        return
+    result = registry.resolve(prompt)
+    actual = result.kind if result.kind in {'message', 'control'} else result.skills[0] if result.command in {'claude-code', 'claude-design', 'skill'} or result.reason == 'explicit_use_intent' else result.role
+    assert actual == expected
+
+
+@pytest.mark.parametrize('key', sorted(BUILTINS))
+def test_reserved_names(registry, key):
+    with pytest.raises(ValueError, match='COLLISION'):
+        registry.save({'slug': key, 'template': '$ARGUMENTS'})
+
+
+@pytest.mark.parametrize('key,role', ROLE_COMMANDS.items())
+def test_role_commands_never_expand_capabilities(registry, key, role):
+    resolved = registry.resolve('/' + key + ' inspect', subagents=[{'id': role}])
+    assert resolved.role == role and set(resolved.skills) <= ROLE_SKILLS[role]
+    with pytest.raises(ValueError, match='ROLE_DISABLED'):
+        registry.resolve('/' + key + ' inspect', subagents=[])
+
+
+@pytest.mark.parametrize('bad', ['/.plan hi', '/unknown hi', '/plan', '/help extra', '/plan /build hi', '/skill', '/skill missing hi'])
+def test_invalid_commands_are_not_sent_to_model(registry, bad):
+    with pytest.raises(ValueError):
+        registry.resolve(bad)
+
+
+def test_custom_revision_literal_arguments_and_restart(registry):
+    c = registry.save({'slug': 'fix-custom', 'template': 'Fix $ARGUMENTS', 'skills': ['systematic-debugging'], 'role': 'debug'})
+    resolved = registry.resolve('/fix-custom $(whoami); /build more')
+    assert resolved.prompt == 'Fix $(whoami); /build more'
+    assert resolved.revision == c['revision']
+    with pytest.raises(ValueError, match='REVISION'):
+        registry.save(c | {'revision': 0}, c['slug'])
+    updated = registry.save(c | {'enabled': False}, c['slug'])
+    with pytest.raises(ValueError, match='DISABLED'):
+        registry.resolve('/fix-custom task')
+    reopened = CommandRegistry(registry.store, registry.catalog)
+    assert reopened.custom()[0]['revision'] == 2
+    registry.delete(c['slug'], updated['revision'])
+    assert not registry.custom()
+
+
+def test_import_once_and_disabled_skill(registry):
+    original = registry.settings()
+    assert registry.configure({'enabled': [], 'importLegacy': True}) == original
+    registry.configure({'enabled': [], 'revision': original['revision']})
+    with pytest.raises(ValueError, match='SKILL_DISABLED'):
+        registry.resolve('/claude-code hello')
+
+
+@pytest.mark.parametrize('role', ['plan', 'review', 'research', 'explore'])
+def test_readonly_role_rejects_writing_workflow(registry, role):
+    with pytest.raises(ValueError, match='ROLE_SKILL_CONFLICT'):
+        registry.save({'slug': 'bad-role', 'template': '$ARGUMENTS', 'skills': ['claude-design'], 'role': role})
+
+
+class Executor:
+    async def cleanup(self, sid): pass
+    async def execute(self, *args): raise AssertionError('No effects expected')
+
+
+class Model:
+    def __init__(self): self.requests = []
+    async def complete(self, messages, tools, route, **kwargs):
+        self.requests.append(copy.deepcopy(messages))
+        return {'choices': [{'message': {'content': 'verified fixture result'}, 'finish_reason': 'stop'}]}
+
+
+def test_command_child_plan_idempotency_and_skill_snapshot(registry):
+    async def run():
+        model = Model()
+        runtime = HarnessRuntime(registry.store, Executor(), model, registry.catalog)
+        parent = runtime.create({'skills': []})
+        first = await runtime.submit(parent['id'], '/plan Inspect the system', invocation_id='invocation-1')
+        same = await runtime.submit(parent['id'], '/plan Inspect the system', invocation_id='invocation-1')
+        assert first == same
+        await runtime.tasks[parent['id']]
+        children = registry.store.db.execute('SELECT id FROM sessions WHERE parent_id=?', (parent['id'],)).fetchall()
+        assert len(children) == 1
+        child = registry.store.get(children[0]['id'])
+        assert child['role'] == 'plan'
+        assert 'file_write' not in child['config']['tools']
+        assert child['status'] == 'completed'
+        with pytest.raises(ValueError, match='INVOCATION_CONFLICT'):
+            await runtime.submit(parent['id'], '/build change scope', invocation_id='invocation-1')
+    asyncio.run(run())
+
+
+def test_busy_controls_never_start_second_model_call(registry):
+    async def run():
+        started, finish = asyncio.Event(), asyncio.Event()
+        class Waiting(Model):
+            async def complete(self, *args, **kwargs):
+                started.set(); await finish.wait()
+                return await super().complete(*args, **kwargs)
+        runtime = HarnessRuntime(registry.store, Executor(), Waiting(), registry.catalog)
+        sid = runtime.create({'skills': []})['id']
+        await runtime.submit(sid, 'hello')
+        await started.wait()
+        assert (await runtime.submit(sid, '/status'))['status'] == 'running'
+        with pytest.raises(ValueError, match='BUSY'):
+            await runtime.submit(sid, '/plan task')
+        await runtime.submit(sid, '/stop')
+        assert runtime.store.get(sid)['status'] == 'cancelled'
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('sid', ['codebase-inspection', 'systematic-debugging', 'requesting-code-review', 'simplify-code', 'test-driven-development', 'grounded-citations'])
+@pytest.mark.parametrize('scenario', ['full', 'dedup', 'compression', 'new-child', 'disabled'])
+def test_skill_lifecycle(registry, sid, scenario):
+    runtime = HarnessRuntime(registry.store, Executor(), Model(), registry.catalog)
+    session = runtime.create({'skills': [sid], 'contextWindow': 200000})
+    loader = SkillLoader(registry.catalog, registry.store.emit)
+    first = loader.read(session, sid)
+    assert first['content'] == registry.catalog.items[sid]['_path'].read_text(encoding='utf-8')
+    assert first['basePath'].startswith('/opt/boxfox-skills/')
+    messages = [{'role': 'tool', 'content': json.dumps(first, ensure_ascii=False)}]
+    if scenario == 'dedup':
+        assert loader.read(session, sid, messages=messages)['status'] == 'unchanged'
+    elif scenario == 'compression':
+        loader.reset(session['id'])
+        assert loader.read(session, sid, messages=[])['content'] == first['content']
+    elif scenario == 'new-child':
+        child = runtime.create({'skills': [sid], 'contextWindow': 200000}, parent_id=session['id'])
+        assert loader.read(child, sid, messages=messages)['content'] == first['content']
+    elif scenario == 'disabled':
+        session['config']['skills'] = []
+        with pytest.raises(PermissionError): loader.read(session, sid)
+
+
+def test_skill_change_and_linked_file_path(tmp_path):
+    root = tmp_path / 'skills' / 'demo'
+    root.mkdir(parents=True)
+    (root / 'SKILL.md').write_text('---\nname: demo\n---\nfirst', encoding='utf-8')
+    (root / 'ref.md').write_text('evidence', encoding='utf-8')
+    catalog = SkillCatalog(tmp_path)
+    session = {'id': 'one', 'config': {'skills': ['demo'], 'contextWindow': 32768}}
+    loader = SkillLoader(catalog, lambda *args: None)
+    first = loader.read(session, 'demo')
+    (root / 'SKILL.md').write_text('changed', encoding='utf-8')
+    assert loader.read(session, 'demo')['sha256'] != first['sha256']
+    assert loader.read(session, 'demo', 'ref.md')['content'] == 'evidence'
+    with pytest.raises(ValueError): loader.read(session, 'demo', '../../escape')
+
+
+@pytest.mark.parametrize('key,value', [
+    ('slug', ''), ('slug', '/custom'), ('slug', '../file'), ('slug', 'UPPER'), ('slug', 'one two'), ('slug', 'x'),
+    ('template', ''), ('template', None), ('template', 'x' * 12001), ('template', []),
+    ('skills', ['unknown']), ('skills', 'debug'), ('skills', [None]), ('skills', ['codex']), ('skills', ['opencode']),
+    ('skills', ['claude-code']), ('skills', ['claude-code', 'codex']),
+    ('executor', 'codex'), ('executor', 'opencode'), ('executor', 'shell'), ('executor', ''),
+    ('role', 'admin'), ('role', 'orchestrator'), ('role', ''), ('role', 'test'),
+    ('enabled', 'yes'), ('enabled', 1), ('enabled', None),
+    ('description', []), ('description', None), ('description', 'x' * 501),
+])
+def test_custom_invalid_contracts(registry, key, value):
+    with pytest.raises(ValueError):
+        registry.save({'slug': 'valid-custom', 'template': '$ARGUMENTS', key: value})
+
+
+@pytest.mark.parametrize('argument', ['$(cat secret)', '`whoami`', '${TOKEN}', '!`date`', '/plan more'])
+def test_custom_template_never_executes_or_reparses(registry, argument):
+    registry.save({'slug': 'literal-task', 'template': 'Inspect: $ARGUMENTS', 'skills': [], 'role': 'explore'})
+    if argument.startswith('/'):
+        with pytest.raises(ValueError): registry.resolve('/literal-task ' + argument)
+    else:
+        assert registry.resolve('/literal-task ' + argument).prompt == 'Inspect: ' + argument

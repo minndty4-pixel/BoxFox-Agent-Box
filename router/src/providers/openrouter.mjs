@@ -7,15 +7,15 @@ import { RouterError } from '../errors.mjs';
 const DEFAULT_OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
 
 export const OPENROUTER_FALLBACK_MODELS = Object.freeze([
-  { ...modelRecord('openrouter/free', 'Free Models Router'), thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
-  { ...modelRecord('nex-agi/nex-n2.5-mini:free', 'Nex AGI: Nex-N2.5-Mini (Free)'), thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
-  { ...modelRecord('nex-agi/nex-n2.5-pro:free', 'Nex AGI: Nex-N2.5-Pro (Free)'), thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
+  { ...modelRecord('openrouter/free', 'Free Models Router'), thinkingLevels: ['low', 'medium', 'high'] },
+  { ...modelRecord('nex-agi/nex-n2.5-mini:free', 'Nex AGI: Nex-N2.5-Mini (Free)'), thinkingLevels: ['low', 'medium', 'high'] },
+  { ...modelRecord('nex-agi/nex-n2.5-pro:free', 'Nex AGI: Nex-N2.5-Pro (Free)'), thinkingLevels: ['low', 'medium', 'high'] },
   { ...modelRecord('inclusionai/ling-3.0-flash-vl:free', 'inclusionAI: Ling 3.0 Flash VL (Free)') },
   { ...modelRecord('liquid/lfm-2.5-2.6b:free', 'LiquidAI: LFM2.5-2.6B (Free)') },
   { ...modelRecord('cohere/north-mini-code:free', 'Cohere: North Mini Code (Free)') },
-  { ...modelRecord('deepseek/deepseek-r1:free', 'DeepSeek R1 (Free)'), thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
-  { ...modelRecord('openai/gpt-4o-mini', 'GPT-4o Mini'), thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
-  { ...modelRecord('anthropic/claude-3.5-sonnet', 'Claude 3.5 Sonnet'), thinkingLevels: ['auto', 'low', 'medium', 'high'] },
+  { ...modelRecord('deepseek/deepseek-r1:free', 'DeepSeek R1 (Free)'), thinkingLevels: ['low', 'medium', 'high'] },
+  { ...modelRecord('openai/gpt-4o-mini', 'GPT-4o Mini') },
+  { ...modelRecord('anthropic/claude-3.5-sonnet', 'Claude 3.5 Sonnet') },
 ]);
 
 function resolveBaseUrl(endpoint) {
@@ -87,11 +87,16 @@ export function createOpenRouterAdapter({ fetchImpl }) {
 
             return {
               models: sorted.map(item => {
-                const isThinking = Boolean(item.architecture?.instruct_type || item.id.includes('r1') || item.id.includes('o1') || item.id.includes('o3'));
+                const isThinking = Boolean(
+                  item.supported_parameters?.includes('reasoning') ||
+                  item.supported_parameters?.includes('thinking') ||
+                  item.supported_parameters?.includes('include_reasoning') ||
+                  /(?:^|[-_/])(r1|o1|o3|o4|deepseek-r1|qwq|claude-3[-.]7.*think|flash-thinking)(?:[-_/]|$)/i.test(item.id || '')
+                );
                 const isFree = item.id?.includes(':free') || item.id === 'openrouter/free' || item.pricing?.prompt === '0';
                 return {
                   ...modelRecord(item.id, item.name || item.id),
-                  ...(isThinking ? { thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] } : {}),
+                  ...(isThinking ? { thinkingLevels: ['low', 'medium', 'high'] } : {}),
                   // If account is free tier, default enable free models and disable paid models to avoid 402/429
                   ...(isFreeTier ? { enabled: Boolean(isFree) } : {}),
                 };
@@ -111,10 +116,21 @@ export function createOpenRouterAdapter({ fetchImpl }) {
       const stream = body.stream !== false;
       const targetUrl = resolveChatUrl(connection.endpoint);
 
+      // Extract and map thinkingLevel to OpenRouter reasoning parameter
+      const requestPayload = { ...body, stream };
+      const level = body.thinkingLevel || body.reasoning_effort;
+      if (level && level !== 'none' && level !== 'auto') {
+        requestPayload.reasoning = { effort: level };
+      } else if (level === 'none') {
+        requestPayload.reasoning = { effort: 'none', exclude: true };
+      }
+      delete requestPayload.thinkingLevel;
+      delete requestPayload.reasoning_effort;
+
       const response = await fetchImpl(targetUrl, {
         method: 'POST',
         headers: openRouterHeaders(apiKey),
-        body: JSON.stringify({ ...body, stream }),
+        body: JSON.stringify(requestPayload),
         signal,
       });
 
@@ -132,8 +148,13 @@ export function createOpenRouterAdapter({ fetchImpl }) {
         const data = await jsonOrProviderError(response);
         const choice = data?.choices?.[0];
         const message = choice?.message || {};
-        if (message.content || message.tool_calls?.length) {
-          yield { type: 'delta', delta: { ...(message.content ? { content: message.content } : {}), ...(message.tool_calls ? { tool_calls: message.tool_calls } : {}) } };
+        const reasoning = message.reasoning_content || message.reasoning || null;
+        if (message.content || message.tool_calls?.length || reasoning) {
+          yield { type: 'delta', delta: {
+            ...(message.content ? { content: message.content } : {}),
+            ...(reasoning ? { reasoning_content: reasoning } : {}),
+            ...(message.tool_calls ? { tool_calls: message.tool_calls } : {})
+          } };
         }
         if (data?.usage) yield { type: 'usage', usage: data.usage };
         if (choice?.finish_reason) yield { type: 'finish', finishReason: normalizeFinishReason(choice.finish_reason) };
@@ -144,10 +165,19 @@ export function createOpenRouterAdapter({ fetchImpl }) {
         if (!event.data || event.data === '[DONE]') continue;
         const data = parseJson(event.data);
         if (!data) continue;
-        if (data.error) throw providerError(data?.error?.status || 502);
+        if (data.error) {
+          const msg = data.error.message || `OpenRouter error: ${data.error.code || 'unknown'}`;
+          throw new RouterError('PROVIDER_ERROR', msg, data.error.code === 429 ? 429 : 502, data.error.code === 429);
+        }
         const choice = data.choices?.[0];
-        if (choice?.delta && (choice.delta.content || choice.delta.tool_calls?.length)) {
-          yield { type: 'delta', delta: choice.delta };
+        if (choice?.delta) {
+          const delta = { ...choice.delta };
+          if (delta.reasoning && !delta.reasoning_content) {
+            delta.reasoning_content = delta.reasoning;
+          }
+          if (delta.content || delta.tool_calls?.length || delta.reasoning_content) {
+            yield { type: 'delta', delta };
+          }
         }
         if (data.usage) yield { type: 'usage', usage: data.usage };
         if (choice?.finish_reason) yield { type: 'finish', finishReason: normalizeFinishReason(choice.finish_reason) };

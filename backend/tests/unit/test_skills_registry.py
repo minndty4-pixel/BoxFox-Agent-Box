@@ -29,7 +29,7 @@ def test_skills_prompt_rendering():
     rendered = skills_registry.render_skills_prompt(["systematic-debugging", "simplify-code"])
     assert "Systematic Debugging" in rendered
     assert "Simplify Code" in rendered
-    assert "SYSTEMATIC DEBUGGING DISCIPLINE" in rendered
+    assert skills_registry.catalog.read('systematic-debugging')['content'] in rendered
 
 
 def test_context_manager_incorporates_active_skills(tmp_path: Path):
@@ -43,5 +43,5 @@ def test_context_manager_incorporates_active_skills(tmp_path: Path):
 
     full_prompt = cm.assemble_full_system_prompt(ctx)
     assert "ACTIVE SKILLS:" in full_prompt
-    assert "Test-Driven Development (TDD)" in full_prompt
-    assert "Self-Critique & Code Review" in full_prompt
+    assert skills_registry.catalog.read('test-driven-development')['content'] in full_prompt
+    assert skills_registry.catalog.read('requesting-code-review')['content'] in full_prompt
