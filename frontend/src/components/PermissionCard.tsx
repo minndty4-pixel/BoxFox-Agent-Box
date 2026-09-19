@@ -1,15 +1,18 @@
 /**
  * Thẻ xin quyền (PermissionCard).
  *
- * Năm phần đúng thứ tự:
- *  1. Tool + tham số
- *  2. Nội dung nguyên văn (write_file hiện diff tự viết)
- *  3. Lý do — bằng tiếng người
- *  4. Nguồn gốc (derived_from) — bấm được
- *  5. Nút quyết định: 3 nút cho sạch, 4 nút cho bẩn
- *
- * Bộ đếm ngược 10 phút. Hết giờ → "đã quá hạn — tính là TỪ CHỐI".
- * Mock rút ngắn bằng hằng số, nhưng mặc định phải là 10 phút thật.
+ * Một thẻ, hai đường:
+ *  • Đường MOCK (transport demo): năm phần đúng thứ tự —
+ *      1. Tool + tham số
+ *      2. Nội dung nguyên văn (write_file hiện diff tự viết)
+ *      3. Lý do — bằng tiếng người
+ *      4. Nguồn gốc (derived_from) — bấm được
+ *      5. Nút quyết định: 3 nút cho sạch, 4 nút cho bẩn
+ *    Bộ đếm ngược 10 phút là của RIÊNG đường này. Hết giờ → "đã quá hạn — tính là
+ *    TỪ CHỐI". Mock rút ngắn bằng hằng số, nhưng mặc định phải là 10 phút thật.
+ *  • Đường THẬT (`decision_requested` của harness): bố cục/lớp CSS y hệt, nhưng
+ *    bộ đếm đi theo `deadline` (epoch giây) do server gửi xuống — `ask_user` 300 s,
+ *    `request_approval` 600 s — không có hạn 10 phút nào do giao diện tự bịa.
  */
 import { useMemo, useState } from 'react'
 import { LoaderCircle } from 'lucide-react'

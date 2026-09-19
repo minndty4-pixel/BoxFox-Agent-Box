@@ -511,6 +511,50 @@ class IdeProxyWorkspaceWriteTest(unittest.TestCase):
         self.assertFalse((self.root.parent / "escaped.md").exists())
         self.assertTrue((self.root / "src" / "a.md").is_file())
 
+    def test_rename_and_move_refuse_protected_paths(self) -> None:
+        """Ba repro: `rename`/`move` không được đổi tên, chôn hay dựng lại mục bảo vệ.
+
+        Trước đây `PROTECTED_PATHS` chỉ được kiểm ở `delete`, nên `rename`/`move`
+        có thể làm rỗng tab Plan (`.plans` → `docs`), lộ `.trash` ra listing, hoặc
+        tạo một mục `.trash` mà route delete chưa từng tạo.
+        """
+        (self.root / ".plans" / "v1-pilot.md").write_text("# plan\n", encoding="utf-8")
+        self.assertFalse((self.root / ".trash").exists())
+
+        cases = (
+            # `.plans` đổi tên thành `docs` → mất sạch plan
+            ("/__box/files/rename", {"path": ".plans", "name": "docs"}),
+            # `.trash` bị di chuyển ra chỗ công khai → phá bất biến \"ẩn\"
+            ("/__box/files/move", {"path": ".trash", "destination": "src"}),
+            # file bị nhét vào `.trash` → dựng thùng rác mà delete chưa từng tạo
+            ("/__box/files/move", {"path": "src/a.md", "destination": ".trash"}),
+            # và chiều ngược lại: đưa `.generated_artifacts` vào `src`
+            ("/__box/files/move", {"path": ".generated_artifacts", "destination": "src"}),
+            # đổi tên `.trash` thành tên khác cũng là đổi tên mục bảo vệ
+            ("/__box/files/rename", {"path": ".trash", "name": "recycle"}),
+        )
+        for endpoint, payload in cases:
+            with self.subTest(endpoint=endpoint, payload=payload):
+                status, _h, body = self.write_call(endpoint, payload)
+                self.assertEqual(status, 409)
+                self.assertIn("được bảo vệ", self.payload_of(body)["error"])
+
+        # Không có thao tác nào chạy: plan còn nguyên, `.trash` vẫn chưa tồn tại,
+        # file trong `src` vẫn nằm nguyên chỗ cũ.
+        self.assertTrue((self.root / ".plans" / "v1-pilot.md").is_file())
+        self.assertEqual(list((self.root / "docs").iterdir()), [], "docs phải vẫn rỗng")
+        self.assertFalse((self.root / ".trash").exists())
+        self.assertFalse((self.root / "recycle").exists())
+        self.assertTrue((self.root / "src" / "a.md").is_file())
+        self.assertFalse((self.root / "src" / ".trash").exists())
+
+        # Mục CON của `.plans` vẫn đi qua bình thường (chỉ chính mục bảo vệ bị chặn).
+        status, _h, _b = self.write_call(
+            "/__box/files/rename", {"path": ".plans/v1-pilot.md", "name": "v2-pilot.md"}
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue((self.root / ".plans" / "v2-pilot.md").is_file())
+
     def test_delete_refuses_protected_paths(self) -> None:
         (self.root / ".plans" / "v1-pilot.md").write_text("# plan\n", encoding="utf-8")
         for protected in ("", ".plans", ".trash", ".generated_artifacts"):

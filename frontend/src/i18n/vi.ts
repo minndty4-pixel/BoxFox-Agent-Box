@@ -613,6 +613,7 @@ const vi = {
     emptyHistory: 'Chưa có quyết định nào được ghi lại.',
     noteLabel: 'Ghi chú',
     sendingAnswer: 'Đang gửi câu trả lời…',
+    answerError: 'Không gửi được câu trả lời',
     expiredNote: 'Đã quá hạn — tự động tính là TỪ CHỐI.',
     deadline: 'Hạn chót',
   },

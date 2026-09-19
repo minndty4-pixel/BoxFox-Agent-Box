@@ -251,3 +251,85 @@ describe('ContextUsageBar — bong bóng cảnh báo ngưỡng', () => {
     expect(send).toHaveBeenCalledWith(SESSION_ID, '/compact', null)
   })
 })
+
+describe('ContextUsageBar — bố cục theo bề rộng KHUNG CHỨA, không theo viewport (NEW-1)', () => {
+  /**
+   * NEW-1: ở viewport 900px nhưng khung chat chỉ ~384px (panel workspace mở),
+   * media query `sm:` cũ vẫn bày bản đầy đủ nên nút Compact bị `overflow-hidden`
+   * của hàng cắt cụt (đo được: mép phải nút 470px so với mép phải khung 440px).
+   *
+   * jsdom không dựng layout nên không đo được pixel; thay vào đó khẳng định
+   * các bất biến cấu trúc khiến việc cắt cụt là KHÔNG THỂ:
+   *  1. hàng của thanh là một CSS container (`@container`) và mọi biến thể
+   *     condensed/full đọc theo container (`@lg:`), không còn `sm:`/`md:` viewport;
+   *  2. các nút co giãn được mang lớp co (`min-w-0`) còn nút Compact là phần tử
+   *     duy nhất giữ nguyên kích thước (`shrink-0`) và không mang lớp ẩn/cắt nào.
+   */
+  const CONTAINER_VARIANT = '@lg'
+
+  function viewportBreakpointClasses(el: Element | null): string[] {
+    return (el?.className ?? '')
+      .split(/\s+/)
+      .filter((cls) => /^(sm|md|lg|xl|2xl):/.test(cls))
+  }
+
+  it('hàng của thanh là CSS container và không node nào còn breakpoint theo viewport', () => {
+    useProviderStore.setState({ snapshot: snapshotWith(1_000_000) })
+    useRouterChatStore.setState({ selection: { kind: 'model', connectionId: 'conn-1', modelId: 'gemini-3.8-flash-high' } })
+    seedRun()
+
+    const host = render(<ContextUsageBar />)
+    const row = host.querySelector('[data-testid="context-usage-row"]') as HTMLElement
+    expect(row).toBeTruthy()
+    // `@container` = container-type: inline-size — bề rộng thật của khung chat.
+    expect(row.className).toContain('@container')
+
+    for (const testid of ['context-usage-row', 'context-usage-progress', 'context-usage-actions', 'context-usage-label', 'context-usage-compact']) {
+      const el = host.querySelector(`[data-testid="${testid}"]`)
+      expect(el, testid).toBeTruthy()
+      expect(viewportBreakpointClasses(el), testid).toEqual([])
+    }
+  })
+
+  it('biến thể condensed/full chuyển theo container (`@lg:`), không theo viewport', () => {
+    useProviderStore.setState({ snapshot: snapshotWith(null) })
+    seedRun({ lastModelLabel: 'acme-mystery-model-v9' })
+
+    const host = render(<ContextUsageBar />)
+    // Thanh tiến trình: chỉ hiện ở bản đầy đủ → điều kiện phải là container.
+    const progress = host.querySelector('[data-testid="context-usage-progress"]') as HTMLElement
+    expect(progress.className).toContain('hidden')
+    expect(progress.className).toContain(`${CONTAINER_VARIANT}:flex`)
+
+    // Nhãn ước lượng + chữ trên nút Compact cũng chỉ hiện ở bản đầy đủ.
+    const label = host.querySelector('[data-testid="context-usage-label"]') as HTMLElement
+    const estimated = label.querySelector('span.hidden')
+    expect(estimated?.className).toContain(`${CONTAINER_VARIANT}:inline`)
+    const compactWord = Array.from(
+      (host.querySelector('[data-testid="context-usage-compact"]') as HTMLElement).querySelectorAll('span'),
+    ).find((span) => (span.textContent ?? '').trim().length > 0)
+    expect(compactWord?.className).toContain('hidden')
+    expect(compactWord?.className).toContain(`${CONTAINER_VARIANT}:inline`)
+  })
+
+  it('nút Compact không bao giờ bị cắt: nhãn/nhóm co được, nút thì không', () => {
+    useProviderStore.setState({ snapshot: snapshotWith(1_000_000) })
+    useRouterChatStore.setState({ selection: { kind: 'model', connectionId: 'conn-1', modelId: 'gemini-3.8-flash-high' } })
+    seedRun()
+
+    const host = render(<ContextUsageBar />)
+    const actions = host.querySelector('[data-testid="context-usage-actions"]') as HTMLElement
+    const label = host.querySelector('[data-testid="context-usage-label"]') as HTMLElement
+    const compact = host.querySelector('[data-testid="context-usage-compact"]') as HTMLElement
+
+    // Hai node co giãn được (nhóm hành động + nhãn token) mang lớp co.
+    expect(actions.className).toContain('min-w-0')
+    expect(label.className).toContain('min-w-0')
+    expect(label.className).toContain('overflow-hidden')
+    // Nút: giữ nguyên kích thước và không mang lớp ẩn/cắt cụt nào.
+    expect(compact.className).toContain('shrink-0')
+    expect(compact.className).not.toMatch(/\bhidden\b/)
+    expect(compact.className).not.toMatch(/\btruncate\b|\boverflow-hidden\b/)
+    expect(compact.querySelectorAll('[data-testid="context-usage-label"]')).toHaveLength(0)
+  })
+})

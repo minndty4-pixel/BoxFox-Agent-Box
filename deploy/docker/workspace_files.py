@@ -58,8 +58,10 @@ GENERATED_DIR_NAME = ".generated_artifacts"
 TRASH_DIR_NAME = ".trash"
 HIDDEN_DIR_NAMES = frozenset({GENERATED_DIR_NAME, TRASH_DIR_NAME})
 
-# Mục cấp 1 không bao giờ được xoá (thư mục gốc workspace tự nó bị chặn riêng vì
-# không có segment nào để tách tên).
+# Mục cấp 1 không bao giờ được xoá / đổi tên / di chuyển (thư mục gốc workspace
+# tự nó bị chặn riêng vì không có segment nào để tách tên). `rename`/`move` phải
+# dùng cùng luật này, nếu không chúng có thể đổi tên hoặc chôn mục bảo vệ và phá
+# bất biến của mục đó (`.trash` biến mất khỏi vùng ẩn, `.plans` bị làm rỗng).
 PROTECTED_PATHS = frozenset({".plans", TRASH_DIR_NAME, GENERATED_DIR_NAME})
 
 # `touch` tạo file nhỏ (rỗng hoặc nội dung ngắn) chứ không phải đường upload thứ hai.
@@ -216,6 +218,19 @@ def _validate_filename(name: object) -> str:
     if "./" in name or ".." in name.split("/"):
         raise InvalidWorkspacePath("Tên file chứa segment không hợp lệ.")
     return name
+
+
+def _reject_protected_rel(rel: str, *, verb: str) -> None:
+    """409 khi ``rel`` là CHÍNH một mục bảo vệ ở cấp 1 workspace.
+
+    Dùng chung cho cả ba đường ghi chạm tới mục đó: ``delete`` (nguồn), ``rename``
+    (nguồn — đổi tên cùng thư mục nên đích cũng ở cấp 1) và ``move`` (nguồn lẫn
+    thư mục đích). Mục con của chúng vẫn đi qua bình thường.
+    """
+
+    segments = split_segments(rel)
+    if len(segments) == 1 and segments[0] in PROTECTED_PATHS:
+        raise WorkspaceConflict(f"«{segments[0]}» là mục được bảo vệ, không {verb} được.")
 
 
 # ---------------------------------------------------------------------------
@@ -901,6 +916,9 @@ def rename_entry(path: object, name: object) -> dict:
     dir_rel, old_name, rel = _split_entry_path(
         path, root_message="Không đổi tên được thư mục gốc workspace."
     )
+    # Đổi tên giữ nguyên thư mục cha, nên `rel` cấp 1 nghĩa là đích cũng cấp 1:
+    # một lần kiểm là đủ cho cả nguồn lẫn đích.
+    _reject_protected_rel(rel, verb="đổi tên")
     # `name` là tên đơn: `_validate_filename` từ chối rỗng/`.`/`..`/`/`/`\\`/NUL.
     new_name = _validate_filename(name)
     new_rel = f"{dir_rel}/{new_name}" if dir_rel else new_name
@@ -921,6 +939,11 @@ def move_entry(path: object, destination: object) -> dict:
         path, root_message="Không di chuyển được thư mục gốc workspace."
     )
     dest_rel = validate_rel_path(destination)
+    # Nguồn cấp 1 bị chặn (chôn `.trash`/`.plans` vào thư mục khác), và thư mục
+    # đích cấp 1 cũng bị chặn — nếu không, `move` dựng được mục `.trash` mà route
+    # delete chưa từng tạo, hoặc nhét file vào `.plans` sau lưng luật bảo vệ.
+    _reject_protected_rel(rel, verb="di chuyển")
+    _reject_protected_rel(dest_rel, verb="di chuyển vào")
     new_rel = f"{dest_rel}/{name}" if dest_rel else name
     src_fd = _open_dir_fd(src_dir_rel)
     try:
@@ -997,8 +1020,7 @@ def delete_entry(path: object) -> dict:
     segments = split_segments(normalized)
     if not segments:
         raise WorkspaceConflict("Không xoá được thư mục gốc workspace.")
-    if len(segments) == 1 and segments[0] in PROTECTED_PATHS:
-        raise WorkspaceConflict(f"«{segments[0]}» là mục được bảo vệ, không xoá được.")
+    _reject_protected_rel(normalized, verb="xoá")
     dir_rel = "/".join(segments[:-1])
     name = segments[-1]
     rel = f"{dir_rel}/{name}" if dir_rel else name

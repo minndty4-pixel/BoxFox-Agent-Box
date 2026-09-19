@@ -347,6 +347,54 @@ def test_decision_tools_are_role_gated(tmp_path):
     asyncio.run(run())
 
 
+def test_a_delegated_child_cannot_ask_the_user(tmp_path):
+    """A question raised inside a child session is refused before any event, so it cannot hang the parent turn.
+
+    Only root sessions are listed (session_store.list -> parent_id IS NULL) and the UI reads decisions for
+    the active chat only, so a child question would be invisible and unanswerable while still blocking the
+    parent turn for the full ask_user deadline (300 s) against the parent's own 180 s budget.
+    """
+
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        model = FixtureModel([
+            # parent turn delegates the decision to a specialist
+            answer('Giao cho chuyên gia', calls=[call('delegate_task', {'role': 'review', 'goal': 'Kiểm tra giúp'}, 'p1')]),
+            # the child tries to ask the user: must be an ordinary tool error
+            answer('Cần bạn chọn', calls=[call('ask_user', {'question': 'Chọn giúp tôi?', 'options': ['a', 'b']}, 'c1')]),
+            answer('Tự quyết theo bằng chứng của mình'),
+            # parent turn continues normally
+            answer('Đã xong theo bằng chứng của chuyên gia')])
+        runtime = HarnessRuntime(store, FixtureExecutor(), model)
+        parent_sid = runtime.create({'skills': []})['id']
+
+        started = time.monotonic()
+        task = runtime.start(parent_sid, 'Nhờ chuyên gia kiểm tra')
+        assert await asyncio.wait_for(task, 10) == 'Đã xong theo bằng chứng của chuyên gia'
+        assert time.monotonic() - started < 5, 'a child question must never burn the parent turn budget'
+
+        child_sid = store.db.execute('SELECT id FROM sessions WHERE parent_id=?', (parent_sid,)).fetchone()['id']
+        # the child can never become the active chat, which is why asking there was refused
+        assert [row['id'] for row in store.list()] == [parent_sid]
+
+        for sid in (parent_sid, child_sid):
+            assert events_of(store, sid, 'decision_requested') == [], 'no decision may be raised on ' + sid
+            assert events_of(store, sid, 'ui_intent') == []
+            assert runtime.pending_for(sid) == []
+        assert store.get(child_sid)['status'] == 'completed', 'the child must never stall as awaiting_decision'
+
+        failures = [result for result in tool_results(store, child_sid) if result.get('is_error')]
+        assert failures and 'DECISION_UNAVAILABLE' in failures[0]['error']
+        # the child saw a normal tool error and decided from its own evidence
+        assert 'DECISION_UNAVAILABLE' in json.dumps(store.get(child_sid)['messages'], ensure_ascii=False)
+        # the parent reads the child as a normal completed delegation, not as a stalled question
+        delegation = tool_results(store, parent_sid)[-1]
+        assert delegation['status'] == 'completed' and delegation['is_error'] is False
+        store.close()
+
+    asyncio.run(run())
+
+
 def test_option_normalization_and_deadline_ceiling():
     """Pure helpers: 2-5 options with a guaranteed approve/reject pair, deadlines clamped to 3600 s."""
     options = normalize_decision_options(['Nhanh', 'Kỹ'], 'question')

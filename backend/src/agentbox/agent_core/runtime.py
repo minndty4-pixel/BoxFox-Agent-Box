@@ -293,6 +293,39 @@ def resolve_context_window(model_str='', requested=None, metadata=None):
     return 128000
 
 
+def resolve_thinking_level(requested, metadata=None):
+    """Mức thinking ĐƯỢC LƯU cho phiên: chỉ mức mà model đã định tuyến thật sự công bố.
+
+    Metadata router (`modelMetadata` / `/api/router/state`) mang `thinkingLevels`,
+    `thinkingType` và `defaultThinking` đọc thẳng từ provider. Trước đây `create()`
+    nhận bất kỳ chuỗi `thinkingLevel` nào và lưu nguyên văn, nên một mức sai (provider
+    bỏ qua) vẫn nằm trong config như thể đã được áp.
+
+    - Model CÔNG BỐ danh sách mức: mức yêu cầu được chuẩn hoá hoa/thường rồi phải
+      khớp một mức trong danh sách (lưu đúng cách viết của provider); mức lạ →
+      `THINKING_LEVEL_UNSUPPORTED` để người dùng biết ngay thay vì lưu im lặng.
+    - Model KHÔNG công bố mức nào (`thinkingType` 'none'/'fixed' hoặc
+      `thinkingLevels` rỗng, ví dụ các id antigravity `…-low/-medium/-high` đã mang
+      sẵn mức trong tên): giá trị bị DROP (trả `None`) chứ không báo lỗi — provider
+      không có điều khiển thinking để áp, và chặn tạo phiên ở đây là sai.
+    - Không có metadata để đối chiếu (router không trả record, model lạ): giữ
+      nguyên giá trị yêu cầu như hành vi cũ, vì không có cơ sở nào để phán.
+    """
+    if not isinstance(requested, str) or not requested.strip():
+        return None
+    level = requested.strip()
+    if not isinstance(metadata, dict):
+        return level
+    published = metadata.get('thinkingLevels')
+    levels = [str(item).strip().lower() for item in published if str(item).strip()] if isinstance(published, list) else []
+    if not levels:
+        return None
+    for candidate in levels:
+        if candidate == level.lower():
+            return candidate
+    raise ValueError(f'THINKING_LEVEL_UNSUPPORTED: model publishes {"/".join(levels)}; requested {level}')
+
+
 DECISION_TOOLS = frozenset({'ask_user', 'request_approval'})
 DECISION_DEFAULT_SECONDS = {'ask_user': 300.0, 'request_approval': 600.0}
 DECISION_MAX_SECONDS = 3600.0
@@ -461,12 +494,26 @@ class HarnessRuntime(RuntimeCommands):
         model_metadata = values.get('modelMetadata') if isinstance(values.get('modelMetadata'), dict) else None
         context_window = resolve_context_window(model_id_str, values.get('contextWindow'), model_metadata)
 
+        # thinkingLevel: chỉ lưu mức mà model đã định tuyến công bố (THINKING_LEVEL_UNSUPPORTED
+        # khi model có danh sách mức mà mức yêu cầu không nằm trong đó; drop khi model không
+        # công bố mức nào — xem `resolve_thinking_level`).
+        if 'thinkingLevel' in route:
+            thinking_level = resolve_thinking_level(route['thinkingLevel'], model_metadata)
+            if thinking_level is None:
+                route.pop('thinkingLevel')
+            else:
+                route['thinkingLevel'] = thinking_level
+
         config = {'skills': list(dict.fromkeys(skills)), 'subagents': subagents, 'route': route,
                   'maxSteps': min(60, max(1, int(values.get('maxSteps', 16)))),
                   'deadlineSeconds': min(600, max(5, int(values.get('deadlineSeconds', 180)))),
                   'contextWindow': context_window,
                   'tools': sorted(allowed_tools(role, parent_tools)),
                   'instructions': str(values.get('instructions', ''))[:12000]}
+        # Giữ metadata của model đã định tuyến: các lượt sau gửi route kèm
+        # `thinkingLevel` (UI gửi ở mỗi lượt) và `start()` cần nó để đối chiếu.
+        if model_metadata:
+            config['modelMetadata'] = model_metadata
         session = self.store.create(config, role, parent_id)
         role_instructions = ROLES[role].instructions if role in ROLES else ORCHESTRATOR_SOP_GUIDANCE
         prompt = (
@@ -487,7 +534,23 @@ class HarnessRuntime(RuntimeCommands):
         if session['status'] in {'running', 'awaiting_decision'}:
             raise ValueError('SESSION_BUSY: Turn in progress')
         if route and isinstance(route, dict) and any(route.values()):
-            session['config']['route'] = route
+            # Route của lượt cũng mang `thinkingLevel` (UI gửi ở mỗi lượt) và thay
+            # trọn `config['route']`, nên phải đối chiếu y như lúc tạo phiên — nếu
+            # không, một mức sai lại được lưu nguyên văn và provider bỏ qua im lặng.
+            updated = dict(route)
+            metadata = session['config'].get('modelMetadata')
+            metadata = metadata if isinstance(metadata, dict) else None
+            # Metadata chỉ dùng được khi nó mô tả ĐÚNG model của route này; đổi
+            # model ở lượt (route trỏ nơi khác) thì giữ hành vi cũ.
+            if metadata and updated.get('modelId') != metadata.get('id'):
+                metadata = None
+            if 'thinkingLevel' in updated:
+                thinking_level = resolve_thinking_level(updated['thinkingLevel'], metadata)
+                if thinking_level is None:
+                    updated.pop('thinkingLevel')
+                else:
+                    updated['thinkingLevel'] = thinking_level
+            session['config']['route'] = updated
             self.store.update_config(sid, session['config'])
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError('Prompt is required')
@@ -660,6 +723,11 @@ class HarnessRuntime(RuntimeCommands):
     async def decision(self, session, name, args, call_id=None):
         """ask_user / request_approval: emit decision_requested, block, return the honest outcome."""
         sid = session['id']
+        # A delegated child runs inside the parent's turn and has no chat of its own (only root
+        # sessions are listed), so a question asked there could never be shown or answered.
+        if session.get('parent_id'):
+            raise ValueError('DECISION_UNAVAILABLE: a delegated session cannot ask the user; '
+                             'decide from your own evidence')
         kind = 'question' if name == 'ask_user' else 'approval'
         if kind == 'question':
             question = str(args.get('question') or '').strip()

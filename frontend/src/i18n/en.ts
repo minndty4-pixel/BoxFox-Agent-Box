@@ -613,6 +613,7 @@ const en: SameShape<typeof vi> = {
     emptyHistory: 'No decision has been recorded yet.',
     noteLabel: 'Note',
     sendingAnswer: 'Sending your answer…',
+    answerError: 'Could not send your answer',
     expiredNote: 'Past the deadline — counted as REJECTED automatically.',
     deadline: 'Deadline',
   },

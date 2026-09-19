@@ -149,6 +149,28 @@ describe('DecisionsPanel — quyết định thật', () => {
 
     expect(useHarnessChatStore.getState().sessions[CHAT_ID].error).toContain('DECISION_ALREADY_RESOLVED')
     expect(host.textContent).toContain('Chỉ mục phiên nên nằm ở đâu?')
+    // ... và lỗi phải hiện NGAY TRONG panel này (nơi người dùng vừa bấm), không
+    // chỉ nằm ở cột chat — hàng quay về "đang chờ" nên nếu không có dải này thì
+    // cú bấm trông như không có chuyện gì xảy ra.
+    const strip = host.querySelector('[data-testid="decision-answer-error"]')
+    expect(strip).toBeTruthy()
+    expect(strip?.textContent).toContain('Could not send your answer')
+    expect(strip?.textContent).toContain('DECISION_ALREADY_RESOLVED')
+  })
+
+  it('trả lời thành công thì KHÔNG hiện dải lỗi', async () => {
+    seedDecisions([entry()])
+    const host = render(<DecisionsPanel />)
+
+    const approve = Array.from(host.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Giữ trong harness'),
+    )
+    await act(async () => {
+      approve?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(useHarnessChatStore.getState().decisions[CHAT_ID][0].status).toBe('approved')
+    expect(host.querySelector('[data-testid="decision-answer-error"]')).toBeNull()
   })
 
   it('quyết định quá hạn hiện đúng trạng thái từ `decision_resolved`', () => {

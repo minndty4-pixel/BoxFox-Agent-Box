@@ -210,6 +210,48 @@ describe('dispatchTabIntents', () => {
     expect(useUiStore.getState().pendingIntents).toEqual([])
   })
 
+  it('nạp lại trang một phiên có quyết định cũ thì không mở tab Decisions', () => {
+    // Hàng `ui_intent` thật nằm ngay sau `decision_requested` trong event log nên khi
+    // nạp lại trang nó vẫn còn nguyên: giống tab Plan, lần nạp đầu phải bỏ qua nó,
+    // nếu không tab Decisions tự mở và huy hiệu đếm đầy ý định ảo (tối đa 20).
+    const past = (base: number, id: string): FakeEvent[] => [
+      requested(base, id),
+      {
+        seq: base + 1,
+        type: 'ui_intent',
+        data: { tab: 'decisions', target: { requestId: id }, reason: 'decision_requested' },
+        created: base + 1,
+      },
+      resolved(base + 2, id, { reason: 'user', status: 'approved' }),
+    ]
+    const events: FakeEvent[] = [...past(1, 'd1'), ...past(4, 'd2'), ...past(7, 'd3')]
+
+    const next = dispatchTabIntents({ allEvents: events, freshEvents: events, lastSeq: 0, firstHydration: true })
+
+    expect(next).toBe(9)
+    expect(useUiStore.getState().activeTab).toBeNull()
+    expect(useUiStore.getState().openTabs).toEqual([])
+    expect(useUiStore.getState().pendingIntents).toEqual([])
+    expect(useUiStore.getState().tabIntentTargets.decisions).toBeUndefined()
+  })
+
+  it('lần nạp đầu vẫn mở tab cho quyết định CÒN chờ (không bị bỏ qua như hàng `ui_intent`)', () => {
+    const events: FakeEvent[] = [
+      requested(2, 'd-live'),
+      {
+        seq: 3,
+        type: 'ui_intent',
+        data: { tab: 'decisions', target: { requestId: 'd-live' }, reason: 'decision_requested' },
+        created: 3,
+      },
+    ]
+
+    dispatchTabIntents({ allEvents: events, freshEvents: events, lastSeq: 0, firstHydration: true })
+
+    expect(useUiStore.getState().activeTab).toBe('decisions')
+    expect(useUiStore.getState().pendingIntents).toEqual([])
+  })
+
   it('`ui_intent` đi kèm không nhân đôi ý định của event gốc (tab, đích)', () => {
     useUiStore.setState({ autoOpenOnlyWhenIdle: true, lastUserActivityAt: Date.now() })
     const events: FakeEvent[] = [

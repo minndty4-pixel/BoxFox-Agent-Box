@@ -473,6 +473,43 @@ class WorkspaceWriteApiTest(unittest.TestCase):
         self.assertTrue((self.root / "tree" / "child").is_dir())
 
     # --- delete ---
+    def test_rename_and_move_refuse_protected_entries(self) -> None:
+        """Cùng luật bảo vệ như `delete`, ở cả nguồn lẫn thư mục đích."""
+
+        for name in (".plans", ".trash", ".generated_artifacts"):
+            (self.root / name).mkdir()
+        self.write(".plans/v1-pilot.md", "# plan\n")
+
+        for protected in (".plans", ".trash", ".generated_artifacts"):
+            with self.assertRaises(WorkspaceConflict) as caught:
+                rename_entry(protected, "moved-away")
+            self.assertEqual(caught.exception.status_code, 409)
+            with self.assertRaises(WorkspaceConflict) as caught:
+                move_entry(protected, "src")
+            self.assertEqual(caught.exception.status_code, 409)
+        # đích cấp 1 bảo vệ cũng bị chặn (không dựng được `.trash` sau lưng delete)
+        for destination in (".plans", ".trash", ".generated_artifacts"):
+            with self.assertRaises(WorkspaceConflict) as caught:
+                move_entry("a.md", destination)
+            self.assertEqual(caught.exception.status_code, 409)
+        # không thao tác nào chạm đĩa
+        for name in (".plans", ".trash", ".generated_artifacts"):
+            self.assertTrue((self.root / name).is_dir())
+        self.assertTrue((self.root / ".plans" / "v1-pilot.md").is_file())
+        self.assertFalse((self.root / "moved-away").exists())
+        self.assertEqual(self.trash_names(), [])
+
+        # mục con của mục bảo vệ vẫn đổi tên/di chuyển bình thường
+        make_directory("docs")
+        self.assertEqual(
+            rename_entry(".plans/v1-pilot.md", "v2-pilot.md"),
+            {"path": ".plans/v1-pilot.md", "newPath": ".plans/v2-pilot.md"},
+        )
+        self.assertEqual(
+            move_entry(".plans/v2-pilot.md", "docs"),
+            {"path": ".plans/v2-pilot.md", "newPath": "docs/v2-pilot.md"},
+        )
+
     def test_delete_moves_to_trash_and_hides_trash_from_listing(self) -> None:
         self.write("docs/a.md", "bye")
         result = delete_entry("docs/a.md")

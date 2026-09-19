@@ -379,6 +379,53 @@ describe('ChatPanel — trạng thái nạp phiên (§D-U4)', () => {
 })
 
 /**
+ * Phiên đang chờ người dùng quyết định vẫn là một lượt chạy đang sống: harness
+ * giữ lượt đó (`runtime.start()` → `SESSION_BUSY` → 409) và chỉ nhận lệnh điều
+ * khiển. UI phải xử lý `awaiting_decision` y như `running` — nút Stop còn đó,
+ * prompt thường bị từ chối tại chỗ (bản nháp còn nguyên), `/stop` vẫn gửi được.
+ */
+describe('ChatPanel — phiên đang chờ quyết định tính là đang chạy', () => {
+  it('hiện nút Stop, giữ bản nháp khi Enter, và vẫn gửi được `/stop`', async () => {
+    // Kiểu tham số tường minh: `mock.calls` không có kiểu thì `call[0]`/`call[1]`
+    // là tuple rỗng và tsc báo TS2493.
+    const harnessSend = vi.fn(async (_chatId: string, _prompt: string) => undefined)
+    const harnessStop = vi.fn(async () => {})
+    useHarnessChatStore.setState({ send: harnessSend, stop: harnessStop })
+    seedRun({ status: 'awaiting_decision', events: [event(1)] })
+
+    const host = render(<ChatPanel />)
+
+    // 1. lượt bị chặn vẫn có nút Stop ngay trên thanh soạn tin (không phải gõ `/stop`)
+    const stopButton = host.querySelector('button[title="Stop / Interrupt agent action (Esc)"]') as HTMLButtonElement
+    expect(stopButton).toBeTruthy()
+
+    // 2. Enter với prompt thường: từ chối tại chỗ, không gửi, bản nháp còn nguyên
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    expect(textarea).toBeTruthy()
+    act(() => {
+      typeInto(textarea, 'Làm tiếp việc khác')
+    })
+    act(() => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(harnessSend).not.toHaveBeenCalled()
+    expect(textarea.value).toBe('Làm tiếp việc khác')
+
+    // 3. `/stop` là lệnh điều khiển nên vẫn gửi được trong lúc bị chặn
+    act(() => {
+      typeInto(textarea, '/stop')
+    })
+    act(() => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    expect(harnessSend.mock.calls.map((call) => [call[0], call[1]])).toEqual([[CHAT_ID, '/stop']])
+  })
+})
+
+/**
  * Gán giá trị textarea rồi bắn `input` — React theo dõi `value` bằng một tracker
  * gắn trên setter gốc của DOM nên phải gọi qua setter gốc để onChange chạy.
  */

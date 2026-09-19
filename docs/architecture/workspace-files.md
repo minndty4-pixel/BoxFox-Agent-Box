@@ -106,6 +106,12 @@ thùng rác".
 - Từ chối `409`: xoá gốc workspace, và ba tên bảo vệ ở cấp 1 là `.plans`, `.trash`,
   `.generated_artifacts` (file *bên trong* `.plans/` vẫn xoá được bình thường). Thiếu
   entry → `404`.
+- **Luật bảo vệ dùng chung cho cả `rename` và `move`** (`_reject_protected_rel`): một
+  mục cấp 1 trong `PROTECTED_PATHS` không đổi tên được, không di chuyển được, và
+  cũng không nhận được mục khác (`move` từ chối cả `path` lẫn `destination` cấp 1
+  bảo vệ — nếu không, `.plans` bị đổi tên thành `docs` sẽ làm rỗng tab Plan, `.trash`
+  lộ ra listing, và một file có thể bị nhét vào `.trash` mà route `delete` chưa từng
+  tạo). Mục con của chúng vẫn đi qua bình thường.
 - `delete` là `rename` nên **cùng thiết bị** mới chạy: khác thiết bị (`EXDEV`) → `409`
   thay vì fallback sang copy.
 - `.trash` nằm trong `HIDDEN_DIR_NAMES` nên bị ẩn khỏi `GET /__box/files` và khỏi zip

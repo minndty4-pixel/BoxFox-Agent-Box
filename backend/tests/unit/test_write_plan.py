@@ -38,8 +38,9 @@ class FixtureModel:
 class PlanFixtureExecutor:
     """Stands in for the sandbox worker: confirms the same metadata the real container returns.
 
-    Note the `identity` field: like the real worker it is the file stem (`vN-slug`), and the harness must
-    ignore it — the published `plan_written.identity` is derived from the confirmed `relativePath`.
+    The worker returns no `identity`: the contract §1 forbids the `vN-`-qualified form there,
+    and the harness derives the published `plan_written.identity` from the confirmed
+    `relativePath` itself.
     """
 
     def __init__(self, versions=()):
@@ -51,7 +52,7 @@ class PlanFixtureExecutor:
         assert name == 'write_plan', 'write_plan must go through the sandbox executor'
         version = max(self.used or {0}) + 1
         self.used.add(version)
-        return {'content': 'Written ' + args['slug'], 'identity': f"v{version}-{args['slug']}", 'version': version,
+        return {'content': 'Written ' + args['slug'], 'version': version,
                 'slug': args['slug'], 'relativePath': f".plans/v{version}-{args['slug']}.md",
                 'bytes': len(args['markdown'].encode('utf-8'))}
 
@@ -64,7 +65,7 @@ class NestedPlanExecutor(PlanFixtureExecutor):
 
     async def execute(self, name, args, sid):
         self.calls.append((name, args, sid))
-        return {'content': 'Written docs/docs', 'identity': 'v1-docs', 'version': 1, 'slug': 'docs',
+        return {'content': 'Written docs/docs', 'version': 1, 'slug': 'docs',
                 'relativePath': '.plans/docs/v1-docs.md', 'title': 'Docs',
                 'bytes': len(args['markdown'].encode('utf-8'))}
 
@@ -254,8 +255,10 @@ def test_worker_write_plan_picks_the_next_free_version(tmp_path, monkeypatch):
 
     first = worker.execute('write_plan', {'slug': 'workspace-plan', 'markdown': PLAN_MARKDOWN}, 'session')
     assert first['relativePath'] == '.plans/v1-workspace-plan.md'
-    # the sandbox's own `identity` is its file stem; the harness publishes plan_identity(relativePath) instead
-    assert first['identity'] == 'v1-workspace-plan' and first['version'] == 1 and first['slug'] == 'workspace-plan'
+    # the worker payload carries NO `identity`: contract §1 forbids the `vN-`-qualified form
+    # (the harness publishes plan_identity(relativePath), i.e. the bare reader grouping key)
+    assert 'identity' not in first
+    assert first['version'] == 1 and first['slug'] == 'workspace-plan'
     assert first['bytes'] == len(PLAN_MARKDOWN.encode('utf-8'))
     assert (tmp_path / '.plans' / 'v1-workspace-plan.md').read_text(encoding='utf-8') == PLAN_MARKDOWN
 

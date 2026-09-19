@@ -199,8 +199,6 @@ interface UiState {
   setPlanViewMode: (mode: 'plan' | 'diff') => void
   planSubTab: 'overview' | 'detailed'
   setPlanSubTab: (tab: 'overview' | 'detailed') => void
-  planVersion: string
-  setPlanVersion: (version: string) => void
   showFeedbackBanner: boolean
   setShowFeedbackBanner: (show: boolean) => void
 
@@ -367,8 +365,6 @@ export const useUiStore = create<UiState>((set, get) => ({
   setPlanViewMode: (mode) => set({ planViewMode: mode }),
   planSubTab: 'overview',
   setPlanSubTab: (tab) => set({ planSubTab: tab }),
-  planVersion: 'v3',
-  setPlanVersion: (version) => set({ planVersion: version }),
   showFeedbackBanner: true,
   setShowFeedbackBanner: (show) => set({ showFeedbackBanner: show }),
 

@@ -101,6 +101,104 @@ def test_session_create_keeps_thinking_level(tmp_path):
     store.close()
 
 
+def _thinking_metadata(thinking_type, levels, default=None, model_id=None):
+    record = {'contextWindow': 1_000_000, 'thinkingType': thinking_type,
+              'thinkingLevels': levels, 'defaultThinking': default}
+    if model_id:
+        record['id'] = model_id
+    return record
+
+
+def test_session_create_accepts_published_thinking_level(tmp_path):
+    """Mức nằm trong danh sách model công bố được nhận (và chuẩn hoá hoa/thường)."""
+    store = SessionStore(tmp_path / 'sessions.db')
+    runtime = HarnessRuntime(store, FixtureExecutor(), FixtureModel())
+    session = runtime.create({'skills': [], 'connectionId': 'c1', 'modelId': 'gemini-3.6-flash',
+                              'thinkingLevel': 'HIGH', 'modelMetadata': _thinking_metadata('effort', ['low', 'medium', 'high'], 'high')})
+    assert session['config']['route']['thinkingLevel'] == 'high'
+    store.close()
+
+
+def test_session_create_rejects_unsupported_thinking_level(tmp_path):
+    """Mức provider không công bố phải bị từ chối kèm mã lỗi, không lưu im lặng."""
+    store = SessionStore(tmp_path / 'sessions.db')
+    runtime = HarnessRuntime(store, FixtureExecutor(), FixtureModel())
+    with pytest.raises(ValueError, match='THINKING_LEVEL_UNSUPPORTED'):
+        runtime.create({'skills': [], 'connectionId': 'c1', 'modelId': 'gemini-3.6-flash',
+                        'thinkingLevel': 'ultra', 'modelMetadata': _thinking_metadata('effort', ['low', 'medium', 'high'], 'high')})
+    assert runtime.store.list(100) == [], 'phiên bị từ chối không được tạo'
+    store.close()
+
+
+@pytest.mark.parametrize('thinking_type,levels', [('fixed', []), ('none', [])])
+def test_session_create_drops_thinking_level_when_model_publishes_none(tmp_path, thinking_type, levels):
+    """Model không có điều khiển thinking (`fixed`/`none`) thì DROP, không báo lỗi."""
+    store = SessionStore(tmp_path / 'sessions.db')
+    runtime = HarnessRuntime(store, FixtureExecutor(), FixtureModel())
+    session = runtime.create({'skills': [], 'connectionId': 'c1', 'modelId': 'gemini-3.6-flash-high',
+                              'thinkingLevel': 'high', 'modelMetadata': _thinking_metadata(thinking_type, levels, 'high')})
+    assert 'thinkingLevel' not in session['config']['route'], 'giá trị provider bỏ qua không được lưu'
+    assert session['config']['route']['modelId'] == 'gemini-3.6-flash-high'
+    store.close()
+
+
+def test_session_create_drops_thinking_level_when_metadata_has_no_levels(tmp_path):
+    """Metadata có mặt nhưng không kèm danh sách mức → cũng là "không công bố mức"."""
+    store = SessionStore(tmp_path / 'sessions.db')
+    runtime = HarnessRuntime(store, FixtureExecutor(), FixtureModel())
+    session = runtime.create({'skills': [], 'connectionId': 'c1', 'modelId': 'mystery',
+                              'thinkingLevel': 'high', 'modelMetadata': {'contextWindow': 200_000}})
+    assert 'thinkingLevel' not in session['config']['route']
+    store.close()
+
+
+def _turn_response():
+    return {'choices': [{'message': {'content': 'done'}, 'finish_reason': 'stop'}]}
+
+
+def test_turn_route_normalizes_published_and_drops_unpublished_thinking_level(tmp_path):
+    """UI gửi `thinkingLevel` ở MỖI lượt: route của lượt cũng phải được đối chiếu."""
+
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        responses = [_turn_response(), _turn_response()]
+        runtime = HarnessRuntime(store, FixtureExecutor(), FixtureModel(responses))
+        effort = runtime.create({'skills': [], 'connectionId': 'c1', 'modelId': 'gemini-3.6-flash',
+                                 'modelMetadata': _thinking_metadata('effort', ['low', 'medium', 'high'], 'high', 'gemini-3.6-flash')})
+        await runtime.submit(effort['id'], 'hello', None,
+                             {'connectionId': 'c1', 'modelId': 'gemini-3.6-flash', 'thinkingLevel': 'HIGH'})
+        await runtime.tasks[effort['id']]
+        assert store.get(effort['id'])['config']['route']['thinkingLevel'] == 'high'
+
+        fixed = runtime.create({'skills': [], 'connectionId': 'c1', 'modelId': 'gemini-3.6-flash-high',
+                                'modelMetadata': _thinking_metadata('fixed', [], 'high', 'gemini-3.6-flash-high')})
+        await runtime.submit(fixed['id'], 'hello', None,
+                             {'connectionId': 'c1', 'modelId': 'gemini-3.6-flash-high', 'thinkingLevel': 'high'})
+        await runtime.tasks[fixed['id']]
+        assert 'thinkingLevel' not in store.get(fixed['id'])['config']['route']
+        store.close()
+
+    asyncio.run(run())
+
+
+def test_turn_route_rejects_unsupported_thinking_level(tmp_path):
+    """Mức sai gửi kèm lượt bị từ chối, KHÔNG được lưu vào route của phiên."""
+
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        runtime = HarnessRuntime(store, FixtureExecutor(), FixtureModel())
+        session = runtime.create({'skills': [], 'connectionId': 'c1', 'modelId': 'gemini-3.6-flash',
+                                  'modelMetadata': _thinking_metadata('effort', ['low', 'medium', 'high'], 'high', 'gemini-3.6-flash')})
+        with pytest.raises(ValueError, match='THINKING_LEVEL_UNSUPPORTED'):
+            await runtime.submit(session['id'], 'hello', None,
+                                 {'connectionId': 'c1', 'modelId': 'gemini-3.6-flash', 'thinkingLevel': 'ultra'})
+        assert 'thinkingLevel' not in store.get(session['id'])['config']['route']
+        assert store.get(session['id'])['status'] != 'running', 'lượt bị từ chối không được chạy'
+        store.close()
+
+    asyncio.run(run())
+
+
 def test_session_create_uses_router_metadata_context_window(tmp_path):
     store = SessionStore(tmp_path / 'sessions.db')
     runtime = HarnessRuntime(store, FixtureExecutor(), FixtureModel())

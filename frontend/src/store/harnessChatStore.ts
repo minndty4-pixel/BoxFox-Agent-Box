@@ -229,7 +229,7 @@ export function dispatchTabIntents(params: {
     if (event.type === 'ui_intent') {
       const tab = asString(event.data.tab)
       if (tab !== 'plan' && tab !== 'decisions' && tab !== 'files' && tab !== 'subagents') continue
-      if (firstHydration && tab === 'plan') continue
+      if (firstHydration && (tab === 'plan' || tab === 'decisions')) continue
       const rawTarget = event.data.target
       request(
         tab,
@@ -348,7 +348,7 @@ export const useHarnessChatStore = create<State>((set, get) => ({
   send: async (chatId, prompt, selection, image, modelLabel) => {
     const current = get().sessions[chatId] ?? empty()
     const control = /^\/(help|skills|agents|status|context|stop)\s*$/.test(prompt)
-    if ((current.status === 'running' || current.status === 'starting') && !control) return
+    if ((current.status === 'running' || current.status === 'starting' || current.status === 'awaiting_decision') && !control) return
     if (control && current.id) {
       try {
         await agentApi(`/sessions/${current.id}/turns`, { prompt, invocationId: crypto.randomUUID() })

@@ -183,7 +183,13 @@ export function ChatPanel() {
   const harnessRefresh = useHarnessChatStore((s) => s.refresh)
   const harnessStop = useHarnessChatStore((s) => s.stop)
   const harnessClearError = useHarnessChatStore((s) => s.clearError)
-  const harnessBusy = harnessRun?.status === 'running' || harnessRun?.status === 'starting'
+  const harnessBusy =
+    harnessRun?.status === 'running' ||
+    harnessRun?.status === 'starting' ||
+    // Phiên đang chờ người dùng quyết định vẫn là một lượt chạy đang sống: ô soạn
+    // tin phải khoá (một prompt thường sẽ bị harness trả 409 SESSION_BUSY) nhưng
+    // nút Stop và các lệnh điều khiển vẫn phải dùng được.
+    harnessRun?.status === 'awaiting_decision'
 
   // Lỗi của lần gửi/dừng vừa rồi được giữ thêm một bản cục bộ: `refresh` được
   // gọi mỗi 1200ms ghi lại `sessions[id].error` (thành `null` khi phiên không
@@ -370,6 +376,13 @@ export function ChatPanel() {
         )
         const modelLabel = hasThinking ? `${baseLabel} (${thinkingLevel.charAt(0).toUpperCase() + thinkingLevel.slice(1)})` : baseLabel
         if (usesHarnessChat(activeType)) {
+          // Phiên đang chạy (kể cả đang chờ người dùng quyết định) không nhận
+          // prompt thường: `send` từ chối tại chỗ, nên trả `false` để composer
+          // giữ nguyên bản nháp thay vì xoá im lặng (BUG-17/F1).
+          const status = useHarnessChatStore.getState().sessions[chatId]?.status
+          if (status === 'running' || status === 'starting' || status === 'awaiting_decision') {
+            return Promise.resolve(false)
+          }
           // Trả về kết quả để composer biết lần gửi có thất bại không — khi
           // harness trả 400 thì nội dung người dùng vừa gõ phải còn nguyên
           // trong ô nhập, không bị xoá im lặng (BUG-17/F1).

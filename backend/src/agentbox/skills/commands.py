@@ -215,7 +215,12 @@ class CommandRegistry:
         if result.executor not in {'native', 'claude-code'}:
             raise ValueError('ADAPTER_UNAVAILABLE')
         if result.kind == 'task' and not result.prompt:
-            raise ValueError('Include a task after the command')
+            # Mã lỗi ổn định cho UI (`Mã lỗi: <CODE>`), cùng quy ước với
+            # UNKNOWN_COMMAND / COMMAND_DISABLED / SKILL_DISABLED. Thiếu task sau
+            # `/skill <id>` (hoặc alias kỹ năng) là SKILL_TASK_REQUIRED; các lệnh
+            # vai trò/CLI còn lại là MISSING_TASK. Phần văn bản giữ nguyên.
+            code = 'SKILL_TASK_REQUIRED' if result.command == 'skill' or result.command in self.aliases() else 'MISSING_TASK'
+            raise ValueError(f'{code}: Include a task after the command')
         if subagents is not None and result.role != 'orchestrator' and not any(r['id'] == result.role and r.get('enabled', True) for r in subagents):
             raise ValueError('ROLE_DISABLED: enable this specialist in the harness')
         if 'claude-design' in result.skills and result.role == 'orchestrator' and subagents is not None:

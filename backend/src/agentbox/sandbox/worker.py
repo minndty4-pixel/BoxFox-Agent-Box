@@ -166,7 +166,10 @@ def write_plan(args):
         except FileExistsError:
             version += 1
     relative = target.relative_to(ROOT).as_posix()
-    return {'content': 'Written ' + relative, 'identity': f'v{version}-{slug}', 'version': version,
+    # KHÔNG trả `identity` ở đây: hợp đồng §1 cấm dạng kèm tiền tố `vN-` (identity là
+    # khoá mà `GET /__box/plans` dùng để nhóm, tức slug trần / `dir/slug`). Bên gọi
+    # tự suy ra từ `relativePath` đã được xác nhận.
+    return {'content': 'Written ' + relative, 'version': version,
             'slug': slug, 'relativePath': relative, 'title': str(args.get('title') or '')[:120],
             'bytes': size}
 

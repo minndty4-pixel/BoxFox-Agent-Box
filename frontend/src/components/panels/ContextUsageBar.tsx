@@ -320,8 +320,17 @@ export function ContextUsageBar() {
 
   return (
     <div className="relative border-b border-line bg-panel px-4 py-2 select-none">
-      {/* Top Header Bar */}
-      <div className="flex items-center justify-between gap-3 overflow-hidden whitespace-nowrap">
+      {/* Top Header Bar — `@container` đặt trên chính hàng này (NEW-1): biến thể
+          đầy đủ/condensed phải chuyển theo bề rộng khung chat chứa nó, không
+          theo viewport. Media query `sm:` cũ đọc bề rộng cửa sổ nên ở viewport
+          900px (khung chat chỉ ~384px) thanh vẫn bày bản đầy đủ và nút Compact
+          bị `overflow-hidden` cắt cụt. Container query KHÔNG đặt trên wrapper
+          ngoài vì `container-type` sinh layout containment — nó sẽ biến wrapper
+          thành containing block của modal `fixed inset-0` bên dưới. */}
+      <div
+        data-testid="context-usage-row"
+        className="flex @container items-center justify-between gap-3 overflow-hidden whitespace-nowrap"
+      >
         {/* Left: Context Window Title & Expand Toggle */}
         <div className="flex items-center gap-2 shrink-0">
           <button
@@ -336,9 +345,14 @@ export function ContextUsageBar() {
           </button>
         </div>
 
-        {/* Center: Progress Bar — ẩn dưới `sm` để nhường chỗ cho số token và nút
-            Compact ở cửa sổ hẹp (390px); từ 640px trở lên vẫn hiện đầy đủ. */}
-        <div className="hidden flex-1 min-w-[40px] max-w-xs items-center gap-2 sm:flex">
+        {/* Center: Progress Bar — ẩn khi khung chat hẹp để nhường chỗ cho số
+            token và nút Compact; `@lg` = container (hàng) ≥ 512px, đo được là
+            ngưỡng an toàn cho bản đầy đủ (cố định ~383px + thanh tiến trình
+            tối thiểu 40px + gap). */}
+        <div
+          data-testid="context-usage-progress"
+          className="hidden flex-1 min-w-[40px] max-w-xs items-center gap-2 @lg:flex"
+        >
           <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-panel2 border border-line">
             <div
               className={`h-full rounded-full transition-all duration-500 ${
@@ -355,28 +369,32 @@ export function ContextUsageBar() {
           </div>
         </div>
 
-        {/* Right: Token count & Actions */}
-        <div className="flex items-center gap-2 shrink-0">
+        {/* Right: Token count & Actions — nhóm này được phép CO LẠI (`min-w-0`)
+            thay vì đẩy tràn ra ngoài; bên trong, nhãn mới là nút thắt co giãn
+            còn nút Compact giữ nguyên kích thước (`shrink-0`), nên nút không bao
+            giờ bị cắt/truncate ở bất kỳ bề rộng khung nào. */}
+        <div data-testid="context-usage-actions" className="flex min-w-0 items-center gap-2">
           <span
             data-testid="context-usage-label"
             title={contextWindow.source === 'router' ? undefined : t(contextLimitTokens === null ? 'contextUsage.unknownHint' : 'contextUsage.estimatedHint')}
-            className="shrink-0 whitespace-nowrap font-mono text-[11px] tabular-nums text-muted"
+            className="min-w-0 overflow-hidden whitespace-nowrap text-ellipsis font-mono text-[11px] tabular-nums text-muted"
           >
             <strong className="text-fg">{formatTokenCount(currentTokens)}</strong>
             {' / '}
             <span>{limitLabel}</span>
             {percent !== null && <> ({percent}%)</>}
             {contextWindow.source === 'router' ? null : (
-              // Dưới `sm` nhãn ước lượng bị ẩn để số token + nút Compact còn chỗ;
+              // Khung hẹp: nhãn ước lượng bị ẩn để số token + nút Compact còn chỗ;
               // thông tin "ước lượng" vẫn còn ở `title` và ở màu hổ phách.
-              <span className="ml-1 hidden text-amber-500/90 sm:inline">{t('contextUsage.estimated')}</span>
+              <span className="ml-1 hidden text-amber-500/90 @lg:inline">{t('contextUsage.estimated')}</span>
             )}
           </span>
 
           <button
             type="button"
             onClick={handleCompactAll}
-            className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition cursor-pointer ${
+            data-testid="context-usage-compact"
+            className={`shrink-0 flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition cursor-pointer ${
               compactedSuccess
                 ? 'bg-emerald-500/15 text-emerald-500 border border-emerald-500/30'
                 : percent !== null && percent >= 75
@@ -387,13 +405,13 @@ export function ContextUsageBar() {
             {compactedSuccess ? (
               <>
                 <Check className="size-3 text-emerald-500" />
-                <span className="hidden sm:inline">{t('contextUsage.compacted')}</span>
+                <span className="hidden @lg:inline">{t('contextUsage.compacted')}</span>
               </>
             ) : (
               <>
                 <Sparkles className="size-3 text-brand" />
-                {/* Màn hẹp: chỉ còn biểu tượng, nhờ vậy nút vẫn nằm trong tầm bấm. */}
-                <span className="hidden sm:inline">{t('contextUsage.compact')}</span>
+                {/* Khung hẹp: chỉ còn biểu tượng, nhờ vậy nút vẫn nằm trong tầm bấm. */}
+                <span className="hidden @lg:inline">{t('contextUsage.compact')}</span>
               </>
             )}
           </button>

@@ -67,7 +67,7 @@
 
 - `tab ∈ {plan, decisions, files, subagents}`.
 - `target`: `{identity, version}` cho `plan`, `{requestId}` cho `decisions`, `{path}` cho `files`, `{sessionId}` cho `subagents`; có thể là `null`.
-- `reason ∈ {plan_written, decision_requested, file_selected, child_started}`.
+- `reason`: lý do gợi ý mở tab. **Hôm nay chỉ có hai giá trị được phát ra thật**: `plan_written` (khi agent ghi plan) và `decision_requested` (khi agent cần người dùng quyết định). Hai giá trị `file_selected` và `child_started` là **chỗ dành sẵn cho đợt sau** — chưa producer nào phát, nên đừng viết mã tiêu thụ dựa vào chúng; khi nào phát thật thì bổ sung vào đây trước.
 - Gợi ý cho UI, **không** phải mệnh lệnh: UI tự quyết định có mở hay không theo luật ở §3.
 
 ### Trạng thái phiên

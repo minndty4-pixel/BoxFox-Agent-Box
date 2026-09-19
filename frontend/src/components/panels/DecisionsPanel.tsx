@@ -37,6 +37,11 @@ export function DecisionsPanel() {
 
   const [activeFilter, setActiveFilter] = useState<DecisionsFilter>('pending')
   const [sendingId, setSendingId] = useState<string | null>(null)
+  // Lỗi của lần trả lời vừa rồi. `answerDecision` đẩy lỗi của route vào
+  // `sessions[id].error` (khung chat), nhưng người dùng đang thao tác Ở ĐÂY nên
+  // panel phải tự hiện lỗi — nếu không hàng chỉ quay về "đang chờ" như chưa có
+  // chuyện gì xảy ra (đường kế hoạch đã có dải `plan-review-error`).
+  const [answerError, setAnswerError] = useState<{ id: string; message: string } | null>(null)
 
   const decisions = useMemo(() => storedDecisions ?? [], [storedDecisions])
   const pendingList = useMemo(() => pendingDecisions(decisions), [decisions])
@@ -72,8 +77,17 @@ export function DecisionsPanel() {
   const handleAnswer = useCallback(
     async (decision: DecisionEntry, choice: string) => {
       setSendingId(decision.id)
+      setAnswerError(null)
       try {
         await answerDecision(chatId, decision.id, choice)
+        // `answerDecision` không ném: nó ghi lỗi thật của route vào store. Hàng
+        // chỉ quay về "đang chờ" khi lần trả lời thất bại, nên lỗi chỉ hiện khi
+        // đúng hàng đó vẫn còn chờ.
+        const state = useHarnessChatStore.getState()
+        const stillPending =
+          (state.decisions[chatId] ?? []).find((item) => item.id === decision.id)?.status === 'pending'
+        const error = state.sessions[chatId]?.error
+        if (stillPending && error) setAnswerError({ id: decision.id, message: error })
       } finally {
         setSendingId(null)
       }
@@ -176,6 +190,20 @@ export function DecisionsPanel() {
                 {t('decisions.awaitingUser')}
               </span>
             </div>
+
+            {/* Lỗi của lần trả lời vừa rồi — cùng kiểu dải với `plan-review-error`
+                của tab Plan, để người dùng thấy ngay tại chỗ mình vừa bấm. */}
+            {answerError && (
+              <div
+                data-testid="decision-answer-error"
+                className="flex items-center gap-2 rounded-lg border border-rose-500/40 bg-rose-500/5 px-3 py-1.5 text-xs text-rose-400"
+              >
+                <ShieldAlert className="size-3.5 shrink-0" />
+                <span className="min-w-0 flex-1 truncate">
+                  {t('decisions.answerError')}: {answerError.message}
+                </span>
+              </div>
+            )}
 
             {/* Băng báo agent đang bị chặn — chỉ hiện khi có yêu cầu thật đang chờ. */}
             {totalPending > 0 && (
