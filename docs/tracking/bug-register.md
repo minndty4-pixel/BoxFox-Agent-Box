@@ -1,6 +1,6 @@
 # Sổ theo dõi lỗi — BoxFox Agent Box
 
-Cập nhật: 2026-09-19 (đợt sửa 25 lỗi E2E + đợt 4).
+Cập nhật: 2026-09-19 21:30 UTC — mọi phát hiện ở mục A và B đã được sửa trong commit 6d9aba7.
 
 Quy ước cột **Trạng thái**:
 
