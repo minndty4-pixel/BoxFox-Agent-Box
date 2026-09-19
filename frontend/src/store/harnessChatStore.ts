@@ -45,9 +45,11 @@ export const useHarnessChatStore = create<State>((set, get) => ({
       const isFailed = session.status === 'failed'
       const lastEvent = allEvents.at(-1)
       const lastIsError = lastEvent?.type === 'error'
+      // Keep a reported error on screen until the user dismisses it or starts a new turn:
+      // the 1200 ms poll must not wipe a message the user is still reading.
       const sessionError = isFailed && lastIsError
         ? String(lastEvent?.data?.message || 'Agent run failed')
-        : null
+        : (current.error ?? null)
       set((state) => ({
         sessions: {
           ...state.sessions,

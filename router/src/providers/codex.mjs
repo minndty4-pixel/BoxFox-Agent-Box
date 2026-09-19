@@ -1,7 +1,7 @@
 // OpenAI Codex Provider Adapter for BoxFox Router
 // Adapted from 9Router MIT-licensed open-sse/providers/registry/codex.js and open-sse/executors/codex.js
 
-import { jsonOrProviderError, modelRecord, parseJson, providerError, sseEvents } from './common.mjs';
+import { jsonOrProviderError, modelRecord, parseJson, providerError, sseEvents, EFFORT_LEVELS } from './common.mjs';
 import { RouterError } from '../errors.mjs';
 
 const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
@@ -10,15 +10,21 @@ const TOKEN_URL = 'https://auth.openai.com/oauth/token';
 const RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
 const CODEX_CLI_VERSION = '0.154.0';
 
+// Curated Codex catalog (BUG-4/R2). Codex models take an effort level
+// (`reasoning_effort`, i.e. the Responses API `reasoning.effort`), so the shared
+// record declares `thinkingType: 'effort'`. The catalog is authored, not fetched,
+// which is why `discover()` labels these records `static`.
+// NOTE: this adapter keeps the Codex CLI request shape and does not forward the
+// requested level upstream yet; the level is accepted and recorded, not applied.
 export const CODEX_MODELS = Object.freeze([
-  { ...modelRecord('gpt-6-astra', 'GPT 6.0 Astra'), thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
-  { ...modelRecord('gpt-5.6-sol', 'GPT 5.6 Sol'), thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
-  { ...modelRecord('gpt-5.6-terra', 'GPT 5.6 Terra'), thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
-  { ...modelRecord('gpt-5.6-luna', 'GPT 5.6 Luna'), thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
-  { ...modelRecord('gpt-5.5', 'GPT 5.5'), thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
-  { ...modelRecord('gpt-5.4', 'GPT 5.4'), thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
-  { ...modelRecord('gpt-5.4-mini', 'GPT 5.4 Mini'), thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
-  { ...modelRecord('gpt-5.3-codex-spark', 'GPT 5.3 Codex Spark'), thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
+  { ...modelRecord('gpt-6-astra', 'GPT 6.0 Astra', {}, { thinkingType: 'effort', thinkingLevels: EFFORT_LEVELS }) },
+  { ...modelRecord('gpt-5.6-sol', 'GPT 5.6 Sol', {}, { thinkingType: 'effort', thinkingLevels: EFFORT_LEVELS }) },
+  { ...modelRecord('gpt-5.6-terra', 'GPT 5.6 Terra', {}, { thinkingType: 'effort', thinkingLevels: EFFORT_LEVELS }) },
+  { ...modelRecord('gpt-5.6-luna', 'GPT 5.6 Luna', {}, { thinkingType: 'effort', thinkingLevels: EFFORT_LEVELS }) },
+  { ...modelRecord('gpt-5.5', 'GPT 5.5', {}, { thinkingType: 'effort', thinkingLevels: EFFORT_LEVELS }) },
+  { ...modelRecord('gpt-5.4', 'GPT 5.4', {}, { thinkingType: 'effort', thinkingLevels: EFFORT_LEVELS }) },
+  { ...modelRecord('gpt-5.4-mini', 'GPT 5.4 Mini', {}, { thinkingType: 'effort', thinkingLevels: EFFORT_LEVELS }) },
+  { ...modelRecord('gpt-5.3-codex-spark', 'GPT 5.3 Codex Spark', {}, { thinkingType: 'effort', thinkingLevels: EFFORT_LEVELS }) },
 ]);
 
 function codexHeaders(token, accountId = null) {
@@ -132,8 +138,10 @@ export function createCodexAdapter({ fetchImpl }) {
     },
 
     async discover() {
+      // Curated Codex catalog; no live inventory call backs these ids, so the
+      // record must not claim `live` (BUG-4/R2).
       return {
-        models: CODEX_MODELS.map(m => ({ ...m, source: 'live', stale: false, enabled: true })),
+        models: CODEX_MODELS.map(m => ({ ...m, source: 'static', stale: false, enabled: true })),
       };
     },
 

@@ -10,11 +10,11 @@ const REFRESH_URL = 'https://api.cline.bot/api/v1/auth/refresh';
 const CHAT_URL = 'https://api.cline.bot/api/v1/chat/completions';
 
 export const CLINE_MODELS = Object.freeze([
-  { ...modelRecord('anthropic/claude-opus-4.7', 'Claude Opus 4.7'), thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
-  { ...modelRecord('anthropic/claude-sonnet-4.6', 'Claude Sonnet 4.6'), thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
-  { ...modelRecord('anthropic/claude-opus-4.6', 'Claude Opus 4.6'), thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
-  { ...modelRecord('openai/gpt-5.3-codex', 'GPT-5.3 Codex'), thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
-  { ...modelRecord('openai/gpt-5.4', 'GPT-5.4'), thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
+  { ...modelRecord('anthropic/claude-opus-4.7', 'Claude Opus 4.7', {}, { thinkingType: 'effort', thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] }) },
+  { ...modelRecord('anthropic/claude-sonnet-4.6', 'Claude Sonnet 4.6', {}, { thinkingType: 'effort', thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] }) },
+  { ...modelRecord('anthropic/claude-opus-4.6', 'Claude Opus 4.6', {}, { thinkingType: 'effort', thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] }) },
+  { ...modelRecord('openai/gpt-5.3-codex', 'GPT-5.3 Codex', {}, { thinkingType: 'effort', thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] }) },
+  { ...modelRecord('openai/gpt-5.4', 'GPT-5.4', {}, { thinkingType: 'effort', thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] }) },
   { ...modelRecord('google/gemini-3.1-pro-preview', 'Gemini 3.1 Pro Preview') },
   { ...modelRecord('google/gemini-3.1-flash-lite-preview', 'Gemini 3.1 Flash Lite Preview') },
   { ...modelRecord('kwaipilot/kat-coder-pro', 'KAT Coder Pro') },
@@ -145,8 +145,10 @@ export function createClineAdapter({ fetchImpl }) {
     },
 
     async discover() {
+      // Curated Cline catalog; nothing is fetched here, so the label stays
+      // `static` instead of claiming a live inventory (BUG-4/R2).
       return {
-        models: CLINE_MODELS.map(m => ({ ...m, source: 'live', stale: false, enabled: true })),
+        models: CLINE_MODELS.map(m => ({ ...m, source: 'static', stale: false, enabled: true })),
       };
     },
 

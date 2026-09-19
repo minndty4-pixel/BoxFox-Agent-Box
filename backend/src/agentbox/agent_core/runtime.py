@@ -117,6 +117,30 @@ class RouterClient:
     def __init__(self, url='http://127.0.0.1:3101'):
         self.url = url.rstrip('/')
 
+    async def model_metadata(self, connection_id, model_id):
+        """Read one model record from the router snapshot.
+
+        The router is the only component that talks to provider APIs, so it owns the
+        real context window and thinking metadata. Returns None when unavailable.
+        """
+        if not connection_id or not model_id:
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=10, trust_env=False) as client:
+                response = await client.get(self.url + '/api/router/state', headers={'x-boxfox-admin': '1'})
+                if response.is_error:
+                    return None
+                snapshot = response.json()
+        except Exception:
+            return None
+        for connection in snapshot.get('connections', []) or []:
+            if connection.get('id') != connection_id:
+                continue
+            for model in connection.get('models', []) or []:
+                if model.get('id') == model_id:
+                    return model
+        return None
+
     async def complete(self, messages, tools, route, on_thought=None, on_content=None, max_tokens=4096):
         async with httpx.AsyncClient(timeout=120, trust_env=False) as client:
             try:
@@ -238,13 +262,25 @@ def route_for(value):
     return {'model': value}
 
 
-def resolve_context_window(model_str='', requested=None):
+def resolve_context_window(model_str='', requested=None, metadata=None):
+    """Resolve the context window. Priority: explicit request → router model metadata → name table.
+
+    The name table is a last resort only: the router reads the true value from the
+    provider API (provider `/models`), so prefer that over guessing from the model name.
+    """
     if requested is not None:
         try:
             val = int(requested)
             if val > 0:
                 return min(2000000, max(4096, val))
         except (ValueError, TypeError):
+            pass
+    if metadata:
+        try:
+            value = int((metadata or {}).get('contextWindow'))
+            if value > 0:
+                return min(2000000, max(4096, value))
+        except (ValueError, TypeError, AttributeError):
             pass
     m = str(model_str or '').lower()
     if 'gemini' in m:
@@ -283,12 +319,13 @@ class HarnessRuntime(RuntimeCommands):
                 s['model'] = single_model
             route = route_for(single_model)
         else:
-            route = {k: values[k] for k in ('connectionId', 'modelId', 'aliasId') if isinstance(values.get(k), str)}
+            route = {k: values[k] for k in ('connectionId', 'modelId', 'aliasId', 'thinkingLevel') if isinstance(values.get(k), str)}
             if values.get('model') and values['model'] not in {'default', 'inherit'}:
                 route = route_for(values['model'])
 
         model_id_str = values.get('model') or values.get('modelId') or (route.get('modelId') if isinstance(route, dict) else '')
-        context_window = resolve_context_window(model_id_str, values.get('contextWindow'))
+        model_metadata = values.get('modelMetadata') if isinstance(values.get('modelMetadata'), dict) else None
+        context_window = resolve_context_window(model_id_str, values.get('contextWindow'), model_metadata)
 
         config = {'skills': list(dict.fromkeys(skills)), 'subagents': subagents, 'route': route,
                   'maxSteps': min(60, max(1, int(values.get('maxSteps', 16)))),

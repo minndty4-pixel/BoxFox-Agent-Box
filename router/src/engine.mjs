@@ -82,6 +82,9 @@ export class RouterEngine {
           const credentials = await this.service.credentials(connection.id, combined);
           const outgoing = { ...body, model: model.id, stream: body.stream !== false };
           delete outgoing.connectionId; delete outgoing.modelId; delete outgoing.aliasId;
+          // BUG-4/R3: `thinkingType: 'none'` models get no thinking field at all,
+          // even when the caller sends a stored default level the model cannot use.
+          if (model.thinkingType === 'none') { delete outgoing.thinkingLevel; delete outgoing.reasoning_effort; }
           let started = false; let finishReason = null; let meaningful = false;
           let pendingUsage = null;
           const ensureStarted = () => ({ type: 'start', meta: { requestId, connectionId: connection.id, modelId: model.id, aliasId: selection.alias?.id || null } });
@@ -89,7 +92,9 @@ export class RouterEngine {
             combined.throwIfAborted();
             assert(this.service.validTarget(target), 'Connection or model disabled during request.', 'CANCELLED', 499);
             if (event.type === 'delta') {
-              const useful = Boolean(event.delta?.content || event.delta?.tool_calls?.length);
+              // BUG-2: a delta that carries only reasoning is still client output.
+              const reasoning = typeof event.delta?.reasoning_content === 'string' ? event.delta.reasoning_content : event.delta?.reasoning;
+              const useful = Boolean(event.delta?.content || event.delta?.tool_calls?.length || (typeof reasoning === 'string' && reasoning.length > 0));
               if (!useful) continue;
               outputBytes += Buffer.byteLength(JSON.stringify(event.delta));
               assert(outputBytes <= 8 * 1024 * 1024, 'Provider response exceeded the output limit.', 'OUTPUT_LIMIT', 502);

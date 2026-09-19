@@ -47,6 +47,16 @@ export function isAntigravityModelValid(id) {
   return BY_PUBLIC_ID.has(id) || COVERED_LIVE_IDS.has(id);
 }
 
+/**
+ * BUG-4/R2: Antigravity publishes the thinking tier inside the model id
+ * (`-low`/`-medium`/`-high`). The suffix is provider data, so it is the only
+ * source used for the model's level.
+ */
+export function thinkingLevelFromModelId(id) {
+  const match = /-(low|medium|high)$/i.exec(String(id || ''));
+  return match ? match[1].toLowerCase() : null;
+}
+
 export function antigravityModelSpec(id) {
   return BY_PUBLIC_ID.get(id) || null;
 }

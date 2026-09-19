@@ -34,8 +34,24 @@ export interface RouterComposerAdapter {
   isBusy: boolean
   connectionWarning?: string | null
   onModelChange: (id: string) => void
-  onSend: (prompt: string, image?: string | null) => void
+  /**
+   * Trả `false` (hoặc Promise resolve `false`) khi lần gửi thất bại — khi đó
+   * composer khôi phục lại nội dung vừa gõ thay vì xoá trắng (BUG-17/F1).
+   */
+  onSend: (prompt: string, image?: string | null) => void | Promise<boolean>
   onStop: () => void
+}
+
+/**
+ * Lệnh điều khiển vẫn gửi được khi agent đang chạy (BUG-21/U5) — danh sách
+ * này phải khớp regex `control` trong `store/harnessChatStore.ts`, nếu không
+ * nút Gửi sẽ bật cho một lệnh mà store âm thầm bỏ qua.
+ */
+export const CONTROL_COMMANDS = ['/help', '/status', '/skills', '/agents', '/context', '/stop'] as const
+
+export function isControlCommand(text: string): boolean {
+  const normalized = text.trim().toLowerCase()
+  return (CONTROL_COMMANDS as readonly string[]).includes(normalized)
 }
 
 export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
@@ -90,12 +106,15 @@ export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
 
   const handleSend = () => {
     if (!input.trim() && attachments.length === 0 && pendingElements.length === 0) return
+    const draftText = input
+    const draftAttachments = attachments
     const textToSend = attachments.length > 0
       ? `${input.trim()}${attachments.some(a => !a.dataUrl) ? `\n\n[Attached Files: ${attachments.filter(a => !a.dataUrl).map((a) => a.name).join(', ')}]` : ''}`
       : input.trim()
     const firstImage = attachments.find((a) => Boolean(a.dataUrl))?.dataUrl
 
-    if (router) router.onSend(textToSend, firstImage)
+    let result: void | Promise<boolean> = undefined
+    if (router) result = router.onSend(textToSend, firstImage)
     else sendCommand({
         type: 'user_message',
         text: textToSend,
@@ -106,6 +125,16 @@ export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
     clearPendingElements()
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
+    }
+
+    // Phản hồi tức thì: xoá ô nhập ngay, nhưng nếu harness trả lỗi (400) thì
+    // trả lại đúng nội dung người dùng vừa gõ — lỗi hiện inline ở ChatPanel.
+    if (result instanceof Promise) {
+      const restoreDraft = () => {
+        setInput(draftText)
+        setAttachments(draftAttachments)
+      }
+      void result.then((ok) => { if (!ok) restoreDraft() }).catch(restoreDraft)
     }
   }
 
@@ -118,12 +147,20 @@ export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (slash.keyDown(e)) return
+    // Lệnh điều khiển đã gõ đủ (vd `/stop`) phải gửi được ngay ở lần Enter đầu;
+    // popup gợi ý không được "ăn" phím này (BUG-21/U5).
+    const controlSubmit = e.key === 'Enter' && !e.shiftKey && isControlCommand(input)
+    if (!controlSubmit && slash.keyDown(e)) return
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSend()
     }
   }
+
+  // Đang chạy: nút Gửi biến mất (thay bằng Stop) trừ khi ô nhập đang là một
+  // lệnh điều khiển — người dùng vẫn phải bấm gửi được `/stop` (BUG-21/U5).
+  const canSend = Boolean(input.trim() || attachments.length || pendingElements.length)
+  const showSendButton = !isBusy || isControlCommand(input)
 
   return (
     <div ref={barRef} className="border-t border-line bg-panel p-3 select-none">
@@ -277,7 +314,7 @@ export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
             </button>
 
             {/* Dynamic Send / Stop Button in the exact same spot */}
-            {isBusy ? (
+            {isBusy && (
               <button
                 type="button"
                 onClick={handleInterrupt}
@@ -286,13 +323,15 @@ export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
               >
                 <Square className="size-3 fill-current" />
               </button>
-            ) : (
+            )}
+            {showSendButton && (
               <button
                 type="button"
                 onClick={handleSend}
-                disabled={!input.trim() && attachments.length === 0 && pendingElements.length === 0}
+                disabled={!canSend}
+                data-testid="composer-send"
                 className="flex size-7 items-center justify-center rounded-lg bg-zinc-100 text-zinc-900 shadow-xs transition hover:bg-white disabled:opacity-30 disabled:hover:bg-zinc-100 cursor-pointer animate-in fade-in zoom-in-90 duration-150"
-                title="Send prompt (Enter)"
+                title={isBusy ? t('composer.sendControlWhileBusy') : 'Send prompt (Enter)'}
               >
                 <ArrowUp className="size-3.5" />
               </button>

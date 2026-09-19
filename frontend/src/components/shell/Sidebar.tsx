@@ -39,12 +39,17 @@ import { ASSIGNEES, MOCK_ACCOUNT } from '../../lib/mock/sessions'
 import type { SessionSummary } from '../../types/session'
 import { ShortcutsPopover } from '../chat/ShortcutsPopover'
 import { useHarnessChatStore, type SavedSessionRow } from '../../store/harnessChatStore'
+import { isNarrowViewport, useViewportWidth } from './useViewportWidth'
 
 
 export function Sidebar() {
   const t = useT()
   const collapsed = useUiStore((s) => s.sidebarCollapsed)
   const toggleSidebar = useUiStore((s) => s.toggleSidebar)
+  const viewportWidth = useViewportWidth()
+  const narrow = isNarrowViewport(viewportWidth)
+  // Ở chế độ hẹp, panel đầy đủ chỉ hiện khi người dùng chủ động mở (overlay).
+  const [narrowOpen, setNarrowOpen] = useState(false)
   const openSearch = useUiStore((s) => s.openSearch)
   const accountMenuOpen = useUiStore((s) => s.accountMenuOpen)
   const setAccountMenuOpen = useUiStore((s) => s.setAccountMenuOpen)
@@ -123,49 +128,54 @@ export function Sidebar() {
   const visibleSessions = effectiveSessions.filter((s) => !s.is_archived)
 
 
-  if (collapsed) {
-    return (
-      <aside className="flex w-14 shrink-0 flex-col items-center gap-3 border-r border-line bg-panel py-3 select-none">
-        <div className="flex size-7 items-center justify-center rounded-lg bg-blue-600/10 text-blue-400 font-bold">
-          <Sparkles className="size-4" />
-        </div>
+  // Dưới `NARROW_VIEWPORT_MAX_PX` cột 260px bóp cột chat xuống ~120px (BUG-23)
+  // → tự thu về thanh biểu tượng; nút mở sẽ bung panel đầy đủ dạng overlay.
+  const rail = (
+    <aside className="flex w-14 shrink-0 flex-col items-center gap-3 border-r border-line bg-panel py-3 select-none">
+      <div className="flex size-7 items-center justify-center rounded-lg bg-blue-600/10 text-blue-400 font-bold">
+        <Sparkles className="size-4" />
+      </div>
+      <button
+        type="button"
+        onClick={() => (narrow ? setNarrowOpen(true) : toggleSidebar())}
+        className="rounded-md p-1.5 text-muted hover:bg-panel2 hover:text-fg cursor-pointer"
+        title={t('common.expandSidebar')}
+      >
+        <PanelLeft className="size-4" />
+      </button>
+      <button
+        type="button"
+        onClick={handleNewSession}
+        className="rounded-md p-1.5 text-muted hover:bg-panel2 hover:text-fg cursor-pointer"
+        title={t('sidebar.newSession')}
+      >
+        <Plus className="size-4" />
+      </button>
+      <div className="mt-auto flex flex-col items-center gap-2">
         <button
           type="button"
-          onClick={toggleSidebar}
+          onClick={() => openSettings('harness')}
           className="rounded-md p-1.5 text-muted hover:bg-panel2 hover:text-fg cursor-pointer"
-          title={t('common.expandSidebar')}
+          title={t('sidebar.settings')}
         >
-          <PanelLeft className="size-4" />
+          <Settings className="size-4" />
         </button>
-        <button
-          type="button"
-          className="rounded-md p-1.5 text-muted hover:bg-panel2 hover:text-fg cursor-pointer"
-          title={t('sidebar.newSession')}
+        <span
+          className="flex size-6 items-center justify-center rounded-full bg-blue-600/20 text-[10px] font-bold text-blue-400"
+          title={userEmail || t('sidebar.undefinedUser')}
         >
-          <Plus className="size-4" />
-        </button>
-        <div className="mt-auto flex flex-col items-center gap-2">
-          <button
-            type="button"
-            onClick={() => openSettings('harness')}
-            className="rounded-md p-1.5 text-muted hover:bg-panel2 hover:text-fg cursor-pointer"
-            title={t('sidebar.settings')}
-          >
-            <Settings className="size-4" />
-          </button>
-          <span
-            className="flex size-6 items-center justify-center rounded-full bg-blue-600/20 text-[10px] font-bold text-blue-400"
-            title={userEmail || t('sidebar.undefinedUser')}
-          >
-            {MOCK_ACCOUNT.initials}
-          </span>
-        </div>
-      </aside>
-    )
-  }
+          {MOCK_ACCOUNT.initials}
+        </span>
+      </div>
+    </aside>
+  )
 
-  return (
-    <aside className="flex w-[260px] shrink-0 flex-col border-r border-line bg-panel select-none">
+  const fullPanel = (
+    <aside
+      className={`flex w-[260px] shrink-0 flex-col border-r border-line bg-panel select-none ${
+        narrow ? 'fixed inset-y-0 left-0 z-50 shadow-2xl' : ''
+      }`}
+    >
       {/* Top Header: Brand Logo + Actions */}
       <div className="flex items-center justify-between px-3.5 py-3">
         <div className="flex items-center gap-2">
@@ -220,7 +230,7 @@ export function Sidebar() {
           <div className="absolute left-2.5 right-2.5 z-30 mt-1 overflow-hidden rounded-lg border border-line bg-panel p-1 shadow-xl">
             <MenuItem
               icon={<UserRound className="size-3.5" />}
-              label="Account Profile"
+              label={t('sidebar.accountProfile')}
               onClick={() => setAccountMenuOpen(false)}
             />
             <MenuItem
@@ -241,7 +251,7 @@ export function Sidebar() {
             />
             <MenuItem
               icon={<LogOut className="size-3.5" />}
-              label="Sign Out"
+              label={t('sidebar.signOut')}
               onClick={() => setAccountMenuOpen(false)}
             />
           </div>
@@ -256,7 +266,7 @@ export function Sidebar() {
           className="flex w-full items-center justify-center gap-1.5 rounded-md bg-panel2 border border-line px-3 py-1.5 text-xs font-medium text-fg transition hover:bg-panel2/80 cursor-pointer"
         >
           <Plus className="size-3.5 text-blue-400" />
-          <span>New Session</span>
+          <span>{t('sidebar.newSession')}</span>
         </button>
       </div>
 
@@ -264,7 +274,7 @@ export function Sidebar() {
       {/* All Sessions Navigation Header */}
       <div className="px-2.5 pt-2">
         <div className="flex items-center justify-between pb-1.5 text-xs font-medium text-fg">
-          <span>All Sessions</span>
+          <span>{t('sidebar.allSessions')}</span>
         </div>
 
         <div className="flex items-center gap-1 border-b border-line pb-1">
@@ -277,7 +287,7 @@ export function Sidebar() {
                 : 'text-muted hover:text-fg'
             }`}
           >
-            Recent
+            {t('sidebar.tabRecent')}
           </button>
           <button
             type="button"
@@ -288,7 +298,7 @@ export function Sidebar() {
                 : 'text-muted hover:text-fg'
             }`}
           >
-            Groups
+            {t('sidebar.tabGroups')}
           </button>
           <button
             type="button"
@@ -304,8 +314,8 @@ export function Sidebar() {
       <div className="mt-1 min-h-0 flex-1 overflow-y-auto px-2 space-y-0.5">
         {visibleSessions.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-10 px-3 text-center text-xs text-muted/60 select-none">
-            <span className="text-zinc-400">No active sessions</span>
-            <span className="text-[11px] text-zinc-500 mt-1">Click + New Session to start</span>
+            <span className="text-zinc-400">{t('sidebar.noActiveSessions')}</span>
+            <span className="text-[11px] text-zinc-500 mt-1">{t('sidebar.startHint')}</span>
           </div>
         ) : sessionTab === 'groups' ? (
           <GroupsAccordion
@@ -341,12 +351,32 @@ export function Sidebar() {
           className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted transition hover:bg-panel2 hover:text-fg cursor-pointer"
         >
           <Settings className="size-3.5" />
-          <span>Settings</span>
+          <span>{t('sidebar.settings')}</span>
         </button>
         <ShortcutsPopover variant="sidebar" />
       </div>
     </aside>
   )
+
+  if (collapsed || narrow) {
+    return (
+      <>
+        {rail}
+        {narrow && narrowOpen && (
+          <>
+            <div
+              className="fixed inset-0 z-40 bg-black/60"
+              aria-hidden="true"
+              onClick={() => setNarrowOpen(false)}
+            />
+            {fullPanel}
+          </>
+        )}
+      </>
+    )
+  }
+
+  return fullPanel
 }
 
 /** Nhóm phiên theo `group_name`; phiên không nhóm gom vào một nhóm ngầm. */

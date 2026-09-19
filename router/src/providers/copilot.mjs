@@ -1,17 +1,17 @@
 // GitHub Copilot Provider Adapter for BoxFox Router
 // Adapted from 9Router MIT-licensed open-sse/providers/registry/github.js and open-sse/executors/github.js
 
-import { jsonOrProviderError, modelRecord, withThinkingLevels, normalizeFinishReason, parseJson, providerError, sseEvents } from './common.mjs';
+import { jsonOrProviderError, modelRecord, normalizeFinishReason, parseJson, providerError, sseEvents, thinkingFromProviderPayload } from './common.mjs';
 import { RouterError } from '../errors.mjs';
 
 const COPILOT_CHAT_URL = 'https://api.githubcopilot.com/chat/completions';
 const COPILOT_MODELS_URL = 'https://api.githubcopilot.com/models';
 
 export const COPILOT_MODELS = Object.freeze([
-  { ...modelRecord('gpt-5.2', 'GPT-5.2'), thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
-  { ...modelRecord('gpt-5.3-codex', 'GPT-5.3 Codex'), thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
-  { ...modelRecord('gpt-5.4', 'GPT-5.4'), thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
-  { ...modelRecord('claude-sonnet-4.5', 'Claude Sonnet 4.5'), thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
+  { ...modelRecord('gpt-5.2', 'GPT-5.2', {}, { thinkingType: 'effort', thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] }) },
+  { ...modelRecord('gpt-5.3-codex', 'GPT-5.3 Codex', {}, { thinkingType: 'effort', thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] }) },
+  { ...modelRecord('gpt-5.4', 'GPT-5.4', {}, { thinkingType: 'effort', thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] }) },
+  { ...modelRecord('claude-sonnet-4.5', 'Claude Sonnet 4.5', {}, { thinkingType: 'effort', thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] }) },
   { ...modelRecord('claude-haiku-4.5', 'Claude Haiku 4.5') },
 ]);
 
@@ -169,12 +169,14 @@ export function createCopilotAdapter({ fetchImpl }) {
           const list = Array.isArray(data?.data) ? data.data : [];
           if (list.length) {
             return {
-              models: list.map(item => withThinkingLevels(modelRecord(item.id, item.name || item.id))),
+              models: list.map(item => modelRecord(item.id, item.name || item.id, {}, thinkingFromProviderPayload(item))),
             };
           }
         }
       } catch { /* best effort */ }
-      return { models: COPILOT_MODELS.map(m => ({ ...m, source: 'live', stale: false, enabled: true })) };
+      // Curated fallback: the inventory call did not answer, so this is not live
+      // data (BUG-4/R2).
+      return { models: COPILOT_MODELS.map(m => ({ ...m, source: 'static', stale: false, enabled: true })) };
     },
 
     async *generate({ connection, credentials, body, signal }) {

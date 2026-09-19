@@ -21,11 +21,13 @@ import { useUiStore } from '../../store/uiStore'
 import { PlainText } from '../ui'
 import { MarkdownRenderer } from '../chat/MarkdownRenderer'
 import { usePlanFiles } from '../../hooks/usePlanFiles'
+import { useT } from '../../i18n/context'
 import type { DiffLine } from '../../types/agent'
 
 const PLAN_VERSIONS = ['v3 (latest)', 'v2', 'v1']
 
 export function PlanPanel() {
+  const t = useT()
   const mode = useAgentStore((s) => s.mode)
   const workspace = useAgentStore((s) => s.planWorkspace)
   const endorsed = useAgentStore((s) => s.planEndorsed)
@@ -418,11 +420,11 @@ export function PlanPanel() {
                   {planFiles.document ? (
                     <div className="space-y-2 text-xs text-muted">
                       <p className="leading-relaxed">
-                        Tài liệu kế hoạch được tải trực tiếp từ máy ảo sandbox.
+                        {t('plan.sourceNotice')}
                       </p>
                       <div className="grid grid-cols-2 gap-2 pt-1 font-mono text-[11px]">
-                        <div>Dung lượng: <span className="text-fg">{(planFiles.document.sizeBytes / 1024).toFixed(1)} KB</span></div>
-                        <div>Cập nhật: <span className="text-fg">{new Date(planFiles.document.modifiedAt).toLocaleTimeString()}</span></div>
+                        <div>{t('plan.size')}: <span className="text-fg">{(planFiles.document.sizeBytes / 1024).toFixed(1)} KB</span></div>
+                        <div>{t('plan.updated')}: <span className="text-fg">{new Date(planFiles.document.modifiedAt).toLocaleTimeString()}</span></div>
                       </div>
                       <div className="pt-2">
                         <button
@@ -430,7 +432,7 @@ export function PlanPanel() {
                           onClick={() => setPlanSubTab('detailed')}
                           className="inline-flex items-center gap-1.5 rounded-md bg-panel border border-line px-2.5 py-1 text-xs font-medium text-fg hover:bg-panel2 hover:border-zinc-500 transition cursor-pointer"
                         >
-                          <span>Xem toàn bộ chi tiết Markdown</span>
+                          <span>{t('plan.viewFull')}</span>
                           <ArrowRight className="size-3 text-brand" />
                         </button>
                       </div>

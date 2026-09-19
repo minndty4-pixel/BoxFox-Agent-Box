@@ -75,6 +75,14 @@ def create_app(runtime):
         value = await request.json()
         if not isinstance(value, dict):
             raise ValueError('JSON object required')
+        # The router owns provider metadata (context window, thinking type). Read it once per
+        # session so the harness never has to guess the context budget from the model name.
+        if value.get('connectionId') and value.get('modelId'):
+            metadata = await runtime.client.model_metadata(value.get('connectionId'), value.get('modelId'))
+            if metadata:
+                value['modelMetadata'] = metadata
+                if not value.get('contextWindow') and metadata.get('contextWindow'):
+                    value['contextWindow'] = metadata['contextWindow']
         return web.json_response(runtime.create(value), status=201)
 
     async def list_sessions(request):

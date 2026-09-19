@@ -14,6 +14,9 @@ ROLE_COMMANDS.pop('testing')
 INFO = {'help', 'skills', 'agents', 'status', 'context'}
 BUILTINS = INFO | set(ROLE_COMMANDS) | {'skill', 'compact', 'stop', 'claude-code', 'claude-design'}
 EXTERNAL = {'claude-code', 'codex', 'opencode'}
+# Default role per CLI command. The role is not tied to the executor: change these entries
+# (or use a custom command with an explicit role) instead of hardcoding a role in the dispatcher.
+CLI_DEFAULT_ROLES = {'claude-code': 'build', 'claude-design': 'orchestrator'}
 ROLE_SKILLS = {
     'explore': {'codebase-inspection', 'ast-grep'},
     'plan': {'codebase-inspection', 'grill-me'},
@@ -171,8 +174,11 @@ class CommandRegistry:
                 result.skills = sorted(set(enabled) & ROLE_SKILLS[result.role])
             elif key in {'claude-code', 'claude-design'}:
                 result.kind, result.skills = 'task', [key]
+                # The executor is a transport choice; the role decides tools and instructions.
+                # Change CLI_DEFAULT_ROLES to retarget a CLI without touching the dispatch path,
+                # and custom commands can already carry any role with this executor.
                 result.executor = 'claude-code' if key == 'claude-code' else 'native'
-                result.role = 'build' if key == 'claude-code' else 'orchestrator'
+                result.role = CLI_DEFAULT_ROLES.get(key, 'build')
             elif key == 'skill' or key in self.aliases():
                 if key == 'skill':
                     parts = args.split(None, 1)

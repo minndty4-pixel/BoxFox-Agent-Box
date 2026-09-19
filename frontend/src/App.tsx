@@ -24,6 +24,7 @@ import { useT } from './i18n/context'
 import { useAgentStore } from './store/agentStore'
 import { useUiStore, ALL_PANEL_TABS, type PanelTabId } from './store/uiStore'
 import { Sidebar } from './components/shell/Sidebar'
+import { isCompactViewport, useViewportWidth } from './components/shell/useViewportWidth'
 import { Resizer } from './components/shell/Resizer'
 import { ChatPanel } from './components/panels/ChatPanel'
 import { PlanPanel } from './components/panels/PlanPanel'
@@ -118,6 +119,9 @@ export default function App() {
   const closeTab = useUiStore((s) => s.closeTab)
   const closePanel = useUiStore((s) => s.closePanel)
   const splitRatio = useUiStore((s) => s.splitRatio)
+  // Dưới ~768px cột chat phải chiếm trọn bề ngang: cột chat 120px ở 390px là
+  // không dùng được (BUG-23). Sidebar tự thu về thanh biểu tượng ở <1024px.
+  const compactLayout = isCompactViewport(useViewportWidth())
 
   const containerRef = useRef<HTMLDivElement>(null)
   const showModeSwitch = proposal !== null
@@ -180,16 +184,20 @@ export default function App() {
               còn lại. */}
           <div
             className="flex min-h-0 min-w-0 flex-col overflow-hidden border-r border-line"
-            style={{ flex: `${splitRatio} 0 0%`, width: `${splitRatio * 100}%` }}
+            style={compactLayout
+              ? { flex: '1 1 0%', width: 'auto' }
+              : { flex: `${splitRatio} 0 0%`, width: `${splitRatio * 100}%` }}
           >
             <div className="min-h-0 flex-1 overflow-hidden">
               <ChatPanel />
             </div>
           </div>
 
-          <Resizer containerRef={containerRef} />
+          {!compactLayout && <Resizer containerRef={containerRef} />}
 
-          {/* Right Column — VS Code-style Workspace Tabs (cùng lý do min-w-0 như trên) */}
+          {/* Right Column — VS Code-style Workspace Tabs (cùng lý do min-w-0 như trên).
+              Ở chế độ hẹp (<768px) panel phải tạm ẩn để cột chat đủ rộng. */}
+          {!compactLayout && (
           <div
             className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-panel"
             style={{ flex: `${1 - splitRatio} 0 0%`, width: `${(1 - splitRatio) * 100}%` }}
@@ -305,6 +313,7 @@ export default function App() {
               )}
             </div>
           </div>
+          )}
         </div>
       </div>
 

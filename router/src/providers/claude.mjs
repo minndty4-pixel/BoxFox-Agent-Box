@@ -12,13 +12,21 @@ const TOKEN_URL = 'https://api.anthropic.com/v1/oauth/token';
 const MESSAGES_URL = 'https://api.anthropic.com/v1/messages?beta=true';
 const SCOPES = ['org:create_api_key', 'user:profile', 'user:inference'];
 
+// Curated Claude Code catalog (BUG-4/R2). Claude models control thinking with a
+// token budget (`thinking.budget_tokens`), so the shared record declares
+// `thinkingType: 'budget'`. The catalog is authored, not fetched, which is why
+// `discover()` labels these records `static`.
+// NOTE: this OAuth path builds the Claude Code payload through
+// `openAIToClaudeRequest`, which does not emit a thinking block; the level is
+// accepted and recorded, not applied on this route (see providers/anthropic.mjs
+// for the adapter that does map low/medium/high onto budgets).
 export const CLAUDE_MODELS = Object.freeze([
-  { ...modelRecord('cc/claude-opus-5', 'Claude Opus 5'), upstreamModelId: 'claude-opus-5', thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
-  { ...modelRecord('cc/claude-fable-5-1', 'Claude Fable 5.1'), upstreamModelId: 'claude-fable-5-1', thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
-  { ...modelRecord('cc/claude-fable-5', 'Claude Fable 5'), upstreamModelId: 'claude-fable-5', thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
-  { ...modelRecord('cc/claude-sonnet-5', 'Claude Sonnet 5'), upstreamModelId: 'claude-sonnet-5', thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
+  { ...modelRecord('cc/claude-opus-5', 'Claude Opus 5', {}, { thinkingType: 'budget', thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] }), upstreamModelId: 'claude-opus-5' },
+  { ...modelRecord('cc/claude-fable-5-1', 'Claude Fable 5.1', {}, { thinkingType: 'budget', thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] }), upstreamModelId: 'claude-fable-5-1' },
+  { ...modelRecord('cc/claude-fable-5', 'Claude Fable 5', {}, { thinkingType: 'budget', thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] }), upstreamModelId: 'claude-fable-5' },
+  { ...modelRecord('cc/claude-sonnet-5', 'Claude Sonnet 5', {}, { thinkingType: 'budget', thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] }), upstreamModelId: 'claude-sonnet-5' },
   { ...modelRecord('cc/claude-haiku-4-5-20251001', 'Claude 4.5 Haiku'), upstreamModelId: 'claude-haiku-4-5-20251001' },
-  { ...modelRecord('claude-3-7-sonnet-20250219', 'Claude 3.7 Sonnet'), upstreamModelId: 'claude-3-7-sonnet-20250219', thinkingLevels: ['auto', 'low', 'medium', 'high'] },
+  { ...modelRecord('claude-3-7-sonnet-20250219', 'Claude 3.7 Sonnet', {}, { thinkingType: 'budget', thinkingLevels: ['auto', 'low', 'medium', 'high'] }), upstreamModelId: 'claude-3-7-sonnet-20250219' },
   { ...modelRecord('claude-3-5-sonnet-20241022', 'Claude 3.5 Sonnet'), upstreamModelId: 'claude-3-5-sonnet-20241022' },
 ]);
 
@@ -116,9 +124,10 @@ export function createClaudeAdapter({ fetchImpl }) {
     },
 
     async discover() {
-      // Curated Claude Code models catalog
+      // Curated Claude Code models catalog. Nothing here comes from a live
+      // inventory call, so it must not be labelled `live` (BUG-4/R2).
       return {
-        models: CLAUDE_MODELS.map(m => ({ ...m, source: 'live', stale: false, enabled: true })),
+        models: CLAUDE_MODELS.map(m => ({ ...m, source: 'static', stale: false, enabled: true })),
       };
     },
 

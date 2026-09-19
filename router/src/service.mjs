@@ -3,7 +3,7 @@ import { RouterError, assert, safeError } from './errors.mjs';
 import { validateEndpoint } from './network.mjs';
 import { PROVIDER_CATALOG, PROVIDER_ENDPOINTS } from './catalog.mjs';
 import { isAntigravityModelValid } from './providers/antigravity-models.mjs';
-import { isReasoningModel } from './providers/common.mjs';
+import { modelThinking } from './providers/common.mjs';
 export { PROVIDER_CATALOG };
 function label(value, fallback) {
   assert(value === undefined || typeof value === 'string', 'Name must be text.');
@@ -50,20 +50,20 @@ export class ProviderService {
       }
     }
     if (Array.isArray(c.models)) {
+      const provider = this.providers[c.providerId];
       for (const m of c.models) {
-        if (c.providerId === 'antigravity') {
-          if (/-(?:low|medium|high)$/i.test(m.id) || /\((?:Low|Medium|High)\)/i.test(m.name || '')) {
-            if (m.thinkingLevels && m.thinkingLevels.length > 0) {
-              m.thinkingLevels = [];
-              modified = true;
-            }
-          }
-        } else {
-          const isReasoning = isReasoningModel(m.id, m.name, m.capabilities);
-          if (isReasoning && (!Array.isArray(m.thinkingLevels) || m.thinkingLevels.length === 0)) {
-            m.thinkingLevels = ['low', 'medium', 'high'];
-            modified = true;
-          }
+        // BUG-4/R2: every stored model record carries contextWindow,
+        // thinkingType and defaultThinking. Nothing is guessed from the model
+        // name here: an adapter may re-derive its own metadata from provider
+        // rules, otherwise the row keeps whatever the provider payload said
+        // (unknown rows normalize to contextWindow null / thinkingType 'none' /
+        // thinkingLevels []).
+        const fromProvider = typeof provider?.thinkingMetadata === 'function' ? provider.thinkingMetadata(m) : null;
+        const normalized = modelThinking(fromProvider ? { ...m, ...fromProvider } : m);
+        const levels = Array.isArray(m.thinkingLevels) ? m.thinkingLevels.join(',') : null;
+        if (m.contextWindow !== normalized.contextWindow || m.thinkingType !== normalized.thinkingType || m.defaultThinking !== normalized.defaultThinking || levels !== normalized.thinkingLevels.join(',')) {
+          Object.assign(m, normalized);
+          modified = true;
         }
       }
     }
@@ -157,6 +157,9 @@ export class ProviderService {
               reasoning: values.customModel.capabilities?.reasoning ? 'supported' : 'unknown',
             },
             thinkingLevels: values.customModel.capabilities?.reasoning ? ['auto', 'low', 'medium', 'high'] : [],
+            thinkingType: values.customModel.capabilities?.reasoning ? 'effort' : 'none',
+            contextWindow: Number.isInteger(values.customModel.contextWindow) && values.customModel.contextWindow > 0 ? values.customModel.contextWindow : null,
+            defaultThinking: null,
           });
         }
       }
@@ -254,7 +257,10 @@ export class ProviderService {
         : found.models;
       current.models = eligibleFound.filter(m => typeof m.id === 'string' && m.id && m.id.length <= 200).map(m => ({
         ...previous.get(m.id), ...m, id: m.id, name: m.name || m.id, enabled: previous.get(m.id)?.enabled ?? m.enabled ?? true,
-        source: m.source || 'live', stale: Boolean(m.stale), thinkingLevels: Array.isArray(m.thinkingLevels) ? m.thinkingLevels : [],
+        source: m.source || 'live', stale: Boolean(m.stale),
+        // BUG-4/R2: the payload (or the adapter's provider rules) owns the
+        // metadata; a previous row only fills gaps the payload left.
+        ...modelThinking({ ...previous.get(m.id), ...m }),
         capabilities: { streaming: 'reported', tools: 'unknown', vision: 'unknown', reasoning: 'unknown', ...m.capabilities },
       }));
       if (found.credentials) this.store.saveCredentials(id, { ...credentials, ...found.credentials });
@@ -365,7 +371,9 @@ export class ProviderService {
     if (d.aliasId ? !alias?.enabled || !alias.targets.some(t => this.validTarget(t)) : d.connectionId && !this.validTarget(d)) this.store.setDefault({ connectionId: null, modelId: null, aliasId: null });
   }
   publicModels(key = null) {
-    const direct = this.store.list('connection').flatMap(c => c.models.filter(m => this.validTarget({ connectionId: c.id, modelId: m.id })).map(m => ({ id: `${c.id}/${m.id}`, object: 'model', owned_by: c.providerId, name: m.name })));
+    // BUG-4/R2: model records exported to clients carry the shared metadata.
+    const described = m => ({ contextWindow: m.contextWindow ?? null, thinkingType: m.thinkingType ?? 'none', defaultThinking: m.defaultThinking ?? null, thinkingLevels: Array.isArray(m.thinkingLevels) ? m.thinkingLevels : [] });
+    const direct = this.store.list('connection').flatMap(c => c.models.filter(m => this.validTarget({ connectionId: c.id, modelId: m.id })).map(m => ({ id: `${c.id}/${m.id}`, object: 'model', owned_by: c.providerId, name: m.name, ...described(m) })));
     const aliases = this.store.list('alias').filter(a => a.enabled && a.targets.some(t => this.validTarget(t))).map(a => ({ id: a.name, object: 'model', owned_by: 'boxfox' }));
     return [...direct, ...aliases].filter(m => !key || !key.allowedModels.length || key.allowedModels.includes(m.id));
   }

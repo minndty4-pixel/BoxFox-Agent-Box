@@ -39,7 +39,10 @@ export function createRouterServer({ service, engine, oauth, frontendDir = null,
         if (event.type === 'start') { meta = event.meta; if (stream) await write(chunk({ role: 'assistant' }, null, { boxfox: meta })); }
         if (event.type === 'delta') {
           content += event.delta.content || '';
-          if (event.delta.reasoning_content) reasoningContent += event.delta.reasoning_content;
+          // BUG-2: reasoning-only deltas are passed through, so the non-stream
+          // response has to accumulate them into message.reasoning_content.
+          const reasoning = event.delta.reasoning_content || event.delta.reasoning;
+          if (typeof reasoning === 'string' && reasoning) reasoningContent += reasoning;
           for (const call of event.delta.tool_calls || []) {
             const index = call.index ?? 0, old = toolCalls.get(index) || { id: '', type: 'function', function: { name: '', arguments: '' } };
             if (call.id) old.id = call.id;

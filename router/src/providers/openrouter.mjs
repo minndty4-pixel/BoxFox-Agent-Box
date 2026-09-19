@@ -1,19 +1,19 @@
 // OpenRouter Provider Adapter for BoxFox Router
 // Adapted from 9Router MIT-licensed open-sse/providers/registry/openrouter.js and OmniRoute openrouterQuotaFetcher.ts
 
-import { jsonOrProviderError, modelRecord, normalizeFinishReason, parseJson, providerError, sseEvents } from './common.mjs';
+import { jsonOrProviderError, modelRecord, normalizeFinishReason, parseJson, providerError, sseEvents, thinkingFromProviderPayload } from './common.mjs';
 import { RouterError } from '../errors.mjs';
 
 const DEFAULT_OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
 
 export const OPENROUTER_FALLBACK_MODELS = Object.freeze([
-  { ...modelRecord('openrouter/free', 'Free Models Router'), thinkingLevels: ['low', 'medium', 'high'] },
-  { ...modelRecord('nex-agi/nex-n2.5-mini:free', 'Nex AGI: Nex-N2.5-Mini (Free)'), thinkingLevels: ['low', 'medium', 'high'] },
-  { ...modelRecord('nex-agi/nex-n2.5-pro:free', 'Nex AGI: Nex-N2.5-Pro (Free)'), thinkingLevels: ['low', 'medium', 'high'] },
+  { ...modelRecord('openrouter/free', 'Free Models Router', {}, { thinkingType: 'effort', thinkingLevels: ['low', 'medium', 'high'] }) },
+  { ...modelRecord('nex-agi/nex-n2.5-mini:free', 'Nex AGI: Nex-N2.5-Mini (Free)', {}, { thinkingType: 'effort', thinkingLevels: ['low', 'medium', 'high'] }) },
+  { ...modelRecord('nex-agi/nex-n2.5-pro:free', 'Nex AGI: Nex-N2.5-Pro (Free)', {}, { thinkingType: 'effort', thinkingLevels: ['low', 'medium', 'high'] }) },
   { ...modelRecord('inclusionai/ling-3.0-flash-vl:free', 'inclusionAI: Ling 3.0 Flash VL (Free)') },
   { ...modelRecord('liquid/lfm-2.5-2.6b:free', 'LiquidAI: LFM2.5-2.6B (Free)') },
   { ...modelRecord('cohere/north-mini-code:free', 'Cohere: North Mini Code (Free)') },
-  { ...modelRecord('deepseek/deepseek-r1:free', 'DeepSeek R1 (Free)'), thinkingLevels: ['low', 'medium', 'high'] },
+  { ...modelRecord('deepseek/deepseek-r1:free', 'DeepSeek R1 (Free)', {}, { thinkingType: 'effort', thinkingLevels: ['low', 'medium', 'high'] }) },
   { ...modelRecord('openai/gpt-4o-mini', 'GPT-4o Mini') },
   { ...modelRecord('anthropic/claude-3.5-sonnet', 'Claude 3.5 Sonnet') },
 ]);
@@ -87,16 +87,12 @@ export function createOpenRouterAdapter({ fetchImpl }) {
 
             return {
               models: sorted.map(item => {
-                const isThinking = Boolean(
-                  item.supported_parameters?.includes('reasoning') ||
-                  item.supported_parameters?.includes('thinking') ||
-                  item.supported_parameters?.includes('include_reasoning') ||
-                  /(?:^|[-_/])(r1|o1|o3|o4|deepseek-r1|qwq|claude-3[-.]7.*think|flash-thinking)(?:[-_/]|$)/i.test(item.id || '')
-                );
                 const isFree = item.id?.includes(':free') || item.id === 'openrouter/free' || item.pricing?.prompt === '0';
                 return {
-                  ...modelRecord(item.id, item.name || item.id),
-                  ...(isThinking ? { thinkingLevels: ['low', 'medium', 'high'] } : {}),
+                  // BUG-4/R2: context window and thinking metadata come from the
+                  // `/models` payload (`context_length`, `reasoning.*`,
+                  // `supported_parameters`), never from a name pattern.
+                  ...modelRecord(item.id, item.name || item.id, {}, thinkingFromProviderPayload(item)),
                   // If account is free tier, default enable free models and disable paid models to avoid 402/429
                   ...(isFreeTier ? { enabled: Boolean(isFree) } : {}),
                 };
@@ -107,7 +103,7 @@ export function createOpenRouterAdapter({ fetchImpl }) {
       } catch {
         /* best effort */
       }
-      return { models: OPENROUTER_FALLBACK_MODELS.map(m => ({ ...m, source: 'live', stale: false, enabled: true })) };
+      return { models: OPENROUTER_FALLBACK_MODELS.map(m => ({ ...m, source: 'static', stale: false, enabled: true })) };
     },
 
     async *generate({ connection, credentials, body, signal }) {
@@ -116,13 +112,13 @@ export function createOpenRouterAdapter({ fetchImpl }) {
       const stream = body.stream !== false;
       const targetUrl = resolveChatUrl(connection.endpoint);
 
-      // Extract and map thinkingLevel to OpenRouter reasoning parameter
+      // R3 mapping for the `effort` thinking type: a level becomes
+      // `reasoning.effort`. `none`/`auto`/absent send no thinking field at all,
+      // so the provider applies its own default.
       const requestPayload = { ...body, stream };
       const level = body.thinkingLevel || body.reasoning_effort;
       if (level && level !== 'none' && level !== 'auto') {
         requestPayload.reasoning = { effort: level };
-      } else if (level === 'none') {
-        requestPayload.reasoning = { effort: 'none', exclude: true };
       }
       delete requestPayload.thinkingLevel;
       delete requestPayload.reasoning_effort;
