@@ -51,7 +51,7 @@ def test_real_files_browser_computer_capture_video_and_agent(tmp_path):
             assert not probe.get('is_error'), probe
             assert json.loads(probe['content'])['streams'][0]['width'] > 0
             class ToolModel:
-                async def complete(self, messages, tools, route, max_tokens=4096):
+                async def complete(self, messages, tools, route, max_tokens=4096, **kwargs):
                     if messages[-1]['role'] == 'tool':
                         assert 'fixture.html' in messages[-1]['content']
                         return {'choices': [{'message': {'content': 'Verified sandbox file through agent tools.'}, 'finish_reason': 'stop'}]}

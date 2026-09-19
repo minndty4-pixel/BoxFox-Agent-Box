@@ -195,6 +195,9 @@ def execute(name, args, session):
         action = args['action']
         commands = {
             'click': lambda: ['xdotool', 'mousemove', '--sync', str(int(args['x'])), str(int(args['y'])), 'click', '1'],
+            'double_click': lambda: ['xdotool', 'mousemove', '--sync', str(int(args['x'])), str(int(args['y'])), 'click', '--repeat', '2', '--delay', '100', '1'],
+            'right_click': lambda: ['xdotool', 'mousemove', '--sync', str(int(args['x'])), str(int(args['y'])), 'click', '3'],
+            'middle_click': lambda: ['xdotool', 'mousemove', '--sync', str(int(args['x'])), str(int(args['y'])), 'click', '2'],
             'type': lambda: ['xdotool', 'type', '--clearmodifiers', '--', args['text']],
             'key': lambda: ['xdotool', 'key', '--clearmodifiers', args['key']],
             'scroll': lambda: ['xdotool', 'click', '--repeat', str(min(20, max(1, int(args.get('steps', 3))))), '5' if args.get('direction') == 'down' else '4'],

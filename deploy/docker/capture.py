@@ -779,6 +779,7 @@ def record_start(spec: dict) -> dict:
                 "-f", "x11grab", "-framerate", str(framerate),
                 "-window_id", win["id"], "-video_size", f"{win['w']}x{win['h']}",
                 "-i", DISPLAY,
+                "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
                 "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
                 "-t", str(max_duration),
                 str(path),
@@ -791,6 +792,7 @@ def record_start(spec: dict) -> dict:
             proc = _spawn_ffmpeg([
                 "-f", "x11grab", "-framerate", str(framerate),
                 "-video_size", f"{width}x{height}", "-i", DISPLAY,
+                "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
                 "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
                 "-t", str(max_duration),
                 str(path),

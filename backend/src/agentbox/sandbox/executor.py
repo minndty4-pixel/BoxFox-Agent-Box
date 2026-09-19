@@ -26,12 +26,14 @@ class SandboxExecutor:
             return response.json()
 
     async def execute(self, name, args, session):
-        if name in {'computer_screen_capture', 'computer_screen_record', 'computer_use', 'browser_use'}:
+        if name in {'computer_screen_capture', 'computer_screen_record', 'computer_use', 'browser_use', 'inspect_element'}:
             async with self.visual_lock:
                 return await self._execute(name, args, session)
         return await self._execute(name, args, session)
 
     async def _execute(self, name, args, session):
+        if name == 'inspect_element':
+            return await self.request('/__box/inspect-element', {'x': int(args['x']), 'y': int(args['y'])})
         if name == 'computer_screen_capture':
             data = await self.request('/__box/capture', {'target': {'kind': 'screen'}, 'output': 'base64'})
             raw = base64.b64decode(data.get('data', ''))

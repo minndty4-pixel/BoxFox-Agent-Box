@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 READ = frozenset({'file_read', 'codebase_glob', 'codebase_grep', 'skills_list', 'skill_view'})
 WRITE = READ | {'file_write', 'file_edit_block', 'terminal_exec'}
-VISUAL = frozenset({'computer_screen_capture', 'computer_screen_record', 'computer_use', 'browser_use'})
+VISUAL = frozenset({'computer_screen_capture', 'computer_screen_record', 'computer_use', 'browser_use', 'inspect_element'})
 RESEARCH = READ | {'browser_use'}
 
 

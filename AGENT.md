@@ -55,3 +55,16 @@ BoxFox operates as an orchestrated multi-agent network with clearly defined resp
 
 ### 3.4. User Delivery Standards
 - State clearly: (1) What was changed, (2) Exact test outputs verifying the change, (3) Any operational notes or instructions.
+
+### 3.5. Computer Use Agent (CUA) & Autonomous Element Selection
+When operating the sandbox GUI, desktop, or web applications:
+- **Inspect Before Acting (Devin-style Element Selection)**:
+  - Do not click blind pixel coordinates. When identifying UI components or targets on screen, use `inspect_element(x, y)` to obtain window metadata, application name, or web DOM selectors, tags, text, and bounding boxes.
+- **Desktop Application Launch**:
+  - In XFCE Desktop, launching icons/shortcuts strictly requires `double_click` (e.g. `computer_use(action='double_click', x=..., y=...)`). Single `click` only selects the icon without launching it.
+- **Web Browsing & Navigation**:
+  - To browse websites, use `browser_use(action='navigate', url='https://...')` directly. You MUST call `action='navigate'` with a valid `url` before taking snapshots or interacting with web elements.
+  - After navigating, take `browser_use(action='snapshot')` to obtain structured element references (`ref`) and accessibility tree, then use `click` or `fill` with `ref`.
+- **Screen Recording Lifecycle**:
+  - When starting a screen recording via `computer_screen_record(action='start')`, ALWAYS explicitly call `computer_screen_record(action='stop')` when your interaction sequence is complete to finalize the MP4 video container.
+
