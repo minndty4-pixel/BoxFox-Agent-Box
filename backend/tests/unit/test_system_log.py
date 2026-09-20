@@ -122,7 +122,9 @@ def test_cli_env_var_overrides_the_home_default(tmp_path):
 
 
 def test_cli_reports_a_missing_log(tmp_path):
+    # Cùng lý do: bỏ biến của conftest để CLI đi theo nhánh mặc định `~/BoxFox/logs`.
     env = {**os.environ, 'HOME': str(tmp_path / 'empty-home')}
+    env.pop('BOXFOX_SYSTEM_LOG_DIR', None)
     result = subprocess.run([sys.executable, str(REPO / 'scripts' / 'system-log.py'), 'tail'],
                             capture_output=True, text=True, env=env, cwd=REPO)
     assert result.returncode == 2
