@@ -123,3 +123,19 @@ def test_pruning_an_old_capture_keeps_its_text_and_drops_the_image():
     assert result[-1] == messages[-1], 'bước đang chạy không bị đụng'
     assert '/tmp/last.png' in json.dumps(result[-1])
     assert 'base64' in json.dumps(result[-1]), 'ảnh mới nhất vẫn còn nguyên'
+
+
+def test_a_duplicated_reasoning_signature_is_counted_once():
+    """Bản lưu giữ cùng một chữ ký dưới hai tên; router chỉ nhận một bản, nên ước lượng cũng vậy."""
+    messages = _mission(6, payload=20_000)
+    doubled = estimate_tokens(messages)
+    single = [{**m, 'tool_calls': [{k: v for k, v in call.items() if k != 'thoughtSignature'}
+                                  for call in m['tool_calls']]} if m.get('tool_calls') else m
+              for m in messages]
+    assert doubled == estimate_tokens(single), 'hai tên cho một giá trị không được đếm hai lần'
+
+
+def test_a_transcript_without_signatures_is_counted_as_before():
+    messages = [{'role': 'user', 'content': 'x' * 300}, {'role': 'assistant', 'content': 'y' * 300}]
+    expected = (len(json.dumps([messages, []], ensure_ascii=False).encode('utf-8')) + 2) // 3
+    assert estimate_tokens(messages) == expected

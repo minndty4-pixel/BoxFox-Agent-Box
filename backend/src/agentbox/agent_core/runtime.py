@@ -267,6 +267,7 @@ def _drop_oldest_round(messages):
     """
     out = list(messages)
     tail = max(0, len(out) - LIVE_TAIL)
+    fallback = None
     for index in range(0, tail):
         message = out[index]
         if message.get('role') != 'assistant' or not isinstance(message.get('tool_calls'), list):
@@ -279,7 +280,14 @@ def _drop_oldest_round(messages):
             dropping.add(cursor)
             cursor += 1
         if len(dropping) > 1:
-            return [item for position, item in enumerate(out) if position not in dropping]
+            if cursor <= tail:
+                return [item for position, item in enumerate(out) if position not in dropping]
+            # A round that runs into the tail can only leave together with the results it produced,
+            # so it is a last resort: the newest observations are worth more than the oldest round.
+            if fallback is None:
+                fallback = dropping
+    if fallback is not None:
+        return [item for position, item in enumerate(out) if position not in fallback]
     return out
 
 

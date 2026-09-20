@@ -38,9 +38,34 @@ def _thin_images(messages):
     return thinned, images
 
 
+def _one_signature(messages):
+    """The transcript as the provider will see it: one copy of each reasoning signature.
+
+    A Gemini response arrives with the same value under two names -- `thought_signature` and
+    `thoughtSignature` -- and the transcript keeps both, so every function call counted twice in the
+    estimate. `runtime.dedupe_thought_signatures()` drops the second name on the wire, so the
+    estimate has to count one copy too (measured on session `08f2483c`: 761 888 B of signatures on
+    the heaviest request).
+    """
+    if not any(isinstance(call, dict) and 'thoughtSignature' in call
+               for message in messages if isinstance(message.get('tool_calls'), list)
+               for call in message['tool_calls']):
+        return messages
+    counted = []
+    for message in messages:
+        calls = message.get('tool_calls')
+        if not isinstance(calls, list):
+            counted.append(message)
+            continue
+        shaped = [{key: value for key, value in call.items()
+                   if key != 'thoughtSignature'} if isinstance(call, dict) else call for call in calls]
+        counted.append({**message, 'tool_calls': shaped})
+    return counted
+
+
 def estimate_tokens(messages, tools=()):
     # Conservative UTF-8 estimate, not billable usage. Includes function schemas.
-    thinned, images = _thin_images(messages)
+    thinned, images = _thin_images(_one_signature(messages))
     chars = len(json.dumps([thinned, tools], ensure_ascii=False).encode('utf-8'))
     return (chars + 2) // 3 + images * IMAGE_TOKEN_ALLOWANCE
 

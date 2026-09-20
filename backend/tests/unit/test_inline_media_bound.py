@@ -316,3 +316,44 @@ def test_the_trim_measures_the_body_the_client_really_sends():
     assert "shrink_request_to_budget(\n            {**route, 'messages': messages" in text
     assert "'model.request_trimmed'" in text
 
+
+
+def test_dropping_a_round_never_reaches_into_the_live_tail():
+    """Lượt gọi cũ: cả cặp gọi/kết quả đi cùng nhau, và bước đang chạy không bị đụng."""
+    from agentbox.agent_core import runtime
+
+    def mission(rounds):
+        messages = [{'role': 'system', 'content': 'vai'}, {'role': 'user', 'content': 'nhiệm vụ'}]
+        for step in range(rounds):
+            messages.append({'role': 'assistant', 'content': None, 'tool_calls': [
+                {'id': f'call_{step}', 'type': 'function',
+                 'function': {'name': 'terminal_exec', 'arguments': '{"command": "uname -a"}'}}]})
+            messages.append({'role': 'tool', 'tool_call_id': f'call_{step}', 'name': 'terminal_exec',
+                             'content': f'output {step}'})
+        return messages
+
+    messages = mission(8)
+    trimmed = runtime._drop_oldest_round(messages)
+    assert len(trimmed) == len(messages) - 2, 'lượt cũ nhất đi cùng kết quả của nó'
+    assert trimmed[2]['tool_calls'][0]['id'] == 'call_1', 'lượt kế tiếp trở thành lượt cũ nhất'
+    assert trimmed[-2:] == messages[-2:], 'đuôi đang chạy nguyên vẹn'
+    assert not any(m.get('role') == 'tool' and m.get('tool_call_id') not in
+                   {c.get('id') for m2 in trimmed for c in m2.get('tool_calls', [])}
+                   for m in trimmed), 'không để lại kết quả mồ côi'
+
+
+def test_a_round_that_touches_the_tail_is_the_last_resort():
+    """Lượt nằm sát đuôi vẫn phải đi cùng kết quả của nó — request không bao giờ mồ côi."""
+    from agentbox.agent_core import runtime
+
+    call = {'role': 'assistant', 'content': None, 'tool_calls': [
+        {'id': 'call_x', 'type': 'function', 'function': {'name': 'terminal_exec', 'arguments': '{}'}}]}
+    messages = [{'role': 'system', 'content': 'vai'}, {'role': 'user', 'content': 'nhiệm vụ'},
+                {'role': 'assistant', 'content': 'note'}]
+    messages += [call, {'role': 'tool', 'tool_call_id': 'call_x', 'name': 'terminal_exec', 'content': 'out'}]
+    messages += [{'role': 'assistant', 'content': f'note {i}'} for i in range(7)]
+
+    trimmed = runtime._drop_oldest_round(messages)
+    assert len(trimmed) == len(messages) - 2, 'cặp gọi/kết quả đi cùng nhau'
+    assert 'call_x' not in json.dumps(trimmed, ensure_ascii=False)
+    assert trimmed[-7:] == messages[-7:], 'các bước mới nhất vẫn còn'
