@@ -260,6 +260,28 @@ mức ghi chú được ghi nhận thành rủi ro có tên trong tài liệu th
 Tổng số ca sau khi sửa: backend **488 passed, 2 failed, 2 skipped** (+9 ca so với 479 của vòng 12, và ca đỏ vì cây sạch đã xanh);
 `deploy/docker` **359 OK**; router **89 pass / 0 fail**; frontend **682 passed / 4 failed**; `tsc` thoát 0.
 
+### Vòng 12 (tiếp) — gỡ nút chặn 1 MiB cho nhiệm vụ CUA nặng — 2026-09-20, 08:3x–09:5x
+
+Ca T21 (nhiệm vụ nặng để mô hình tự chọn chụp màn hình) của vòng kiểm chứng độc lập đợt 10 chết với
+`UPSTREAM_HTTP_413: Request is too large.`. Đây là **lỗi có sẵn**, không nằm trong diff của vòng 10,
+nhưng nó chặn đúng hạng mục "CUA nhẹ → nặng" của chủ sở hữu, nên được sửa trong ba lớp — mỗi lớp đo
+được trên các phiên thật trong `~/BoxFox/harness/sessions.sqlite`.
+
+| Lớp | Việc | Đo trên phiên thật |
+|---|---|---|
+| 1 — `fa57325` | `runtime.bound_inline_media()`: giữ ảnh của 2 lần chụp mới nhất và tối đa 512 KB trong thân request; ảnh cũ rút về phần chữ kèm đường dẫn tệp. Transcript trong store không đổi | Phiên 1 119 229 B → **307 948 B** (bỏ 7 ảnh); 1 107 429 → **303 055** (6 ảnh); 1 090 982 → **259 986** (8 ảnh); 1 813 206 → **674 074** (8 ảnh) |
+| 2 — `6991b17` | `runtime.dedupe_thought_signatures()`: cặp `thought_signature` + `thoughtSignature` của Gemini chỉ còn một khoá trong bản gửi đi | Cặp chữ ký chiếm **761 888 B** ở phiên nặng nhất, 380 944 B ở phiên 1,8 MB; sau lượt này thân đã nằm dưới trần |
+| 3 — `344ce0f` | `runtime.shrink_request_to_budget()`: lượt rút cuối, nếu thân vẫn trên ngân sách **900 KB** thì cắt chữ của các tin nhắn cũ nhất (không đụng bước đang chạy, không sửa transcript) và ghi `model.request_trimmed` mức `warn` | Không phải cắt ở cả năm phiên lớn nhất — nhưng đây là chốt chặn cho đường còn lại: phiên 1,8 MB vẫn còn trường chữ 416 891 B và `tool_calls` 385 408 B sau hai lớp đầu |
+
+Cả năm phiên lớn nhất đo được đều nằm dưới trần 1 048 576 B sau ba lớp. Ca kiểm thử ở
+`backend/tests/unit/test_inline_media_bound.py` — **12 ca** (6 ca lớp 1, 3 ca lớp 2, 3 ca lớp 3),
+gồm ca khẳng định danh sách gốc không bao giờ bị sửa và ca khẳng định thân request dưới ngân sách
+được trả nguyên. Chi tiết ở `docs/tracking/bug-register.md` §6.7.
+
+Tổng số ca sau ba lớp này: backend **500 passed, 2 failed, 2 skipped** — hai ca đỏ vẫn là hai ca cũ
+có điều kiện môi trường. `deploy/docker` **359 OK**; router **89 pass / 0 fail**; frontend
+**682 passed / 4 failed**; `tsc` thoát 0.
+
 ### Điều vòng này CHƯA làm được
 
 - Chưa có câu trả lời thật từ `/claude-code` vì hạn mức nhà cung cấp (429); cầu nối và CLI đã đúng.
