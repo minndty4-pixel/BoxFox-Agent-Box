@@ -155,8 +155,19 @@ try {
     $HarnessHealth = $null
     try { $HarnessHealth = Invoke-RestMethod 'http://127.0.0.1:3102/api/agent/health' -TimeoutSec 2 } catch {}
     if ($HarnessHealth.service -ne 'boxfox-harness') {
-        $PythonCommand = Get-Command python -ErrorAction Stop
-        $HarnessProcess = Start-Process -FilePath $PythonCommand.Source -ArgumentList @('scripts/run-harness.py') -WorkingDirectory $RootDir -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $RouterLogDir 'harness.stdout.log') -RedirectStandardError (Join-Path $RouterLogDir 'harness.stderr.log')
+        $PythonPath = $null
+        $CandidatePythons = @(
+            "C:\Users\Admin\anaconda3\envs\DL\python.exe",
+            "$env:CONDA_PREFIX\python.exe"
+        )
+        foreach ($cp in $CandidatePythons) {
+            if ($cp -and (Test-Path $cp)) { $PythonPath = $cp; break }
+        }
+        if (-not $PythonPath) {
+            $PythonCommand = Get-Command python -ErrorAction Stop
+            $PythonPath = $PythonCommand.Source
+        }
+        $HarnessProcess = Start-Process -FilePath $PythonPath -ArgumentList @('scripts/run-harness.py') -WorkingDirectory $RootDir -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $RouterLogDir 'harness.stdout.log') -RedirectStandardError (Join-Path $RouterLogDir 'harness.stderr.log')
         $HarnessReady = $false
         for ($Attempt = 0; $Attempt -lt 40; $Attempt++) {
             if ($HarnessProcess.HasExited) { throw 'Harness exited; install backend/requirements.txt and inspect harness.stderr.log.' }
