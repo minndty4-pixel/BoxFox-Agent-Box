@@ -199,36 +199,45 @@ def request_body_bytes(payload) -> int:
     return len(blob.encode('utf-8'))
 
 
-def _last_user_index(messages) -> int:
-    """First index of the live step; everything before it is history the model only needs gist of."""
-    for index in range(len(messages) - 1, -1, -1):
-        if messages[index].get('role') == 'user':
-            return index
-    return 0
+# Messages the model still needs verbatim: the step it is in, plus the rounds that produced it.
+LIVE_TAIL = 8
 
 
-def _shrink_old_text(messages, stop):
+def _reducible(messages) -> list:
+    """Indexes the model can lose detail on: not a user instruction, not the newest step.
+
+    A heavy CUA mission is one user prompt followed by dozens of assistant/tool rounds, so
+    "everything before the last user message" is the whole mission — that is why the first
+    byte-budget pass freed 7 841 B of a 1 060 902 B body and the call still died with 413.
+    """
+    stop = max(0, len(messages) - LIVE_TAIL)
+    if not stop:  # a short session still has history worth trimming — keep only the last two
+        stop = max(0, len(messages) - 2)
+    return [index for index in range(0, stop) if messages[index].get('role') != 'user']
+
+
+def _shrink_old_text(messages, indexes):
     out = list(messages)
-    for index in range(0, stop):
+    for index in indexes:
         text = out[index].get('content')
         if isinstance(text, str) and len(text) > 2000:
             out[index] = {**out[index], 'content': text[:1000] + TRIMMED_TEXT_NOTE}
     return out
 
 
-def _drop_old_thoughts(messages, stop):
+def _drop_old_thoughts(messages, indexes):
     """Reasoning traces are not part of any provider protocol — only the signature is."""
     out = list(messages)
-    for index in range(0, stop):
+    for index in indexes:
         if out[index].get('thought'):
             out[index] = {**out[index], 'thought': ''}
     return out
 
 
-def _shrink_old_tool_arguments(messages, stop):
+def _shrink_old_tool_arguments(messages, indexes):
     """Keep the call id and the tool name — the pairing every provider validates — drop the blob."""
     out = list(messages)
-    for index in range(0, stop):
+    for index in indexes:
         calls = out[index].get('tool_calls')
         if not isinstance(calls, list) or not calls:
             continue
@@ -247,6 +256,33 @@ def _shrink_old_tool_arguments(messages, stop):
     return out
 
 
+def _drop_oldest_round(messages):
+    """Drop the oldest complete tool round: the assistant call and the results it produced.
+
+    The last resort, and the only way to bound a mission whose **signatures** alone outgrow the
+    cap: a Gemini provider refuses a replayed function call that lost its signature, so an old
+    call cannot be kept without one — but a call that is not in the request at all needs no
+    signature. The oldest round goes first, its parts always leave together (so no `tool` message
+    is left orphaned), and user instructions and the live tail are never touched.
+    """
+    out = list(messages)
+    tail = max(0, len(out) - LIVE_TAIL)
+    for index in range(0, tail):
+        message = out[index]
+        if message.get('role') != 'assistant' or not isinstance(message.get('tool_calls'), list):
+            continue
+        ids = {call.get('id') for call in message['tool_calls'] if isinstance(call, dict)}
+        dropping = {index}
+        cursor = index + 1
+        while cursor < len(out) and out[cursor].get('role') == 'tool' \
+                and out[cursor].get('tool_call_id') in ids:
+            dropping.add(cursor)
+            cursor += 1
+        if len(dropping) > 1:
+            return [item for position, item in enumerate(out) if position not in dropping]
+    return out
+
+
 def shrink_request_to_budget(body, messages, budget: int = ROUTER_BODY_BUDGET) -> tuple[list, int, str]:
     """Last-resort byte budget for the **whole** request, least destructive reduction first.
 
@@ -259,12 +295,13 @@ def shrink_request_to_budget(body, messages, budget: int = ROUTER_BODY_BUDGET) -
     2026-09-20: a body 1 060 902 B large whose `messages` list was 1 043 364 B — 12 326 B over
     the cap, and the earlier messages-only check never saw it).
 
-    The reductions run over the history *before* the live step only, each one whole-list at a
-    time, in order of what costs the model least: old text, old reasoning traces, old tool
-    arguments, then the older inline captures down to one, then down to none. The moment the
-    body fits it stops. Returns `(messages, freed_bytes, phase)`; `freed_bytes` is 0 (and the
-    input list comes back) when nothing helped, so a request that cannot be reduced still fails
-    honestly. The stored transcript is never mutated — the chat UI keeps every byte.
+    The reductions run over the history before the live tail only, each one whole-list at a time,
+    in order of what costs the model least: old text, old reasoning traces, old tool arguments,
+    the older inline captures down to one and then to none, and finally — the only reduction that
+    is not bounded by what a single round holds — dropping the oldest tool rounds outright. The
+    moment the body fits it stops. Returns `(messages, freed_bytes, phase)`; `freed_bytes` is 0
+    (and the input list comes back) when nothing helped, so a request that cannot be reduced still
+    fails honestly. The stored transcript is never mutated — the chat UI keeps every byte.
     """
     def size(candidate):
         return request_body_bytes({**body, 'messages': candidate})
@@ -272,16 +309,19 @@ def shrink_request_to_budget(body, messages, budget: int = ROUTER_BODY_BUDGET) -
     original = size(messages)
     if original <= budget:
         return messages, 0, ''
-    stop = _last_user_index(messages)
     out = list(messages)
     freed, phase, current = 0, '', original
-    for name, reduce in (
-        ('text', lambda history: _shrink_old_text(history, stop)),
-        ('thought', lambda history: _drop_old_thoughts(history, stop)),
-        ('arguments', lambda history: _shrink_old_tool_arguments(history, stop)),
+    steps = [
+        ('text', lambda history: _shrink_old_text(history, _reducible(history))),
+        ('thought', lambda history: _drop_old_thoughts(history, _reducible(history))),
+        ('arguments', lambda history: _shrink_old_tool_arguments(history, _reducible(history))),
         ('media-1', lambda history: bound_inline_media(history, keep=1)[0]),
         ('media-0', lambda history: bound_inline_media(history, keep=0)[0]),
-    ):
+    ]
+    # Dropping rounds is the only reduction that is not bounded by what one round holds, so it
+    # repeats — the oldest first, and only for as long as the body is still over the budget.
+    steps += [('round', _drop_oldest_round)] * len(messages)
+    for name, reduce in steps:
         before = current
         out = reduce(out)
         current = size(out)

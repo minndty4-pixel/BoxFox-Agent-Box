@@ -19,6 +19,8 @@ import copy
 import json
 
 from agentbox.agent_core import runtime as runtime_module
+from agentbox.agent_core.roles import ORCHESTRATOR_TOOLS
+from agentbox.agent_core.tool_contracts import schemas_for
 from agentbox.agent_core.runtime import (MAX_INLINE_MEDIA_BYTES, ROUTER_BODY_BUDGET, TRIMMED_ARGUMENTS,
                                          bound_inline_media, dedupe_thought_signatures,
                                          request_body_bytes, shrink_request_to_budget)
@@ -280,6 +282,30 @@ def test_the_measured_cua_body_now_fits_under_the_router_cap():
     assert before > 1048576, 'kịch bản phải tái hiện được thân quá trần'
     assert after < 1048576 and after <= ROUTER_BODY_BUDGET, (phase, freed, after)
     assert trimmed[-1]['content'] == 'kết quả mới nhất', 'bước sống không bị đụng'
+
+
+def test_a_mission_that_keeps_capturing_never_crosses_the_router_cap():
+    """Đúng thứ đã hỏng: vòng lặp tiếp tục chụp thì thân phải ở lại dưới trần, mãi mãi.
+
+    Mỗi bước thêm một cặp `assistant` (chữ ký ghi hai lần) + `tool` mang ảnh 80 KB, đúng như
+    vòng lặp thật; sau mỗi bước chạy ba lượt và khẳng định thân request gửi đi vẫn dưới 1 MiB.
+    """
+    tools = schemas_for(list(ORCHESTRATOR_TOOLS))
+    route = {'connectionId': 'c' * 36, 'modelId': 'gemini-3.8-flash-medium'}
+    messages = [{'role': 'system', 'content': 'vai gốc'}, {'role': 'user', 'content': 'nhiệm vụ'}]
+    sizes = []
+    for step in range(30):
+        messages.append(_assistant_with_signature(step, 40 * 1024))
+        messages.append(_capture(step, 80 * 1024))
+        messages.append({'role': 'assistant', 'content': 'ghi chú ' + 'N' * 20_000})
+        body = {**route, 'messages': messages, 'tools': tools, 'stream': True, 'max_tokens': 4096}
+        bounded, _ = bound_inline_media(messages)
+        deduped, _ = dedupe_thought_signatures(bounded)
+        trimmed, _, _ = shrink_request_to_budget({**body, 'messages': deduped}, deduped)
+        sent = request_body_bytes({**body, 'messages': trimmed})
+        sizes.append(sent)
+        assert sent < 1048576, (step, sent)
+    assert sizes[0] < sizes[-1] < 1048576, 'thân vẫn tăng nhưng luôn dưới trần'
 
 
 def test_the_trim_measures_the_body_the_client_really_sends():

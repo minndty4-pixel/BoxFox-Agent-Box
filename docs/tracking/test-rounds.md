@@ -274,12 +274,13 @@ nhưng nó chặn đúng hạng mục "CUA nhẹ → nặng" của chủ sở h�
 | 3 — `344ce0f`, `1a2c…` | `runtime.shrink_request_to_budget(body, messages)`: lượt rút cuối, đo **cả thân request** (prompt vai + lược đồ công cụ) chứ không chỉ `messages`; khi vượt ngân sách **900 KB** thì hạ theo thứ tự ít mất mát nhất — chữ cũ → `thought` cũ → tham số `tool_calls` cũ (giữ `id` + tên công cụ) → 1 ảnh mới nhất → không ảnh nào — dừng ngay khi vừa, ghi `model.request_trimmed` kèm `phase` | Lượt đo lại trên phiên `584d61c8` (ca chết ở bước 25) chứng minh lớp 3 bản đầu **không đủ**: nó chỉ đo `messages` (1 043 364 B) trong khi thân thật là 1 060 902 B — vẫn quá trần 12 326 B. Sau bản sửa: **1 754 163 → 850 965 B**, phase `media-1`; cả năm phiên lớn còn lại đều dưới trần |
 
 Cả năm phiên lớn nhất đo được đều nằm dưới trần 1 048 576 B sau ba lớp. Ca kiểm thử ở
-`backend/tests/unit/test_inline_media_bound.py` — **18 ca** (6 ca lớp 1, 3 ca lớp 2, 12 ca lớp 3),
+`backend/tests/unit/test_inline_media_bound.py` — **19 ca** (6 ca lớp 1, 3 ca lớp 2, 10 ca lớp 3),
 gồm ca khẳng định danh sách gốc không bao giờ bị sửa, ca khẳng định thân request dưới ngân sách
-được trả nguyên, ca khẳng định phép đo tính **cả** prompt vai và lược đồ công cụ, và ca tái hiện
-hình dạng thật của phiên chết vì 413. Chi tiết ở `docs/tracking/bug-register.md` §6.7.
+được trả nguyên, ca khẳng định phép đo tính **cả** prompt vai và lược đồ công cụ, ca tái hiện
+hình dạng thật của phiên chết vì 413, và ca nhiệm vụ 30 bước liên tục chụp màn hình mà thân request
+vẫn luôn dưới trần. Chi tiết ở `docs/tracking/bug-register.md` §6.7.
 
-Tổng số ca sau ba lớp này: backend **506 passed, 2 failed, 2 skipped** — hai ca đỏ vẫn là hai ca cũ
+Tổng số ca sau ba lớp này: backend **507 passed, 2 failed, 2 skipped** — hai ca đỏ vẫn là hai ca cũ
 có điều kiện môi trường. `deploy/docker` **359 OK**; router **89 pass / 0 fail**; frontend
 **682 passed / 4 failed**; `tsc` thoát 0.
 
