@@ -19,8 +19,9 @@ import copy
 import json
 
 from agentbox.agent_core import runtime as runtime_module
-from agentbox.agent_core.runtime import (MAX_INLINE_MEDIA_BYTES, bound_inline_media,
-                                         dedupe_thought_signatures)
+from agentbox.agent_core.runtime import (MAX_INLINE_MEDIA_BYTES, ROUTER_BODY_BUDGET,
+                                         bound_inline_media, dedupe_thought_signatures,
+                                         request_body_bytes, shrink_request_to_budget)
 
 
 def _capture(index: int, payload: int) -> dict:
@@ -136,3 +137,40 @@ def test_a_long_mission_body_fits_after_both_passes():
     after = len(json.dumps(bounded, ensure_ascii=False).encode('utf-8'))
     assert before > 1048576 and after < 1048576, (before, after)
     assert dropped == 4 and saved == 6 * 120 * 1024
+
+
+# --------------------------------------------------- trần BYTE cuối cùng của thân request
+
+def test_a_body_under_the_budget_is_returned_untouched():
+    messages = [{'role': 'user', 'content': 'xin chào'}, {'role': 'assistant', 'content': 'chào bạn'}]
+    returned, freed = shrink_request_to_budget(messages)
+    assert freed == 0 and returned is messages
+
+
+def test_the_byte_budget_trims_the_oldest_text_first():
+    """Trần token không bắt được trần byte: model 1M token vẫn vượt 1 MiB thân request.
+
+    Đo trên phiên thật của vòng kiểm chứng: `assistant` văn bản dài 416 891 B là phần lớn nhất
+    còn lại sau khi đã bó ảnh và bỏ chữ ký trùng — không lượt nén nào chạm tới vì ngưỡng là token.
+    """
+    messages = [
+        {'role': 'user', 'content': 'nhiệm vụ'},
+        {'role': 'assistant', 'content': 'A' * 600_000},
+        {'role': 'tool', 'name': 'terminal_exec', 'content': 'B' * 400_000},
+        {'role': 'assistant', 'content': 'C' * 200_000},
+        {'role': 'user', 'content': 'tiếp tục'},
+        {'role': 'assistant', 'content': 'mới nhất, không được đụng'},
+    ]
+    assert request_body_bytes(messages) > ROUTER_BODY_BUDGET
+    trimmed, freed = shrink_request_to_budget(messages)
+    assert freed > 0 and request_body_bytes(trimmed) <= ROUTER_BODY_BUDGET
+    assert trimmed[1]['content'].startswith('A' * 1000) and 'trimmed so the request body fits' in trimmed[1]['content']
+    assert trimmed[5]['content'] == 'mới nhất, không được đụng', 'bước mới nhất phải nguyên vẹn'
+    assert messages[1]['content'] == 'A' * 600_000, 'bản lưu không được sửa'
+
+
+def test_a_huge_single_old_message_still_leaves_a_hard_failure_to_the_caller():
+    """Không cắt được gì (mọi thứ đều là bước hiện tại) thì trả nguyên trạng, không nuốt lỗi."""
+    messages = [{'role': 'user', 'content': 'x' * (2 * 1024 * 1024)}]
+    returned, freed = shrink_request_to_budget(messages)
+    assert freed == 0 and request_body_bytes(returned) > ROUTER_BODY_BUDGET

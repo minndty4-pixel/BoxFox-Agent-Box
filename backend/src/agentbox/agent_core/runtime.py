@@ -182,6 +182,46 @@ def bound_inline_media(messages, keep: int = MAX_INLINE_MEDIA,
     return out, dropped
 
 
+ROUTER_BODY_BUDGET = 900 * 1024
+
+
+def request_body_bytes(payload) -> int:
+    """Bytes the router will receive — it counts the serialized body, not tokens."""
+    return len(json.dumps(payload, ensure_ascii=False).encode('utf-8'))
+
+
+def shrink_request_to_budget(messages, budget: int = ROUTER_BODY_BUDGET) -> tuple[list, int]:
+    """Last-resort byte budget: trim the oldest bulky text until the body fits.
+
+    `ContextCompressor` works in tokens, and the router's cap is in bytes, so on a model with a
+    large context window (1M) a long mission can grow past 1 MiB without ever crossing the token
+    threshold — the body is then refused outright (`UPSTREAM_HTTP_413`) and the turn dies. This
+    walks from the oldest message forward, cuts the text of one bulky message at a time, and
+    stops the moment the body fits. The newest step and the stored transcript are never touched.
+    """
+    if request_body_bytes(messages) <= budget:
+        return messages, 0
+    keep_from = 0
+    for index in range(len(messages) - 1, -1, -1):
+        if messages[index].get('role') == 'user':
+            keep_from = index
+            break
+    out = list(messages)
+    freed = 0
+    for index in range(0, keep_from):
+        text = out[index].get('content')
+        if not isinstance(text, str) or len(text) <= 2000:
+            continue
+        cut = text[:1000] + '\n[Older step trimmed so the request body fits the router; the full entry stays in the transcript.]'
+        freed += len(text) - len(cut)
+        out[index] = {**out[index], 'content': cut}
+        if request_body_bytes(out) <= budget:
+            break
+    if not freed:
+        return messages, 0
+    return out, freed
+
+
 def dedupe_thought_signatures(messages) -> tuple[list, int]:
     """One spelling per thought signature in the request body.
 
@@ -251,6 +291,10 @@ class RouterClient:
         if signature_chars:
             system_log.write('model.signature_deduped', session_id=route.get('sessionId'),
                              chars=signature_chars)
+        messages, freed = shrink_request_to_budget(messages)
+        if freed:
+            system_log.write('model.request_trimmed', level='warn', session_id=route.get('sessionId'),
+                             chars=freed, budgetBytes=ROUTER_BODY_BUDGET)
         async with httpx.AsyncClient(timeout=120, trust_env=False) as client:
             try:
                 async with client.stream(
