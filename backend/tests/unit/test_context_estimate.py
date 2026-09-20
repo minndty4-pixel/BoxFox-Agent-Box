@@ -6,9 +6,11 @@ request — vì toàn bộ ảnh base64 bị tính như chữ. Hệ quả không
 `context_window - output_reserve` nên khi lượt tóm tắt thất bại (nhà cung cấp trả 429/90 giây),
 bộ nén đi vào đúng nhánh duy nhất làm chết cả lượt — `CONTEXT_LIMIT: summary failed`.
 """
+import asyncio
 import json
 
-from agentbox.agent_core.compression import IMAGE_TOKEN_ALLOWANCE, estimate_tokens
+from agentbox.agent_core.compression import (IMAGE_TOKEN_ALLOWANCE, ContextCompressor, estimate_tokens,
+                                               summarizer_material)
 
 
 def _capture(payload: int) -> dict:
@@ -52,3 +54,72 @@ def test_the_estimate_stays_a_list_of_the_same_length():
     messages = [_capture(1000), {'role': 'user', 'content': 'tiếp'}]
     assert isinstance(estimate_tokens(messages), int)
     assert IMAGE_TOKEN_ALLOWANCE > 0
+
+
+# ------------------------------------------- nén một nhiệm vụ chỉ có MỘT lời nhắc
+
+def _mission(steps: int, payload: int = 40 * 1024) -> list:
+    messages = [{'role': 'system', 'content': 'vai gốc'}, {'role': 'user', 'content': 'nhiệm vụ CUA'}]
+    for step in range(steps):
+        messages.append({'role': 'assistant', 'content': None, 'thought': 'T' * 2000, 'tool_calls': [
+            {'id': f'call_{step}', 'type': 'function',
+             'function': {'name': 'computer_screen_capture', 'arguments': '{"x": 1}'},
+             'thought_signature': 'S' * payload, 'thoughtSignature': 'S' * payload}]})
+        messages.append(_capture(payload))
+    return messages
+
+
+def test_a_one_prompt_mission_is_summarized_instead_of_failing():
+    """Ca `08f2483c`/`9ec9bf1d`: một lời nhắc, lịch sử vượt cửa sổ, không có lượt cũ nào để nén."""
+    messages = _mission(20, payload=4096)
+    seen = {}
+
+    async def summary(history):
+        seen['history'] = history
+        return {'choices': [{'message': {'content': 'Goal: CUA. Evidence: many captures.'}, 'finish_reason': 'stop'}]}
+
+    async def run():
+        return await ContextCompressor(40_000, output_reserve=4096).compact(messages, [], summary)
+
+    result, event = asyncio.run(run())
+    assert event and event['kind'] == 'summary', event
+    assert result[0] == messages[0], 'tiền tố hệ thống giữ nguyên'
+    assert result[1]['content'].startswith('[Context compaction'), 'lịch sử giữa nhiệm vụ được gộp'
+    assert result[-1] == messages[-1], 'đuôi đang chạy giữ nguyên'
+    assert 'computer_screen_capture' in json.dumps(result[-4:]), 'các bước mới nhất còn nguyên'
+
+
+def test_the_summary_input_is_thin_and_bounded():
+    """Đầu vào cho lượt tóm tắt không được mang ảnh base64 hay chữ ký: nhà cung cấp đã trả 90 giây."""
+    material = summarizer_material(_mission(30))
+    blob = json.dumps(material, ensure_ascii=False)
+    assert len(blob) <= 120_000, len(blob)
+    assert 'base64' not in blob and 'thought_signature' not in blob
+    assert '[inline capture left out of the summary input]' in blob, 'vẫn nói rõ có ảnh ở đó'
+    assert 'call_29' in blob, 'bước mới nhất vẫn nằm trong mẫu'
+
+
+def test_a_short_history_reaches_the_summarizer_intact():
+    messages = [{'role': 'user', 'content': 'a'}, {'role': 'assistant', 'content': 'b'},
+                {'role': 'user', 'content': 'c'}]
+    material = summarizer_material(messages)
+    assert [m['content'] for m in material] == ['a', 'b', 'c']
+
+
+def test_pruning_an_old_capture_keeps_its_text_and_drops_the_image():
+    """Bản cũ của phép tỉa coi `str(content)` của ảnh là "kết quả công cụ dài" và cắt nát chính
+    ảnh mới nhất — thứ mô hình đang nhìn."""
+    messages = _mission(20, payload=4096)
+    messages[-1]['content'][0]['text'] = '{"path": "/tmp/last.png", "width": 1280}'
+
+    async def summary(history):
+        return {'choices': [{'message': {'content': 'Goal: CUA. Evidence: captures.'}, 'finish_reason': 'stop'}]}
+
+    async def run():
+        return await ContextCompressor(40_000, output_reserve=4096).compact(messages, [], summary)
+
+    result, event = asyncio.run(run())
+    assert event and event['kind'] == 'summary'
+    assert result[-1] == messages[-1], 'bước đang chạy không bị đụng'
+    assert '/tmp/last.png' in json.dumps(result[-1])
+    assert 'base64' in json.dumps(result[-1]), 'ảnh mới nhất vẫn còn nguyên'
