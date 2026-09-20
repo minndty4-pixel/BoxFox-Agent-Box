@@ -289,7 +289,14 @@ bộ nén đi vào nhánh duy nhất làm chết lượt. Nay mỗi ảnh inline
 còn **952 417** — dưới ngưỡng chết, lượt tiếp tục với bản gốc thay vì dừng. Ca kiểm thử mới ở
 `backend/tests/unit/test_context_estimate.py` (4 ca).
 
-Tổng số ca sau ba lớp này: backend **511 passed, 2 failed, 2 skipped** — hai ca đỏ vẫn là hai ca cũ
+Lớp thứ tư (commit `14a5935`) mở nốt chỗ chết cuối cùng: nhiệm vụ CUA chỉ có một lời nhắc nên
+`compact()` không có lượt cũ nào để nén (`cut = 1`), trong khi lượt tóm tắt bị đẩy cả lịch sử ~900 KB
+vào nhà cung cấp. Nay `compact()` gộp chính phần giữa nhiệm vụ (giữ tiền tố hệ thống, lời nhắc và 10
+tin nhắn mới nhất), đầu vào tóm tắt do `summarizer_material()` làm phẳng và chặn ở 120 000 ký tự, và
+phép tỉa một ảnh chụp giữ phần chữ thay vì cắt nát chính ảnh mới nhất. **Diễn lại phiên thật
+`9ec9bf1d`**: `beforeEstimate 1075446 → afterEstimate 314771`, đầu vào tóm tắt còn **15 397 ký tự**.
+
+Tổng số ca sau bốn lớp này: backend **515 passed, 2 failed, 2 skipped** — hai ca đỏ vẫn là hai ca cũ
 có điều kiện môi trường. `deploy/docker` **359 OK**; router **89 pass / 0 fail**; frontend
 **682 passed / 4 failed**; `tsc` thoát 0.
 
