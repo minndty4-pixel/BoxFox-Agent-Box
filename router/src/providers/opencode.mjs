@@ -11,8 +11,8 @@ const RESPONSES_URL = 'https://opencode.ai/zen/v1/responses';
 const MODELS_URL = 'https://opencode.ai/zen/v1/models';
 
 export const OPENCODE_MODELS = Object.freeze([
-  { ...modelRecord('muse-spark-1.2-contributor-free', 'Muse Spark 1.2 Contributor Free'), thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
-  { ...modelRecord('muse-spark-1.3-contributor-free', 'Muse Spark 1.3 Contributor Free'), thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] },
+  { ...modelRecord('muse-spark-1.2-contributor-free', 'Muse Spark 1.2 Contributor Free', {}, { thinkingType: 'effort', thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] }) },
+  { ...modelRecord('muse-spark-1.3-contributor-free', 'Muse Spark 1.3 Contributor Free', {}, { thinkingType: 'effort', thinkingLevels: ['auto', 'none', 'low', 'medium', 'high'] }) },
 ]);
 
 function isResponsesModel(modelId) {
@@ -67,7 +67,9 @@ export function createOpenCodeAdapter({ fetchImpl }) {
         /* best effort fallback */
       }
       return {
-        models: OPENCODE_MODELS.map(m => ({ ...m, source: 'live', stale: false, enabled: true })),
+        // Curated fallback: the inventory call did not answer, so this is not
+        // live data (BUG-4/R2).
+        models: OPENCODE_MODELS.map(m => ({ ...m, source: 'static', stale: false, enabled: true })),
       };
     },
 

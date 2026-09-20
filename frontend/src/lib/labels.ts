@@ -4,6 +4,7 @@
  * chữ tiếng Việt để người mù màu / ảnh chụp đen trắng vẫn đọc được.
  */
 import { CONFIDENTIALITY_ORDER, INTEGRITY_ORDER, type Confidentiality, type Integrity } from '../types/labels'
+import type { TKey } from '../i18n/context'
 
 export interface AxisMeta {
   value: string
@@ -53,6 +54,25 @@ export const CONFIDENTIALITY_META: Record<Confidentiality, AxisMeta> = {
     dotClass: 'bg-red-500',
     badgeClass: 'bg-red-500/15 text-red-700 dark:text-red-300 ring-1 ring-red-500/40',
   },
+}
+
+/**
+ * Khoá i18n cho NHÃN CHỮ của từng giá trị trên hai trục provenance.
+ *
+ * Mọi chấm (thanh công cụ `LabelDot`, thẻ lưới Explorer) lấy nhãn qua đây — một
+ * nguồn duy nhất, nên hai bề mặt của cùng một panel không thể lệch ngôn ngữ như
+ * trước (B2c: lưới in nhãn tiếng Anh, chấm thanh công cụ in tiếng Việt).
+ */
+export function integrityLabelKey(value: Integrity): TKey {
+  return value === 'duoc_nguoi_dung_cho_phep'
+    ? 'workspace.integrity.clean'
+    : 'workspace.integrity.unverified'
+}
+
+export function confidentialityLabelKey(value: Confidentiality): TKey {
+  if (value === 'cong_khai') return 'workspace.confidentiality.public'
+  if (value === 'noi_bo') return 'workspace.confidentiality.internal'
+  return 'workspace.confidentiality.secret'
 }
 
 /**

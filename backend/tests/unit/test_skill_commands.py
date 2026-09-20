@@ -52,6 +52,22 @@ def test_invalid_commands_are_not_sent_to_model(registry, bad):
         registry.resolve(bad)
 
 
+@pytest.mark.parametrize('prompt', ['/skill codebase-inspection', '/codebase-inspection'])
+def test_missing_task_after_skill_command_carries_stable_code(registry, prompt):
+    """`/skill <id>` (và alias kỹ năng) thiếu task phải có mã lỗi ổn định cho UI.
+
+    Trước đây nhánh này chỉ ném `Include a task after the command` trần, nên UI
+    không hiển thị dòng `Mã lỗi: …` như các nhánh UNKNOWN_COMMAND / SKILL_DISABLED.
+    """
+    with pytest.raises(ValueError, match=r'^SKILL_TASK_REQUIRED: Include a task after the command$'):
+        registry.resolve(prompt)
+
+
+def test_missing_task_after_role_command_carries_stable_code(registry):
+    with pytest.raises(ValueError, match=r'^MISSING_TASK: Include a task after the command$'):
+        registry.resolve('/build')
+
+
 def test_custom_revision_literal_arguments_and_restart(registry):
     c = registry.save({'slug': 'fix-custom', 'template': 'Fix $ARGUMENTS', 'skills': ['systematic-debugging'], 'role': 'debug'})
     resolved = registry.resolve('/fix-custom $(whoami); /build more')

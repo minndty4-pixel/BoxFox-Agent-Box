@@ -26,10 +26,13 @@ import {
   FileText,
   Search,
 } from 'lucide-react'
+import { useT } from '../../i18n/context'
 import { useAgentStore } from '../../store/agentStore'
-import { useUiStore } from '../../store/uiStore'
 import { useHarnessChatStore } from '../../store/harnessChatStore'
 import { useHarnessStore, AVAILABLE_MODELS } from '../../store/harnessStore'
+import { useProviderStore } from '../../store/providerStore'
+import { useRouterChatStore, type RouterChatSelection } from '../../store/routerChatStore'
+import type { ProviderSnapshot } from '../../types/provider'
 import { LabelDot } from '../LabelDot'
 import type { ContextChunk } from '../../types/context'
 
@@ -48,24 +51,108 @@ export interface DisplayChunk {
   lineCount: number
 }
 
-function resolveModelLimit(modelIdOrName?: string | null): number {
-  if (!modelIdOrName) return 128_000
-  const found = AVAILABLE_MODELS.find(m => m.id === modelIdOrName || m.name === modelIdOrName)
-  if (found?.contextWindow) {
-    if (found.contextWindow === '2M') return 2_000_000
-    if (found.contextWindow === '1M') return 1_000_000
-    if (found.contextWindow === '256k') return 256_000
-    if (found.contextWindow === '200k') return 200_000
-    if (found.contextWindow === '128k') return 128_000
+/**
+ * Nguồn của con số context window:
+ * - `router`: metadata thật của model từ router (`contextWindow`) — nguồn duy nhất đáng tin.
+ * - `catalog`: bảng tĩnh `AVAILABLE_MODELS` trong repo — chỉ là ước lượng.
+ * - `heuristic`: đoán theo tên model — phương án cuối, phải ghi rõ là ước lượng.
+ * - `unknown`: không có dữ liệu nào → hiện "unknown", KHÔNG bịa số.
+ */
+export type ContextWindowSource = 'router' | 'catalog' | 'heuristic' | 'unknown'
+
+export interface ContextWindowResolution {
+  tokens: number | null
+  source: ContextWindowSource
+}
+
+/** Model record từ router có thể mang `contextWindow` (xem plan §R2). */
+export interface RouterModelMetadata {
+  contextWindow?: number | null
+}
+
+function readReportedContextWindow(model: unknown): number | null {
+  const value = (model as RouterModelMetadata | null | undefined)?.contextWindow
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null
+  return Math.round(value)
+}
+
+const CATALOG_WINDOW_TOKENS: Record<string, number> = {
+  '2M': 2_000_000,
+  '1M': 1_000_000,
+  '256k': 256_000,
+  '200k': 200_000,
+  '128k': 128_000,
+}
+
+/**
+ * Tìm `contextWindow` thật của model đang chạy trong snapshot router: ưu tiên
+ * route đang chọn (model hoặc target đầu của alias), sau đó khớp nhãn model.
+ */
+export function findRouterContextWindow(
+  snapshot: ProviderSnapshot | null,
+  selection: RouterChatSelection | null,
+  modelLabelOrId?: string | null,
+): number | null {
+  if (!snapshot) return null
+  const modelOf = (connectionId?: string | null, modelId?: string | null) => {
+    if (!connectionId || !modelId) return null
+    const connection = snapshot.connections.find((c) => c.id === connectionId)
+    return connection?.models.find((m) => m.id === modelId) ?? null
   }
+
+  if (selection?.kind === 'model') {
+    const reported = readReportedContextWindow(modelOf(selection.connectionId, selection.modelId))
+    if (reported !== null) return reported
+  }
+  if (selection?.kind === 'alias') {
+    const target = snapshot.aliases.find((a) => a.id === selection.aliasId)?.targets?.[0]
+    const reported = readReportedContextWindow(modelOf(target?.connectionId, target?.modelId))
+    if (reported !== null) return reported
+  }
+
+  // Nhãn harness là "Tên connection · Tên model (High)" — bỏ hậu tố mức thinking
+  // rồi so khớp với id/tên model trong snapshot.
+  const needle = (modelLabelOrId ?? '').replace(/\s*\((?:low|medium|high|minimal)\)\s*$/i, '').trim().toLowerCase()
+  if (!needle) return null
+  for (const connection of snapshot.connections) {
+    for (const model of connection.models) {
+      if (!needle.includes(model.id.toLowerCase()) && !needle.includes(model.name.toLowerCase())) continue
+      const reported = readReportedContextWindow(model)
+      if (reported !== null) return reported
+    }
+  }
+  return null
+}
+
+/**
+ * Context window của model đang chạy. Thứ tự: metadata router → bảng tĩnh →
+ * đoán theo tên → `unknown` (không bịa số).
+ */
+export function resolveContextWindow(reportedTokens: number | null, modelIdOrName?: string | null): ContextWindowResolution {
+  if (reportedTokens !== null && Number.isFinite(reportedTokens) && reportedTokens > 0) {
+    return { tokens: Math.round(reportedTokens), source: 'router' }
+  }
+  if (!modelIdOrName) return { tokens: null, source: 'unknown' }
+
+  const found = AVAILABLE_MODELS.find(m => m.id === modelIdOrName || m.name === modelIdOrName)
+  const catalogTokens = found?.contextWindow ? CATALOG_WINDOW_TOKENS[found.contextWindow] : undefined
+  if (catalogTokens) return { tokens: catalogTokens, source: 'catalog' }
+
   const m = modelIdOrName.toLowerCase()
-  if (m.includes('gemini')) return 1_000_000
-  if (m.includes('claude')) return 200_000
-  if (m.includes('deepseek') || m.includes('qwen')) return 64_000
-  return 128_000
+  if (m.includes('gemini')) return { tokens: 1_000_000, source: 'heuristic' }
+  if (m.includes('claude')) return { tokens: 200_000, source: 'heuristic' }
+  if (m.includes('deepseek') || m.includes('qwen')) return { tokens: 64_000, source: 'heuristic' }
+  return { tokens: null, source: 'unknown' }
+}
+
+/** `28.6k` / `1.0M` — dùng chung cho thanh và modal để hai nhãn không lệch nhau. */
+export function formatTokenCount(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`
+  return `${(tokens / 1000).toFixed(tokens >= 100_000 ? 0 : 1)}k`
 }
 
 export function ContextUsageBar() {
+  const t = useT()
   const activeSessionId = useAgentStore((s) => s.activeSessionId)
   const harnessRun = useHarnessChatStore((s) => s.sessions[activeSessionId])
   const sendHarnessCommand = useHarnessChatStore((s) => s.send)
@@ -73,8 +160,8 @@ export function ContextUsageBar() {
 
   const context = useAgentStore((s) => s.context)
   const contextChunks = context?.chunks || []
-  const autopilotEnabled = useUiStore((s) => s.autopilotEnabled)
-  const setAutopilotEnabled = useUiStore((s) => s.setAutopilotEnabled)
+  const snapshot = useProviderStore((s) => s.snapshot)
+  const routerSelection = useRouterChatStore((s) => s.selection)
 
   // Toggle modal mở rộng
   const [inspectorModalOpen, setInspectorModalOpen] = useState(false)
@@ -85,10 +172,15 @@ export function ContextUsageBar() {
   const [compactedSuccess, setCompactedSuccess] = useState(false)
   const [dismissed, setDismissed] = useState(false)
 
-  // Context limit thực tế theo model đang chạy
-  const contextLimitTokens = useMemo(() => {
-    return resolveModelLimit(harnessRun?.lastModelLabel || activeModelId)
-  }, [harnessRun?.lastModelLabel, activeModelId])
+  // Context window thật theo model đang chạy: metadata router trước, chỉ khi
+  // router không báo mới rơi về bảng tĩnh/đoán tên (BUG-4/U3).
+  const modelLabel = harnessRun?.lastModelLabel || activeModelId
+  const contextWindow = useMemo(() => {
+    const reported = findRouterContextWindow(snapshot, routerSelection, modelLabel)
+    return resolveContextWindow(reported, modelLabel)
+  }, [snapshot, routerSelection, modelLabel])
+  const contextLimitTokens = contextWindow.tokens
+  const limitLabel = contextLimitTokens === null ? t('contextUsage.unknown') : formatTokenCount(contextLimitTokens)
 
   // Lắng nghe phím ESC để đóng Modal
   useEffect(() => {
@@ -122,7 +214,11 @@ export function ContextUsageBar() {
     return contextChunks.reduce((acc: number, c: ContextChunk) => acc + Math.round((c.content || '').length / 4), 0)
   }, [harnessRun?.events, contextChunks])
 
-  const percent = Math.min(Math.round((currentTokens / contextLimitTokens) * 100), 100)
+  // `percent === null` khi router chưa báo context window: không vẽ phần trăm,
+  // không vẽ thanh tiến trình như thể đã biết mẫu số (U3).
+  const percent = contextLimitTokens === null
+    ? null
+    : Math.min(Math.round((currentTokens / contextLimitTokens) * 100), 100)
 
   // Chunks hiển thị chuẩn hóa tiêu đề và định dạng từ contextChunks thực tế
   const displayChunks: DisplayChunk[] = useMemo(() => {
@@ -220,12 +316,21 @@ export function ContextUsageBar() {
     }
   }
 
-  const showMangaBubble = percent >= 75 && !dismissed
+  const showMangaBubble = percent !== null && percent >= 75 && !dismissed
 
   return (
     <div className="relative border-b border-line bg-panel px-4 py-2 select-none">
-      {/* Top Header Bar */}
-      <div className="flex items-center justify-between gap-3 overflow-hidden whitespace-nowrap">
+      {/* Top Header Bar — `@container` đặt trên chính hàng này (NEW-1): biến thể
+          đầy đủ/condensed phải chuyển theo bề rộng khung chat chứa nó, không
+          theo viewport. Media query `sm:` cũ đọc bề rộng cửa sổ nên ở viewport
+          900px (khung chat chỉ ~384px) thanh vẫn bày bản đầy đủ và nút Compact
+          bị `overflow-hidden` cắt cụt. Container query KHÔNG đặt trên wrapper
+          ngoài vì `container-type` sinh layout containment — nó sẽ biến wrapper
+          thành containing block của modal `fixed inset-0` bên dưới. */}
+      <div
+        data-testid="context-usage-row"
+        className="flex @container items-center justify-between gap-3 overflow-hidden whitespace-nowrap"
+      >
         {/* Left: Context Window Title & Expand Toggle */}
         <div className="flex items-center gap-2 shrink-0">
           <button
@@ -235,41 +340,64 @@ export function ContextUsageBar() {
             title="Click to open full Context Breakdown & Chunk Inspector modal"
           >
             <Zap className="size-3.5 text-amber-500 fill-amber-500/20" />
-            <span>Context Window</span>
+            <span>{t('contextUsage.title')}</span>
             <Maximize2 className="size-3 text-muted group-hover:text-brand transition ml-0.5" />
           </button>
         </div>
 
-        {/* Center: Progress Bar */}
-        <div className="flex-1 min-w-[40px] max-w-xs flex items-center gap-2">
+        {/* Center: Progress Bar — ẩn khi khung chat hẹp để nhường chỗ cho số
+            token và nút Compact; `@lg` = container (hàng) ≥ 512px, đo được là
+            ngưỡng an toàn cho bản đầy đủ (cố định ~383px + thanh tiến trình
+            tối thiểu 40px + gap). */}
+        <div
+          data-testid="context-usage-progress"
+          className="hidden flex-1 min-w-[40px] max-w-xs items-center gap-2 @lg:flex"
+        >
           <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-panel2 border border-line">
             <div
               className={`h-full rounded-full transition-all duration-500 ${
-                percent >= 85
-                  ? 'bg-rose-500'
-                  : percent >= 70
-                    ? 'bg-amber-500'
-                    : 'bg-emerald-500'
+                percent === null
+                  ? 'bg-muted/40'
+                  : percent >= 85
+                    ? 'bg-rose-500'
+                    : percent >= 70
+                      ? 'bg-amber-500'
+                      : 'bg-emerald-500'
               }`}
-              style={{ width: `${percent}%` }}
+              style={{ width: `${percent ?? 0}%` }}
             />
           </div>
         </div>
 
-        {/* Right: Token count & Actions */}
-        <div className="flex items-center gap-2 shrink-0">
-          <span className="font-mono text-[11px] text-muted">
-            <strong className="text-fg">{(currentTokens / 1000).toFixed(1)}k</strong>
-            <span className="hidden xl:inline"> / {contextLimitTokens >= 1_000_000 ? `${(contextLimitTokens / 1_000_000).toFixed(1)}M` : `${(contextLimitTokens / 1000).toFixed(0)}k`}</span> ({percent}%)
+        {/* Right: Token count & Actions — nhóm này được phép CO LẠI (`min-w-0`)
+            thay vì đẩy tràn ra ngoài; bên trong, nhãn mới là nút thắt co giãn
+            còn nút Compact giữ nguyên kích thước (`shrink-0`), nên nút không bao
+            giờ bị cắt/truncate ở bất kỳ bề rộng khung nào. */}
+        <div data-testid="context-usage-actions" className="flex min-w-0 items-center gap-2">
+          <span
+            data-testid="context-usage-label"
+            title={contextWindow.source === 'router' ? undefined : t(contextLimitTokens === null ? 'contextUsage.unknownHint' : 'contextUsage.estimatedHint')}
+            className="min-w-0 overflow-hidden whitespace-nowrap text-ellipsis font-mono text-[11px] tabular-nums text-muted"
+          >
+            <strong className="text-fg">{formatTokenCount(currentTokens)}</strong>
+            {' / '}
+            <span>{limitLabel}</span>
+            {percent !== null && <> ({percent}%)</>}
+            {contextWindow.source === 'router' ? null : (
+              // Khung hẹp: nhãn ước lượng bị ẩn để số token + nút Compact còn chỗ;
+              // thông tin "ước lượng" vẫn còn ở `title` và ở màu hổ phách.
+              <span className="ml-1 hidden text-amber-500/90 @lg:inline">{t('contextUsage.estimated')}</span>
+            )}
           </span>
 
           <button
             type="button"
             onClick={handleCompactAll}
-            className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition cursor-pointer ${
+            data-testid="context-usage-compact"
+            className={`shrink-0 flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition cursor-pointer ${
               compactedSuccess
                 ? 'bg-emerald-500/15 text-emerald-500 border border-emerald-500/30'
-                : percent >= 75
+                : percent !== null && percent >= 75
                   ? 'border border-brand/50 bg-brand/10 text-fg hover:bg-brand/20 shadow-xs'
                   : 'border border-line bg-panel2 text-muted hover:text-fg hover:bg-panel'
             }`}
@@ -277,12 +405,13 @@ export function ContextUsageBar() {
             {compactedSuccess ? (
               <>
                 <Check className="size-3 text-emerald-500" />
-                <span>Compacted</span>
+                <span className="hidden @lg:inline">{t('contextUsage.compacted')}</span>
               </>
             ) : (
               <>
                 <Sparkles className="size-3 text-brand" />
-                <span>Compact</span>
+                {/* Khung hẹp: chỉ còn biểu tượng, nhờ vậy nút vẫn nằm trong tầm bấm. */}
+                <span className="hidden @lg:inline">{t('contextUsage.compact')}</span>
               </>
             )}
           </button>
@@ -305,7 +434,7 @@ export function ContextUsageBar() {
                   <div className="flex items-center gap-2">
                     <h2 className="text-sm font-bold text-fg">Context Breakdown & Chunk Inspector</h2>
                     <span className="rounded-md bg-panel px-2 py-0.5 text-[10px] font-mono font-semibold text-muted border border-line">
-                      {(currentTokens / 1000).toFixed(1)}k / {contextLimitTokens >= 1_000_000 ? `${(contextLimitTokens / 1_000_000).toFixed(1)}M` : `${(contextLimitTokens / 1000).toFixed(0)}k`} tokens ({percent}%)
+                      {formatTokenCount(currentTokens)} / {limitLabel}{percent !== null && ` (${percent}%)`}
                     </span>
                   </div>
                   <p className="text-xs text-muted mt-0.5">
@@ -677,41 +806,34 @@ export function ContextUsageBar() {
               <div className="flex size-6 items-center justify-center rounded-full bg-amber-500/20 text-amber-500 border border-amber-500/30">
                 <Sparkles className="size-3.5" />
               </div>
-              <span className="text-xs font-bold text-fg">Context Threshold Alert</span>
+              <span className="text-xs font-bold text-fg">{t('contextUsage.thresholdTitle')}</span>
             </div>
             <button
               type="button"
               onClick={() => setDismissed(true)}
               className="rounded p-0.5 text-muted hover:text-fg transition cursor-pointer"
-              title="Dismiss recommendation"
+              title={t('contextUsage.dismiss')}
             >
               <X className="size-3.5" />
             </button>
           </div>
 
           {/* Bubble Body */}
+          {/* Bubble Body — không còn hứa hẹn số token tiết kiệm bịa (backend
+              chưa có cờ auto-compact, xem U3) */}
           <p className="mt-2 text-xs leading-relaxed text-muted">
-            Context window is reaching <strong className="text-amber-500 font-mono">{percent}%</strong> ({(currentTokens / 1000).toFixed(1)}k tokens).
-            You can summarize completed tool traces to free up ~<strong>45k tokens</strong> while strictly preserving provenance labels (Rule N5).
+            {t('contextUsage.thresholdBody', { percent: percent ?? 0, tokens: formatTokenCount(currentTokens) })}
           </p>
 
           {/* Action Buttons */}
-          <div className="mt-3 flex items-center justify-between gap-2 pt-2 border-t border-line">
-            <button
-              type="button"
-              onClick={() => setAutopilotEnabled(!autopilotEnabled)}
-              className="text-[11px] text-muted hover:text-fg transition cursor-pointer"
-            >
-              {autopilotEnabled ? '✓ Auto-compact enabled' : 'Enable auto-compact'}
-            </button>
-
+          <div className="mt-3 flex items-center justify-end gap-2 pt-2 border-t border-line">
             <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={() => setDismissed(true)}
                 className="rounded px-2.5 py-1 text-xs text-muted hover:text-fg transition cursor-pointer"
               >
-                Later
+                {t('contextUsage.later')}
               </button>
               <button
                 type="button"
@@ -719,7 +841,7 @@ export function ContextUsageBar() {
                 className="flex items-center gap-1 rounded-md bg-brand px-3 py-1 text-xs font-semibold text-brandfg shadow-xs hover:opacity-90 transition cursor-pointer"
               >
                 <Zap className="size-3 fill-current" />
-                <span>Compact Now</span>
+                <span>{t('contextUsage.compactNow')}</span>
               </button>
             </div>
           </div>

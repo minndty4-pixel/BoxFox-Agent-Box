@@ -1,17 +1,21 @@
 /**
  * Thẻ xin quyền (PermissionCard).
  *
- * Năm phần đúng thứ tự:
- *  1. Tool + tham số
- *  2. Nội dung nguyên văn (write_file hiện diff tự viết)
- *  3. Lý do — bằng tiếng người
- *  4. Nguồn gốc (derived_from) — bấm được
- *  5. Nút quyết định: 3 nút cho sạch, 4 nút cho bẩn
- *
- * Bộ đếm ngược 10 phút. Hết giờ → "đã quá hạn — tính là TỪ CHỐI".
- * Mock rút ngắn bằng hằng số, nhưng mặc định phải là 10 phút thật.
+ * Một thẻ, hai đường:
+ *  • Đường MOCK (transport demo): năm phần đúng thứ tự —
+ *      1. Tool + tham số
+ *      2. Nội dung nguyên văn (write_file hiện diff tự viết)
+ *      3. Lý do — bằng tiếng người
+ *      4. Nguồn gốc (derived_from) — bấm được
+ *      5. Nút quyết định: 3 nút cho sạch, 4 nút cho bẩn
+ *    Bộ đếm ngược 10 phút là của RIÊNG đường này. Hết giờ → "đã quá hạn — tính là
+ *    TỪ CHỐI". Mock rút ngắn bằng hằng số, nhưng mặc định phải là 10 phút thật.
+ *  • Đường THẬT (`decision_requested` của harness): bố cục/lớp CSS y hệt, nhưng
+ *    bộ đếm đi theo `deadline` (epoch giây) do server gửi xuống — `ask_user` 300 s,
+ *    `request_approval` 600 s — không có hạn 10 phút nào do giao diện tự bịa.
  */
 import { useMemo, useState } from 'react'
+import { LoaderCircle } from 'lucide-react'
 import { useT } from '../i18n/context'
 import { useNow } from '../hooks/useNow'
 import { useAgentStore } from '../store/agentStore'
@@ -22,9 +26,30 @@ import type { PermissionRequest } from '../types/agent'
 import type { PermissionButtonId } from '../lib/permissions'
 import { getPermissionButtons } from '../lib/permissions'
 import type { DiffLine } from '../types/agent'
+import type { DecisionEntry, DecisionOption } from '../store/harnessChatStore'
 
-// Countdown uses expires_at from the request itself.
-export function PermissionCard({ request }: { request: PermissionRequest }) {
+export interface PermissionCardProps {
+  /** Thẻ của transport mock (đường demo) — giữ nguyên hành vi cũ. */
+  request?: PermissionRequest
+  /** Quyết định THẬT của agent (`decision_requested`/`decision_resolved`). */
+  decision?: DecisionEntry
+  /** Trả lời quyết định thật; `choice` là `id` trong `decision.options`. */
+  onAnswer?: (choice: string) => void
+  /** Đang gửi câu trả lời → hàng này tạm khoá. */
+  busy?: boolean
+}
+
+/**
+ * Một thẻ, hai nguồn: thẻ xin quyền của transport mock (năm phần, nguyên trạng)
+ * và quyết định thật của harness (cùng bố cục, cùng lớp CSS, dữ liệu thật).
+ */
+export function PermissionCard({ request, decision, onAnswer, busy = false }: PermissionCardProps) {
+  if (decision) return <DecisionCard decision={decision} onAnswer={onAnswer} busy={busy} />
+  if (!request) return null
+  return <TransportPermissionCard request={request} />
+}
+
+function TransportPermissionCard({ request }: { request: PermissionRequest }) {
   const t = useT()
   const now = useNow()
   const sendCommand = useAgentStore((s) => s.sendCommand)
@@ -153,6 +178,156 @@ export function PermissionCard({ request }: { request: PermissionRequest }) {
         </p>
       )}
     </div>
+  )
+}
+
+/**
+ * Quyết định thật của agent. Cùng bố cục năm phần với thẻ mock: nhãn loại +
+ * nội dung, "vì sao phải hỏi", các lựa chọn server gửi kèm và bộ đếm ngược
+ * theo đúng `deadline` (epoch giây) — không có hạn 10 phút nào do giao diện bịa.
+ */
+function DecisionCard({
+  decision,
+  onAnswer,
+  busy,
+}: {
+  decision: DecisionEntry
+  onAnswer?: (choice: string) => void
+  busy: boolean
+}) {
+  const t = useT()
+  const now = useNow()
+
+  const deadlineMs = decision.deadline !== null ? decision.deadline * 1000 : null
+  const remaining = deadlineMs === null ? null : Math.max(0, deadlineMs - now)
+  const remainingSec = remaining === null ? null : Math.ceil(remaining / 1000)
+  const remainingMin = remainingSec === null ? null : Math.floor(remainingSec / 60)
+  const remainingSecPart = remainingSec === null ? null : remainingSec % 60
+
+  const expired = decision.status === 'expired' || decision.resolvedReason === 'timeout'
+  const isPending = decision.status === 'pending'
+  const chosenLabel =
+    decision.choice === null
+      ? null
+      : (decision.options.find((option) => option.id === decision.choice)?.label ?? decision.choice)
+  const headline = decision.question ?? decision.action ?? ''
+
+  const headlineLabel = decision.kind === 'approval' ? t('decisions.kind.approval') : t('decisions.kind.question')
+
+  const statusChip = () => {
+    if (expired) return { tone: 'danger' as const, label: t('permission.timedOut') }
+    if (decision.status === 'cancelled') return { tone: 'danger' as const, label: t('decisions.status.cancelled') }
+    if (decision.status === 'rejected') return { tone: 'danger' as const, label: t('decisions.status.rejected') }
+    if (decision.status === 'approved') return { tone: 'neutral' as const, label: t('decisions.status.approved') }
+    return null
+  }
+  const chip = statusChip()
+
+  return (
+    <div
+      className={`rounded-lg border-2 p-3 shadow-lg ${
+        !isPending
+          ? 'border-line bg-bg'
+          : expired
+            ? 'border-red-500/50 bg-red-50 dark:bg-red-950/20'
+            : 'border-amber-500/50 bg-bg shadow-amber-500/10'
+      }`}
+    >
+      {/* 1. Loại + đối tượng */}
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <Chip tone="brand">{headlineLabel}</Chip>
+        <span className="min-w-0 truncate text-[11px] font-mono text-muted" title={headline}>
+          {headline}
+        </span>
+        {chip && <Chip tone={chip.tone}>{chip.label}</Chip>}
+        {chosenLabel && <Chip tone="neutral">{chosenLabel}</Chip>}
+      </div>
+
+      {/* 2. Nội dung */}
+      <SectionLabel>{t('permission.content')}</SectionLabel>
+      <div className="mb-2 max-h-48 overflow-auto rounded border border-line bg-panel2 p-2">
+        <PlainText text={headline} />
+      </div>
+
+      {/* 3. Vì sao phải hỏi */}
+      {decision.reason && (
+        <>
+          <SectionLabel>{t('permission.reason')}</SectionLabel>
+          <p className="mb-2 text-[12px] leading-relaxed">{decision.reason}</p>
+        </>
+      )}
+
+      {/* 4. Ghi chú kèm theo câu trả lời (nếu server trả về) */}
+      {decision.note && (
+        <>
+          <SectionLabel>{t('decisions.noteLabel')}</SectionLabel>
+          <p className="mb-2 text-[12px] leading-relaxed">{decision.note}</p>
+        </>
+      )}
+
+      {/* 5. Lựa chọn + bộ đếm ngược theo deadline của server */}
+      {isPending ? (
+        <div className="flex flex-wrap items-center gap-2">
+          {decision.options.map((option) => (
+            <DecisionOptionButton
+              key={option.id}
+              option={option}
+              disabled={busy}
+              onClick={() => onAnswer?.(option.id)}
+            />
+          ))}
+          {remainingMin !== null && remainingSecPart !== null && (
+            <span
+              className={`ml-auto text-[11px] font-mono tabular-nums ${
+                remaining !== null && remaining < 60000 ? 'text-red-500' : 'text-muted'
+              }`}
+            >
+              {remainingMin}:{String(remainingSecPart).padStart(2, '0')}
+            </span>
+          )}
+          {busy && (
+            <span className="flex items-center gap-1 text-[11px] text-muted" aria-live="polite">
+              <LoaderCircle className="size-3 animate-spin" />
+              <span>{t('decisions.sendingAnswer')}</span>
+            </span>
+          )}
+        </div>
+      ) : (
+        expired && (
+          <p className="mt-2 text-[12px] font-medium text-red-600 dark:text-red-400">
+            {t('decisions.expiredNote')}
+          </p>
+        )
+      )}
+    </div>
+  )
+}
+
+function DecisionOptionButton({
+  option,
+  disabled,
+  onClick,
+}: {
+  option: DecisionOption
+  disabled: boolean
+  onClick: () => void
+}) {
+  const style =
+    option.kind === 'reject'
+      ? 'border-red-300 text-red-700 hover:bg-red-50 dark:border-red-700 dark:text-red-300 dark:hover:bg-red-950/30'
+      : option.kind === 'alternative'
+        ? 'border-amber-400 text-amber-800 hover:bg-amber-50 dark:border-amber-600 dark:text-amber-200 dark:hover:bg-amber-950/30'
+        : 'border-brand/50 text-brand hover:bg-brand/10'
+
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className={`rounded-md border px-2.5 py-1 text-[12px] font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${style}`}
+    >
+      {option.label}
+    </button>
   )
 }
 

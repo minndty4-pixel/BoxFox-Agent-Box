@@ -1,15 +1,42 @@
-import { jsonOrProviderError, modelRecord, normalizeFinishReason, parseJson, providerError, sseEvents, baseUrl, withThinkingLevels } from './common.mjs';
+import { jsonOrProviderError, modelRecord, normalizeFinishReason, parseJson, providerError, sseEvents, baseUrl, thinkingFromProviderPayload, EFFORT_LEVELS } from './common.mjs';
 
 function headers(apiKey) {
   return { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', Accept: 'application/json' };
 }
 
+/**
+ * BUG-4/R2: OpenAI's `/models` payload carries no reasoning or context metadata.
+ * When a compatible gateway does report it (OpenRouter-shaped
+ * `context_length`/`reasoning`/`supported_parameters` fields) that payload wins;
+ * otherwise the record uses OpenAI's own control, `reasoning_effort`
+ * (minimal|low|medium|high), and leaves the context window null rather than
+ * inventing one.
+ */
+function thinkingFromOpenAIModel(item) {
+  const payload = thinkingFromProviderPayload(item || {});
+  return {
+    contextWindow: payload.contextWindow,
+    thinkingType: 'effort',
+    thinkingLevels: payload.thinkingLevels.length ? payload.thinkingLevels : [...EFFORT_LEVELS],
+    defaultThinking: payload.defaultThinking,
+  };
+}
+
 export function createOpenAIAdapter({ fetchImpl }) {
   return {
+    // Stored rows are re-described when the service normalizes a connection:
+    // OpenAI-compatible endpoints take an effort level, and the context window
+    // stays whatever the payload reported (BUG-4/R2).
+    thinkingMetadata: model => ({
+      thinkingType: 'effort',
+      thinkingLevels: Array.isArray(model?.thinkingLevels) && model.thinkingLevels.length ? model.thinkingLevels : [...EFFORT_LEVELS],
+      defaultThinking: model?.defaultThinking ?? null,
+      contextWindow: model?.contextWindow ?? null,
+    }),
     async discover({ connection, credentials, signal }) {
       const data = await jsonOrProviderError(await fetchImpl(`${baseUrl(connection.endpoint)}/models`, { headers: headers(credentials.apiKey), signal }));
       const list = Array.isArray(data?.data) ? data.data : Array.isArray(data?.models) ? data.models : [];
-      return { models: list.map(item => withThinkingLevels(typeof item === 'string' ? modelRecord(item) : modelRecord(item?.id, item?.name || item?.id))).filter(m => m.id) };
+      return { models: list.map(item => typeof item === 'string' ? modelRecord(item, item, {}, thinkingFromOpenAIModel({ id: item })) : modelRecord(item?.id, item?.name || item?.id, {}, thinkingFromOpenAIModel(item))).filter(m => m.id) };
     },
     async *generate({ connection, credentials, body, signal }) {
       const stream = body.stream !== false;

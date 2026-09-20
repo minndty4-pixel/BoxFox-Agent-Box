@@ -1,4 +1,5 @@
-import React, { useState, useMemo } from 'react'
+import React, { useState, useMemo, useEffect } from 'react'
+import { useT } from '../../i18n/context'
 import {
   Terminal,
   Camera,
@@ -16,6 +17,9 @@ import {
   Hexagon,
   X,
   Maximize2,
+  Layers,
+  Film,
+  ShieldAlert,
 } from 'lucide-react'
 import type { HarnessEvent } from '../../store/harnessChatStore'
 import type { ProviderSnapshot } from '../../types/provider'
@@ -23,6 +27,9 @@ import type { RouterChatSelection } from '../../store/routerChatStore'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { ProviderIcon } from '../providers/ProviderIcon'
 import type { LightboxMediaProps } from './MediaLightboxModal'
+
+/** Tab mà một chip trong transcript có thể mở (hợp đồng §3 — gợi ý, không ra lệnh). */
+export type TranscriptTabId = 'plan' | 'decisions' | 'subagents'
 
 interface HarnessStepViewProps {
   events: HarnessEvent[]
@@ -33,15 +40,28 @@ interface HarnessStepViewProps {
   onOpenLightbox?: (media: LightboxMediaProps) => void
   snapshot?: ProviderSnapshot | null
   selection?: RouterChatSelection | null
+  /** Mở tab tại chỗ khi người dùng bấm chip kế hoạch / sub-agent / quyết định. */
+  onOpenTab?: (tab: TranscriptTabId, target?: Record<string, unknown> | null) => void
 }
+
+/**
+ * Một mục trong dòng thời gian của lượt (F2). Lượt được vẽ như MỘT danh sách
+ * phẳng theo `seq`, không gom tool/ảnh vào accordion hay gallery riêng.
+ */
+type TurnTimelineItem =
+  | { kind: 'text'; id: string; seq: number; text: string; live: boolean }
+  | { kind: 'tool'; id: string; seq: number; start: HarnessEvent | null; end: HarnessEvent | null }
+  | { kind: 'child'; id: string; seq: number; event: HarnessEvent }
+  | { kind: 'plan'; id: string; seq: number; event: HarnessEvent }
+  | { kind: 'decision'; id: string; seq: number; event: HarnessEvent; resolution?: HarnessEvent }
+  | { kind: 'compression'; id: string; seq: number; event: HarnessEvent }
 
 interface HarnessTurn {
   id: string
   modelChange?: { from: string; to: string } | null
   userEvent: HarnessEvent | null
   thought: string | null
-  steps: HarnessEvent[]
-  streamingText?: string | null
+  items: TurnTimelineItem[]
   finalAssistant: HarnessEvent | null
   usage: {
     prompt_tokens?: number
@@ -61,6 +81,46 @@ interface HarnessTurn {
   error?: string | null
 }
 
+/** Ảnh/video sinh ra bởi một lần gọi tool (nguồn thật: payload `tool_end`). */
+export interface ToolMedia {
+  eventSeq: number
+  kind: 'image' | 'video'
+  src: string
+  mime: string | null
+  dimensions: [number, number] | null
+  artifactPath: string | null
+  caption: string
+  sourceUrl?: string
+  durationSec?: number
+}
+
+/** i18n thuộc workstream khác — hai nhãn này được export thẳng từ component. */
+export const FINAL_ANSWER_EXPAND_LABEL = 'View detailed response'
+export const FINAL_ANSWER_COLLAPSE_LABEL = 'Hide detailed response'
+export const FINAL_ANSWER_SUMMARY_MAX_CHARS = 600
+export const FINAL_ANSWER_SUMMARY_MAX_LINES = 6
+
+/** F3: không bịa nội dung suy luận — chỉ nói đúng những gì model trả về. */
+export function reasoningTokensNotice(reasoningTokens: number): string {
+  return `Model returned ${reasoningTokens} reasoning tokens; no streamed reasoning text.`
+}
+
+/** F7: thông báo nén context ở cấp cao nhất của lượt, kèm số token thật. */
+export function compactionNoticeText(data: Record<string, unknown>): string {
+  const kind = String(data.kind ?? 'unchanged')
+  const before = typeof data.beforeEstimate === 'number' ? data.beforeEstimate : null
+  const after = typeof data.afterEstimate === 'number' ? data.afterEstimate : null
+  if (kind === 'unchanged') return 'No compaction needed — context is still within budget.'
+  if (kind === 'summary_failed') {
+    return before === null
+      ? 'Context compaction failed; the original transcript was preserved.'
+      : `Context compaction failed; the original transcript was preserved (${before} tokens).`
+  }
+  if (before !== null && after !== null) return `Context compacted: ${before} → ${after} tokens`
+  if (before !== null) return `Context compaction requested (${before} tokens)`
+  return 'Context compaction applied'
+}
+
 function toMs(t?: number): number {
   if (!t) return Date.now()
   return t < 1e11 ? t * 1000 : t
@@ -76,6 +136,111 @@ function formatTime(timestamp?: number): string {
   if (!timestamp) return 'Just now'
   const d = new Date(toMs(timestamp))
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+/** F4: đọc kích thước thật từ payload (`dimensions` có thể là mảng, object hay chuỗi). */
+export function parseDimensions(value: unknown): [number, number] | null {
+  if (Array.isArray(value) && value.length >= 2) {
+    const w = Number(value[0])
+    const h = Number(value[1])
+    return Number.isFinite(w) && Number.isFinite(h) ? [w, h] : null
+  }
+  if (value && typeof value === 'object') {
+    const obj = value as Record<string, unknown>
+    const w = Number(obj.width ?? obj.w)
+    const h = Number(obj.height ?? obj.h)
+    return Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0 ? [w, h] : null
+  }
+  if (typeof value === 'string') {
+    const match = value.match(/(\d+)\s*[x×]\s*(\d+)/)
+    if (match) return [Number(match[1]), Number(match[2])]
+  }
+  return null
+}
+
+const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp', '.svg', '.gif']
+const VIDEO_EXTENSIONS = ['.mp4', '.webm', '.mov', '.mkv']
+
+const MIME_LABELS: Record<string, string> = {
+  'image/png': 'PNG',
+  'image/jpeg': 'JPEG',
+  'image/jpg': 'JPEG',
+  'image/webp': 'WEBP',
+  'image/svg+xml': 'SVG',
+  'image/gif': 'GIF',
+  'video/mp4': 'MP4',
+  'video/webm': 'WEBM',
+  'video/quicktime': 'MOV',
+}
+
+function extensionOf(path: string): string {
+  const clean = path.split('?')[0].toLowerCase()
+  const dot = clean.lastIndexOf('.')
+  return dot === -1 ? '' : clean.slice(dot)
+}
+
+/** F4: nhãn `1280 × 800 · PNG` — số đo lấy từ chính `tool_end`, không hardcode. */
+export function formatMediaLabel(media: Pick<ToolMedia, 'mime' | 'dimensions' | 'artifactPath' | 'durationSec' | 'kind'>): string {
+  const parts: string[] = []
+  if (media.dimensions) parts.push(`${media.dimensions[0]} × ${media.dimensions[1]}`)
+  const ext = media.artifactPath ? extensionOf(media.artifactPath) : ''
+  const mimeLabel =
+    (media.mime && MIME_LABELS[media.mime.toLowerCase()]) ||
+    (ext ? ext.replace('.', '').toUpperCase() : '')
+  if (media.kind === 'video' && typeof media.durationSec === 'number') parts.push(`${media.durationSec}s`)
+  if (mimeLabel) parts.push(mimeLabel)
+  return parts.join(' · ')
+}
+
+function boxMediaUrl(artifactPath: string): string {
+  const relPath = artifactPath.replace(/^\/home\/agent\/workspace\//, '')
+  return `/__box/file/media?path=${encodeURIComponent(relPath)}`
+}
+
+/** F2 + F4: ảnh/video của `tool_end` lấy từ payload thật, gắn ngay dưới hàng tool. */
+export function extractToolMedia(event: HarnessEvent): ToolMedia | null {
+  const result = event.data?.result
+  const resObj = result && typeof result === 'object' ? (result as Record<string, unknown>) : null
+  if (!resObj) return null
+
+  const name = String(event.data?.name ?? '')
+  const args = event.data?.args as Record<string, unknown> | null
+  const inlineImage = typeof resObj.image === 'string' ? resObj.image : null
+  const artifactPath =
+    typeof resObj.artifact === 'string' ? resObj.artifact : typeof resObj.path === 'string' ? resObj.path : null
+  const mime = typeof resObj.mime === 'string' ? resObj.mime : null
+  const dimensions = parseDimensions(resObj.dimensions)
+  const durationSec = typeof resObj.durationSec === 'number' ? resObj.durationSec : undefined
+
+  let src: string | null = inlineImage ? `data:${mime || 'image/png'};base64,${inlineImage}` : null
+  let kind: 'image' | 'video' = 'image'
+  if (!src && artifactPath) {
+    const ext = extensionOf(artifactPath)
+    if (VIDEO_EXTENSIONS.includes(ext)) {
+      src = boxMediaUrl(artifactPath)
+      kind = 'video'
+    } else if (IMAGE_EXTENSIONS.includes(ext)) {
+      src = boxMediaUrl(artifactPath)
+    }
+  }
+  if (!src) return null
+
+  return {
+    eventSeq: event.seq,
+    kind,
+    src,
+    mime,
+    dimensions,
+    artifactPath,
+    caption:
+      kind === 'video'
+        ? 'Sandbox Screen Recording'
+        : name === 'browser_use'
+          ? 'Browser Page Screenshot'
+          : 'Sandbox Desktop Screen Capture',
+    sourceUrl: typeof args?.url === 'string' ? args.url : undefined,
+    durationSec,
+  }
 }
 
 function resolveProvider(modelId?: string, connectionId?: string, snapshot?: ProviderSnapshot | null): string {
@@ -141,6 +306,13 @@ function getToolDisplay(name: string, args: Record<string, unknown> | null, isEr
         icon: <Camera className="size-3.5 text-blue-400" />,
       }
     }
+    case 'computer_screen_record': {
+      return {
+        actionLabel: 'Recorded',
+        detailLabel: 'sandbox display',
+        icon: <Film className="size-3.5 text-fuchsia-400" />,
+      }
+    }
     case 'browser_use': {
       return {
         actionLabel: 'Explored',
@@ -165,6 +337,296 @@ function getToolDisplay(name: string, args: Record<string, unknown> | null, isEr
   }
 }
 
+/** F6: câu trả lời cuối chỉ hiện tóm tắt, nút mở rộng hiện bản đầy đủ. */
+export function summarizeFinalText(text: string): { summary: string; truncated: boolean } {
+  const normalized = text.replace(/\r\n/g, '\n')
+  const lines = normalized.split('\n')
+  let summary = lines.slice(0, FINAL_ANSWER_SUMMARY_MAX_LINES).join('\n')
+  if (summary.length > FINAL_ANSWER_SUMMARY_MAX_CHARS) {
+    summary = summary.slice(0, FINAL_ANSWER_SUMMARY_MAX_CHARS)
+  }
+  const truncated = summary.length < normalized.length
+  return {
+    summary: truncated ? summary.replace(/\s+$/, '') + '…' : normalized,
+    truncated,
+  }
+}
+
+function applyTimelineEvent(turn: HarnessTurn, event: HarnessEvent) {
+  // F5: thời lượng chỉ được cộng khi lượt CHƯA kết thúc. Event `finish`/`error` đầu tiên
+  // vẫn chốt được mốc kết thúc (kể cả khi `assistant` final đã tới trước đó), nhưng sau đó
+  // lượt đóng băng — không còn bị kéo dài bởi event tới muộn (lượt cancel 36s từng hiện 1702s).
+  const terminal = event.type === 'finish' || event.type === 'error'
+  const firstTerminal = terminal && !turn.finish && !turn.error
+  if (!turn.isCompleted || firstTerminal) {
+    turn.endTime = Math.max(turn.endTime, event.created)
+  }
+
+  switch (event.type) {
+    case 'thought': {
+      turn.thought = String(event.data.text ?? '')
+      return
+    }
+    case 'usage': {
+      turn.usage = event.data.usage as HarnessTurn['usage']
+      turn.target =
+        (event.data.target as HarnessTurn['target']) || (event.data.model ? { modelId: String(event.data.model) } : null)
+      return
+    }
+    case 'assistant_delta': {
+      const text = String(event.data.text ?? '')
+      const last = turn.items[turn.items.length - 1]
+      if (last && last.kind === 'text' && last.live) {
+        // Delta của backend là văn bản tích luỹ; nhánh sau chỉ để phòng adapter gửi từng mảnh.
+        last.text = text.startsWith(last.text) ? text : last.text + text
+      } else {
+        turn.items.push({ kind: 'text', id: `text_${event.seq}`, seq: event.seq, text, live: true })
+      }
+      return
+    }
+    case 'assistant': {
+      if (event.data.thought) turn.thought = String(event.data.thought)
+      const text = String(event.data.text ?? '')
+      const isFinal = event.data.final !== false
+      const last = turn.items[turn.items.length - 1]
+      if (isFinal) {
+        turn.finalAssistant = event
+        turn.isCompleted = true
+        // Văn bản đang stream chính là câu trả lời cuối: bỏ khỏi timeline để không lặp.
+        if (last && last.kind === 'text' && (last.live || (text && text.startsWith(last.text)))) {
+          turn.items.pop()
+        }
+      } else if (last && last.kind === 'text') {
+        // Event `assistant` (final:false) là bản đầy đủ của đúng đoạn vừa stream.
+        last.text = text
+        last.live = false
+      } else if (text) {
+        turn.items.push({ kind: 'text', id: `text_${event.seq}`, seq: event.seq, text, live: false })
+      }
+      return
+    }
+    case 'tool_start': {
+      turn.items.push({
+        kind: 'tool',
+        id: `tool_${event.data.id ?? event.seq}`,
+        seq: event.seq,
+        start: event,
+        end: null,
+      })
+      return
+    }
+    case 'tool_end': {
+      const callId = event.data.id
+      const pending = findPendingTool(turn, callId)
+      if (pending) pending.end = event
+      else turn.items.push({ kind: 'tool', id: `tool_${event.seq}`, seq: event.seq, start: null, end: event })
+      return
+    }
+    case 'child': {
+      turn.items.push({ kind: 'child', id: `child_${event.seq}`, seq: event.seq, event })
+      return
+    }
+    case 'plan_written': {
+      // Chip kế hoạch trong transcript — bấm để mở đúng bản vừa ghi ở tab Plan.
+      turn.items.push({ kind: 'plan', id: `plan_${event.seq}`, seq: event.seq, event })
+      return
+    }
+    case 'decision_requested': {
+      turn.items.push({
+        kind: 'decision',
+        id: `decision_${String(event.data.decisionId ?? event.seq)}`,
+        seq: event.seq,
+        event,
+      })
+      return
+    }
+    case 'decision_resolved': {
+      // Một hàng duy nhất cho mỗi quyết định: cập nhật tại chỗ, không thêm hàng mới.
+      const existing = turn.items.find(
+        (item): item is Extract<TurnTimelineItem, { kind: 'decision' }> =>
+          item.kind === 'decision' && item.event.data.decisionId === event.data.decisionId,
+      )
+      if (existing) existing.resolution = event
+      else {
+        turn.items.push({
+          kind: 'decision',
+          id: `decision_${String(event.data.decisionId ?? event.seq)}`,
+          seq: event.seq,
+          event,
+          resolution: event,
+        })
+      }
+      return
+    }
+    case 'compression': {
+      turn.items.push({ kind: 'compression', id: `compaction_${event.seq}`, seq: event.seq, event })
+      return
+    }
+    case 'finish': {
+      turn.finish = event
+      turn.isCompleted = true
+      return
+    }
+    case 'error': {
+      turn.error = String(event.data?.message ?? 'Turn execution error')
+      turn.isCompleted = true
+      return
+    }
+    default:
+      // `step`, `command_resolved`, `skill_loaded`, `executor`... chỉ là telemetry.
+      return
+  }
+}
+
+function findPendingTool(turn: HarnessTurn, callId: unknown): Extract<TurnTimelineItem, { kind: 'tool' }> | null {
+  for (let i = turn.items.length - 1; i >= 0; i -= 1) {
+    const item = turn.items[i]
+    if (item.kind === 'tool' && !item.end && (item.start?.data.id === callId || callId === undefined)) return item
+  }
+  return null
+}
+
+/**
+ * Một hàng cho mỗi quyết định của agent: câu hỏi nằm ngay chỗ nó được hỏi, và
+ * một nút mở tab Decisions tại đúng yêu cầu đó. Trạng thái đọc từ
+ * `decision_resolved` thật — không có bộ đếm hạn nào do giao diện bịa.
+ */
+function DecisionRow({
+  event,
+  resolution,
+  onOpenTab,
+}: {
+  event: HarnessEvent
+  resolution?: HarnessEvent
+  onOpenTab?: (tab: TranscriptTabId, target?: Record<string, unknown> | null) => void
+}) {
+  const t = useT()
+  const data = event.data ?? {}
+  const decisionId = String(data.decisionId ?? '')
+  const question = String(data.question ?? data.action ?? '')
+  const kind = String(data.kind ?? 'question')
+  const status = resolution ? String(resolution.data?.status ?? '') : 'pending'
+  const timedOut = resolution ? String(resolution.data?.reason ?? '') === 'timeout' : false
+
+  const statusLabel = timedOut
+    ? t('decisions.status.expired')
+    : status === 'approved'
+      ? t('decisions.status.approved')
+      : status === 'rejected'
+        ? t('decisions.status.rejected')
+        : status === 'cancelled'
+          ? t('decisions.status.cancelled')
+          : t('decisions.status.pending')
+
+  return (
+    <div
+      data-timeline="decision"
+      data-decision-id={decisionId || undefined}
+      data-decision-status={status}
+      className="max-w-2xl rounded-lg border border-amber-500/45 bg-amber-500/5 px-2.5 py-2"
+    >
+      <div className="flex items-center gap-2 text-[11px] font-semibold text-amber-700 dark:text-amber-300">
+        <span
+          className={`size-1.5 rounded-full bg-amber-500 ${status === 'pending' ? 'animate-pulse' : 'opacity-50'}`}
+        />
+        <span>
+          {status === 'pending'
+            ? t('chat.decisionWaiting')
+            : `${kind === 'approval' ? t('decisions.kind.approval') : t('decisions.kind.question')} · ${statusLabel}`}
+        </span>
+      </div>
+      {question && <p className="mt-1 text-xs leading-relaxed text-fg select-text">{question}</p>}
+      <div className="mt-1.5 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => onOpenTab?.('decisions', decisionId ? { requestId: decisionId } : null)}
+          className="group inline-flex items-center gap-1 rounded-md border border-line bg-panel px-2 py-0.5 text-[11px] font-medium text-muted transition hover:bg-panel2 hover:text-fg cursor-pointer"
+        >
+          <ShieldAlert className="size-3" />
+          <span className="group-hover:underline">{t('chat.openDecisionTab')}</span>
+          <ChevronRight className="size-3 opacity-0 transition group-hover:opacity-100" />
+        </button>
+        {resolution && (
+          <span className="font-mono text-[10px] text-muted">{statusLabel}</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function emptyTurn(id: string, modelChange: { from: string; to: string } | null, userEvent: HarnessEvent | null, created: number): HarnessTurn {
+  return {
+    id,
+    modelChange,
+    userEvent,
+    thought: null,
+    items: [],
+    finalAssistant: null,
+    usage: null,
+    target: null,
+    finish: null,
+    startTime: created,
+    endTime: created,
+    isCompleted: false,
+  }
+}
+
+function sortItems(items: TurnTimelineItem[]): TurnTimelineItem[] {
+  return [...items].sort((a, b) => a.seq - b.seq)
+}
+
+/** F2 + F5: nhóm event thành lượt theo `user`, dựng timeline phẳng theo `seq`. */
+export function buildHarnessTurns(events: HarnessEvent[]): HarnessTurn[] {
+  const list: HarnessTurn[] = []
+  let current: HarnessTurn | null = null
+  let pendingModelChange: { from: string; to: string } | null = null
+  // `command_resolved` được phát TRƯỚC `user` ở mọi lượt. F5: không dựng lượt "ma" từ
+  // những event này — chỉ gắn vào lượt kế tiếp (và chúng vốn không được vẽ).
+  let preUserEvents: HarnessEvent[] = []
+
+  const closeTurn = () => {
+    if (!current) return
+    current.items = sortItems(current.items)
+    list.push(current)
+    current = null
+  }
+
+  for (const event of events) {
+    if (event.type === 'model_change') {
+      pendingModelChange = { from: String(event.data.from || ''), to: String(event.data.to || '') }
+      continue
+    }
+
+    if (event.type === 'user') {
+      closeTurn()
+      current = emptyTurn(`turn_${event.seq}`, pendingModelChange, event, event.created)
+      pendingModelChange = null
+      preUserEvents = []
+      continue
+    }
+
+    if (!current) {
+      preUserEvents.push(event)
+      continue
+    }
+
+    applyTimelineEvent(current, event)
+  }
+
+  closeTurn()
+
+  // Fallback: transcript không có event `user` nào (dữ liệu cũ/không đầy đủ) — vẫn phải
+  // hiển thị thay vì làm mất toàn bộ nội dung.
+  if (list.length === 0 && preUserEvents.length > 0) {
+    const fallback = emptyTurn('turn_pre_user', pendingModelChange, null, preUserEvents[0].created)
+    for (const event of preUserEvents) applyTimelineEvent(fallback, event)
+    fallback.items = sortItems(fallback.items)
+    list.push(fallback)
+  }
+
+  return list
+}
+
 export function HarnessStepView({
   events,
   status,
@@ -174,95 +636,11 @@ export function HarnessStepView({
   onOpenLightbox,
   snapshot,
   selection,
+  onOpenTab,
 }: HarnessStepViewProps) {
   const isBusy = status === 'running' || status === 'starting'
 
-  // Nhóm events thành các Turn
-  const turns = useMemo(() => {
-    const list: HarnessTurn[] = []
-    let current: HarnessTurn | null = null
-    let pendingModelChange: { from: string; to: string } | null = null
-
-    for (const event of events) {
-      if (event.type === 'model_change') {
-        pendingModelChange = { from: String(event.data.from || ''), to: String(event.data.to || '') }
-        continue
-      }
-
-      if (event.type === 'user') {
-        if (current) list.push(current)
-        current = {
-          id: `turn_${event.seq}`,
-          modelChange: pendingModelChange,
-          userEvent: event,
-          thought: null,
-          steps: [],
-          streamingText: null,
-          finalAssistant: null,
-          usage: null,
-          target: null,
-          finish: null,
-          startTime: event.created,
-          endTime: event.created,
-          isCompleted: false,
-        }
-        pendingModelChange = null
-        continue
-      }
-
-      if (!current) {
-        current = {
-          id: `turn_initial`,
-          modelChange: pendingModelChange,
-          userEvent: null,
-          thought: null,
-          steps: [],
-          streamingText: null,
-          finalAssistant: null,
-          usage: null,
-          target: null,
-          finish: null,
-          startTime: event.created,
-          endTime: event.created,
-          isCompleted: false,
-        }
-        pendingModelChange = null
-      }
-
-      current.endTime = Math.max(current.endTime, event.created)
-
-      if (event.type === 'thought') {
-        current.thought = String(event.data.text ?? '')
-      } else if (event.type === 'usage') {
-        current.usage = event.data.usage as any
-        current.target = (event.data.target as any) || (event.data.model ? { modelId: String(event.data.model) } : null)
-      } else if (event.type === 'assistant_delta') {
-        current.streamingText = String(event.data.text ?? '')
-      } else if (event.type === 'assistant') {
-        if (event.data.thought) {
-          current.thought = String(event.data.thought)
-        }
-        const isFinal = event.data.final !== false
-        if (isFinal) {
-          current.finalAssistant = event
-          current.isCompleted = true
-        } else {
-          current.steps.push(event)
-        }
-      } else if (event.type === 'finish') {
-        current.finish = event
-        current.isCompleted = true
-      } else if (event.type === 'error') {
-        current.error = String(event.data?.message ?? 'Turn execution error')
-        current.isCompleted = true
-      } else {
-        current.steps.push(event)
-      }
-    }
-
-    if (current) list.push(current)
-    return list
-  }, [events])
+  const turns = useMemo(() => buildHarnessTurns(events), [events])
 
   return (
     <div className="space-y-6 font-sans select-text">
@@ -278,6 +656,7 @@ export function HarnessStepView({
               onOpenLightbox={onOpenLightbox}
               snapshot={snapshot}
               selection={selection}
+              onOpenTab={onOpenTab}
             />
           </div>
         )
@@ -316,18 +695,18 @@ function TurnBlock({
   onOpenLightbox,
   snapshot,
   selection,
+  onOpenTab,
 }: {
   turn: HarnessTurn
   isTurnBusy: boolean
   onOpenLightbox?: (media: LightboxMediaProps) => void
   snapshot?: ProviderSnapshot | null
   selection?: RouterChatSelection | null
+  onOpenTab?: (tab: TranscriptTabId, target?: Record<string, unknown> | null) => void
 }) {
+  const t = useT()
   const [copiedUser, setCopiedUser] = useState(false)
   const [copiedAssistant, setCopiedAssistant] = useState(false)
-
-  // Collapse Accordion State: Mặc định collapse all khi đã completed, mở khi đang chạy
-  const [thinkingOpen, setThinkingOpen] = useState(!turn.isCompleted)
 
   // Xác định Model info và Provider
   const targetModelId =
@@ -340,66 +719,27 @@ function TurnBlock({
 
   const providerId = resolveProvider(targetModelId, targetConnId, snapshot)
 
-  // Tính toán thời gian thực thi của turn
+  // F5: endTime chỉ được cộng khi lượt chưa xong.
   const durationSec = Math.max(1, Math.round((toMs(turn.endTime) - toMs(turn.startTime)) / 1000))
 
-  // Tool calls trong turn
-  const toolStarts = turn.steps.filter((e) => e.type === 'tool_start')
-  const toolEnds = turn.steps.filter((e) => e.type === 'tool_end')
-  const activeCall = toolStarts.find((s) => !toolEnds.some((e) => e.data.id === s.data.id))
+  // Tool đang chạy (chưa có `tool_end`) — vẫn nằm đúng vị trí trong timeline.
+  const pendingTool = useMemo(
+    () => turn.items.find((item) => item.kind === 'tool' && !item.end) ?? null,
+    [turn.items],
+  )
 
-  // Trích xuất ảnh chụp màn hình trực tiếp từ các tool bước thực thi hoặc yêu cầu screenshot
-  const capturedScreenshots = useMemo(() => {
-    const list: Array<{
-      id: string
-      src: string
-      caption: string
-      artifactPath?: string
-      sourceUrl?: string
-    }> = []
-
-    for (const end of toolEnds) {
-      const name = String(end.data.name ?? '')
-      const args = end.data.args as Record<string, unknown> | null
-      const res = end.data.result
-      const resObj = res && typeof res === 'object' ? (res as Record<string, unknown>) : null
-      const artifactPath = typeof resObj?.artifact === 'string' ? resObj.artifact : null
-      const hasImage = typeof resObj?.image === 'string'
-      const mime = typeof resObj?.mime === 'string' ? resObj.mime : 'image/png'
-
-      let imgSrc: string | null = hasImage ? `data:${mime};base64,${resObj!.image}` : null
-      if (
-        !imgSrc &&
-        artifactPath &&
-        (artifactPath.endsWith('.png') ||
-          artifactPath.endsWith('.jpg') ||
-          artifactPath.endsWith('.jpeg') ||
-          artifactPath.endsWith('.webp') ||
-          artifactPath.endsWith('.svg'))
-      ) {
-        const relPath = artifactPath.replace(/^\/home\/agent\/workspace\//, '')
-        imgSrc = `/__box/file/media?path=${encodeURIComponent(relPath)}`
-      }
-
-      if (imgSrc) {
-        list.push({
-          id: `ss_${end.seq}`,
-          src: imgSrc,
-          caption:
-            name === 'browser_use'
-              ? 'Browser Page Screenshot'
-              : 'Sandbox Desktop Screen Capture',
-          artifactPath: artifactPath || undefined,
-          sourceUrl: typeof args?.url === 'string' ? args.url : undefined,
-        })
-      }
+  const turnMedia = useMemo(() => {
+    const media: ToolMedia[] = []
+    for (const item of turn.items) {
+      if (item.kind !== 'tool' || !item.end) continue
+      const found = extractToolMedia(item.end)
+      if (found) media.push(found)
     }
+    return media
+  }, [turn.items])
 
-    return list
-  }, [toolEnds])
-
-  // Luôn hiển thị thanh Worked for Xs nếu đã có hoạt động hoặc đang chạy
-  const hasThinkingSteps = turn.steps.length > 0 || Boolean(turn.thought) || isTurnBusy
+  const reasoningTokens = typeof turn.usage?.reasoning_tokens === 'number' ? turn.usage.reasoning_tokens : 0
+  const thoughtText = turn.thought && turn.thought.trim() ? turn.thought : null
 
   const handleCopyUser = () => {
     const text = String(turn.userEvent?.data?.text ?? '')
@@ -471,213 +811,459 @@ function TurnBlock({
         </div>
       )}
 
-      {/* 2. Devin-style Hierarchical Thinking Accordion */}
-      {hasThinkingSteps && (
-        <div className="space-y-2 pl-0.5">
-          {/* Main Parent Header: Worked for Xs > (Không viền hộp to, thanh thoát như Ảnh 2 & 4) */}
-          <button
-            type="button"
-            onClick={() => setThinkingOpen(!thinkingOpen)}
-            className="flex items-center gap-1.5 text-xs text-muted hover:text-fg font-medium transition cursor-pointer select-none group py-0.5"
-          >
-            <span
-              className={`size-1.5 rounded-full transition duration-200 ${
-                isTurnBusy ? 'bg-brand animate-pulse scale-110' : 'bg-brand/80 group-hover:scale-125'
-              }`}
-            />
-            <span className="text-zinc-400 group-hover:text-zinc-200">
-              {isTurnBusy ? 'Working...' : `Worked for ${durationSec}s`}
-            </span>
-            {thinkingOpen ? (
-              <ChevronDown className="size-3.5 text-muted group-hover:text-fg transition" />
-            ) : (
-              <ChevronRight className="size-3.5 text-muted group-hover:text-fg transition" />
-            )}
-          </button>
-
-          {/* Sub-steps Hierarchical Tree (Chuẩn xác như Ảnh 2) */}
-          {thinkingOpen && (
-            <div className="ml-1 pl-3 space-y-2 border-l border-line/60 my-1 animate-in fade-in duration-150">
-              {/* Thinking Reasoning Sub-item (Luồng suy nghĩ stream từ model hoặc reasoning tokens đã sinh) */}
-              {turn.thought ? (
-                <ThinkingSubItem thought={turn.thought} durationSec={durationSec} isLive={isTurnBusy} />
-              ) : turn.usage?.reasoning_tokens ? (
-                <ThinkingSubItem
-                  thought={`⚡ Deep reasoning process executed successfully (${turn.usage.reasoning_tokens} reasoning tokens). Cryptographically verified by Cloud Code signature.`}
-                  durationSec={durationSec}
-                  isLive={false}
-                />
-              ) : (
-                <ThinkingSubItem
-                  thought={`Direct response synthesized by ${targetModelId}.`}
-                  durationSec={durationSec}
-                  isLive={false}
-                />
-              )}
-
-              {/* Tool Execution Sub-items with Devin-style labels */}
-              {toolEnds.map((end) => (
-                <CompletedToolSubItem
-                  key={end.seq}
-                  name={String(end.data.name ?? '')}
-                  args={end.data.args as Record<string, unknown> | null}
-                  result={end.data.result}
-                  onOpenLightbox={onOpenLightbox}
-                />
-              ))}
-
-              {/* Sub-agent Specialist Sub-items */}
-              {turn.steps
-                .filter((e) => e.type === 'child')
-                .map((e) => (
-                  <div
-                    key={e.seq}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-brand/30 bg-brand/5 px-2 py-0.5 text-[11px] text-brand font-medium select-none"
-                  >
-                    <BrainCircuit className="size-3 animate-pulse" />
-                    <span>
-                      Specialist: {String(e.data.role)} ({String(e.data.status)})
-                    </span>
-                  </div>
-                ))}
-
-              {/* Context Optimization Notice */}
-              {turn.steps
-                .filter((e) => e.type === 'compression')
-                .map((e) => (
-                  <div key={e.seq} className="text-[11px] text-muted italic">
-                    Context optimized: {String(e.data.kind)}
-                  </div>
-                ))}
-
-              {/* Active in-progress tool call indicator */}
-              {isTurnBusy && activeCall && (
-                <div className="flex items-center gap-2 py-1 text-xs text-blue-300 animate-pulse select-none">
-                  <Loader2 className="size-3.5 text-blue-400 animate-spin shrink-0" />
-                  <span className="font-medium">
-                    {getToolDisplay(String(activeCall.data.name), activeCall.data.args as any, false).actionLabel}{' '}
-                    {getToolDisplay(String(activeCall.data.name), activeCall.data.args as any, false).detailLabel}...
-                  </span>
-                </div>
-              )}
-
-              {/* Lightweight Text-only Thinking Indicator (Ảnh 2, Không viền hộp to) */}
-              {isTurnBusy && !activeCall && (
-                <div className="flex items-center gap-2 py-1 text-xs text-muted select-none">
-                  <Sparkles className="size-3.5 text-brand animate-pulse shrink-0" />
-                  <span className="text-zinc-300">BoxFox is thinking and synthesizing response...</span>
-                </div>
-              )}
-            </div>
-          )}
+      {/* 2. Slim turn header — chỉ còn dòng tổng kết thời gian, không bọc toàn bộ lượt (F2) */}
+      <div className="space-y-1.5 pl-0.5" data-turn-header="true">
+        <div className="flex items-center gap-1.5 text-xs text-muted select-none">
+          <span
+            className={`size-1.5 rounded-full transition duration-200 ${
+              isTurnBusy ? 'bg-brand animate-pulse scale-110' : 'bg-brand/80'
+            }`}
+          />
+          <span className="text-zinc-400">
+            {isTurnBusy ? 'Working...' : `Worked for ${durationSec}s`}
+          </span>
         </div>
-      )}
 
-      {/* 2.5 Inline Captured Screenshots — Nhả ảnh trực tiếp ra đoạn chat */}
-      {capturedScreenshots.length > 0 && (
-        <div className="space-y-2.5 max-w-2xl pl-0.5 my-2 animate-in fade-in slide-in-from-bottom-2 duration-200">
-          <div className="flex items-center justify-between text-xs text-muted select-none">
-            <div className="flex items-center gap-1.5 font-semibold text-fg">
-              <Camera className="size-3.5 text-brand" />
-              <span>
-                Sandbox Screen Capture{capturedScreenshots.length > 1 ? ` (${capturedScreenshots.length})` : ''}
-              </span>
-            </div>
-            <span className="text-[10px] text-zinc-500 font-mono">1280 × 720 · PNG</span>
+        {/* Suy luận thật (stream từ model) hoặc dòng trung thực khi model chỉ trả token (F3) */}
+        {thoughtText ? (
+          <ThinkingSubItem thought={thoughtText} durationSec={durationSec} isLive={isTurnBusy} />
+        ) : reasoningTokens > 0 ? (
+          <div className="flex items-center gap-1.5 text-[11px] text-muted" data-thinking-tokens="true">
+            <Sparkles className="size-3 text-brand/70 shrink-0" />
+            <span className="text-zinc-400">{reasoningTokensNotice(reasoningTokens)}</span>
           </div>
-          <div className="grid grid-cols-1 gap-3">
-            {capturedScreenshots.map((item, idx) => (
-              <div
-                key={item.id || idx}
-                className="group relative overflow-hidden rounded-xl border border-line bg-panel2 shadow-xs transition hover:border-brand/50 hover:shadow-md cursor-pointer"
-                onClick={() => onOpenLightbox?.({ src: item.src, caption: item.caption || 'Sandbox Screen Capture' })}
-                title="Nhấp để phóng to / tải về"
-              >
-                <img
-                  src={item.src}
-                  alt={item.caption || 'Sandbox Screen Capture'}
-                  onError={(e) => {
-                    (e.currentTarget as HTMLElement).style.display = 'none'
-                  }}
-                  className="w-full object-contain max-h-96 rounded-lg transition group-hover:scale-[1.01]"
-                />
-                <div className="absolute top-2 right-2 flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition bg-black/75 backdrop-blur-xs px-2.5 py-1 rounded-md text-[11px] text-white shadow-xs">
-                  <Maximize2 className="size-3 text-zinc-200" />
-                  <span>Phóng to</span>
-                </div>
-                {item.artifactPath && (
-                  <div className="px-3 py-1.5 border-t border-line/40 bg-panel/80 text-[10px] text-zinc-400 font-mono truncate flex items-center justify-between">
-                    <span className="truncate">{item.artifactPath}</span>
-                    <span className="text-brand shrink-0 ml-2">Click để phóng to</span>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+        ) : null}
+      </div>
 
-      {/* 3. Assistant Response & Model Header (Supports both live streamingText and finalAssistant) */}
-      {(turn.finalAssistant || turn.streamingText) && (
-        <div className="space-y-1.5 pl-0.5">
-          {/* Model Info Header */}
-          <div className="flex items-center gap-1.5 text-[11px] text-muted select-none">
-            <ProviderIcon providerId={providerId} className="size-3.5" />
-            <span className="font-semibold text-fg">{targetModelId}</span>
-            <span className="text-zinc-500">·</span>
-            <span>{formatTime(turn.finalAssistant?.created || turn.endTime)}</span>
-            {turn.finalAssistant ? (
-              <span className="flex items-center gap-1 text-emerald-400 font-medium">
-                <CheckCircle2 className="size-3" />
-                <span>done</span>
-              </span>
-            ) : (
-              <span className="flex items-center gap-1 text-brand font-medium animate-pulse">
-                <Loader2 className="size-3 animate-spin" />
-                <span>streaming</span>
-              </span>
-            )}
-
-            {/* Token Usage Metrics (↑ prompt_tokens ↓ completion_tokens) */}
-            {turn.usage && (
-              <>
-                <span className="text-zinc-500">·</span>
-                <span
-                  className="font-mono text-[10px] text-zinc-400"
-                  title={`Prompt tokens: ${turn.usage.prompt_tokens ?? 0} | Completion tokens: ${turn.usage.completion_tokens ?? 0}`}
-                >
-                  ↑ {formatTokens(turn.usage.prompt_tokens)} ↓ {formatTokens(turn.usage.completion_tokens)}
-                </span>
-              </>
-            )}
-
-            {/* Copy Response Button */}
-            {turn.finalAssistant && (
+      {/* 3. Flat chronological timeline — text, tool, ảnh của tool, specialist, nén context (F2) */}
+      <div className="space-y-3">
+        {turn.items.map((item) => {
+          if (item.kind === 'text') {
+            return <TimelineTextBlock key={item.id} text={item.text} isLive={item.live && isTurnBusy} />
+          }
+          if (item.kind === 'tool') {
+            return (
+              <ToolTimelineRow
+                key={item.id}
+                start={item.start}
+                end={item.end}
+                isTurnBusy={isTurnBusy}
+                onOpenLightbox={onOpenLightbox}
+              />
+            )
+          }
+          if (item.kind === 'child') {
+            const childSessionId = String(item.event.data.sessionId ?? item.event.data.role ?? '')
+            return (
               <button
+                key={item.id}
                 type="button"
-                onClick={handleCopyAssistant}
-                className="ml-auto hover:text-fg text-muted transition cursor-pointer p-0.5"
-                title="Copy response"
+                data-timeline="child"
+                aria-label={t('chat.openSubagentTab')}
+                onClick={() => onOpenTab?.('subagents', childSessionId ? { sessionId: childSessionId } : null)}
+                className="group inline-flex items-center gap-1.5 rounded-md border border-brand/30 bg-brand/5 px-2 py-0.5 text-[11px] text-brand font-medium select-none transition hover:bg-brand/10 cursor-pointer"
               >
-                {copiedAssistant ? <Check className="size-3 text-emerald-500" /> : <Copy className="size-3" />}
+                <BrainCircuit className="size-3 animate-pulse" />
+                <span className="group-hover:underline">
+                  Specialist: {String(item.event.data.role)} ({String(item.event.data.status)})
+                </span>
+                <ChevronRight className="size-3 opacity-0 transition group-hover:opacity-100" />
               </button>
-            )}
-          </div>
+            )
+          }
+          if (item.kind === 'plan') {
+            const identity = String(item.event.data.identity ?? '')
+            return (
+              <button
+                key={item.id}
+                type="button"
+                data-timeline="plan"
+                data-plan-identity={identity || undefined}
+                aria-label={t('chat.openPlanTab')}
+                onClick={() => onOpenTab?.('plan', identity ? { identity } : null)}
+                className="group inline-flex items-center gap-1.5 rounded-md border border-brand/30 bg-brand/5 px-2 py-0.5 text-[11px] text-brand font-medium select-none transition hover:bg-brand/10 cursor-pointer"
+              >
+                <FileText className="size-3" />
+                <span className="group-hover:underline">{t('chat.planWritten')}</span>
+                {identity && <span className="font-mono text-[10px] text-muted">{identity}</span>}
+                <ChevronRight className="size-3 opacity-0 transition group-hover:opacity-100" />
+              </button>
+            )
+          }
+          if (item.kind === 'decision') {
+            return (
+              <DecisionRow
+                key={item.id}
+                event={item.event}
+                resolution={item.resolution}
+                onOpenTab={onOpenTab}
+              />
+            )
+          }
+          return <CompactionNotice key={item.id} event={item.event} />
+        })}
 
-          {/* Assistant Text with Progressive Typewriter Reveal */}
-          <div className="max-w-3xl text-sm text-fg leading-relaxed">
-            <ProgressiveMarkdown
-              content={String(turn.finalAssistant?.data?.text ?? turn.streamingText ?? '')}
-              isLive={!turn.isCompleted || (Date.now() - toMs(turn.endTime) < 4000)}
-            />
+        {/* Lightweight Text-only Thinking Indicator (Không viền hộp to) */}
+        {isTurnBusy && !pendingTool && (
+          <div className="flex items-center gap-2 py-1 text-xs text-muted select-none" data-state-indicator="thinking">
+            <Sparkles className="size-3.5 text-brand animate-pulse shrink-0" />
+            <span className="text-zinc-300">BoxFox is thinking and synthesizing response...</span>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
-      {/* 4. Turn Error: Rendered cleanly within the specific turn where it occurred */}
+      {/* 4. Final answer — tóm tắt + nút mở rộng, kèm ảnh/video của lượt (F6) */}
+      <FinalAnswerBlock
+        turn={turn}
+        providerId={providerId}
+        targetModelId={targetModelId}
+        media={turnMedia}
+        isTurnBusy={isTurnBusy}
+        copiedAssistant={copiedAssistant}
+        onCopyAssistant={handleCopyAssistant}
+        onOpenLightbox={onOpenLightbox}
+      />
+
+      {/* 5. Turn Error: Rendered cleanly within the specific turn where it occurred */}
       {turn.error && (
         <div className="py-2 text-xs text-rose-400 font-sans leading-relaxed select-text animate-in fade-in duration-150">
           {turn.error}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** Văn bản trợ lý giữa lượt (kể cả `final:false`) — hiện đúng vị trí theo `seq`. */
+function TimelineTextBlock({ text, isLive }: { text: string; isLive: boolean }) {
+  if (!text) return null
+  return (
+    <div className="max-w-3xl pl-0.5 text-sm text-fg leading-relaxed" data-timeline="assistant-text">
+      <ProgressiveMarkdown content={text} isLive={isLive} />
+    </div>
+  )
+}
+
+/** Một hàng cho mỗi cặp `tool_start` + `tool_end`, ảnh/video nằm ngay dưới hàng đó (F2/F4). */
+function ToolTimelineRow({
+  start,
+  end,
+  isTurnBusy,
+  onOpenLightbox,
+}: {
+  start: HarnessEvent | null
+  end: HarnessEvent | null
+  isTurnBusy?: boolean
+  onOpenLightbox?: (media: LightboxMediaProps) => void
+}) {
+  const [open, setOpen] = useState(false)
+
+  const source = end ?? start
+  const name = String(source?.data.name ?? '')
+  const args = (source?.data.args ?? null) as Record<string, unknown> | null
+  const result = end?.data.result
+  const isError = Boolean(result && typeof result === 'object' && (result as Record<string, unknown>).is_error)
+  const display = getToolDisplay(name, args, isError)
+  const media = useMemo(() => (end ? extractToolMedia(end) : null), [end])
+  // Chỉ hiện trạng thái "đang chạy" khi lượt thực sự đang chạy; lượt đã xong mà thiếu
+  // `tool_end` (bị huỷ / hết hạn) phải nói thật là không có kết quả.
+  const running = !end && Boolean(isTurnBusy)
+  const unfinished = !end && !isTurnBusy
+
+  return (
+    <div className="space-y-1.5" data-timeline="tool" data-tool-name={name} data-tool-pending={running ? 'true' : undefined} data-tool-unfinished={unfinished ? 'true' : undefined}>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-1.5 text-xs text-muted hover:text-fg transition cursor-pointer select-none group"
+      >
+        <div className="flex items-center gap-1.5">
+          {running ? (
+            <Loader2 className="size-3.5 text-blue-400 animate-spin shrink-0" />
+          ) : isError || unfinished ? (
+            <AlertCircle className={`size-3 shrink-0 ${isError ? 'text-red-400' : 'text-amber-400'}`} />
+          ) : (
+            display.icon
+          )}
+          <span className={running ? 'text-blue-300 animate-pulse' : 'text-zinc-400'}>
+            {running ? 'Running' : display.actionLabel}
+          </span>
+          <span className="font-mono text-[11px] text-zinc-200 font-semibold">{display.detailLabel}</span>
+          {running && <span className="text-[10px] text-blue-300">…</span>}
+          {!running && isError && <span className="text-[10px] text-red-400">· failed</span>}
+          {unfinished && <span className="text-[10px] text-amber-400">· no result recorded</span>}
+        </div>
+        {open ? (
+          <ChevronDown className="size-3 text-muted group-hover:text-fg" />
+        ) : (
+          <ChevronRight className="size-3 text-muted group-hover:text-fg" />
+        )}
+      </button>
+
+      {/* Ảnh/video của chính tool này — không gom vào gallery riêng */}
+      {media && <ToolMediaBlock media={media} onOpenLightbox={onOpenLightbox} />}
+
+      {open && (
+        <div className="ml-4 space-y-2 rounded-xl border border-line bg-panel2/60 p-2.5 text-xs animate-in fade-in duration-150">
+          {args && Object.keys(args).length > 0 && (
+            <div className="text-[11px] text-zinc-400 font-mono">
+              <span className="text-zinc-500">Input:</span> {JSON.stringify(args)}
+            </div>
+          )}
+
+          {media?.artifactPath && (
+            <div className="text-[11px] text-zinc-400 font-mono flex items-center gap-1">
+              <span className="text-zinc-500">Artifact:</span>
+              <span className="text-blue-400 truncate">{media.artifactPath}</span>
+            </div>
+          )}
+
+          {end && (
+            <pre className="max-h-48 overflow-auto font-mono text-[11px] text-zinc-300 whitespace-pre-wrap">
+              {typeof result === 'string' ? result : JSON.stringify(result, null, 2)}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ToolMediaBlock({
+  media,
+  onOpenLightbox,
+}: {
+  media: ToolMedia
+  onOpenLightbox?: (media: LightboxMediaProps) => void
+}) {
+  const t = useT()
+  // Payload `dimensions` là nguồn chính; nếu tool không kèm (ví dụ browser_use) thì lấy
+  // kích thước thật của chính ảnh khi nó tải xong — không đoán, không hardcode.
+  const [naturalSize, setNaturalSize] = useState<[number, number] | null>(null)
+  const dimensions = media.dimensions ?? naturalSize
+  const label = formatMediaLabel({ ...media, dimensions })
+  const open = () =>
+    onOpenLightbox?.({
+      type: media.kind,
+      src: media.src,
+      caption: media.caption,
+      sourceUrl: media.sourceUrl,
+      duration: media.durationSec,
+    })
+
+  return (
+    <div className="max-w-2xl space-y-1 pl-0.5" data-tool-media={media.kind}>
+      <div
+        className="group relative overflow-hidden rounded-xl border border-line bg-panel2 shadow-xs transition hover:border-brand/50 hover:shadow-md cursor-pointer"
+        onClick={open}
+        title="Nhấp để phóng to"
+      >
+        {media.kind === 'video' ? (
+          <video src={media.src} muted playsInline className="w-full max-h-80 rounded-lg" data-tool-media-element="video" />
+        ) : (
+          <img
+            src={media.src}
+            alt={media.caption}
+            onLoad={(e) => {
+              const el = e.currentTarget
+              if (el.naturalWidth && el.naturalHeight) setNaturalSize([el.naturalWidth, el.naturalHeight])
+            }}
+            onError={(e) => {
+              (e.currentTarget as HTMLElement).style.display = 'none'
+            }}
+            className="w-full object-contain max-h-96 rounded-lg transition group-hover:scale-[1.01]"
+          />
+        )}
+        <div className="absolute top-2 right-2 flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition bg-black/75 backdrop-blur-xs px-2.5 py-1 rounded-md text-[11px] text-white shadow-xs">
+          <Maximize2 className="size-3 text-zinc-200" />
+          <span>{t('chat.zoom')}</span>
+        </div>
+      </div>
+      {/* F4: nhãn lấy từ `dimensions` + `mime` thật của payload */}
+      <div className="flex items-center justify-between text-[10px] text-zinc-500 font-mono" data-media-label="true">
+        <span>{label}</span>
+        {media.artifactPath && <span className="truncate ml-2">{media.artifactPath}</span>}
+      </div>
+    </div>
+  )
+}
+
+/** F7: thông báo nén context ở cấp cao nhất của lượt, bấm để xem chi tiết. */
+function CompactionNotice({ event }: { event: HarnessEvent }) {
+  const [open, setOpen] = useState(false)
+  const kind = String(event.data.kind ?? 'unchanged')
+  const before = typeof event.data.beforeEstimate === 'number' ? event.data.beforeEstimate : null
+  const after = typeof event.data.afterEstimate === 'number' ? event.data.afterEstimate : null
+  const pruned = typeof event.data.pruned === 'number' ? event.data.pruned : null
+
+  return (
+    <div className="max-w-2xl rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-2" data-timeline="compaction" data-compaction-kind={kind}>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-1.5 text-xs text-amber-200/90 hover:text-amber-100 transition cursor-pointer select-none text-left"
+      >
+        <Layers className="size-3.5 text-amber-400 shrink-0" />
+        <span className="flex-1">{compactionNoticeText(event.data)}</span>
+        {open ? (
+          <ChevronDown className="size-3.5 text-amber-400/80" />
+        ) : (
+          <ChevronRight className="size-3.5 text-amber-400/80" />
+        )}
+      </button>
+
+      {open && (
+        <dl className="mt-1.5 space-y-0.5 pl-5 text-[11px] text-zinc-400 font-mono animate-in fade-in duration-150" data-compaction-detail="true">
+          <div>
+            <dt className="inline text-zinc-500">Kind: </dt>
+            <dd className="inline">{kind}</dd>
+          </div>
+          <div>
+            <dt className="inline text-zinc-500">Before: </dt>
+            <dd className="inline">{before === null ? '—' : `${before} tokens`}</dd>
+          </div>
+          <div>
+            <dt className="inline text-zinc-500">After: </dt>
+            <dd className="inline">{after === null ? '—' : `${after} tokens`}</dd>
+          </div>
+          {pruned !== null && (
+            <div>
+              <dt className="inline text-zinc-500">Tool outputs pruned: </dt>
+              <dd className="inline">{pruned}</dd>
+            </div>
+          )}
+        </dl>
+      )}
+    </div>
+  )
+}
+
+/** F6: tóm tắt câu trả lời cuối + nút mở rộng + ảnh/video gắn kèm của cả lượt. */
+function FinalAnswerBlock({
+  turn,
+  providerId,
+  targetModelId,
+  media,
+  isTurnBusy,
+  copiedAssistant,
+  onCopyAssistant,
+  onOpenLightbox,
+}: {
+  turn: HarnessTurn
+  providerId: string
+  targetModelId: string
+  media: ToolMedia[]
+  isTurnBusy: boolean
+  copiedAssistant: boolean
+  onCopyAssistant: () => void
+  onOpenLightbox?: (media: LightboxMediaProps) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+
+  const fullText = String(turn.finalAssistant?.data?.text ?? '')
+  const { summary, truncated } = useMemo(() => summarizeFinalText(fullText), [fullText])
+
+  if (!turn.finalAssistant) return null
+
+  const visibleText = truncated && !expanded ? summary : fullText
+
+  return (
+    <div className="space-y-1.5 pl-0.5" data-final-answer="true">
+      {/* Model Info Header */}
+      <div className="flex items-center gap-1.5 text-[11px] text-muted select-none">
+        <ProviderIcon providerId={providerId} className="size-3.5" />
+        <span className="font-semibold text-fg">{targetModelId}</span>
+        <span className="text-zinc-500">·</span>
+        <span>{formatTime(turn.finalAssistant.created || turn.endTime)}</span>
+        <span className="flex items-center gap-1 text-emerald-400 font-medium">
+          <CheckCircle2 className="size-3" />
+          <span>done</span>
+        </span>
+
+        {/* Token Usage Metrics (↑ prompt_tokens ↓ completion_tokens) */}
+        {turn.usage && (
+          <>
+            <span className="text-zinc-500">·</span>
+            <span
+              className="font-mono text-[10px] text-zinc-400"
+              title={`Prompt tokens: ${turn.usage.prompt_tokens ?? 0} | Completion tokens: ${turn.usage.completion_tokens ?? 0}`}
+            >
+              ↑ {formatTokens(turn.usage.prompt_tokens)} ↓ {formatTokens(turn.usage.completion_tokens)}
+            </span>
+          </>
+        )}
+
+        {isTurnBusy && (
+          <span className="flex items-center gap-1 text-brand font-medium animate-pulse">
+            <Loader2 className="size-3 animate-spin" />
+            <span>streaming</span>
+          </span>
+        )}
+
+        <button
+          type="button"
+          onClick={onCopyAssistant}
+          className="ml-auto hover:text-fg text-muted transition cursor-pointer p-0.5"
+          title="Copy response"
+        >
+          {copiedAssistant ? <Check className="size-3 text-emerald-500" /> : <Copy className="size-3" />}
+        </button>
+      </div>
+
+      {/* Summary (mặc định) hoặc toàn bộ markdown khi người dùng mở rộng */}
+      <div className="max-w-3xl text-sm text-fg leading-relaxed" data-final-text={expanded ? 'expanded' : 'summary'}>
+        <MarkdownRenderer content={visibleText} />
+
+        {truncated && (
+          <button
+            type="button"
+            onClick={() => setExpanded(!expanded)}
+            aria-expanded={expanded}
+            data-final-expander="true"
+            className="mt-1.5 inline-flex items-center gap-1 text-[11px] text-brand hover:text-brand/80 font-medium transition cursor-pointer select-none"
+          >
+            {expanded ? (
+              <ChevronDown className="size-3" />
+            ) : (
+              <ChevronRight className="size-3" />
+            )}
+            <span>› {expanded ? FINAL_ANSWER_COLLAPSE_LABEL : FINAL_ANSWER_EXPAND_LABEL}</span>
+          </button>
+        )}
+      </div>
+
+      {/* Ảnh/video sinh ra trong lượt — gắn kèm câu trả lời cuối */}
+      {media.length > 0 && (
+        <div className="flex flex-wrap gap-2 pt-0.5" data-final-media="true">
+          {media.map((item) => (
+            <div
+              key={`${item.eventSeq}_${item.src.slice(0, 32)}`}
+              onClick={() =>
+                onOpenLightbox?.({
+                  type: item.kind,
+                  src: item.src,
+                  caption: item.caption,
+                  sourceUrl: item.sourceUrl,
+                  duration: item.durationSec,
+                })
+              }
+              className="group relative overflow-hidden rounded-lg border border-line bg-panel2 cursor-pointer hover:border-brand/60 transition"
+              title={item.caption}
+            >
+              {item.kind === 'video' ? (
+                <>
+                  <video src={item.src} muted playsInline className="h-20 w-32 object-cover" />
+                  <span className="absolute inset-0 flex items-center justify-center bg-black/35 text-white text-[10px] gap-1">
+                    <Film className="size-3.5" />
+                    <span>{formatMediaLabel(item) || 'video'}</span>
+                  </span>
+                </>
+              ) : (
+                <img src={item.src} alt={item.caption} className="h-20 w-32 object-cover" />
+              )}
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -724,15 +1310,21 @@ function ProgressiveMarkdown({
   )
 }
 
-/** Thinking Reasoning Sub-item */
+/** Thinking Reasoning Sub-item — tự đóng khi lượt đã xong (F6) */
 function ThinkingSubItem({ thought, durationSec, isLive }: { thought: string; durationSec?: number; isLive?: boolean }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(Boolean(isLive))
+
+  useEffect(() => {
+    if (!isLive) setOpen(false)
+  }, [isLive])
 
   return (
     <div className="space-y-1">
       <button
         type="button"
         onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        data-thinking-toggle="true"
         className="flex items-center gap-1.5 text-xs text-muted hover:text-fg transition cursor-pointer select-none group"
       >
         <Sparkles className="size-3 text-brand/80" />
@@ -749,92 +1341,6 @@ function ThinkingSubItem({ thought, durationSec, isLive }: { thought: string; du
       {open && (
         <div className="ml-3 pl-3 border-l-2 border-brand/50 py-1.5 text-xs text-zinc-300/95 leading-relaxed bg-panel2/40 rounded-r-xl animate-in fade-in duration-150">
           <ProgressiveMarkdown content={thought} isLive={isLive} />
-        </div>
-      )}
-    </div>
-  )
-}
-
-/** Sub-step tool accordion item (Formatted like Photo 2) */
-function CompletedToolSubItem({
-  name,
-  args,
-  result,
-  onOpenLightbox,
-}: {
-  name: string
-  args: Record<string, unknown> | null
-  result: unknown
-  onOpenLightbox?: (media: LightboxMediaProps) => void
-}) {
-  const [open, setOpen] = useState(false)
-  const isError = Boolean(result && typeof result === 'object' && (result as Record<string, unknown>).is_error)
-  const display = getToolDisplay(name, args, isError)
-
-  const resultObj = result && typeof result === 'object' ? (result as Record<string, unknown>) : null
-  const artifactPath = typeof resultObj?.artifact === 'string' ? resultObj.artifact : null
-  const hasImage = typeof resultObj?.image === 'string'
-  const mime = typeof resultObj?.mime === 'string' ? resultObj.mime : 'image/png'
-  let imgSrc = hasImage ? `data:${mime};base64,${resultObj.image}` : null
-  if (!imgSrc && artifactPath && (artifactPath.endsWith('.png') || artifactPath.endsWith('.jpg') || artifactPath.endsWith('.webp') || artifactPath.endsWith('.svg'))) {
-    const relPath = artifactPath.replace(/^\/home\/agent\/workspace\//, '')
-    imgSrc = `/__box/file/media?path=${encodeURIComponent(relPath)}`
-  }
-
-  return (
-    <div className="space-y-1">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-1.5 text-xs text-muted hover:text-fg transition cursor-pointer select-none group"
-      >
-        <div className="flex items-center gap-1.5">
-          {isError ? (
-            <AlertCircle className="size-3 text-red-400 shrink-0" />
-          ) : (
-            display.icon
-          )}
-          <span className="text-zinc-400">{display.actionLabel}</span>
-          <span className="font-mono text-[11px] text-zinc-200 font-semibold">{display.detailLabel}</span>
-          {isError && <span className="text-[10px] text-red-400">· failed</span>}
-        </div>
-        {open ? (
-          <ChevronDown className="size-3 text-muted group-hover:text-fg" />
-        ) : (
-          <ChevronRight className="size-3 text-muted group-hover:text-fg" />
-        )}
-      </button>
-
-      {open && (
-        <div className="ml-4 space-y-2 rounded-xl border border-line bg-panel2/60 p-2.5 text-xs animate-in fade-in duration-150">
-          {/* Screenshot thumbnail if available */}
-          {imgSrc && (
-            <div className="space-y-1">
-              <span className="text-[10px] uppercase font-semibold text-muted tracking-wider">
-                Captured Screenshot:
-              </span>
-              <img
-                src={imgSrc}
-                alt="Captured Display"
-                onError={(e) => {
-                  (e.currentTarget as HTMLElement).style.display = 'none'
-                }}
-                onClick={() => onOpenLightbox?.({ src: imgSrc!, caption: 'Sandbox Screen Capture' })}
-                className="max-h-48 max-w-full rounded-lg border border-line object-contain cursor-pointer hover:opacity-90 transition shadow-xs"
-              />
-            </div>
-          )}
-
-          {artifactPath && (
-            <div className="text-[11px] text-zinc-400 font-mono flex items-center gap-1">
-              <span className="text-zinc-500">Artifact:</span>
-              <span className="text-blue-400 truncate">{artifactPath}</span>
-            </div>
-          )}
-
-          <pre className="max-h-48 overflow-auto font-mono text-[11px] text-zinc-300 whitespace-pre-wrap">
-            {typeof result === 'string' ? result : JSON.stringify(result, null, 2)}
-          </pre>
         </div>
       )}
     </div>

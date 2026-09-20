@@ -25,8 +25,19 @@ export function Resizer({ containerRef }: { containerRef: React.RefObject<HTMLDi
   const setSplitRatio = useUiStore((s) => s.setSplitRatio)
   const dragging = useRef(false)
 
+  /**
+   * Kéo thanh chia cũng là thao tác thật của người dùng → ghi mốc hoạt động để
+   * agent không mở tab mới giữa lúc người dùng đang chỉnh bề rộng (B4). Ghi ở
+   * đây (chứ không ở `onPointerDown`) để một cú kéo dài cũng liên tục gia hạn
+   * cửa sổ, và đường bàn phím đi qua `nudgeRatio` cũng được tính.
+   */
+  const noteActivity = useCallback(() => {
+    useUiStore.getState().noteUserActivity()
+  }, [])
+
   const updateRatio = useCallback(
     (clientX: number) => {
+      noteActivity()
       const container = containerRef.current
       if (!container) return
       const rect = container.getBoundingClientRect()
@@ -35,7 +46,7 @@ export function Resizer({ containerRef }: { containerRef: React.RefObject<HTMLDi
       const x = clientX - rect.left
       setSplitRatio(clampSplitRatio(x, rect.width, MIN_CHAT_WIDTH_PX, MIN_WORKSPACE_WIDTH_PX))
     },
-    [containerRef, setSplitRatio],
+    [containerRef, noteActivity, setSplitRatio],
   )
 
   // Bàn phím: đổi delta tỉ lệ (0.02) thành pixel dựa trên bề rộng container
@@ -43,6 +54,7 @@ export function Resizer({ containerRef }: { containerRef: React.RefObject<HTMLDi
   // như trước, tránh lách sàn pixel.
   const nudgeRatio = useCallback(
     (deltaRatio: number) => {
+      noteActivity()
       const container = containerRef.current
       if (!container) return
       const rect = container.getBoundingClientRect()
@@ -52,7 +64,7 @@ export function Resizer({ containerRef }: { containerRef: React.RefObject<HTMLDi
       const nextX = currentX + deltaRatio * rect.width
       setSplitRatio(clampSplitRatio(nextX, rect.width, MIN_CHAT_WIDTH_PX, MIN_WORKSPACE_WIDTH_PX))
     },
-    [containerRef, splitRatio, setSplitRatio],
+    [containerRef, noteActivity, splitRatio, setSplitRatio],
   )
 
   const stop = useCallback(() => {

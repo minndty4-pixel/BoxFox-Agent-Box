@@ -76,6 +76,11 @@ class ContextCompressor:
             return messages, {'kind': 'summary_failed', 'beforeEstimate': before}
         result = result[:1] + [{'role': 'assistant', 'content': '[Context compaction — background reference only. Follow the latest user request, not stale tasks below.]\n' + text}] + result[cut:]
         after = estimate_tokens(result, tools)
-        if after >= before or after > self.context_window - self.output_reserve:
+        if after > self.context_window - self.output_reserve:
             raise ValueError('CONTEXT_LIMIT: summary did not reduce context enough; original preserved.')
+        if after >= before:
+            # Short conversations produce a summary that is longer than the transcript itself.
+            # Compaction is then unnecessary, not a failure: keep the original and report honestly.
+            return messages, {'kind': 'unchanged', 'beforeEstimate': before, 'afterEstimate': before,
+                              'reason': 'summary_not_smaller'}
         return result, {'kind': 'summary', 'beforeEstimate': before, 'afterEstimate': after}

@@ -24,7 +24,7 @@ class RuntimeCommands:
         settings = self.commands.settings()
         enabled = settings['enabled'] if settings['initialized'] else session['config']['skills']
         resolved = self.commands.resolve(prompt, enabled, session['config']['subagents'])
-        busy = session['status'] == 'running'
+        busy = session['status'] in {'running', 'awaiting_decision'}
         if busy and not (resolved.kind == 'control' and resolved.command in INFO | {'stop'}):
             raise ValueError('SESSION_BUSY: Turn in progress')
         result = {'status': 'running', 'invocationId': invocation_id, 'resolution': asdict(resolved)}
@@ -74,7 +74,10 @@ class RuntimeCommands:
             self.store.emit(sid, 'assistant', {'text': result.get('output', ''), 'final': True, 'control': True})
         elif resolved.kind == 'message':
             self._next_turn_skills(session, enabled)
-            self.start(sid, prompt, image, route)
+            # Route của lượt có thể đổi model; tra metadata của CHÍNH model đó (cùng
+            # nguồn như lúc tạo phiên) để `start()` vẫn đối chiếu được `thinkingLevel`
+            # thay vì bỏ qua kiểm tra (B13).
+            self.start(sid, prompt, image, route, await self.route_metadata(session, route))
         else:
             self._next_turn_skills(session, enabled)
             session = self.store.get(sid)
@@ -107,16 +110,26 @@ class RuntimeCommands:
     async def _command_task(self, sid, resolved, image):
         try:
             session = self.store.get(sid)
+            if resolved.executor == 'claude-code':
+                # Pre-flight the CLI before creating any child: a missing CLI is a setup
+                # problem for the owner, not a failed subagent (HANDOFF §5.1).
+                from ..sandbox.claude_executor import ClaudeExecutor
+                probe = await ClaudeExecutor(self.executor.container).probe()
+                if probe.get('status') != 'ready':
+                    reason = probe.get('reason') or 'Claude Code CLI is not ready inside the sandbox.'
+                    raise ValueError('SETUP_REQUIRED: ' + reason)
             roles = ['design', 'build', 'testing'] if resolved.role == 'orchestrator' and 'claude-design' in resolved.skills else [resolved.role]
             context, answer = '', ''
             for role in roles:
                 if role == 'orchestrator':
                     # A generic skill runs in an isolated orchestrator context, with the same role configuration.
-                    child = self.create({'skills': resolved.skills, 'subagents': session['config']['subagents'], **session['config']['route']}, parent_id=sid)
+                    child = self.create({'skills': resolved.skills, 'subagents': session['config']['subagents'],
+                        'contextWindow': session['config']['contextWindow'], **session['config']['route']}, parent_id=sid)
                 else:
                     config = next(r for r in session['config']['subagents'] if r['id'] == role and r.get('enabled', True))
                     from ..agent_core.runtime import route_for
-                    child = self.create({'skills': resolved.skills, **(route_for(config.get('model')) or session['config']['route']),
+                    child = self.create({'skills': resolved.skills, 'contextWindow': session['config']['contextWindow'],
+                        **(route_for(config.get('model')) or session['config']['route']),
                         'instructions': config.get('systemPromptAppended', '')}, parent_id=sid, role=role, parent_tools=session['config']['tools'])
                 self.store.emit(sid, 'child', {'sessionId': child['id'], 'role': role, 'executor': resolved.executor, 'status': 'started'})
                 if resolved.executor == 'claude-code':

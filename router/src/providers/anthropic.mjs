@@ -1,7 +1,23 @@
-import { jsonOrProviderError, modelRecord, normalizeFinishReason, parseJson, providerError, sseEvents, baseUrl, withThinkingLevels } from './common.mjs';
+import { jsonOrProviderError, modelRecord, normalizeFinishReason, parseJson, providerError, sseEvents, baseUrl } from './common.mjs';
 
 const ANTHROPIC_VERSION = '2023-06-01';
 function headers(apiKey) { return { 'x-api-key': apiKey, 'anthropic-version': ANTHROPIC_VERSION, 'content-type': 'application/json' }; }
+
+/**
+ * BUG-4/R2: Anthropic's `/models` payload carries neither a context window nor
+ * thinking metadata, so the record uses Anthropic's published controls: a
+ * 200K-token window for Claude 4.x, 1M when the id carries the long-context
+ * `[1m]` marker, and token-budget thinking with the low/medium/high budget map.
+ */
+export function thinkingFromAnthropicId(id) {
+  const longContext = /\[1m\]/i.test(String(id || ''));
+  return {
+    contextWindow: longContext ? 1_000_000 : 200_000,
+    thinkingType: 'budget',
+    thinkingLevels: ['low', 'medium', 'high'],
+    defaultThinking: null,
+  };
+}
 
 function toAnthropic(body) {
   const system = [];
@@ -25,8 +41,12 @@ function toAnthropic(body) {
   if (body.tools?.length) request.tools = body.tools.map(tool => ({ name: tool.function.name, description: tool.function.description || '', input_schema: tool.function.parameters || { type: 'object', properties: {} } }));
   if (body.tool_choice && request.tools) request.tool_choice = typeof body.tool_choice === 'object' ? { type: 'tool', name: body.tool_choice.function?.name } : { type: body.tool_choice === 'required' ? 'any' : body.tool_choice };
 
+  // R3 mapping for the `budget` thinking type: Anthropic spends
+  // `thinking.budget_tokens` instead of an effort level. low/medium/high map to
+  // 2048/8192/16384. A `fixed` model already carries its level in the model id,
+  // so nothing is sent for it, and `none` never sends a thinking block.
   const level = body.thinkingLevel;
-  if (level && level !== 'none' && level !== 'auto') {
+  if (level && level !== 'none' && level !== 'auto' && body.thinkingType !== 'fixed') {
     const budget = level === 'low' ? 2048 : level === 'medium' ? 8192 : 16384;
     request.thinking = { type: 'enabled', budget_tokens: budget };
     if (request.max_tokens <= budget) {
@@ -38,10 +58,16 @@ function toAnthropic(body) {
 
 export function createAnthropicAdapter({ fetchImpl }) {
   return {
+    // Stored rows are re-derived from the model id when the service normalizes a
+    // connection (BUG-4/R2).
+    thinkingMetadata: model => thinkingFromAnthropicId(model?.id),
     async discover({ connection, credentials, signal }) {
       const data = await jsonOrProviderError(await fetchImpl(`${baseUrl(connection.endpoint)}/models`, { headers: headers(credentials.apiKey), signal }));
       const list = Array.isArray(data?.data) ? data.data : [];
-      return { models: list.map(item => withThinkingLevels(modelRecord(item?.id, item?.display_name || item?.id, { tools: 'reported' }))).filter(m => m.id) };
+      // BUG-4/R2: `/models` reports no context/thinking metadata, so the record
+      // follows Anthropic's documented controls (200K window, 1M with the `[1m]`
+      // long-context marker, token-budget thinking).
+      return { models: list.map(item => modelRecord(item?.id, item?.display_name || item?.id, { tools: 'reported' }, thinkingFromAnthropicId(item?.id))).filter(m => m.id) };
     },
     async *generate({ connection, credentials, body, signal }) {
       const stream = body.stream !== false;

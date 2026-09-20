@@ -49,6 +49,51 @@ export const ALL_PANEL_TABS: PanelTabId[] = [
   'files',
 ]
 
+/**
+ * Ý định mở tab do agent phát ra (hợp đồng §1 `ui_intent`, §3 luật tự mở tab).
+ * `target` là ngữ cảnh kèm theo: `{identity}` cho plan, `{requestId}` cho
+ * decisions, `{path}` cho files, `{sessionId}` cho subagents.
+ */
+export interface TabIntent {
+  tab: PanelTabId
+  target?: Record<string, unknown> | null
+  reason: string
+}
+
+/** Cửa sổ "người dùng đang rảnh" của luật tự mở tab (hợp đồng §3). */
+export const AUTO_OPEN_IDLE_MS = 15000
+
+/** Trần số ý định chờ giữ lại; ý định cũ nhất bị bỏ trước (hợp đồng §3). */
+export const MAX_PENDING_TAB_INTENTS = 20
+
+/**
+ * Hẹn một lần thử mở lại hàng đợi đúng lúc cửa sổ rảnh kết thúc (B12).
+ *
+ * Không giữ trạng thái ở cấp module: mỗi ý định bị chặn vì người dùng đang bận
+ * tự hẹn một lần thử, và mỗi lần thử vẫn bị chặn sẽ hẹn tiếp cho hết cửa sổ
+ * HIỆN TẠI — nhờ vậy dù người dùng tiếp tục gõ/cuộn thì ý định cũng không bị bỏ
+ * quên (trước đây hàng đợi không có ai mở hộ). Số lần thử bị chặn là rất nhỏ
+ * (tối đa 20 ý định trong hàng đợi, mỗi lần thử cách nhau trọn một cửa sổ rảnh).
+ */
+function armIntentFlush(get: () => UiState): void {
+  const delay = Math.max(0, get().lastUserActivityAt + AUTO_OPEN_IDLE_MS - Date.now()) + 1
+  setTimeout(() => {
+    get().flushPendingIntents()
+  }, delay)
+}
+
+/** Cờ bật/tắt của người dùng, lưu cùng chỗ với `boxfox_theme`. */
+function getInitialFlag(key: string, fallback: boolean): boolean {
+  if (typeof window === 'undefined') return fallback
+  const saved = localStorage.getItem(key)
+  if (saved === 'true') return true
+  if (saved === 'false') return false
+  return fallback
+}
+
+export const AUTO_OPEN_TABS_KEY = 'boxfox_auto_open_tabs'
+export const AUTO_OPEN_IDLE_ONLY_KEY = 'boxfox_auto_open_only_when_idle'
+
 
 function getInitialTheme(): 'light' | 'dark' | 'system' {
   if (typeof window === 'undefined') return 'dark'
@@ -86,9 +131,45 @@ interface UiState {
 
   openTabs: PanelTabId[]
   activeTab: PanelTabId | null
-  openTab: (tab: PanelTabId) => void
+  /**
+   * Mở + kích hoạt tab. `target` (tuỳ chọn) là ngữ cảnh của ý định đang mở
+   * (ví dụ `{identity}` cho plan) — panel đọc lại qua `tabIntentTargets`.
+   */
+  openTab: (tab: PanelTabId, target?: Record<string, unknown> | null) => void
   closeTab: (tab: PanelTabId) => void
   closePanel: () => void
+
+  // ── Luật tự mở tab (hợp đồng §3) ───────────────────────────────────────
+  /** Tab người dùng tự bấm trên thanh tab; ý định trúng tab này chỉ xếp hàng. */
+  pinnedTab: PanelTabId | null
+  pinTab: (tab: PanelTabId) => void
+  /** Mốc hoạt động gần nhất của người dùng (keydown trong khung soạn tin, cuộn chat). */
+  lastUserActivityAt: number
+  noteUserActivity: () => void
+  autoOpenTabs: boolean
+  setAutoOpenTabs: (enabled: boolean) => void
+  autoOpenOnlyWhenIdle: boolean
+  setAutoOpenOnlyWhenIdle: (enabled: boolean) => void
+  /** Ý định bị chặn, mới nhất ở cuối; tab đích hiện huy hiệu đếm. */
+  pendingIntents: TabIntent[]
+  requestTabIntent: (intent: TabIntent) => 'opened' | 'queued'
+  /**
+   * Mở lại các ý định đang xếp hàng khi điều kiện chặn đã hết (B12): hết cửa sổ
+   * rảnh, hoặc người dùng vừa bật lại công tắc. Vẫn đi qua ĐÚNG luật §3 tại thời
+   * điểm gọi (tab bị ghim thì ở lại hàng đợi), và chỉ xoá những ý định thật sự
+   * được mở.
+   */
+  flushPendingIntents: () => void
+  /** Ngữ cảnh của lần mở tab gần nhất, cho panel tự chọn đúng mục. */
+  tabIntentTargets: Partial<Record<PanelTabId, Record<string, unknown> | null>>
+
+  /** Tăng khi agent ghi một plan mới (`plan_written`) — `usePlanFiles` nghe số này. */
+  planRevision: number
+  bumpPlanRevision: () => void
+
+  /** Vị trí cuộn đã nhớ của từng phiên chat, khôi phục khi quay lại phiên đó. */
+  sessionScrollOffsets: Record<string, number>
+  rememberSessionScroll: (sessionId: string, offset: number) => void
 
   panelFullscreen: boolean
   toggleFullscreen: () => void
@@ -141,8 +222,6 @@ interface UiState {
   setPlanViewMode: (mode: 'plan' | 'diff') => void
   planSubTab: 'overview' | 'detailed'
   setPlanSubTab: (tab: 'overview' | 'detailed') => void
-  planVersion: string
-  setPlanVersion: (version: string) => void
   showFeedbackBanner: boolean
   setShowFeedbackBanner: (show: boolean) => void
 
@@ -179,18 +258,109 @@ export const useUiStore = create<UiState>((set, get) => ({
 
   openTabs: [],
   activeTab: null,
-  openTab: (tab) =>
-    set((s) => ({
-      openTabs: s.openTabs.includes(tab) ? s.openTabs : [...s.openTabs, tab],
-      activeTab: tab,
-    })),
+  // Mở tab cũng là "đã tiêu thụ" mọi ý định đang xếp hàng cho tab đó: huy hiệu
+  // tắt, và ngữ cảnh của ý định cuối cùng trở thành ngữ cảnh của lần mở này.
+  openTab: (tab, target) =>
+    set((s) => {
+      const queued = s.pendingIntents.filter((intent) => intent.tab === tab)
+      const queuedTarget = queued.length ? (queued[queued.length - 1].target ?? null) : null
+      const nextTarget = target ?? queuedTarget
+      const pendingIntents = s.pendingIntents.filter((intent) => intent.tab !== tab)
+      return {
+        openTabs: s.openTabs.includes(tab) ? s.openTabs : [...s.openTabs, tab],
+        activeTab: tab,
+        pendingIntents,
+        tabIntentTargets: nextTarget
+          ? { ...s.tabIntentTargets, [tab]: nextTarget }
+          : s.tabIntentTargets,
+      }
+    }),
   closeTab: (tab) =>
     set((s) => {
       const openTabs = s.openTabs.filter((item) => item !== tab)
       const activeTab = s.activeTab === tab ? (openTabs[0] ?? null) : s.activeTab
-      return { openTabs, activeTab, panelFullscreen: openTabs.length ? s.panelFullscreen : false }
+      return {
+        openTabs,
+        activeTab,
+        pinnedTab: s.pinnedTab === tab ? null : s.pinnedTab,
+        panelFullscreen: openTabs.length ? s.panelFullscreen : false,
+      }
     }),
   closePanel: () => set({ activeTab: null, panelFullscreen: false }),
+
+  // ── Luật tự mở tab (hợp đồng §3). Thứ tự ba điều kiện là phần hợp đồng:
+  // dừng ở điều kiện đầu tiên vi phạm và xếp hàng thay vì mở.
+  pinnedTab: null,
+  pinTab: (tab) => set({ pinnedTab: tab }),
+
+  lastUserActivityAt: 0,
+  noteUserActivity: () => set({ lastUserActivityAt: Date.now() }),
+
+  autoOpenTabs: getInitialFlag(AUTO_OPEN_TABS_KEY, true),
+  setAutoOpenTabs: (enabled) => {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(AUTO_OPEN_TABS_KEY, String(enabled))
+    set({ autoOpenTabs: enabled })
+    // Công tắc là điều kiện 1 của §3: bật lại thì hàng đợi phải được mở, không
+    // để nó nằm đó chờ người dùng tình cờ bấm đúng tab (B12).
+    if (enabled) get().flushPendingIntents()
+  },
+  autoOpenOnlyWhenIdle: getInitialFlag(AUTO_OPEN_IDLE_ONLY_KEY, true),
+  setAutoOpenOnlyWhenIdle: (enabled) => {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(AUTO_OPEN_IDLE_ONLY_KEY, String(enabled))
+    set({ autoOpenOnlyWhenIdle: enabled })
+    // Tắt "chỉ khi rảnh" là điều kiện 3 hết chặn → mở luôn hàng đợi.
+    if (!enabled) get().flushPendingIntents()
+  },
+
+  pendingIntents: [],
+  requestTabIntent: (intent) => {
+    const state = get()
+    const queue = () => {
+      set((s) => ({
+        pendingIntents: [...s.pendingIntents, intent].slice(-MAX_PENDING_TAB_INTENTS),
+      }))
+      return 'queued' as const
+    }
+    if (!state.autoOpenTabs) return queue()
+    if (state.pinnedTab === intent.tab) return queue()
+    if (state.autoOpenOnlyWhenIdle && Date.now() - state.lastUserActivityAt < AUTO_OPEN_IDLE_MS) {
+      // Chỉ bị chặn vì người dùng đang bận → hẹn mở lại khi cửa sổ rảnh kết thúc.
+      armIntentFlush(get)
+      return queue()
+    }
+    state.openTab(intent.tab, intent.target ?? null)
+    return 'opened' as const
+  },
+  flushPendingIntents: () => {
+    const state = get()
+    if (state.pendingIntents.length === 0) return
+    // Điều kiện 1: công tắc tắt — không có gì để làm, hàng đợi chờ lần bật lại.
+    if (!state.autoOpenTabs) return
+    // Điều kiện 3: người dùng vừa hoạt động lại → hẹn tiếp cho hết cửa sổ hiện
+    // tại (nếu không, một lần thử trượt là ý định bị bỏ quên vĩnh viễn).
+    if (state.autoOpenOnlyWhenIdle && Date.now() - state.lastUserActivityAt < AUTO_OPEN_IDLE_MS) {
+      armIntentFlush(get)
+      return
+    }
+    // Điều kiện 2: tab người dùng đã ghim thì KHÔNG bao giờ bị cướp — ý định của
+    // nó ở lại hàng đợi (mở tab đó bằng tay vẫn là cách tiêu thụ nó).
+    const openable: PanelTabId[] = []
+    for (const intent of state.pendingIntents) {
+      if (intent.tab === state.pinnedTab) continue
+      if (!openable.includes(intent.tab)) openable.push(intent.tab)
+    }
+    // `openTab` tự lấy đích của ý định MỚI NHẤT của tab đó và tự xoá hàng đợi của
+    // đúng tab ấy — nên chỉ những ý định thật sự được mở mới biến mất.
+    for (const tab of openable) get().openTab(tab)
+  },
+  tabIntentTargets: {},
+
+  planRevision: 0,
+  bumpPlanRevision: () => set((s) => ({ planRevision: s.planRevision + 1 })),
+
+  sessionScrollOffsets: {},
+  rememberSessionScroll: (sessionId, offset) =>
+    set((s) => ({ sessionScrollOffsets: { ...s.sessionScrollOffsets, [sessionId]: offset } })),
 
   panelFullscreen: false,
   toggleFullscreen: () => set((s) => ({ panelFullscreen: !s.panelFullscreen })),
@@ -247,8 +417,6 @@ export const useUiStore = create<UiState>((set, get) => ({
   setPlanViewMode: (mode) => set({ planViewMode: mode }),
   planSubTab: 'overview',
   setPlanSubTab: (tab) => set({ planSubTab: tab }),
-  planVersion: 'v3',
-  setPlanVersion: (version) => set({ planVersion: version }),
   showFeedbackBanner: true,
   setShowFeedbackBanner: (show) => set({ showFeedbackBanner: show }),
 

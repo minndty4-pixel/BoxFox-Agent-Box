@@ -5,7 +5,8 @@
  * người mù màu, ảnh chụp đen trắng, hay người đọc bằng trình đọc màn hình
  * vẫn biết nhãn là gì.
  */
-import { CONFIDENTIALITY_META, INTEGRITY_META } from '../lib/labels'
+import { CONFIDENTIALITY_META, INTEGRITY_META, confidentialityLabelKey, integrityLabelKey } from '../lib/labels'
+import { useT, type TKey } from '../i18n/context'
 import type { Confidentiality, Integrity } from '../types/labels'
 
 interface LabelProps {
@@ -14,22 +15,36 @@ interface LabelProps {
   className?: string
 }
 
+/**
+ * Nhãn chữ của chấm — MỘT nguồn cho mọi bề mặt (chấm trong `LabelDot`, chấm trên
+ * thẻ lưới Explorer): `Integrity: <nhãn>` / `Confidentiality: <nhãn>`, lấy từ
+ * i18n nên theo đúng ngôn ngữ giao diện (B2c).
+ */
+export function integrityDotTitle(value: Integrity, t: (key: TKey) => string): string {
+  return `${t('fileTree.integrityLabel')}: ${t(integrityLabelKey(value))}`
+}
+
+export function confidentialityDotTitle(value: Confidentiality, t: (key: TKey) => string): string {
+  return `${t('fileTree.confidentialityLabel')}: ${t(confidentialityLabelKey(value))}`
+}
+
 export function LabelDot({ integrity, confidentiality, className = '' }: LabelProps) {
+  const t = useT()
   return (
     <span className={`inline-flex items-center gap-1 ${className}`}>
       {integrity && (
         <span
           className={`size-2 shrink-0 rounded-full ${INTEGRITY_META[integrity].dotClass}`}
-          title={`Integrity: ${INTEGRITY_META[integrity].label}`}
-          aria-label={`Integrity: ${INTEGRITY_META[integrity].label}`}
+          title={integrityDotTitle(integrity, t)}
+          aria-label={integrityDotTitle(integrity, t)}
           role="img"
         />
       )}
       {confidentiality && (
         <span
           className={`size-2 shrink-0 rounded-full ${CONFIDENTIALITY_META[confidentiality].dotClass}`}
-          title={`Confidentiality: ${CONFIDENTIALITY_META[confidentiality].label}`}
-          aria-label={`Confidentiality: ${CONFIDENTIALITY_META[confidentiality].label}`}
+          title={confidentialityDotTitle(confidentiality, t)}
+          aria-label={confidentialityDotTitle(confidentiality, t)}
           role="img"
         />
       )}

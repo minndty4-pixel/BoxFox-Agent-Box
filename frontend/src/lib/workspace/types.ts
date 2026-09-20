@@ -48,10 +48,39 @@ export interface WorkspaceContent {
   binary: boolean
 }
 
+/** Kết quả `mkdir` — đúng khoá của hợp đồng (`POST /__box/files/mkdir`). */
+export interface WorkspaceMkdirResult {
+  path: string
+  type: 'directory'
+}
+
+/** Kết quả `touch` — đúng khoá của hợp đồng (`POST /__box/files/touch`). */
+export interface WorkspaceTouchResult {
+  path: string
+  type: 'file'
+  /** Số byte của nội dung vừa ghi (`0` khi tạo file rỗng). */
+  size: number
+}
+
+/** Kết quả `rename`/`move` — đúng khoá của hợp đồng. */
+export interface WorkspaceMoveResult {
+  path: string
+  newPath: string
+}
+
+/** Kết quả `deleteEntry` — KHÔNG xoá thẳng: entry được chuyển vào `.trash`. */
+export interface WorkspaceDeleteResult {
+  path: string
+  trashPath: string
+}
+
 /**
  * Adapter đọc/ghi file workspace. Phương thức `*Url` trả URL cho subresource
  * (`<img>`, `<video>`, `<a download>`) — KHÔNG thêm header Origin/auth vì trình
  * duyệt không gửi Origin cho subresource; biên thật là bind loopback của proxy.
+ *
+ * Năm phương thức ghi (`mkdir`, `touch`, `rename`, `move`, `deleteEntry`) bắt
+ * buộc gửi `X-BoxFox-Api-Key` (hợp đồng §0.4) và trả về đúng khoá của bảng §2.
  */
 export interface WorkspaceRepository {
   baseUrl: string
@@ -71,4 +100,14 @@ export interface WorkspaceRepository {
     path: string,
     signal?: AbortSignal,
   ): Promise<{ extracted: number; skipped: number; warnings: string[] }>
+  /** Tạo thư mục tại `path` (đường dẫn tương đối). */
+  mkdir(path: string, signal?: AbortSignal): Promise<WorkspaceMkdirResult>
+  /** Tạo file tại `path`; `content` mặc định là rỗng. */
+  touch(path: string, content?: string, signal?: AbortSignal): Promise<WorkspaceTouchResult>
+  /** Đổi tên trong CÙNG thư mục — `name` không được chứa `/`. */
+  rename(path: string, name: string, signal?: AbortSignal): Promise<WorkspaceMoveResult>
+  /** Di chuyển entry vào thư mục `destination` (chuỗi rỗng = gốc workspace). */
+  move(path: string, destination: string, signal?: AbortSignal): Promise<WorkspaceMoveResult>
+  /** Chuyển entry vào `.trash` (không xoá thẳng) và trả đường dẫn trong thùng rác. */
+  deleteEntry(path: string, signal?: AbortSignal): Promise<WorkspaceDeleteResult>
 }

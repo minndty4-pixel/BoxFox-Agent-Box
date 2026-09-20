@@ -84,12 +84,76 @@ export function parseJson(value) {
   try { return JSON.parse(value); } catch { return null; }
 }
 
-export function modelRecord(id, name = id, capabilities = {}) {
+// BUG-4/R2: the model record carries the provider's own model metadata so the
+// router, the harness and the UI share one source of truth.
+export const THINKING_TYPES = Object.freeze(['effort', 'budget', 'fixed', 'none']);
+// OpenAI `reasoning_effort` values used by OpenAI/Codex/OpenRouter.
+export const EFFORT_LEVELS = Object.freeze(['minimal', 'low', 'medium', 'high']);
+// Google maps OpenAI `reasoning_effort` directly onto `thinking_level`.
+export const GEMINI_THINKING_LEVELS = Object.freeze(['low', 'medium', 'high']);
+
+function positiveInteger(value) {
+  return Number.isInteger(value) && value > 0 ? value : null;
+}
+
+export function normalizeThinkingLevels(value) {
+  if (!Array.isArray(value)) return [];
+  const levels = value.filter(level => typeof level === 'string' && level.trim().length > 0).map(level => level.trim());
+  return [...new Set(levels)];
+}
+
+/**
+ * Normalizes the three shared thinking/context fields. Nothing is guessed from
+ * the model name: a value only exists when the caller (provider payload or an
+ * authored catalog) supplied it. When a provider reports nothing the model gets
+ * `contextWindow: null`, `thinkingType: 'none'` and `thinkingLevels: []`.
+ */
+export function modelThinking(values = {}) {
+  const source = values && typeof values === 'object' ? values : {};
+  const thinkingLevels = normalizeThinkingLevels(source.thinkingLevels);
+  const declared = THINKING_TYPES.includes(source.thinkingType) ? source.thinkingType : null;
+  // Levels without an explicit control type still mean the provider exposes
+  // selectable levels; those providers use an effort-style control.
+  return {
+    contextWindow: positiveInteger(source.contextWindow),
+    thinkingType: declared || (thinkingLevels.length ? 'effort' : 'none'),
+    defaultThinking: typeof source.defaultThinking === 'string' && source.defaultThinking.trim() ? source.defaultThinking.trim() : null,
+    thinkingLevels,
+  };
+}
+
+/**
+ * Maps an OpenRouter-shaped `/models` entry (also returned by several
+ * OpenAI-compatible gateways) onto the shared metadata contract. Only payload
+ * fields are read: `context_length`, top-level preferred, and the `reasoning`
+ * block with `supported_efforts`/`default_effort`/`default_enabled`/`mandatory`.
+ * `supported_parameters` containing reasoning/include_reasoning/thinking is the
+ * weaker signal used when the `reasoning` block is absent.
+ */
+export function thinkingFromProviderPayload(item = {}) {
+  const reasoning = item?.reasoning && typeof item.reasoning === 'object' ? item.reasoning : null;
+  const params = Array.isArray(item?.supported_parameters) ? item.supported_parameters : [];
+  const declared = Boolean(
+    reasoning?.supported_efforts?.length ||
+    reasoning?.default_enabled === true ||
+    reasoning?.mandatory === true ||
+    params.includes('reasoning') || params.includes('include_reasoning') || params.includes('thinking'),
+  );
+  return modelThinking({
+    contextWindow: item?.context_length ?? item?.context_window ?? item?.top_provider?.context_length ?? item?.max_context_length ?? null,
+    thinkingType: declared ? 'effort' : 'none',
+    thinkingLevels: reasoning?.supported_efforts,
+    defaultThinking: typeof reasoning?.default_effort === 'string' ? reasoning.default_effort : null,
+  });
+}
+
+export function modelRecord(id, name = id, capabilities = {}, thinking = {}) {
   return {
     id,
     name: name || id,
     source: 'live',
     stale: false,
+    ...modelThinking(thinking),
     capabilities: { streaming: 'reported', tools: 'unknown', vision: 'unknown', reasoning: 'unknown', ...capabilities },
   };
 }
@@ -101,25 +165,4 @@ export function normalizeFinishReason(value) {
   return 'stop';
 }
 
-export function isReasoningModel(id, name = '', capabilities = {}, supportedParams = []) {
-  if (capabilities?.reasoning && capabilities.reasoning !== 'unknown') {
-    return capabilities.reasoning === 'reported' || Boolean(capabilities.reasoning);
-  }
-  if (Array.isArray(supportedParams) && (supportedParams.includes('reasoning') || supportedParams.includes('thinking'))) {
-    return true;
-  }
-  const checkStr = `${id || ''} ${name || ''}`.toLowerCase();
-  return Boolean(
-    /(?:^|[-_/])(r1|o1|o3|o4|deepseek|qwq|claude-3[-.]7|claude-opus-5|claude-sonnet-5|gpt-5|gpt-6|codex|thinking|reasoning|inkling|poolside|flash-thinking)(?:[-_/]|$)/i.test(checkStr) ||
-    /think|reason|deepseek|r1|nex-agi|nex-n/i.test(checkStr)
-  );
-}
-
-export function withThinkingLevels(record, supportedParams = []) {
-  const isReasoning = isReasoningModel(record.id, record.name, record.capabilities, supportedParams);
-  return {
-    ...record,
-    ...(isReasoning ? { thinkingLevels: ['low', 'medium', 'high'] } : {}),
-  };
-}
 

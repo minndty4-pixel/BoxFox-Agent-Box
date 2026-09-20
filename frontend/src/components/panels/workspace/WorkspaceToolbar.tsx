@@ -2,6 +2,8 @@
  * Thanh công cụ panel Files: breadcrumb + công tắc Explorer/Tree + ô tìm kiếm
  * + nút Tải lên / Làm mới. Ô tìm kiếm ẩn khi đang ở chế độ Tree (tree tự lọc
  * qua cây đang mở). Nút Tải lên kích hoạt <input type=file> ẩn.
+ *
+ * Breadcrumb nhận thả entry đang kéo (di chuyển vào đoạn đường dẫn đó).
  */
 import { useRef } from 'react'
 import { ArrowLeft, RefreshCw, Search, Upload } from 'lucide-react'
@@ -24,6 +26,8 @@ interface WorkspaceToolbarProps {
   onRefresh: () => void
   selectedCount: number
   status: WorkspaceStatus
+  /** Thả entry đang kéo lên breadcrumb → chuyển vào đoạn đường dẫn đó. */
+  onMoveEntry?: (path: string, destination: string) => void
 }
 
 export function WorkspaceToolbar({
@@ -39,6 +43,7 @@ export function WorkspaceToolbar({
   onRefresh,
   selectedCount,
   status,
+  onMoveEntry,
 }: WorkspaceToolbarProps) {
   const t = useT()
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -57,7 +62,7 @@ export function WorkspaceToolbar({
       >
         <ArrowLeft className="size-3.5" />
       </button>
-      <Breadcrumb crumbs={crumbs} onNavigate={onNavigate} />
+      <Breadcrumb crumbs={crumbs} onNavigate={onNavigate} onMoveEntry={onMoveEntry} />
       {selectedCount > 0 && (
         <span className="shrink-0 rounded bg-panel2 px-1.5 py-0.5 text-[10px] font-medium text-muted">
           {t('workspace.selectedCount', { n: selectedCount })}

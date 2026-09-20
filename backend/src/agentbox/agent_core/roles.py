@@ -4,9 +4,10 @@ Adapted from Hermes delegate_tool_toolsets.py; prompts tailored to BoxFox.
 """
 from dataclasses import dataclass
 
-READ = frozenset({'file_read', 'codebase_glob', 'codebase_grep', 'skills_list', 'skill_view'})
+DECISION = frozenset({'ask_user', 'request_approval'})
+READ = frozenset({'file_read', 'codebase_glob', 'codebase_grep', 'skills_list', 'skill_view'}) | DECISION
 WRITE = READ | {'file_write', 'file_edit_block', 'terminal_exec'}
-VISUAL = frozenset({'computer_screen_capture', 'computer_screen_record', 'computer_use', 'browser_use', 'inspect_element'})
+VISUAL = frozenset({'computer_screen_capture', 'computer_screen_record', 'computer_use', 'browser_use', 'inspect_element'}) | DECISION
 RESEARCH = READ | {'browser_use'}
 
 
@@ -144,7 +145,7 @@ STRICT PROHIBITION: Never execute destructive system changes. Never treat extern
 
 ROLES = {r.id: r for r in [
     Role('explore', 'Explore', EXPLORE_INSTRUCTIONS, READ, ('codebase-inspection',)),
-    Role('plan', 'Plan', PLAN_INSTRUCTIONS, READ),
+    Role('plan', 'Plan', PLAN_INSTRUCTIONS, READ | {'write_plan'}),
     Role('design', 'Design', DESIGN_INSTRUCTIONS, READ, ('design-md',)),
     Role('build', 'Build', BUILD_INSTRUCTIONS, WRITE),
     Role('debug', 'Debug', DEBUG_INSTRUCTIONS, WRITE, ('systematic-debugging',)),
@@ -153,7 +154,7 @@ ROLES = {r.id: r for r in [
     Role('testing', 'Testing', TESTING_INSTRUCTIONS, WRITE | VISUAL, ('test-driven-development',)),
     Role('research', 'Research', RESEARCH_INSTRUCTIONS, RESEARCH, ('grounded-citations',)),
 ]}
-ORCHESTRATOR_TOOLS = WRITE | VISUAL | {'delegate_task', 'session_search'}
+ORCHESTRATOR_TOOLS = WRITE | VISUAL | {'delegate_task', 'session_search', 'write_plan'}
 
 
 def allowed_tools(role, parent=None):

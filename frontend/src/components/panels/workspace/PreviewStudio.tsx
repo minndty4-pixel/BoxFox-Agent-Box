@@ -3,12 +3,18 @@
  * ảnh (zoom + kích thước), video/âm thanh (<video>/<audio>), code (tokenizer +
  * số dòng + Copy + Mở trong VS Code Web), text (dòng + Copy), PDF (<iframe>),
  * markdown (MarkdownRenderer chung), unknown (tải về + badge nhị phân).
+ *
+ * Header mang huy hiệu provenance (integrity/confidentiality) của entry — cùng
+ * mẫu badge với các component anh em. File vượt trần đọc 1 MiB của container
+ * hiện đúng câu "vượt 1 MiB — tải về để xem" thay vì khung trống khó hiểu.
  */
 import { Check, Copy, X, Zap, ZoomIn, ZoomOut } from 'lucide-react'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useT } from '../../../i18n/context'
 import { MarkdownRenderer } from '../../chat/MarkdownRenderer'
 import { basename, byLine, tokenize, type PreviewKind, type WorkspaceContent, type WorkspaceEntry, type WorkspaceRepository, type TokenKind, type Token } from '../../../lib/workspace'
+import type { WorkspacePreviewNotice } from '../../../hooks/useWorkspaceFiles'
+import { EntryLabelBadges } from './entryView'
 
 interface PreviewStudioProps {
   path: string
@@ -18,6 +24,8 @@ interface PreviewStudioProps {
   repository: WorkspaceRepository
   onClose: () => void
   onOpenInIde: (path: string) => void
+  /** `too-large` = vượt trần đọc 1 MiB; `read-failed` = đọc hỏng vì lý do khác. */
+  notice?: WorkspacePreviewNotice | null
 }
 
 const TOKEN_CLASS: Record<TokenKind, string> = {
@@ -38,11 +46,13 @@ export function PreviewStudio({
   repository,
   onClose,
   onOpenInIde,
+  notice = null,
 }: PreviewStudioProps) {
   const t = useT()
   const name = entry?.name ?? basename(path)
   const showIdeButton = kind === 'code' || kind === 'text' || kind === 'markdown'
   const showCopy = kind === 'code' || kind === 'text' || kind === 'markdown'
+  const showNotice = notice !== null
 
   // Phím Escape đóng nhanh overlay mà không cần rê chuột tới nút X.
   useEffect(() => {
@@ -58,6 +68,7 @@ export function PreviewStudio({
       <header className="flex items-center gap-2 border-b border-line px-3 py-2">
         <span className="truncate font-mono text-[12px] text-fg">{name}</span>
         <span className="rounded bg-panel2 px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted">{kind}</span>
+        {entry && <EntryLabelBadges entry={entry} />}
         <div className="ml-auto flex items-center gap-1.5">
           {showCopy && content && <CopyButton text={content.content} label={t('workspace.copy')} copiedLabel={t('workspace.copied')} />}
           {showIdeButton && (
@@ -94,14 +105,23 @@ export function PreviewStudio({
           </div>
         )}
         {kind === 'pdf' && <iframe src={repository.mediaUrl(path)} title={name} className="size-full border-0 bg-white" />}
-        {kind === 'markdown' && content && (
+        {!showNotice && kind === 'markdown' && content && (
           <div className="h-full overflow-auto px-4 py-3">
             <MarkdownRenderer variant="document" content={content.content} />
           </div>
         )}
-        {kind === 'code' && content && <CodeView source={content.content} language={content.language} />}
-        {kind === 'text' && content && <TextView source={content.content} />}
-        {kind === 'unknown' && <UnknownPreview href={repository.downloadUrl(path)} binary={content?.binary ?? true} />}
+        {!showNotice && kind === 'code' && content && <CodeView source={content.content} language={content.language} />}
+        {!showNotice && kind === 'text' && content && <TextView source={content.content} />}
+        {showNotice && (
+          <UnknownPreview
+            href={repository.downloadUrl(path)}
+            binary={false}
+            message={notice === 'too-large' ? t('workspace.tooLarge') : t('workspace.noPreview')}
+          />
+        )}
+        {!showNotice && kind === 'unknown' && (
+          <UnknownPreview href={repository.downloadUrl(path)} binary={content?.binary ?? true} />
+        )}
       </div>
     </div>
   )
@@ -190,11 +210,15 @@ function TextView({ source }: { source: string }) {
   )
 }
 
-function UnknownPreview({ href, binary }: { href: string; binary: boolean }) {
+/**
+ * Khối "không xem trước được" — dùng cho file nhị phân, file đọc hỏng, và file
+ * vượt trần đọc 1 MiB (khi đó `message` nói thẳng lý do). Giữ nguyên lớp CSS cũ.
+ */
+function UnknownPreview({ href, binary, message }: { href: string; binary: boolean; message?: string }) {
   const t = useT()
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
-      <p className="text-[12px] text-muted">{t('workspace.noPreview')}</p>
+      <p className="text-[12px] text-muted">{message ?? t('workspace.noPreview')}</p>
       {binary && (
         <span className="rounded bg-panel2 px-2 py-0.5 text-[10px] font-semibold uppercase text-muted">
           {t('workspace.binary')}

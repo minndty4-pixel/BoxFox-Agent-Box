@@ -21,6 +21,15 @@ import { useUiStore } from '../store/uiStore'
 export type WorkspaceMode = 'explorer' | 'tree'
 export type WorkspaceStatus = 'idle' | 'loading' | 'error' | 'refreshing'
 
+/**
+ * Trạng thái thật của phần xem trước: `too-large` = file vượt trần đọc 1 MiB của
+ * container (tải về để xem, không phải lỗi), `read-failed` = đọc hỏng vì lý do khác.
+ */
+export type WorkspacePreviewNotice = 'too-large' | 'read-failed'
+
+/** Trần đọc text của container (`deploy/docker/workspace_files.py`, 1 MiB). */
+export const WORKSPACE_TEXT_PREVIEW_LIMIT = 1024 * 1024
+
 export interface UseWorkspaceFilesResult {
   cwd: string
   listing: WorkspaceListing | null
@@ -34,11 +43,20 @@ export interface UseWorkspaceFilesResult {
   previewEntry: WorkspaceEntry | null
   previewContent: WorkspaceContent | null
   previewKind: PreviewKind
+  /** Lý do phần xem trước không có nội dung — `null` khi bình thường. */
+  previewNotice: WorkspacePreviewNotice | null
   status: WorkspaceStatus
   error: string | null
   mode: WorkspaceMode
   setMode: (m: WorkspaceMode) => void
   repository: WorkspaceRepository
+  /** Đường dẫn đang có thao tác ghi chạy — dùng để khoá hàng đó trên giao diện. */
+  pendingPaths: ReadonlySet<string>
+  /** Lỗi của thao tác ghi gần nhất, theo từng đường dẫn (cây KHÔNG bị đổi khi lỗi). */
+  entryErrors: ReadonlyMap<string, string>
+  /** Thông báo lỗi của thao tác ghi gần nhất, để hiện ở dòng trạng thái của panel. */
+  actionError: string | null
+  clearEntryError: (path: string) => void
   refresh: () => Promise<void>
   navigateTo: (path: string) => void
   goUp: () => void
@@ -51,6 +69,11 @@ export interface UseWorkspaceFilesResult {
   zipSelected: () => Promise<void>
   upload: (files: FileList | File[], targetDir: string) => Promise<void>
   unzip: (path: string) => Promise<void>
+  createFile: (name: string, dir?: string) => Promise<void>
+  createFolder: (name: string, dir?: string) => Promise<void>
+  renameEntry: (path: string, name: string) => Promise<void>
+  moveEntry: (path: string, destination: string) => Promise<void>
+  deleteEntry: (path: string) => Promise<void>
   openInIde: (path: string) => void
 }
 
@@ -116,9 +139,13 @@ export function useWorkspaceFiles(repository?: WorkspaceRepository): UseWorkspac
   const [previewEntry, setPreviewEntry] = useState<WorkspaceEntry | null>(null)
   const [previewContent, setPreviewContent] = useState<WorkspaceContent | null>(null)
   const [previewKind, setPreviewKind] = useState<PreviewKind>('unknown')
+  const [previewNotice, setPreviewNotice] = useState<WorkspacePreviewNotice | null>(null)
   const [status, setStatus] = useState<WorkspaceStatus>('idle')
   const [error, setError] = useState<string | null>(null)
   const [mode, setModeState] = useState<WorkspaceMode>('explorer')
+  const [pendingPaths, setPendingPaths] = useState<Set<string>>(() => new Set())
+  const [entryErrors, setEntryErrors] = useState<Map<string, string>>(() => new Map())
+  const [actionError, setActionError] = useState<string | null>(null)
 
   // Refs đồng bộ để callback ổn định ([]) đọc giá trị mới nhất.
   const cwdRef = useRef(cwd)
@@ -127,6 +154,8 @@ export function useWorkspaceFiles(repository?: WorkspaceRepository): UseWorkspac
   treeRef.current = tree
   const selectedRef = useRef(selected)
   selectedRef.current = selected
+  const previewPathRef = useRef(previewPath)
+  previewPathRef.current = previewPath
   const lastAnchorRef = useRef<string | null>(null)
 
   const navGenRef = useRef(0)
@@ -168,7 +197,7 @@ export function useWorkspaceFiles(repository?: WorkspaceRepository): UseWorkspac
     return deriveEntry(path)
   }, [])
 
-  const loadList = useCallback(async (path: string, isRefresh: boolean) => {
+  const loadList = useCallback(async (path: string, isRefresh: boolean, activate = true) => {
     const generation = ++navGenRef.current
     navControllerRef.current?.abort()
     const controller = new AbortController()
@@ -178,7 +207,9 @@ export function useWorkspaceFiles(repository?: WorkspaceRepository): UseWorkspac
     try {
       const listing = await repoRef.current.list(path, controller.signal)
       if (generation !== navGenRef.current) return
-      setCwd(path)
+      // Thao tác ghi chỉ nạp lại thư mục bị ảnh hưởng — không kéo người dùng đi
+      // khỏi thư mục đang xem (`activate === false`).
+      if (activate) setCwd(path)
       setListings((prev) => {
         const next = new Map(prev)
         next.set(path, listing)
@@ -229,8 +260,15 @@ export function useWorkspaceFiles(repository?: WorkspaceRepository): UseWorkspac
     const kind = previewKindFor(entry)
     setPreviewKind(kind)
     setPreviewContent(null)
+    setPreviewNotice(null)
     // Ảnh/video/âm thanh/PDF dùng mediaUrl trực tiếp — không cần readText.
     if (kind === 'image' || kind === 'video' || kind === 'audio' || kind === 'pdf') return
+    // File vượt trần đọc 1 MiB của container: nói thẳng "vượt 1 MiB" thay vì
+    // để khung xem trước trống trơn như một lỗi khó hiểu.
+    if (entry.sizeBytes > WORKSPACE_TEXT_PREVIEW_LIMIT) {
+      setPreviewNotice('too-large')
+      return
+    }
     const generation = ++contentGenRef.current
     contentControllerRef.current?.abort()
     const controller = new AbortController()
@@ -245,19 +283,63 @@ export function useWorkspaceFiles(repository?: WorkspaceRepository): UseWorkspac
       if (generation !== contentGenRef.current) return
       if (isAbortError(cause)) return
       setPreviewContent(null)
+      setPreviewNotice('read-failed')
     }
   }, [resolveEntry, loadList])
 
+  /**
+   * Đích của ý định mở tab Files (`tabIntentTargets.files = {path}`, hợp đồng §1):
+   * agent mở tab kèm đúng file cần xem. Ý định có thể tới lúc panel ĐÃ mở sẵn, nên
+   * phải tiêu thụ ngay tại chỗ chứ không chỉ ở lần mount như `selectedFilePath`.
+   *
+   * `selectedFilePath` (người dùng bấm chip trong transcript) là lựa chọn TRỰC
+   * TIẾP nên luôn thắng khi cả hai cùng có mặt; mỗi đích chỉ áp dụng MỘT lần để
+   * người dùng vẫn tự đổi được sau đó.
+   */
+  const filesIntentTarget = useUiStore((s) => s.tabIntentTargets.files)
+  const filesIntentPath = typeof filesIntentTarget?.path === 'string' ? filesIntentTarget.path : ''
+  const appliedIntentPathRef = useRef<string | null>(null)
+
+  const openIntentPath = useCallback(
+    (path: string) => {
+      appliedIntentPathRef.current = path
+      void loadList(parentOf(path), false).then(() => {
+        void open(path)
+      })
+    },
+    [loadList, open],
+  )
+
+  useEffect(() => {
+    if (!filesIntentPath || appliedIntentPathRef.current === filesIntentPath) return
+    // Lựa chọn trực tiếp của người dùng chưa được tiêu thụ → nhường cho nó. Đích
+    // này coi như đã xét: người dùng vừa nói rõ muốn xem gì, không kéo họ đi nơi
+    // khác ngay sau đó.
+    if (useUiStore.getState().selectedFilePath) {
+      appliedIntentPathRef.current = filesIntentPath
+      return
+    }
+    openIntentPath(filesIntentPath)
+  }, [filesIntentPath, openIntentPath])
+
   // Lần mount đầu: nếu có selectedFilePath (từ ChatPanel) → mở thư mục cha rồi
-  // mở file; ngược lại liệt kê gốc. Sau đó abort mọi request khi unmount.
+  // mở file; nếu không mà có ý định Files của agent → mở file agent chỉ định;
+  // ngược lại liệt kê gốc. Sau đó abort mọi request khi unmount.
   useEffect(() => {
     const initialFile = useUiStore.getState().selectedFilePath
+    const initialIntent = useUiStore.getState().tabIntentTargets.files
+    const initialIntentPath =
+      typeof initialIntent?.path === 'string' && initialIntent.path ? initialIntent.path : ''
     if (initialFile) {
       useUiStore.getState().clearSelectedFile()
       const parent = parentOf(initialFile)
       void loadList(parent, false).then(() => {
         void open(initialFile)
       })
+    } else if (initialIntentPath) {
+      // Cùng đường với hiệu ứng trên, nhưng chạy trước `loadList('')` để không
+      // liệt kê gốc rồi bị thay bằng thư mục cha (một lần nạp thắng theo thế hệ).
+      openIntentPath(initialIntentPath)
     } else {
       void loadList('', false)
     }
@@ -281,6 +363,7 @@ export function useWorkspaceFiles(repository?: WorkspaceRepository): UseWorkspac
     setPreviewPath(null)
     setPreviewEntry(null)
     setPreviewContent(null)
+    setPreviewNotice(null)
   }, [])
 
   const navigateTo = useCallback(
@@ -413,6 +496,111 @@ export function useWorkspaceFiles(repository?: WorkspaceRepository): UseWorkspac
     useUiStore.getState().openFileInIde(path)
   }, [])
 
+  const markPending = useCallback((path: string, on: boolean) => {
+    setPendingPaths((prev) => {
+      const next = new Set(prev)
+      if (on) next.add(path)
+      else next.delete(path)
+      return next
+    })
+  }, [])
+
+  const setEntryError = useCallback((path: string, message: string | null) => {
+    setEntryErrors((prev) => {
+      const next = new Map(prev)
+      if (message) next.set(path, message)
+      else next.delete(path)
+      return next
+    })
+  }, [])
+
+  const clearEntryError = useCallback((path: string) => setEntryError(path, null), [setEntryError])
+
+  /**
+   * Chạy một thao tác GHI lên `path`: đánh dấu hàng đang bận, gọi repository, rồi
+   * nạp lại đúng những thư mục bị ảnh hưởng. Khi lỗi thì ghi lỗi theo từng mục và
+   * KHÔNG đụng tới cây — người dùng vẫn thấy nguyên trạng thái trước đó.
+   */
+  const runEntryOperation = useCallback(
+    async (path: string, run: (repository: WorkspaceRepository) => Promise<unknown>, reloads: string[]) => {
+      setActionError(null)
+      setEntryError(path, null)
+      markPending(path, true)
+      try {
+        await run(repoRef.current)
+      } catch (cause) {
+        const message = cause instanceof WorkspaceRepositoryHttpError ? cause.message : messageFor(cause)
+        setEntryError(path, message)
+        setActionError(message)
+        return false
+      } finally {
+        markPending(path, false)
+      }
+      for (const dir of [...new Set(reloads)]) {
+        await loadList(dir, true, dir === cwdRef.current)
+      }
+      return true
+    },
+    [loadList, markPending, setEntryError],
+  )
+
+  const createFile = useCallback(
+    async (name: string, dir = '') => {
+      const clean = name.trim()
+      if (!clean) return
+      const target = childPath(dir, clean)
+      await runEntryOperation(target, (repository) => repository.touch(target), [dir])
+    },
+    [runEntryOperation],
+  )
+
+  const createFolder = useCallback(
+    async (name: string, dir = '') => {
+      const clean = name.trim()
+      if (!clean) return
+      const target = childPath(dir, clean)
+      await runEntryOperation(target, (repository) => repository.mkdir(target), [dir])
+    },
+    [runEntryOperation],
+  )
+
+  const renameEntry = useCallback(
+    async (path: string, name: string) => {
+      const clean = name.trim()
+      if (!clean || clean === basename(path)) return
+      await runEntryOperation(path, (repository) => repository.rename(path, clean), [parentOf(path)])
+    },
+    [runEntryOperation],
+  )
+
+  const moveEntry = useCallback(
+    async (path: string, destination: string) => {
+      // Không di chuyển vào chính nó / vào thư mục con của nó, và không "di
+      // chuyển" sang chỗ đang đứng.
+      if (destination === path || destination.startsWith(`${path}/`)) return
+      if (parentOf(path) === destination) return
+      await runEntryOperation(path, (repository) => repository.move(path, destination), [
+        parentOf(path),
+        destination,
+      ])
+    },
+    [runEntryOperation],
+  )
+
+  const deleteEntry = useCallback(
+    async (path: string) => {
+      const ok = await runEntryOperation(path, (repository) => repository.deleteEntry(path), [parentOf(path)])
+      if (!ok) return
+      setSelected((prev) => {
+        const next = new Set([...prev].filter((p) => p !== path && !p.startsWith(`${path}/`)))
+        return next.size === prev.size ? prev : next
+      })
+      const opened = previewPathRef.current
+      if (opened && (opened === path || opened.startsWith(`${path}/`))) closePreview()
+    },
+    [closePreview, runEntryOperation],
+  )
+
   return {
     cwd,
     listing: listings.get(cwd) ?? null,
@@ -426,11 +614,16 @@ export function useWorkspaceFiles(repository?: WorkspaceRepository): UseWorkspac
     previewEntry,
     previewContent,
     previewKind,
+    previewNotice,
     status,
     error,
     mode,
     setMode,
     repository: activeRepository,
+    pendingPaths,
+    entryErrors,
+    actionError,
+    clearEntryError,
     refresh,
     navigateTo,
     goUp,
@@ -443,6 +636,11 @@ export function useWorkspaceFiles(repository?: WorkspaceRepository): UseWorkspac
     zipSelected,
     upload,
     unzip,
+    createFile,
+    createFolder,
+    renameEntry,
+    moveEntry,
+    deleteEntry,
     openInIde,
   }
 }

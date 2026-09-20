@@ -3,7 +3,7 @@ import asyncio
 import os
 from pathlib import Path
 from aiohttp import web
-from ..agent_core.runtime import HarnessRuntime
+from ..agent_core.runtime import HarnessRuntime, DecisionError
 from ..agent_core.roles import ROLES
 from ..memory.session_store import SessionStore
 from ..sandbox.executor import SandboxExecutor
@@ -75,6 +75,14 @@ def create_app(runtime):
         value = await request.json()
         if not isinstance(value, dict):
             raise ValueError('JSON object required')
+        # The router owns provider metadata (context window, thinking type). Read it once per
+        # session so the harness never has to guess the context budget from the model name.
+        if value.get('connectionId') and value.get('modelId'):
+            metadata = await runtime.client.model_metadata(value.get('connectionId'), value.get('modelId'))
+            if metadata:
+                value['modelMetadata'] = metadata
+                if not value.get('contextWindow') and metadata.get('contextWindow'):
+                    value['contextWindow'] = metadata['contextWindow']
         return web.json_response(runtime.create(value), status=201)
 
     async def list_sessions(request):
@@ -96,6 +104,20 @@ def create_app(runtime):
     async def stop(request):
         await runtime.stop(request.match_info['sid'])
         return web.json_response({'status': runtime.store.get(request.match_info['sid'])['status']})
+
+    async def decision(request):
+        """Answer a pending ask_user / request_approval (contract §2: 200/400/404/409)."""
+        try:
+            body = await request.json()
+        except Exception:
+            body = None
+        if not isinstance(body, dict):
+            return web.json_response({'error': 'DECISION_INVALID: a JSON body with decisionId and choice is required'}, status=400)
+        try:
+            result = runtime.resolve_decision(request.match_info['sid'], body.get('decisionId'), body.get('choice'), body.get('note'))
+        except DecisionError as exc:
+            return web.json_response({'error': str(exc)}, status=exc.status)
+        return web.json_response(result)
 
     async def delete_session(request):
         sid = request.match_info['sid']
@@ -130,6 +152,7 @@ def create_app(runtime):
     app.router.add_delete('/api/agent/sessions/{sid}', delete_session)
     app.router.add_post('/api/agent/sessions/{sid}/turns', turn)
     app.router.add_post('/api/agent/sessions/{sid}/stop', stop)
+    app.router.add_post('/api/agent/sessions/{sid}/decisions', decision)
     app.on_cleanup.append(close)
     return app
 

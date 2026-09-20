@@ -11,6 +11,7 @@
  */
 import { useRef, useEffect, useState, useMemo, useCallback } from 'react'
 import {
+  ArrowDown,
   ChevronRight,
   ChevronDown,
   Copy,
@@ -27,6 +28,8 @@ import {
   Code2,
   FileJson,
   File,
+  LoaderCircle,
+  X,
 } from 'lucide-react'
 import type { ChatMessage, ReferencedFile } from '../../types/ui'
 import { useAgentStore } from '../../store/agentStore'
@@ -51,6 +54,96 @@ import { routerChatOptions } from './RouterTestChat'
 type ChatGroup =
   | { kind: 'single'; message: ChatMessage }
   | { kind: 'screenshots'; items: Extract<ChatMessage, { kind: 'screenshot' }>[] }
+
+/**
+ * Khoảng cách tối đa (px) từ đáy khung cuộn để vẫn coi là "đang ở cuối".
+ * Vượt ngưỡng này nghĩa là người dùng đã kéo lên đọc → dừng bám ngay (BUG-U1).
+ */
+export const SCROLL_FOLLOW_THRESHOLD_PX = 40
+
+export function distanceFromBottom(el: { scrollHeight: number; scrollTop: number; clientHeight: number }): number {
+  return el.scrollHeight - el.scrollTop - el.clientHeight
+}
+
+export function isNearBottom(
+  el: { scrollHeight: number; scrollTop: number; clientHeight: number },
+  threshold = SCROLL_FOLLOW_THRESHOLD_PX,
+): boolean {
+  return distanceFromBottom(el) <= threshold
+}
+
+/**
+ * Lệnh `interrupt` của transport mock chỉ có nghĩa trong kịch bản demo.
+ * Phiên harness/model chạy qua HTTP API riêng, nên gửi lệnh mock vào đó sẽ
+ * in `Received interrupt command …` vào đúng khung chat thật (BUG-20/U2).
+ */
+export function shouldEmitMockInterrupt(activeType: string): boolean {
+  return activeType !== 'harness' && activeType !== 'model'
+}
+
+/** Phiên chat thật (harness hoặc single-model) — không đi qua transport mock. */
+export function usesHarnessChat(activeType: string): boolean {
+  return activeType === 'harness' || activeType === 'model'
+}
+
+const HARNESS_ERROR_CODES = [
+  'SETUP_REQUIRED',
+  'SKILL_DISABLED',
+  'SESSION_BUSY',
+  'UNKNOWN_COMMAND',
+  'MISSING_TASK',
+  'CONTEXT_LIMIT',
+  'CHILD_FAILED',
+]
+
+export interface HarnessErrorInfo {
+  message: string
+  code: string | null
+}
+
+/**
+ * Chuẩn hóa chuỗi lỗi của store (`error: String(error)`) thành thông báo đọc
+ * được + mã lỗi nếu backend có trả. Hỗ trợ cả ba dạng đang tồn tại:
+ * `Error: SETUP_REQUIRED: …`, JSON `{"error":{"code":…,"message":…}}`, và
+ * chuỗi thuần `Unknown skill`.
+ */
+export function parseHarnessError(raw: string): HarnessErrorInfo {
+  let text = raw.trim()
+  if (text.startsWith('Error: ')) text = text.slice(7).trim()
+
+  // Một số đường lỗi trả nguyên payload JSON dưới dạng chuỗi.
+  if (text.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(text) as { error?: unknown; code?: unknown; message?: unknown }
+      const inner = parsed.error
+      if (typeof inner === 'string') text = inner
+      else if (inner && typeof inner === 'object') {
+        const obj = inner as { code?: unknown; message?: unknown }
+        const code = typeof obj.code === 'string' ? obj.code : null
+        const message = typeof obj.message === 'string' ? obj.message : text
+        return { message, code: code ?? extractErrorCode(message) }
+      } else if (typeof parsed.message === 'string') text = parsed.message
+    } catch {
+      // Không phải JSON hợp lệ — giữ nguyên chuỗi gốc.
+    }
+  }
+
+  return { message: text, code: extractErrorCode(text) }
+}
+
+function extractErrorCode(message: string): string | null {
+  for (const code of HARNESS_ERROR_CODES) {
+    if (new RegExp(`\\b${code}\\b`).test(message)) return code
+  }
+  const prefixed = /^([A-Z][A-Z0-9_]{3,}):\s*/.exec(message)
+  return prefixed ? prefixed[1] : null
+}
+
+/** Bỏ tiền tố mã lỗi khỏi thông báo hiển thị (mã đã có dòng riêng). */
+function stripErrorCode(message: string, code: string | null): string {
+  if (!code) return message
+  return message.replace(new RegExp(`^${code}:\\s*`), '').trim() || message
+}
 
 function groupMessages(messages: ChatMessage[]): ChatGroup[] {
   const groups: ChatGroup[] = []
@@ -81,6 +174,7 @@ export function ChatPanel() {
   const requests = useAgentStore((s) => s.requests)
   const proposal = useAgentStore((s) => s.proposal)
   const openTab = useUiStore((s) => s.openTab)
+  const chatScrollRef = useRef<HTMLDivElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const chatId = useAgentStore((s) => s.activeSessionId)
   const activeType = useHarnessStore((s) => s.activeType)
@@ -89,14 +183,93 @@ export function ChatPanel() {
   const harnessRefresh = useHarnessChatStore((s) => s.refresh)
   const harnessStop = useHarnessChatStore((s) => s.stop)
   const harnessClearError = useHarnessChatStore((s) => s.clearError)
-  const harnessBusy = harnessRun?.status === 'running' || harnessRun?.status === 'starting'
+  const harnessBusy =
+    harnessRun?.status === 'running' ||
+    harnessRun?.status === 'starting' ||
+    // Phiên đang chờ người dùng quyết định vẫn là một lượt chạy đang sống: ô soạn
+    // tin phải khoá (một prompt thường sẽ bị harness trả 409 SESSION_BUSY) nhưng
+    // nút Stop và các lệnh điều khiển vẫn phải dùng được.
+    harnessRun?.status === 'awaiting_decision'
+
+  // Lỗi của lần gửi/dừng vừa rồi được giữ thêm một bản cục bộ: `refresh` được
+  // gọi mỗi 1200ms ghi lại `sessions[id].error` (thành `null` khi phiên không
+  // hỏng) nên thông báo lỗi vừa hiện đã bị xoá sau ~1s — người dùng vẫn không
+  // thấy gì (BUG-17/F1). Bản cục bộ tồn tại tới khi bấm xoá hoặc đổi phiên.
+  const [recentRunError, setRecentRunError] = useState<string | null>(null)
+  const captureRunError = useCallback(() => {
+    const error = useHarnessChatStore.getState().sessions[chatId]?.error ?? null
+    if (error) setRecentRunError(error)
+  }, [chatId])
+
+  // ── Auto-scroll có kiểm soát (BUG-U1) ────────────────────────────────
+  // `followingRef` là nguồn sự thật cho "đang bám đáy"; state chỉ dùng để vẽ
+  // nút mũi tên, nên việc bám không phụ thuộc vào nhịp re-render.
+  const followingRef = useRef(true)
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false)
+  /** Số mục mới của transcript nhận được kể từ lúc người dùng rời đáy. */
+  const [unseenCount, setUnseenCount] = useState(0)
+  // Bỏ qua sự kiện `scroll` do chính mình phát ra: cuộn mượt bắn nhiều sự kiện
+  // trung gian ở xa đáy, nếu tính là "người dùng kéo lên" thì việc bám sẽ tự tắt.
+  const programmaticScrollRef = useRef(false)
+  const programmaticScrollTimer = useRef<number | null>(null)
+  // Phiên đang chờ transcript: chuyển phiên không được nháy "Chưa có hội thoại".
+  const [hydratingSession, setHydratingSession] = useState(true)
+
+  const scrollToLatest = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    programmaticScrollRef.current = true
+    if (programmaticScrollTimer.current !== null) window.clearTimeout(programmaticScrollTimer.current)
+    programmaticScrollTimer.current = window.setTimeout(() => {
+      programmaticScrollRef.current = false
+      programmaticScrollTimer.current = null
+    }, 400)
+    messagesEndRef.current?.scrollIntoView?.({ behavior, block: 'end' })
+  }, [])
+
+  const handleChatScroll = useCallback(() => {
+    const el = chatScrollRef.current
+    if (!el) return
+    // Cuộn do CHÍNH MÌNH phát ra (agent mọc thêm hàng → `scrollToLatest`) không
+    // phải hoạt động của người dùng: phải thoát TRƯỚC khi ghi mốc, nếu không thì
+    // mỗi hàng agent sinh ra lại gia hạn cửa sổ rảnh 15s và ý định tự mở tab
+    // không bao giờ tới hạn (B12). Chỉ thao tác thật mới được ghi mốc (§3).
+    if (programmaticScrollRef.current) return
+    // Cuộn thật trong khung chat là hoạt động thật của người dùng → ý định tự mở
+    // tab của agent chỉ xếp hàng (hợp đồng §3). Không ảnh hưởng tới giao diện.
+    useUiStore.getState().noteUserActivity()
+    const atBottom = isNearBottom(el)
+    followingRef.current = atBottom
+    setShowJumpToLatest(!atBottom)
+    if (atBottom) setUnseenCount((count) => (count === 0 ? count : 0))
+    // Nhớ vị trí đọc của phiên này để quay lại là về đúng chỗ.
+    useUiStore.getState().rememberSessionScroll(chatId, el.scrollTop)
+  }, [chatId])
+
+  const jumpToLatest = useCallback(() => {
+    followingRef.current = true
+    setShowJumpToLatest(false)
+    setUnseenCount(0)
+    scrollToLatest('smooth')
+  }, [scrollToLatest])
+
   useEffect(() => {
     let pending = false
-    const refresh = async () => { if (pending) return; pending = true; try { await harnessRefresh(chatId) } finally { pending = false } }
+    setHydratingSession(true)
+    const refresh = async () => {
+      if (pending) return
+      pending = true
+      try { await harnessRefresh(chatId) } finally { pending = false; setHydratingSession(false) }
+    }
     void refresh()
     const timer = window.setInterval(() => { void refresh() }, 1200)
     return () => window.clearInterval(timer)
   }, [chatId, harnessRefresh])
+
+  // Đổi phiên: bám lại đáy và bỏ thông báo lỗi của phiên trước.
+  useEffect(() => {
+    followingRef.current = true
+    setShowJumpToLatest(false)
+    setRecentRunError(null)
+  }, [chatId])
 
   // Lightbox Modal State
   const [lightboxMedia, setLightboxMedia] = useState<LightboxMediaProps | null>(null)
@@ -159,10 +332,13 @@ export function ChatPanel() {
   const isGlobalBusy = Boolean(harnessBusy || isSending || agentBusy)
 
   const handleStopAll = useCallback(() => {
-    void harnessStop(chatId)
+    void harnessStop(chatId).then(captureRunError, captureRunError)
     routerStop()
-    sendCommand({ type: 'interrupt', level: 'tam_dung' })
-  }, [harnessStop, chatId, routerStop, sendCommand])
+    // Chỉ kịch bản demo mới đi qua transport mock. Phiên harness/model dừng
+    // bằng `harnessStop`; gửi thêm lệnh mock sẽ in chuỗi
+    // `Received interrupt command …` vào khung chat thật (BUG-20/U2).
+    if (shouldEmitMockInterrupt(activeType)) sendCommand({ type: 'interrupt', level: 'tam_dung' })
+  }, [harnessStop, chatId, routerStop, sendCommand, activeType, captureRunError])
 
   // Clear harness error when switching sessions
   useEffect(() => {
@@ -203,12 +379,28 @@ export function ChatPanel() {
           (/deepseek|r1|qwq|o1|o3|claude-3[-.]7.*think/i.test(baseLabel) && !/\((?:Low|Medium|High)\)/i.test(baseLabel))
         )
         const modelLabel = hasThinking ? `${baseLabel} (${thinkingLevel.charAt(0).toUpperCase() + thinkingLevel.slice(1)})` : baseLabel
-        if (activeType === 'harness' || activeType === 'model') void harnessSend(chatId, prompt, selection, image, modelLabel)
-        else if (selected) void routerSend(prompt, undefined, image)
+        if (usesHarnessChat(activeType)) {
+          // Phiên đang chạy (kể cả đang chờ người dùng quyết định) không nhận
+          // prompt thường: `send` từ chối tại chỗ, nên trả `false` để composer
+          // giữ nguyên bản nháp thay vì xoá im lặng (BUG-17/F1).
+          const status = useHarnessChatStore.getState().sessions[chatId]?.status
+          if (status === 'running' || status === 'starting' || status === 'awaiting_decision') {
+            return Promise.resolve(false)
+          }
+          // Trả về kết quả để composer biết lần gửi có thất bại không — khi
+          // harness trả 400 thì nội dung người dùng vừa gõ phải còn nguyên
+          // trong ô nhập, không bị xoá im lặng (BUG-17/F1).
+          return harnessSend(chatId, prompt, selection, image, modelLabel).then(() => {
+            captureRunError()
+            return !useHarnessChatStore.getState().sessions[chatId]?.error
+          })
+        }
+        if (selected) void routerSend(prompt, undefined, image)
+        return undefined
       },
       onStop: handleStopAll,
     }
-  }, [routerOptions, selected, selection, isGlobalBusy, connectionWarning, setSelection, routerSend, activeType, harnessSend, handleStopAll, chatId, harnessClearError])
+  }, [routerOptions, selected, selection, isGlobalBusy, connectionWarning, setSelection, routerSend, activeType, harnessSend, handleStopAll, chatId, harnessClearError, captureRunError])
 
   // Escape to stop streaming
   useEffect(() => {
@@ -216,6 +408,22 @@ export function ChatPanel() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [isGlobalBusy, handleStopAll])
+
+  // End / Shift+G: nhảy xuống cuối transcript và bám lại đáy. Escape vẫn là
+  // "dừng agent" — không đổi nghĩa. Bỏ qua khi con trỏ đang ở ô nhập liệu.
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      const isEnd = e.key === 'End' || (e.shiftKey && (e.key === 'G' || e.key === 'g'))
+      if (!isEnd) return
+      const target = e.target as HTMLElement | null
+      const tag = target?.tagName?.toLowerCase()
+      if (tag === 'input' || tag === 'textarea' || target?.isContentEditable) return
+      e.preventDefault()
+      jumpToLatest()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [jumpToLatest])
 
   const pendingRequestIds = Object.values(requests)
     .filter((r) => r.status === 'dang_cho')
@@ -225,38 +433,96 @@ export function ChatPanel() {
 
   const prevEventsLengthRef = useRef(0)
   const prevTurnsLengthRef = useRef(0)
+  const prevTotalRef = useRef(0)
 
   useEffect(() => {
     const currentEvents = harnessRun?.events.length ?? 0
     const currentTurns = routerTurns.length
+    const total = currentEvents + currentTurns + messages.length
+    const delta = Math.max(0, total - prevTotalRef.current)
     const isNewTurn = (currentEvents > 0 && prevEventsLengthRef.current === 0) || currentTurns > prevTurnsLengthRef.current
 
     prevEventsLengthRef.current = currentEvents
     prevTurnsLengthRef.current = currentTurns
+    prevTotalRef.current = total
 
+    // Gửi tin mới → bám lại đáy rồi đi theo nội dung agent sinh ra.
     if (isNewTurn) {
-      // Đẩy tin nhắn user mới lên trên cùng của khung nhìn (như ảnh 3)
-      setTimeout(() => {
-        const latestTurnEl = document.querySelector('[data-turn-latest="true"]') || document.querySelector('[data-turn-user="true"]:last-of-type')
-        if (latestTurnEl) {
-          latestTurnEl.scrollIntoView({ behavior: 'smooth', block: 'start' })
-        }
-      }, 50)
+      followingRef.current = true
+      setShowJumpToLatest(false)
+    }
+    // Người dùng đã kéo lên đọc → không giật khung nhìn về đáy nữa, nhưng đếm
+    // số mục mới để nút "xuống cuối" nói đúng đang có bao nhiêu thứ chờ.
+    if (!followingRef.current) {
+      if (delta > 0) setUnseenCount((count) => count + delta)
       return
     }
+    setUnseenCount((count) => (count === 0 ? count : 0))
 
-    // Khi đang streaming nội dung, giữ cuộn tự nhiên theo tiến trình
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
-  }, [messages.length, routerTurns.length, harnessRun?.events.length, harnessRun?.status])
+    scrollToLatest(isNewTurn ? 'smooth' : 'auto')
+  }, [messages.length, routerTurns.length, harnessRun?.events.length, harnessRun?.status, scrollToLatest])
+
+  // Đổi phiên: khôi phục đúng vị trí đọc đã nhớ của phiên đó (nếu có), ngược
+  // lại thì bám đáy. Chạy sau khi transcript của phiên mới đã dựng.
+  const restoredSessionRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (restoredSessionRef.current === chatId) return
+    // Chờ transcript của phiên có nội dung rồi mới đặt lại vị trí — đặt trước
+    // khi có nội dung thì trình duyệt kẹp về 0 và lần cuộn tự động sau đó thắng.
+    const hasContent =
+      (harnessRun?.events.length ?? 0) > 0 || messages.length > 0 || routerTurns.length > 0
+    if (!hasContent) return
+    restoredSessionRef.current = chatId
+    const saved = useUiStore.getState().sessionScrollOffsets[chatId]
+    const el = chatScrollRef.current
+    if (saved === undefined || saved <= 0 || !el) {
+      followingRef.current = true
+      setShowJumpToLatest(false)
+      scrollToLatest('auto')
+      return
+    }
+    el.scrollTop = saved
+    const atBottom = isNearBottom(el)
+    followingRef.current = atBottom
+    setShowJumpToLatest(!atBottom)
+  }, [chatId, scrollToLatest, harnessRun?.events.length, messages.length, routerTurns.length])
+
+  useEffect(() => () => {
+    if (programmaticScrollTimer.current !== null) window.clearTimeout(programmaticScrollTimer.current)
+  }, [])
+
+  // Lỗi harness hiện inline ngay trên ô nhập (BUG-17/F1) — không im lặng.
+  // Ưu tiên lỗi mới nhất trong store, rơi về bản cục bộ khi vòng poll vừa xoá nó.
+  const harnessError = harnessRun?.error ?? recentRunError
+  const harnessErrorInfo = useMemo(() => (harnessError ? parseHarnessError(harnessError) : null), [harnessError])
+  const dismissHarnessError = useCallback(() => {
+    setRecentRunError(null)
+    harnessClearError(chatId)
+  }, [chatId, harnessClearError])
+  const showEmptyState = messages.length === 0 && !harnessRun?.events.length && routerTurns.length === 0
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-bg">
       {/* Top Context Usage Bar */}
       <ContextUsageBar />
 
-      {/* Scrollable conversation stream */}
-      <div className="min-h-0 flex-1 overflow-y-auto p-5 space-y-6 select-text">
-        {messages.length === 0 && !harnessRun?.events.length && routerTurns.length === 0 ? (
+      {/* Scrollable conversation stream (+ nút nhảy xuống cuối ở đáy khung) */}
+      <div className="relative flex min-h-0 flex-1 flex-col">
+      <div
+        ref={chatScrollRef}
+        onScroll={handleChatScroll}
+        data-testid="chat-scroll"
+        className="min-h-0 flex-1 overflow-y-auto p-5 space-y-6 select-text"
+      >
+        {showEmptyState && hydratingSession ? (
+          <div
+            data-testid="chat-session-loading"
+            className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center text-xs text-muted"
+          >
+            <LoaderCircle className="size-4 animate-spin" />
+            <span>{t('chat.loadingSession')}</span>
+          </div>
+        ) : showEmptyState ? (
           <div className="flex h-full flex-col items-center justify-center p-8 text-center">
             <div className="max-w-sm space-y-2">
               <div className="mx-auto flex size-10 items-center justify-center rounded-xl bg-panel2 border border-line text-muted">
@@ -309,6 +575,9 @@ export function ChatPanel() {
             onOpenLightbox={setLightboxMedia}
             snapshot={snapshot}
             selection={selection}
+            // Chip kế hoạch / sub-agent / quyết định trong transcript đều mở tab
+            // tại chỗ — người dùng đọc chat không bị mất vị trí (giữ nguyên khung cuộn).
+            onOpenTab={(tab, target) => openTab(tab, target ?? null)}
           />
         )}
         {/* Sub-agent Status Capsule — Theo dõi tiến độ sub-agent và mở SubagentInspectorPanel */}
@@ -335,6 +604,65 @@ export function ChatPanel() {
         <div ref={messagesEndRef} />
 
       </div>
+
+        {/* Nút nhảy xuống cuối — chỉ hiện khi người dùng đã kéo lên (BUG-U1) */}
+        {showJumpToLatest && (
+          <button
+            type="button"
+            onClick={jumpToLatest}
+            data-testid="chat-jump-to-latest"
+            data-unseen-count={unseenCount}
+            aria-label={
+              unseenCount > 0
+                ? `${t('chat.scrollToBottom')} — ${t('chat.newMessages', { count: unseenCount })}`
+                : t('chat.scrollToBottom')
+            }
+            title={
+              unseenCount > 0 ? t('chat.newMessages', { count: unseenCount }) : t('chat.scrollToBottom')
+            }
+            className={`absolute bottom-4 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-line bg-panel text-fg shadow-lg transition hover:bg-panel2 hover:text-brand cursor-pointer ${
+              unseenCount > 0 ? 'h-8 pl-2 pr-3' : 'size-8 justify-center'
+            }`}
+          >
+            <ArrowDown className="size-4" />
+            {unseenCount > 0 && (
+              <span className="font-mono text-[11px] font-bold tabular-nums">{unseenCount}</span>
+            )}
+          </button>
+        )}
+      </div>
+
+      {/* Lỗi harness hiện inline ngay trên ô nhập; nội dung người dùng vừa gõ
+          được composer giữ lại nguyên vẹn (BUG-17/F1). */}
+      {harnessErrorInfo && (
+        <div
+          role="alert"
+          data-testid="chat-error"
+          className="border-t border-rose-500/40 bg-rose-500/10 px-4 py-2.5 text-xs text-rose-200"
+        >
+          <div className="flex items-start gap-2">
+            <ShieldAlert className="mt-0.5 size-3.5 shrink-0 text-rose-400" />
+            <div className="min-w-0 flex-1 space-y-0.5">
+              <p className="font-semibold text-rose-300">{t('chat.errorTitle')}</p>
+              <p className="break-words leading-relaxed">{stripErrorCode(harnessErrorInfo.message, harnessErrorInfo.code)}</p>
+              {harnessErrorInfo.code && (
+                <p className="font-mono text-[10px] text-rose-300/80">
+                  {t('chat.errorCodeLabel')}: {harnessErrorInfo.code}
+                </p>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={dismissHarnessError}
+              aria-label={t('chat.errorDismiss')}
+              title={t('chat.errorDismiss')}
+              className="rounded p-0.5 text-rose-300/80 transition hover:text-rose-100 cursor-pointer"
+            >
+              <X className="size-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Fixed bottom chat input bar */}
       <ChatInputBar router={routerAdapter} />
@@ -818,6 +1146,7 @@ function RouterTurnBubble({ turn, snapshot, onOpenLightbox }: {
   onOpenLightbox?: (props: LightboxMediaProps) => void
 }) {
   const [copied, setCopied] = useState(false)
+  const t = useT()
   const connId = turn.meta?.connectionId ?? (turn.selection.kind === 'model' ? turn.selection.connectionId : null)
   const conn = snapshot?.connections.find(c => c.id === connId)
 
@@ -828,13 +1157,13 @@ function RouterTurnBubble({ turn, snapshot, onOpenLightbox }: {
         <div className="max-w-[85%] rounded-2xl bg-panel2 border border-line px-4 py-3 text-xs leading-relaxed text-fg shadow-xs">
           {turn.imageUrl && (
             <div
-              onClick={() => onOpenLightbox?.({ src: turn.imageUrl!, caption: 'Ảnh người dùng đính kèm' })}
+              onClick={() => onOpenLightbox?.({ src: turn.imageUrl!, caption: t('chat.attachedImage') })}
               className="mb-2.5 max-w-sm cursor-pointer overflow-hidden rounded-xl border border-line/80 bg-panel hover:border-brand/60 transition shadow-xs group"
-              title="Nhấp vào để phóng to ảnh"
+              title={t('chat.openImage')}
             >
               <img
                 src={turn.imageUrl}
-                alt="Ảnh đính kèm"
+                alt={t('chat.attachedImageAlt')}
                 className="w-full object-cover max-h-56 rounded-lg group-hover:scale-[1.02] transition duration-200"
               />
             </div>
@@ -881,26 +1210,26 @@ function RouterTurnBubble({ turn, snapshot, onOpenLightbox }: {
             <MarkdownRenderer content={turn.response} />
           </div>
         ) : turn.status === 'streaming' ? (
-          <p className="text-xs text-muted">Đang chờ phản hồi…</p>
+          <p className="text-xs text-muted">{t('chat.routerWaiting')}</p>
         ) : null}
 
         {turn.error && (
           <p role="alert" className="text-xs leading-relaxed text-rose-500">{turn.error}</p>
         )}
         {turn.status === 'cancelled' && (
-          <p className="text-xs text-muted">Đã dừng request.</p>
+          <p className="text-xs text-muted">{t('chat.routerStopped')}</p>
         )}
 
         {/* Compact meta */}
         <div className="flex items-center gap-3 text-[10px] text-muted select-none">
           <span>
             {turn.status === 'streaming'
-              ? 'Đang chạy'
+              ? t('chat.routerStatus.running')
               : turn.status === 'failed'
-                ? 'Thất bại'
+                ? t('chat.routerStatus.failed')
                 : turn.status === 'cancelled'
-                  ? 'Đã dừng'
-                  : 'Hoàn thành'}
+                  ? t('chat.routerStatus.cancelled')
+                  : t('chat.routerStatus.done')}
             {turn.latencyMs != null && ` · ${(turn.latencyMs / 1000).toFixed(2)}s`}
           </span>
           {turn.usage && (

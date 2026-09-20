@@ -11,12 +11,14 @@ import { useProviderStore } from '../../store/providerStore'
 import { useUiStore } from '../../store/uiStore'
 import type { Harness, SubagentConfig } from '../../types/harness'
 import { CustomCheckbox } from './CustomCheckbox'
+import { useT } from '../../i18n/context'
 
 interface HarnessEditorProps {
   harnessId: string
 }
 
 export function HarnessEditor({ harnessId }: HarnessEditorProps) {
+  const t = useT()
   const snapshot = useProviderStore((s) => s.snapshot)
   const loadProviders = useProviderStore((s) => s.load)
   useEffect(() => { void loadProviders().catch(() => {}) }, [loadProviders])
@@ -24,6 +26,11 @@ export function HarnessEditor({ harnessId }: HarnessEditorProps) {
   const getHarnessById = useHarnessStore((s) => s.getHarnessById)
   const saveHarness = useHarnessStore((s) => s.saveHarness)
   const setEditingHarnessId = useUiStore((s) => s.setEditingHarnessId)
+  // Luật tự mở tab: công tắc toàn cục, lưu trong localStorage cạnh `boxfox_theme`.
+  const autoOpenTabs = useUiStore((s) => s.autoOpenTabs)
+  const setAutoOpenTabs = useUiStore((s) => s.setAutoOpenTabs)
+  const autoOpenOnlyWhenIdle = useUiStore((s) => s.autoOpenOnlyWhenIdle)
+  const setAutoOpenOnlyWhenIdle = useUiStore((s) => s.setAutoOpenOnlyWhenIdle)
 
   const initialHarness = getHarnessById(harnessId)
 
@@ -319,6 +326,33 @@ export function HarnessEditor({ harnessId }: HarnessEditorProps) {
                 </div>
               )
             })}
+          </div>
+        </div>
+
+        {/* Luật tự mở tab (hợp đồng §3) — hai công tắc đọc/ghi thẳng uiStore. */}
+        <div className="pt-3">
+          <div className="mb-3">
+            <h2 className="text-sm font-semibold text-fg">{t('autoOpen.sectionTitle')}</h2>
+          </div>
+          <div className="space-y-2.5">
+            <div className="rounded-lg border border-line bg-panel p-4">
+              <CustomCheckbox
+                checked={autoOpenTabs}
+                onChange={() => setAutoOpenTabs(!autoOpenTabs)}
+                label={t('autoOpen.toggleLabel')}
+                description={t('autoOpen.toggleDesc')}
+                className="items-start"
+              />
+            </div>
+            <div className="rounded-lg border border-line bg-panel p-4">
+              <CustomCheckbox
+                checked={autoOpenOnlyWhenIdle}
+                onChange={() => setAutoOpenOnlyWhenIdle(!autoOpenOnlyWhenIdle)}
+                label={t('autoOpen.idleLabel')}
+                description={t('autoOpen.idleDesc')}
+                className="items-start"
+              />
+            </div>
           </div>
         </div>
       </div>

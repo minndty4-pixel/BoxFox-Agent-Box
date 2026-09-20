@@ -1,16 +1,22 @@
 /**
  * Breadcrumb điều hướng: workspace > frontend > src > ... mỗi đoạn là nút bấm.
  * Đoạn đường dẫn dùng font-mono (JetBrains Mono).
+ *
+ * Mỗi đoạn cũng là ĐÍCH THẢ cho thao tác di chuyển entry nội bộ (`onMoveEntry`),
+ * nên kéo một hàng từ cây/lưới lên "workspace" là chuyển về gốc.
  */
 import { ChevronRight } from 'lucide-react'
 import type { WorkspaceCrumb } from '../../../lib/workspace'
+import { acceptsPathDrop, draggedPath } from './DragDrop'
 
 interface BreadcrumbProps {
   crumbs: WorkspaceCrumb[]
   onNavigate: (path: string) => void
+  /** Nhận entry đang kéo để chuyển vào đoạn đường dẫn này (bỏ trống = không nhận). */
+  onMoveEntry?: (path: string, destination: string) => void
 }
 
-export function Breadcrumb({ crumbs, onNavigate }: BreadcrumbProps) {
+export function Breadcrumb({ crumbs, onNavigate, onMoveEntry }: BreadcrumbProps) {
   return (
     <nav className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto text-[11px]" aria-label="breadcrumb">
       {crumbs.map((crumb, i) => {
@@ -21,6 +27,22 @@ export function Breadcrumb({ crumbs, onNavigate }: BreadcrumbProps) {
             <button
               type="button"
               onClick={() => onNavigate(crumb.path)}
+              onDragOver={
+                onMoveEntry
+                  ? (e) => {
+                      if (acceptsPathDrop(e, crumb.path)) e.preventDefault()
+                    }
+                  : undefined
+              }
+              onDrop={
+                onMoveEntry
+                  ? (e) => {
+                      if (!acceptsPathDrop(e, crumb.path)) return
+                      e.preventDefault()
+                      onMoveEntry(draggedPath(e), crumb.path)
+                    }
+                  : undefined
+              }
               className={`rounded px-1 py-0.5 font-mono transition hover:bg-panel2 hover:text-fg ${
                 isLast ? 'text-fg' : 'text-muted'
               }`}

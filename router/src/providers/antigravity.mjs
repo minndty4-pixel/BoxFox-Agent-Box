@@ -11,6 +11,7 @@ import {
   quotaFamilyForModel,
   registryModelsForInventory,
   resolveAntigravityModel,
+  thinkingLevelFromModelId,
   unknownProbeCandidates,
 } from './antigravity-models.mjs';
 
@@ -167,20 +168,14 @@ async function antigravityResponseError(response) {
 }
 
 function recordForSpec(spec, info = {}, overrides = {}) {
-  // If model is explicitly named/spec'd with a fixed tier (low, medium, high),
-  // its level is already predetermined and it should NOT display a flyout to switch tiers.
-  const hasFixedTierSuffix = /-(?:low|medium|high)$/i.test(spec.id) || /\((?:Low|Medium|High)\)$/i.test(spec.name || '');
-  let levels = undefined;
-  if (!hasFixedTierSuffix && (spec.thinkingLevel || spec.capabilities?.reasoning === 'reported' || spec.id === 'gemini-3.8-flash' || overrides.source === 'probe')) {
-    levels = ['low', 'medium', 'high'];
-  }
   return {
-    ...modelRecord(spec.id, spec.name, spec.capabilities),
+    // BUG-4/R2: context window and thinking metadata come from the provider's
+    // own model ids (see `antigravityThinking`); nothing is guessed by name.
+    ...modelRecord(spec.id, spec.name, spec.capabilities, antigravityThinking(spec, overrides.liveId)),
     source: overrides.source || 'registry',
     stale: false,
     upstreamModelId: spec.upstreamModelId,
     thinkingLevel: spec.thinkingLevel,
-    thinkingLevels: levels,
     quotaFamily: spec.quotaFamily,
     upstreamDisplayName: displayName(overrides.liveId || spec.id, info),
     probeStatus: overrides.probeStatus || 'registry',
@@ -188,10 +183,42 @@ function recordForSpec(spec, info = {}, overrides = {}) {
   };
 }
 
+function isFixedTierSpec(spec) {
+  // A fixed tier is declared by the public model id (or its display name). The
+  // upstream/backing id is not consulted: the selectable base model
+  // `gemini-3.8-flash` is backed by `gemini-3.8-flash-medium`, which must stay
+  // selectable.
+  return /-(?:low|medium|high)$/i.test(spec.id || '') || /\((?:Low|Medium|High)\)$/i.test(spec.name || '');
+}
+
+/**
+ * BUG-4/R2: Cloud Code inventory entries carry no reasoning block, so the model
+ * id is the only provider evidence. `-low/-medium/-high` ids are `fixed` (their
+ * level is already in the id, no flyout); the Gemini 3 families take selectable
+ * levels (`effort`) and `defaultThinking` is the level the id publishes, or null
+ * when the id publishes none. Gemini 3 has a 1M-token window and never uses a
+ * token budget.
+ */
+function antigravityThinking(model = {}, liveId = null) {
+  const spec = resolveAntigravityModel(model.id);
+  const upstream = String(model.upstreamModelId || spec.upstreamModelId || model.id || '').toLowerCase();
+  const geminiFamily = spec.capabilities?.reasoning === 'reported' || /flash|pro|gemini/.test(upstream);
+  const fixed = isFixedTierSpec(model) || isFixedTierSpec(spec);
+  const published = [model.id, model.upstreamModelId || spec.upstreamModelId, liveId].map(thinkingLevelFromModelId).find(Boolean) || null;
+  return {
+    contextWindow: 1_000_000,
+    thinkingType: fixed ? 'fixed' : geminiFamily ? 'effort' : 'none',
+    thinkingLevels: fixed || !geminiFamily ? [] : ['low', 'medium', 'high'],
+    defaultThinking: published || spec.thinkingLevel || null,
+  };
+}
+
 function applyModelThinking(translated, spec, requestedLevel = null) {
   const m = (spec.upstreamModelId || spec.id || '').toLowerCase();
   const inferredLevel = m.includes('high') ? 'high' : m.includes('medium') ? 'medium' : m.includes('low') ? 'low' : 'high';
-  const level = (requestedLevel && requestedLevel !== 'none' && requestedLevel !== 'auto')
+  // R3: `fixed` models already carry their level in the model id, so a caller
+  // level must not override them; only selectable models honour the request.
+  const level = (requestedLevel && requestedLevel !== 'none' && requestedLevel !== 'auto' && !isFixedTierSpec(spec))
     ? requestedLevel
     : spec.thinkingLevel || (m.includes('flash') || m.includes('pro') || m.includes('gemini') ? inferredLevel : null);
   if (!level || level === 'none') return translated;
@@ -297,6 +324,9 @@ export function createAntigravityAdapter({ fetchImpl }) {
   });
   const adapter = {
     oauthConfig,
+    // Stored rows are re-derived from the provider's own model ids when the
+    // service normalizes a connection (BUG-4/R2).
+    thinkingMetadata: model => antigravityThinking(model || {}),
     fallbackModels: ANTIGRAVITY_MODELS.map(model => ({ ...recordForSpec(model), source: 'static', stale: true, enabled: false, probeStatus: 'fallback' })),
     buildAuthUrl({ redirectUri, state }) {
       const redirect = new URL(redirectUri);

@@ -325,8 +325,45 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
     # ------------------------------------------------------------------
     # Endpoint workspace files (§Workspace Files)
     # ------------------------------------------------------------------
+    # Nhóm GHI cấu trúc file (đợt 3, hợp đồng docs/plan/next-batch-contract.md §2):
+    # tất cả là POST + JSON + bắt buộc `X-BoxFox-Api-Key` (Origin KHÔNG đủ — cùng
+    # luật với upload/unzip), nhưng trả 401 khi thiếu/sai khoá.
+    _WORKSPACE_WRITE_ENDPOINTS = (
+        "/__box/files/mkdir",
+        "/__box/files/touch",
+        "/__box/files/rename",
+        "/__box/files/move",
+        "/__box/files/delete",
+    )
+
     def _is_workspace_endpoint(self) -> bool:
         return self.path.startswith("/__box/files") or self.path.startswith("/__box/file/")
+
+    def _require_secret(self) -> bool:
+        """Cổng shared-secret cho route GHI: gửi 401 nếu thiếu/sai, trả True nếu qua."""
+
+        if self._secret_ok():
+            return True
+        self._send_json_cors(401, json.dumps({"error": "Cần X-BoxFox-Api-Key hợp lệ"}))
+        return False
+
+    def _dispatch_workspace_write(self, path_only: str, body: dict) -> dict:
+        """Gọi đúng hàm ghi của ``workspace_files`` theo route; body sai → 400."""
+
+        if path_only == "/__box/files/mkdir":
+            exist_ok = body.get("exist_ok", False)
+            if not isinstance(exist_ok, bool):
+                raise workspace_files.InvalidWorkspacePath("'exist_ok' phải là boolean.")
+            return workspace_files.make_directory(body.get("path"), exist_ok=exist_ok)
+        if path_only == "/__box/files/touch":
+            return workspace_files.touch_file(body.get("path"), body.get("content", ""))
+        if path_only == "/__box/files/rename":
+            return workspace_files.rename_entry(body.get("path"), body.get("name"))
+        if path_only == "/__box/files/move":
+            return workspace_files.move_entry(body.get("path"), body.get("destination"))
+        if path_only == "/__box/files/delete":
+            return workspace_files.delete_entry(body.get("path"))
+        raise workspace_files.InvalidWorkspacePath("Endpoint ghi không được hỗ trợ.")
 
     def _send_stream_response(
         self, status: int, headers: dict[str, str], chunk_iter
@@ -522,6 +559,18 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                 self._send_json_cors(200, json.dumps(result))
                 return
 
+            # Đợt 3: mkdir/touch/rename/move/delete — POST JSON + khoá API, 401 khi thiếu.
+            if path_only in self._WORKSPACE_WRITE_ENDPOINTS:
+                if self.command != "POST":
+                    self._send_json_cors(405, json.dumps({"error": "Phương thức không được phép"}))
+                    return
+                if not self._require_secret():
+                    return
+                body = self._read_json_body()
+                result = self._dispatch_workspace_write(path_only, body)
+                self._send_json_cors(200, json.dumps(result))
+                return
+
             self._send_json_cors(404, json.dumps({"error": "Không tìm thấy endpoint."}))
         except workspace_files.WorkspaceFileError as error:
             self._send_json_cors(error.status_code, json.dumps({"error": error.public_message}))
@@ -534,11 +583,44 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             self._send_json_cors(500, json.dumps({"error": "Lỗi nội bộ."}))
 
 
+    # ------------------------------------------------------------------
+    # Trạng thái duyệt plan (§Plan Document bước 7) — route GHI
+    # ------------------------------------------------------------------
+    def _handle_plan_review(self) -> None:
+        """POST /__box/plans/review — chỉ nhận shared-secret, KHÔNG cần Origin.
+
+        Route này nằm cạnh nhóm đọc `/__box/plans` (:641-671) nhưng phải đứng TRƯỚC
+        cổng Origin, vì backend gọi server-to-server (không có header Origin). Thiếu/
+        sai khoá → 401; identity không khớp quy tắc tên hoặc decision lạ → 400.
+        """
+
+        if self.command == "OPTIONS":
+            self._send_cors_preflight()
+            return
+        if self.command != "POST":
+            self._send_json_cors(405, json.dumps({"error": "Phương thức không được phép"}))
+            return
+        if not self._require_secret():
+            return
+        try:
+            body = self._read_json_body()
+            payload = plan_files.write_review(
+                PLAN_ROOT, body.get("identity"), body.get("decision"), body.get("note", "")
+            )
+            self._send_json_cors(200, json.dumps(payload))
+        except plan_files.PlanFileError as error:
+            self._send_json_cors(error.status_code, json.dumps({"error": error.public_message}))
+        except capture.CaptureError as error:
+            # Body JSON sai → 400 thay vì rơi vào lưới an toàn 500.
+            self._send_json_cors(error.status_code, json.dumps({"error": error.public_message}))
+        except Exception as error:  # lưới an toàn cho thread
+            print(f"[ide-proxy] lỗi plan review: {error!r}", file=sys.stderr)
+            self._send_json_cors(500, json.dumps({"error": "Lỗi nội bộ."}))
+
     def _handle_box_api(self) -> None:
         if self._is_capture_endpoint():
             self._handle_capture_api()
             return
-
         # Endpoint workspace files (§Workspace Files) — nhóm đọc/ghi file riêng,
         # đặt ngay sau capture và trước network/power để khối files tự chứa.
         if self._is_workspace_endpoint():
@@ -568,6 +650,13 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             else:
                 subprocess.run([POWER_BIN, state], check=False)
                 self._send_json_cors(200, json.dumps({"power": read_power_state()}))
+            return
+
+        # Ghi trạng thái duyệt plan: route GHI cần khoá API (backend gọi
+        # server-to-server, không có Origin) nên đứng TRƯỚC cổng Origin của nhóm
+        # đọc `/__box/plans` bên dưới — cùng luật với network/power.
+        if urllib.parse.urlsplit(self.path).path == "/__box/plans/review":
+            self._handle_plan_review()
             return
 
         if not self._origin_ok_for_box_api():
@@ -820,7 +909,9 @@ def main():
         f"[ide-proxy] Capture API: /__box/windows · /__box/browser/tabs · "
         f"/__box/capture · /__box/record/start|stop|status · /__box/inspect-element\n"
         f"[ide-proxy] Workspace API: GET /__box/files · /__box/file/content|media|thumbnail|download · "
-        f"POST /__box/files/zip · /__box/file/upload|unzip",
+        f"POST /__box/files/zip · /__box/file/upload|unzip · "
+        f"/__box/files/mkdir|touch|rename|move|delete (cần secret)\n"
+        f"[ide-proxy] Plan API: GET /__box/plans|content · POST /__box/plans/review (cần secret)",
         flush=True,
     )
     server.serve_forever()
