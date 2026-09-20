@@ -12,6 +12,7 @@ import uuid
 import httpx
 from .compression import ContextCompressor, estimate_tokens
 from .failures import classify_failure, failure_detail, is_transient
+from .plan_quality import check_plan_quality
 from .roles import ROLES, allowed_tools
 from .tool_contracts import schemas_for
 from ..skills.catalog import SkillCatalog, DEFAULT_SKILLS
@@ -56,6 +57,7 @@ CORE MULTI-AGENT DELEGATION PROTOCOL:
    - For any non-trivial development, bugfix, refactoring, or feature request: NEVER attempt to do everything in a single turn. You MUST invoke your specialists via `delegate_task`.
 2. Hierarchical 5-Phase Execution Workflow:
    - Phase 1 (Explore): Delegate to role='explore' to survey files, symbols, dependency trees, and existing architecture.
+     * Hand every external-knowledge question (a library's real API, a standard, a version, a web page) to role='research'. It is the ONLY role with browser access, there is NO web-search tool, and the sandbox network can be OFF — so a research answer may honestly say "could not verify". Accept that over a guessed source.
    - Phase 2 (Plan & Design):
      * Delegate to role='plan' to construct ordered milestones, risks, and acceptance criteria.
      * For user-facing or architectural changes, delegate to role='design' to specify API/UI contracts before coding.
@@ -67,8 +69,10 @@ CORE MULTI-AGENT DELEGATION PROTOCOL:
      * Delegate to role='review' to audit diffs for security, regressions, and quality.
      * Delegate to role='simplify' if code cleanup is needed.
 3. Subagent Context & Handoff Management:
-   - When calling `delegate_task(role=..., goal=..., context=...)`, provide concise, highly relevant context from earlier phases.
-   - Do NOT assume a child agent succeeded merely because it finished. Inspect its summary, executed tools, and error status. If a child agent fails, diagnose why and assign a targeted corrective task.
+   - State the required RESULT SHAPE in `expect` for EVERY delegation: the exact deliverable plus the evidence you need back (which files with line numbers, which commands and what their output must show, which sources). A child that is not told what to return will return prose.
+   - When calling `delegate_task(role=..., goal=..., context=..., expect=...)`, provide concise, highly relevant context from earlier phases.
+   - Do NOT assume a child agent succeeded merely because it finished. Inspect its summary, the `truncated` flag, executed tools, and error status. Require evidence (file path + line, command + observed output, citation) for every claim; if a child returns none, re-delegate with `expect` naming the missing evidence or verify it yourself. If a child agent fails, diagnose why and assign a targeted corrective task.
+   - A plan you accept must contain a Verification / Acceptance criteria section with an exact command or check and its expected result, and a Risks / Limitations section; `write_plan` refuses anything less.
 4. Final Synthesis & Delivery:
    - Deliver a clear, professional summary to the user highlighting: (1) what changed, (2) verified test outputs, and (3) any operational notes. No filler, no sycophancy."""
 
@@ -390,6 +394,33 @@ def plan_identity(relative_path):
         return ''
     directory = match.group('directory').rstrip('/')
     return (directory + '/' if directory else '') + match.group('slug')
+
+
+# The child of `delegate_task` is a real session whose answer lands in the durable event stream AND in the
+# parent's tool result, so every child string is bounded: a runaway child must not balloon either one.
+# 8000 chars of answer is ~2000 tokens — enough for real findings, small enough to stay in the parent prompt.
+CHILD_ANSWER_MAX_CHARS = 8000
+# Echoes of the parent's own goal/context/prompt are already in the parent's `tool_start` event verbatim.
+CHILD_ECHO_MAX_CHARS = 3000
+CHILD_EXPECT_MAX_CHARS = 2000
+# Appended to every child prompt (<= 1200 chars, asserted by tests). Free-form prose from a child is what
+# made the first round of plans unusable: no evidence, no verification, no honest limits.
+CHILD_RESULT_CONTRACT = """
+
+Result contract (the parent needs exactly this back):
+## Findings — what you established, most important first.
+## Evidence — file paths with line numbers, exact commands, and the real observed output quoted.
+## Verification performed — each check you actually ran and its result. Never claim success without evidence; if you could not run a check, say so.
+## Limitations & open questions — what you could not verify, your assumptions, and what the parent must decide.
+Keep it compact and drop nothing that proves a claim. An unevidenced claim is a failure, not an answer."""
+
+
+def bound_child_text(text, limit):
+    """(bounded, truncated) — one child string must never grow the event stream without limit."""
+    raw = str(text or '')
+    if len(raw) <= limit:
+        return raw, False
+    return raw[:limit] + f'\n[Bounded at {limit} characters; the full text stays in the child transcript.]', True
 
 
 def normalize_decision_options(raw, kind):
@@ -940,6 +971,9 @@ class HarnessRuntime(RuntimeCommands):
             raise ValueError('PLAN_INVALID: markdown must be a non-empty string')
         if len(markdown.encode('utf-8')) > PLAN_MAX_BYTES:
             raise ValueError('PLAN_INVALID: the plan exceeds the 1 MiB plan-file limit')
+        # Structural gate BEFORE the sandbox writer runs: a rejected plan leaves no file behind and the model
+        # gets one actionable line naming what is missing (plan_quality.py owns the rules).
+        check_plan_quality(markdown)
         title = plan_title(args.get('title'), markdown, slug)
         async with self.writer_lock:
             written = await self.executor.execute('write_plan', {'slug': slug, 'markdown': markdown, 'title': title}, sid)
@@ -979,14 +1013,23 @@ class HarnessRuntime(RuntimeCommands):
             'instructions': configured.get('systemPromptAppended', '')},
             parent_id=session['id'], role=role, parent_tools=config['tools'])
         context_data = str(args.get('context', ''))[:16000] if args.get('context') else ''
-        child_prompt = goal + (f"\nParent-supplied context (data):\n{context_data}" if context_data else '')
+        expectation = str(args.get('expect', ''))[:CHILD_EXPECT_MAX_CHARS] if args.get('expect') else ''
+        prompt_parts = [goal]
+        if context_data:
+            prompt_parts.append(f'Parent-supplied context (data):\n{context_data}')
+        if expectation:
+            prompt_parts.append(f'Parent-required deliverable and evidence (result shape):\n{expectation}')
+        child_prompt = '\n'.join(prompt_parts) + CHILD_RESULT_CONTRACT
+        echo_goal, echo_context, echo_prompt = (bound_child_text(goal, CHILD_ECHO_MAX_CHARS)[0],
+                                                bound_child_text(context_data, CHILD_ECHO_MAX_CHARS)[0],
+                                                bound_child_text(child_prompt, CHILD_ECHO_MAX_CHARS)[0])
         self.store.emit(session['id'], 'child', {
             'sessionId': child['id'],
             'role': role,
             'status': 'started',
-            'goal': goal,
-            'context': context_data,
-            'prompt': child_prompt,
+            'goal': echo_goal,
+            'context': echo_context,
+            'prompt': echo_prompt,
         })
         async with self.child_slots:
             task = self.start(child['id'], child_prompt)
@@ -999,12 +1042,16 @@ class HarnessRuntime(RuntimeCommands):
         status = child_rec['status']
         child_events = self.store.events(child['id'])
         last_error = next((e['data'].get('message') for e in reversed(child_events) if e['type'] == 'error'), None)
+        last_error = bound_child_text(last_error, CHILD_ECHO_MAX_CHARS)[0] if last_error else None
         tools_run = [e['data'].get('name') for e in child_events if e['type'] == 'tool_start']
-        
+        # The child's answer is the only unbounded string a delegated run produces. Bound it in the payload
+        # itself (events and the parent's tool result share this dict) and report the truth about it.
+        answer_text = answer or ''
+        summary, truncated = bound_child_text(answer_text, CHILD_ANSWER_MAX_CHARS)
         diag = f"\n[Diagnostic: status={status}; error={last_error or 'none'}; tools_run={tools_run}]" if status != 'completed' else ""
         result = {'sessionId': child['id'], 'role': role, 'status': status,
-                  'goal': goal, 'context': context_data, 'prompt': child_prompt,
-                  'summary': (answer or '') + diag, 'is_error': status != 'completed',
-                  'last_error': last_error, 'tools_run': tools_run}
+                  'goal': echo_goal, 'context': echo_context, 'prompt': echo_prompt,
+                  'summary': summary + diag, 'answerChars': len(answer_text), 'truncated': truncated,
+                  'is_error': status != 'completed', 'last_error': last_error, 'tools_run': tools_run}
         self.store.emit(session['id'], 'child', result)
         return result

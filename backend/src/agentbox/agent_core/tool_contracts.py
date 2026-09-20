@@ -32,13 +32,38 @@ SCHEMAS = [
     tool('skills_list', 'List enabled skills metadata; then load relevant full instructions with skill_view.', {}),
     tool('skill_view', 'Read a complete enabled skill or a linked UTF-8 file in its package. Scripts are not auto-executed.', {'id': STRING, 'file_path': STRING}, ['id']),
     tool('session_search', 'Search this session durable checkpoint history for a literal term.', {'query': STRING}, ['query']),
-    tool('delegate_task', 'Run one enabled specialist with isolated context. Return its real result/evidence. Never assume success.',
-         {'role': {'type': 'string', 'enum': ['explore', 'plan', 'design', 'build', 'debug', 'review', 'simplify', 'testing', 'research']}, 'goal': STRING, 'context': STRING}, ['role', 'goal']),
+    tool('delegate_task',
+         'Run one enabled specialist with isolated context. You MUST state the required RESULT SHAPE in `expect`: the '
+         'deliverable plus the evidence you need back (sections, file:line, commands and their output, citations). The '
+         'child is told to finish with Findings / Evidence / Verification performed / Limitations & open questions and '
+         'to never claim success without evidence. Read the returned status, tools_run, last_error and truncated flag; '
+         'a child answer without evidence is not a result.',
+         {'role': {'type': 'string',
+                   'enum': ['explore', 'plan', 'design', 'build', 'debug', 'review', 'simplify', 'testing', 'research'],
+                   'description': 'Specialist id. Only `research` can browse (browser_use, read-only); there is no '
+                                  'web-search tool and the sandbox network can be OFF, so expect "could not verify" '
+                                  'instead of invented sources.'},
+          'goal': {'type': 'string',
+                   'description': 'The one outcome the child must reach, in its own words. It cannot see your chat, so '
+                                  'embed anything it needs to know in goal or context.'},
+          'context': {'type': 'string',
+                      'description': 'Data the child cannot obtain itself: findings from earlier phases, exact file '
+                                     'paths, decisions already made. Capped at 16000 characters.'},
+          'expect': {'type': 'string',
+                     'description': 'Required RESULT SHAPE, stated by you: the exact deliverable and the evidence that '
+                                    'proves it (which files with line numbers, which commands and what their output '
+                                    'must show, which sources). The child must return exactly this.'}},
+         ['role', 'goal']),
     tool('ask_user', 'Ask the user a question and BLOCK this turn until they answer. Give 2-5 options; the runtime always adds the approve/reject pair when you omit it. If nobody answers before the deadline (default 300 s) the answer is a rejection, so ask only when the answer changes what you do next.',
          {'question': STRING, 'options': DECISION_OPTIONS, 'deadlineSeconds': {'type': 'integer'}}, ['question', 'options']),
     tool('request_approval', 'Ask the user to approve ONE concrete risky action (delete, overwrite, command outside the allowlist) BEFORE you run it, and BLOCK this turn until they answer. Default deadline 600 s; no answer means rejected, so never assume approval.',
          {'action': STRING, 'reason': STRING, 'options': DECISION_OPTIONS, 'deadlineSeconds': {'type': 'integer'}}, ['action', 'reason']),
-    tool('write_plan', 'Write a plan document into the workspace plan folder as the next free version vN-slug.md (never overwrites an existing version) and tell the UI. Use a lowercase dash-separated slug; the markdown is the real plan body.',
+    tool('write_plan',
+         'Write a plan document into the workspace plan folder as the next free version vN-slug.md (never overwrites an '
+         'existing version) and tell the UI. Use a lowercase dash-separated slug; the markdown is the real plan body. '
+         'The harness refuses (PLAN_QUALITY_REJECTED, nothing written) a plan without a Verification / Acceptance '
+         'criteria section naming at least one exact command or check plus its expected result, a Risks / Limitations '
+         'section, and — when the plan relies on external facts — a Sources / Citations section.',
          {'slug': STRING, 'markdown': STRING, 'title': STRING}, ['slug', 'markdown']),
 ]
 

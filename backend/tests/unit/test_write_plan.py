@@ -12,7 +12,20 @@ import agentbox.sandbox.worker as worker
 from agentbox.agent_core.runtime import HarnessRuntime, plan_identity, plan_slug, plan_title
 from agentbox.memory.session_store import SessionStore
 
-PLAN_MARKDOWN = '# Workspace plan\n\n- step 1\n'
+# A plan that passes the structural gate (plan_quality.py): acceptance criteria with a real command and
+# its expected result, plus a risks section. The gate must never change what such a plan writes.
+PLAN_MARKDOWN = """# Workspace plan
+
+## Milestones
+1. Build the workspace panel.
+
+## Verification / Acceptance criteria
+Run `.venv/bin/python -m pytest backend/tests -q`; expect only the 3 known environment failures.
+
+## Risks / Limitations
+- none known: the change is additive.
+"""
+PLAN_MARKDOWN_V2 = PLAN_MARKDOWN + "- v2 adds the review state.\n"
 
 
 def answer(text='done', calls=None, finish='stop'):
@@ -95,7 +108,7 @@ def test_write_plan_emits_plan_written_then_ui_intent(tmp_path):
         model = FixtureModel([
             answer('Viết plan', calls=[call('write_plan', {'slug': 'Workspace Plan', 'markdown': PLAN_MARKDOWN, 'title': ''})]),
             answer('Đã ghi plan'),
-            answer('Viết tiếp', calls=[call('write_plan', {'slug': 'workspace-plan', 'markdown': 'v2 body'})]),
+            answer('Viết tiếp', calls=[call('write_plan', {'slug': 'workspace-plan', 'markdown': PLAN_MARKDOWN_V2})]),
             answer('Đã ghi bản 2')])
         runtime = HarnessRuntime(store, executor, model)
         sid = runtime.create({'skills': []})['id']

@@ -1,0 +1,215 @@
+"""The write_plan gate: a plan without verification, limits or sources is refused before any write.
+
+Contract: backend/src/agentbox/agent_core/plan_quality.py (pure) + failures.PLAN_QUALITY_REJECTED.
+"""
+import asyncio
+import copy
+import json
+
+import pytest
+
+from agentbox.agent_core.failures import KNOWN_PREFIXES, classify_failure, describe_failure
+from agentbox.agent_core.plan_quality import (PLAN_QUALITY_PREFIX, REQUIRED_SECTIONS, check_plan_quality,
+                                              plan_quality_issues, plan_quality_message)
+from agentbox.agent_core.runtime import HarnessRuntime
+from agentbox.memory.session_store import SessionStore
+
+GOOD_PLAN = """# Workspace plan
+
+## Milestones
+1. Build the workspace panel.
+
+## Verification / Acceptance criteria
+Run `.venv/bin/python -m pytest backend/tests -q`; expect only the 3 known environment failures.
+
+## Risks / Limitations
+- none known: the change is additive.
+"""
+
+# The document shape the owner actually got: milestones and prose, no verification mechanism, no limits.
+EMPTY_PLAN = """# Patient record lookup agent
+
+## Steps
+1. The agent queries the records service.
+2. It formats the answer.
+"""
+
+
+def answer(text='done', calls=None, finish='stop'):
+    return {'choices': [{'message': {'content': text, **({'tool_calls': calls} if calls else {})},
+                         'finish_reason': 'tool_calls' if calls else finish}],
+            'usage': {'prompt_tokens': 10, 'completion_tokens': 2}}
+
+
+def call(name, args, cid='c1'):
+    return {'id': cid, 'type': 'function', 'function': {'name': name, 'arguments': json.dumps(args)}}
+
+
+class FixtureModel:
+    def __init__(self, responses):
+        self.responses = iter(responses)
+        self.requests = []
+
+    async def complete(self, messages, tools, route, max_tokens=4096, on_thought=None, on_content=None):
+        self.requests.append(copy.deepcopy((messages, tools, route)))
+        return next(self.responses)
+
+
+class PlanFixtureExecutor:
+    """Stands in for the sandbox worker: confirms the same metadata the real container returns."""
+
+    def __init__(self):
+        self.calls = []
+
+    async def execute(self, name, args, sid):
+        self.calls.append((name, args, sid))
+        return {'content': 'Written .plans/v1-x.md', 'version': 1, 'slug': args['slug'],
+                'relativePath': f".plans/v1-{args['slug']}.md",
+                'bytes': len(args['markdown'].encode('utf-8'))}
+
+    async def cleanup(self, sid):
+        return None
+
+
+class SilentExecutor(PlanFixtureExecutor):
+    async def execute(self, name, args, sid):
+        raise AssertionError('the sandbox must not be called: ' + name)
+
+
+def events_of(store, sid, kind):
+    return [event for event in store.events(sid) if event['type'] == kind]
+
+
+def tool_results(store, sid):
+    return [json.loads(message['content']) for message in store.get(sid)['messages'] if message['role'] == 'tool']
+
+
+# --- the pure rules -----------------------------------------------------------------------------------
+
+def test_required_sections_constant_names_the_three_sections():
+    assert [(section['id'], section['trigger']) for section in REQUIRED_SECTIONS] == \
+        [('verification', None), ('risks', None), ('sources', 'external_facts')]
+    assert all(section['heading_keys'] and section['requirement'] for section in REQUIRED_SECTIONS)
+
+
+@pytest.mark.parametrize('markdown', [
+    GOOD_PLAN,
+    # heading style does not matter: ATX, bold label, or a plain `Verification:` label
+    '# P\n\n**Verification**\n- `ls .plans` -> expect at least one vN-*.md file.\n\n**Risks**\n- none known.\n',
+    '# P\n\nVerification:\nPOST /api/agent/sessions returns 201.\n\nRisks:\n- none known, the route is new.\n',
+    # a check that is written as prose is still a check, as long as it names something concrete
+    '# P\n\n## Acceptance criteria\n- The endpoint returns 201 for a valid payload.\n- Invalid payloads return 400.\n\n'
+    '## Limitations\n- jsdom cannot measure layout.\n',
+    # Vietnamese headings: this product's users and the repository plans write Vietnamese
+    '# Kế hoạch\n\n## Nghiệm thu\nChạy `npm test` và mong đợi 0 lỗi.\n\n## Giới hạn\n- chưa kiểm thử trên Safari.\n',
+    # a fenced command block counts
+    '# P\n\n## How to verify\n```\nnpm test\n```\nExpect 0 failures.\n\n## Risks\n- none known\n',
+])
+def test_a_plan_with_evidence_and_limits_is_accepted(markdown):
+    assert plan_quality_issues(markdown) == []
+    assert check_plan_quality(markdown) is None
+
+
+def test_a_plan_without_verification_or_limits_is_rejected():
+    assert plan_quality_issues(EMPTY_PLAN) == ['verification-section', 'risks-section']
+
+
+def test_a_verification_section_must_name_a_command_and_an_expected_result():
+    no_check = '# P\n\n## Verification\nEverything the user cares about works.\n\n## Risks\n- none known\n'
+    assert plan_quality_issues(no_check) == ['verification-command', 'verification-expected']
+    no_expectation = '# P\n\n## Verification\nRun `pytest backend/tests -q`.\n\n## Risks\n- none known\n'
+    assert plan_quality_issues(no_expectation) == ['verification-expected']
+    # an empty section is not a section
+    assert plan_quality_issues('# P\n\n## Verification\n## Risks\n- none known\n') == ['verification-section']
+
+
+def test_external_facts_require_a_sources_section_but_repo_links_do_not():
+    external = '# P\n\n## Verification\n`curl -s https://example.com/health` expect {"ok":true}\n\n## Risks\n- none\n'
+    assert plan_quality_issues(external) == ['sources-section']
+    with_sources = external + '\n## Sources\n- https://example.com/health (checked 2026-09-20)\n'
+    assert plan_quality_issues(with_sources) == []
+    in_repo = '# P\n\n## Verification\nRun `.venv/bin/python -m pytest backend/tests -q`, expect 0 failures.\n\n' \
+              '## Risks\n- none\n\nSee docs/plan/next-batch-contract.md for the event shapes.\n'
+    assert plan_quality_issues(in_repo) == []
+
+
+def test_the_rejection_message_is_one_line_and_names_every_missing_part():
+    issues = plan_quality_issues(EMPTY_PLAN)
+    message = plan_quality_message(issues)
+    assert message.startswith(PLAN_QUALITY_PREFIX + ': ')
+    assert '\n' not in message
+    for issue in issues:
+        assert f'({issue})' in message
+    assert 'call write_plan again' in message and 'nothing was written' in message
+    with pytest.raises(ValueError) as raised:
+        check_plan_quality(EMPTY_PLAN)
+    assert str(raised.value) == message
+
+    # the sources remedy only appears when the plan really claims external facts
+    external = '# P\n\n## Verification\n`curl -s https://example.com` expect 200\n\n## Risks\n- none\n'
+    sources_only = plan_quality_message(plan_quality_issues(external))
+    assert '(sources-section)' in sources_only and '(risks-section)' not in sources_only
+
+
+# --- the gate in the live write path ------------------------------------------------------------------
+
+def test_write_plan_rejects_before_the_sandbox_writer_runs(tmp_path):
+    """A rejected plan must leave no file behind, and the model must get one actionable line."""
+
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        executor = SilentExecutor()
+        runtime = HarnessRuntime(store, executor, FixtureModel([
+            answer(calls=[call('write_plan', {'slug': 'patient-records', 'markdown': EMPTY_PLAN})]),
+            answer('Plan bị từ chối, tôi viết lại')]))
+        sid = runtime.create({'skills': []})['id']
+
+        await runtime.start(sid, 'Lên plan tra cứu hồ sơ bệnh nhân')
+        assert executor.calls == [], 'the sandbox writer must never run for a rejected plan'
+        assert events_of(store, sid, 'plan_written') == []
+        assert events_of(store, sid, 'ui_intent') == []
+        failure = [result for result in tool_results(store, sid) if result.get('is_error')][0]
+        assert failure['errorCode'] == PLAN_QUALITY_PREFIX
+        assert failure['error'] == plan_quality_message(plan_quality_issues(EMPTY_PLAN))
+        assert store.get(sid)['status'] == 'completed', 'the agent keeps going after a refused plan'
+        store.close()
+
+    asyncio.run(run())
+
+
+def test_a_compliant_plan_is_written_exactly_as_before_the_gate(tmp_path):
+    """The gate must not change what a good plan writes: same events, same payload, same file body."""
+
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        executor = PlanFixtureExecutor()
+        runtime = HarnessRuntime(store, executor, FixtureModel([
+            answer(calls=[call('write_plan', {'slug': 'workspace-plan', 'markdown': GOOD_PLAN, 'title': ''})]),
+            answer('Đã ghi plan')]))
+        sid = runtime.create({'skills': []})['id']
+
+        await runtime.start(sid, 'Ghi plan')
+        assert len(executor.calls) == 1
+        name, args, _ = executor.calls[0]
+        assert (name, args['slug'], args['markdown']) == ('write_plan', 'workspace-plan', GOOD_PLAN)
+        written = events_of(store, sid, 'plan_written')[0]['data']
+        assert written == {'identity': 'workspace-plan', 'version': 1, 'slug': 'workspace-plan',
+                           'relativePath': '.plans/v1-workspace-plan.md', 'title': 'Workspace plan',
+                           'bytes': len(GOOD_PLAN.encode('utf-8'))}
+        assert events_of(store, sid, 'ui_intent')[0]['data'] == \
+            {'tab': 'plan', 'target': {'identity': 'workspace-plan', 'version': 1}, 'reason': 'plan_written'}
+        assert tool_results(store, sid)[-1]['relativePath'] == '.plans/v1-workspace-plan.md'
+        store.close()
+
+    asyncio.run(run())
+
+
+# --- failure classification ---------------------------------------------------------------------------
+
+def test_the_new_code_keeps_its_own_message():
+    assert PLAN_QUALITY_PREFIX in KNOWN_PREFIXES
+    message = plan_quality_message(['verification-section'])
+    code, classified = classify_failure(ValueError(message))
+    assert code == PLAN_QUALITY_PREFIX
+    assert classified == message, 'the actionable text must survive classification untouched'
+    assert describe_failure(ValueError(message)) == message
