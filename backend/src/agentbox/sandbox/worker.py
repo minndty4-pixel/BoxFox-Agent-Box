@@ -258,9 +258,21 @@ def execute(name, args, session):
         }
         if action not in commands:
             raise ValueError('Unknown computer action')
+        # F4 (đợt 7): bàn phím chỉ tới cửa sổ ĐANG được focus. Không có cửa sổ nào thì
+        # `xdotool` vẫn thoát 0, nên phải nói rõ là chưa gửi được thay vì báo đã gửi.
+        if action in {'type', 'key'}:
+            focused = subprocess.run(['xdotool', 'getactivewindow'], env={**os.environ, 'DISPLAY': ':99'},
+                                     capture_output=True, timeout=15)
+            if focused.returncode:
+                raise ValueError('No focused window: click the target window first, then send keys.')
         proc = subprocess.run(commands[action](), env={**os.environ, 'DISPLAY': ':99'}, capture_output=True, timeout=15)
         if proc.returncode:
             raise ValueError(proc.stderr.decode(errors='replace'))
+        # F3 (đợt 7): `xdotool key NotARealKey` in 'No such key name ... Ignoring it.' ra
+        # stdout rồi thoát 0. Coi cảnh báo đó là thất bại, kèm tên phím sai.
+        noisy = (proc.stdout + proc.stderr).decode(errors='replace')
+        if 'No such key name' in noisy or 'Ignoring it' in noisy:
+            raise ValueError('Unsupported key name: ' + str(args.get('key', '')) + '. Use an X keysym such as Return, Tab, ctrl+c.')
         return {'content': 'Input delivered; capture the screen to verify the effect.'}
     raise ValueError('Unsupported sandbox tool: ' + name)
 

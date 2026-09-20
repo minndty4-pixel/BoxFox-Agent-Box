@@ -333,3 +333,52 @@ describe('ContextUsageBar — bố cục theo bề rộng KHUNG CHỨA, không t
     expect(compact.querySelectorAll('[data-testid="context-usage-label"]')).toHaveLength(0)
   })
 })
+
+describe('ContextUsageBar — F7 sau khi nén ngữ cảnh', () => {
+  it('hiện ước lượng SAU khi nén, không giữ số trước khi nén', () => {
+    useProviderStore.setState({ snapshot: snapshotWith(1_000_000) })
+    useRouterChatStore.setState({ selection: { kind: 'model', connectionId: 'conn-1', modelId: 'gemini-3.8-flash-high' } })
+    useHarnessChatStore.setState({
+      sessions: {
+        [SESSION_ID]: {
+          id: 'sess-1',
+          status: 'completed',
+          events: [
+            { seq: 1, type: 'step', data: { contextEstimate: 187_628 }, created: 1 },
+            { seq: 2, type: 'compression', data: { kind: 'summary', beforeEstimate: 187_628, afterEstimate: 36_323 }, created: 2 },
+          ],
+          error: null,
+          lastModelLabel: 'Gemini 3.8 Flash (High)',
+        },
+      },
+    } as never)
+
+    const host = render(<ContextUsageBar />)
+    const text = (host.textContent ?? '').replace(/\s+/g, ' ')
+    expect(text).toContain('36.3k')
+    expect(text).not.toContain('187.6k')
+  })
+
+  it('lượt mới sau khi nén lại lấy step mới hơn', () => {
+    useProviderStore.setState({ snapshot: snapshotWith(1_000_000) })
+    useRouterChatStore.setState({ selection: { kind: 'model', connectionId: 'conn-1', modelId: 'gemini-3.8-flash-high' } })
+    useHarnessChatStore.setState({
+      sessions: {
+        [SESSION_ID]: {
+          id: 'sess-1',
+          status: 'running',
+          events: [
+            { seq: 1, type: 'step', data: { contextEstimate: 187_628 }, created: 1 },
+            { seq: 2, type: 'compression', data: { afterEstimate: 36_323 }, created: 2 },
+            { seq: 3, type: 'step', data: { contextEstimate: 39_865 }, created: 3 },
+          ],
+          error: null,
+          lastModelLabel: 'Gemini 3.8 Flash (High)',
+        },
+      },
+    } as never)
+
+    const host = render(<ContextUsageBar />)
+    expect((host.textContent ?? '').replace(/\s+/g, ' ')).toContain('39.9k')
+  })
+})

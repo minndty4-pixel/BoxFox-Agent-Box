@@ -218,6 +218,10 @@ export function extractToolMedia(event: HarnessEvent): ToolMedia | null {
   if (!src && artifactPath) {
     const ext = extensionOf(artifactPath)
     if (VIDEO_EXTENSIONS.includes(ext)) {
+      // `action=start` của computer_screen_record trả về đường dẫn tệp đang ghi (chưa có
+      // durationSec). Nếu nhận nó, một bản ghi hiện thành hai player: một ở hàng `start`,
+      // một ở hàng `stop`. Chỉ hàng đã ghi xong mới là media.
+      if (typeof durationSec !== 'number') return null
       src = boxMediaUrl(artifactPath)
       kind = 'video'
     } else if (IMAGE_EXTENSIONS.includes(ext)) {
@@ -731,10 +735,16 @@ function TurnBlock({
 
   const turnMedia = useMemo(() => {
     const media: ToolMedia[] = []
+    const seen = new Set<string>()
     for (const item of turn.items) {
       if (item.kind !== 'tool' || !item.end) continue
       const found = extractToolMedia(item.end)
-      if (found) media.push(found)
+      // Cùng một tệp có thể xuất hiện ở nhiều tool_end; chỉ hiện một lần.
+      const key = found?.artifactPath ?? found?.src ?? ''
+      if (found && !seen.has(key)) {
+        seen.add(key)
+        media.push(found)
+      }
     }
     return media
   }, [turn.items])

@@ -86,7 +86,10 @@ def test_cli_reads_the_log_it_is_pointed_at(tmp_path):
     log = _log(tmp_path)
     log.write('turn.start', session_id='deadbeef', model='gemini-3.6-flash')
     log.error('turn.failed', session_id='deadbeef', code='UPSTREAM_UNREACHABLE', message='mất kết nối')
+    # `conftest.py` đặt BOXFOX_SYSTEM_LOG_DIR cho cả phiên test; ở đây muốn kiểm
+    # nhánh mặc định `~/BoxFox/logs` nên phải bỏ biến đó khỏi môi trường con.
     env = {**os.environ, 'HOME': str(tmp_path.parent / 'fake-home')}
+    env.pop('BOXFOX_SYSTEM_LOG_DIR', None)
     # CLI đọc `~/BoxFox/logs`; trỏ HOME vào một cây tạm rồi đặt log đúng chỗ.
     target = Path(env['HOME']) / 'BoxFox' / 'logs'
     target.mkdir(parents=True, exist_ok=True)
@@ -103,6 +106,19 @@ def test_cli_reads_the_log_it_is_pointed_at(tmp_path):
     assert errors.returncode == 0
     assert 'turn.failed' in errors.stdout
     assert 'turn.start' not in errors.stdout
+
+
+def test_cli_env_var_overrides_the_home_default(tmp_path):
+    """Biến `BOXFOX_SYSTEM_LOG_DIR` thắng mặc định `~/BoxFox/logs` — nhờ đó bản
+    kiểm chứng chạy tách được log, không ghi vào thư mục log của người vận hành."""
+    log = _log(tmp_path)
+    log.error('turn.failed', session_id='cafebabe', code='DEADLINE', message='hết hạn')
+    env = {**os.environ, 'HOME': str(tmp_path / 'empty-home'), 'BOXFOX_SYSTEM_LOG_DIR': str(tmp_path)}
+
+    summary = subprocess.run([sys.executable, str(REPO / 'scripts' / 'system-log.py'), 'summary'],
+                             capture_output=True, text=True, env=env, cwd=REPO)
+    assert summary.returncode == 0, summary.stderr
+    assert 'DEADLINE' in summary.stdout
 
 
 def test_cli_reports_a_missing_log(tmp_path):

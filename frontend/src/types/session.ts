@@ -16,6 +16,7 @@ export type SessionStatus =
   | 'cho_nguoi_dung'
   | 'idle'
   | 'xong'
+  | 'loi'
   | 'da_tu_choi'
   | 'het_ngan_sach'
 
