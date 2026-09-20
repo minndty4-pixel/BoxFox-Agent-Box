@@ -1,6 +1,6 @@
 # Sổ theo dõi lỗi — BoxFox Agent Box
 
-Cập nhật: 2026-09-19 21:30 UTC — mọi phát hiện ở mục A và B đã được sửa trong commit 6d9aba7.
+Cập nhật: 2026-09-20 05:20 UTC — mọi phát hiện ở mục A và B đã được sửa trong commit 6d9aba7.
 
 Quy ước cột **Trạng thái**:
 
@@ -130,3 +130,23 @@ Ghi chú F3: worker được host đọc từ repo và gửi vào box bằng `py
 |---|---|---|---|
 | F5 | `inspect_element` trả `ambiguous_target` khi cửa sổ Chromium khớp nhiều tab, làm agent đốt bước | CHƯA SỬA | Đây là chốt an toàn cố ý (soi nhầm tab = sai toạ độ). Cách sửa đúng là trả danh sách tab khớp trong payload lỗi để agent tự thu hẹp, cần đổi cả host lẫn container — để chủ sở hữu quyết định |
 | F6 | Desktop trong box bị client kéo nhỏ tận 286×311 qua `Xvnc -AcceptSetDesktopSize` | CHƯA SỬA | Cờ này là **tính năng cố ý** (auto-fit cho noVNC khi tỉ lệ khung khác 1.6). Bỏ cờ là mất auto-fit; muốn giữ cả hai thì phải chặn cỡ nhỏ nhất ở tầng khác. Hiện xử lý được bằng cách đặt lại cỡ: `xrandr --output VNC-0 --mode 1280x800` |
+
+### 6.3 Chín phát hiện của vòng soát mã đợt 8 — bảy lỗi, một ghi chú, một nit
+
+Nguồn: sub-agent `review`, kết luận REQUEST CHANGES trên chuỗi 11 commit (HEAD `af155e1`).
+Toàn bộ được xử lý trong `16eedda`.
+
+| Mã | Mức | Nội dung | Trạng thái | Bằng chứng |
+|---|---|---|---|---|
+| BUG-32 | Cao | Lượt gọi model thử lại giữ nguyên văn bản đã bỏ: `streamed` tạo một lần cho cả bước, không đặt lại trong vòng retry ⇒ câu trả lời cũ dán vào câu trả lời mới (làm sống lại BUG-26 trên đường retry) | ĐÃ SỬA — `_reset_stream()` đặt lại `content`/`thought` trước mỗi lần thử lại; event `UPSTREAM_RETRY` mang thêm `reset: True` | `test_stream_delta_events.py::test_retry_after_a_partial_stream_drops_the_abandoned_text` (mới, dùng `fail_after=n` của `StreamingModel`) |
+| BUG-33 | Cao (an ninh) | Cầu nối quang sai mở luôn **mặt quản trị** của router cho box: cùng một `handler`, mà `/api/router/*` và `/v1/router/generate` chỉ gác bằng header `x-boxfox-admin: 1` (không phải bí mật) + kiểm Origin và `sec-fetch-site` đều lọt khi thiếu header; phần kiểm địa chỉ chỉ chặn `0.0.0.0`/`::` nên địa chỉ LAN/công cộng vẫn qua | ĐÃ SỬA — tai nghe cầu nối chỉ phục vụ bốn đường suy luận (`BRIDGE_PATHS`), mọi đường khác trả 404 kèm dòng `router.bridge_denied`; `isPrivateAddress()` chỉ nhận loopback + dải riêng | 2 ca cầu nối trong `anthropic-ingress.test.mjs`; kiểm ngược: tắt cổng `BRIDGE_PATHS` thì ca đó đỏ |
+| BUG-34 | TB | Thông báo `UPSTREAM_RETRY` không có nơi nhận: `applyTimelineEvent` không có nhánh `notice` nên người dùng vẫn thấy lượt đứng im rồi lỗi | ĐÃ SỬA — `HarnessStepView` có nhánh `notice` dùng lại khung chú thích sẵn có, `reset: True` xoá phần đã stream, và bảng sub-agent cũng xoá `thought`/`output` | `HarnessStepView.notice.test.tsx` (2 ca); kiểm ngược: bỏ nhánh `reset` thì ca thứ hai đỏ |
+| BUG-35 | TB | Trí nhớ chữ ký suy luận có thể gán nhầm của request khác: khoá là id do router phát, mà nhánh Gemini không có id thì dùng `call_${index}_${Date.now()}` — trùng mili-giây là trùng khoá | ĐÃ SỬA — thêm bộ đếm tăng dần toàn tiến trình vào id dự phòng; ghi rõ vòng đời (mất khi router khởi động lại) trong `anthropic.mjs` | `anthropic-ingress.test.mjs` (khoá chữ ký) |
+| BUG-36 | TB | Tham số công cụ không phân tích được thành JSON thì **âm thầm** hoá `{}`: client chạy công cụ không tham số, người dùng thấy lỗi công cụ không giải thích được | ĐÃ SỬA — hàm dựng thân trả lỗi có mã `TOOL_ARGUMENTS_INVALID` (502) nêu tên công cụ và 80 ký tự đầu; đường stream vẫn phát `input_json_delta` thô nên mất mát là hữu hình | ca cũ khoá hành vi mất mát đã được thay bằng 2 khẳng định mới |
+| BUG-37 | Thấp | Đọc sai loại lỗi hết giờ: `httpx.ReadTimeout`/`ConnectTimeout` kế thừa `TimeoutException`/`TransportError` chứ **không** phải `TimeoutError` của Python, nên rơi vào nhánh `UPSTREAM_UNREACHABLE: … closed the connection …` — ngược hẳn lời khuyên | ĐÃ SỬA — `_is_timeout()` nhận cả họ `*Timeout`; `UPSTREAM_TIMEOUT` là mã riêng, câu chữ là "did not answer in time", và không thử lại | `test_failure_classification.py` (12 ca) |
+| BUG-38 | Nit | `HARNESS_PORT` đọc lúc import: giá trị không phải số làm chết harness bằng `ValueError` trần, và danh sách host cho phép giữ nguyên cổng 3102 khi đã đổi cổng | ĐÃ SỬA — `harness_port()`/`allowed_hosts()` đọc mỗi lần gọi, báo lỗi có tên biến, vẫn giữ cổng mặc định trong danh sách | `test_harness_port_override.py` (4 ca) |
+
+Hai phát hiện được xử lý bằng ghi chú, không bằng mã:
+
+- **#6 (Thấp)** — `_suffix()` không có ngữ nghĩa đặt lại; nay docstring nói rõ một `current` không phải tiền tố nghĩa là provider đã bắt đầu tích luỹ lại, và nơi đọc có móc đặt lại.
+- **#8 (ghi chú)** — token router nằm trong argv của `docker exec` phía host (`claude_executor.py`): cố ý, đã có ca khẳng định trong `test_claude_executor.py`.
