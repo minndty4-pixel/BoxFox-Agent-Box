@@ -121,6 +121,67 @@ class AntiLoopGuard:
         return False
 
 
+# The router refuses a request body over 1 MiB (`router/src/server.mjs`). Every capture is
+# inlined as base64, and a CUA mission takes one per step, so a long turn grows past that cap
+# and every later model call dies with `UPSTREAM_HTTP_413: Request is too large.` — measured
+# 2026-09-20: of a 1 107 315-char body, 1 018 908 chars were base64 images. The newest
+# captures stay inline; an older one shrinks to the text it came with, and the file stays on
+# disk exactly as the transcript shows it.
+MAX_INLINE_MEDIA = 2
+MAX_INLINE_MEDIA_BYTES = 512 * 1024
+
+
+def _media_payload_size(message) -> int:
+    """Base64 payload carried by one message, 0 when it carries no image."""
+    content = message.get('content')
+    if not isinstance(content, list):
+        return 0
+    size = 0
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        if part.get('type') == 'image_url':
+            size += len(str((part.get('image_url') or {}).get('url') or ''))
+        elif part.get('type') == 'image':
+            size += len(str((part.get('source') or {}).get('data') or ''))
+    return size
+
+
+def _text_only(content) -> str:
+    text = '\n'.join(str(part.get('text') or '') for part in content
+                      if isinstance(part, dict) and part.get('type') == 'text')
+    note = ('[Older screenshot left out of this request so the body stays under the router cap; '
+            'the file is unchanged on disk at the path named above.]')
+    return f'{text.strip()}\n{note}'.strip()
+
+
+def bound_inline_media(messages, keep: int = MAX_INLINE_MEDIA,
+                       max_bytes: int = MAX_INLINE_MEDIA_BYTES) -> tuple[list, int]:
+    """A request-ready copy of ``messages`` that carries only the newest captures inline.
+
+    Returns ``(messages_for_the_request, dropped)``. The input list is never mutated, so the
+    stored transcript — and therefore the chat UI — keeps every image.
+    """
+    indexes = [index for index, message in enumerate(messages) if _media_payload_size(message)]
+    if not indexes:
+        return messages, 0
+    kept, total, dropped = set(), 0, 0
+    for index in reversed(indexes):  # newest first
+        size = _media_payload_size(messages[index])
+        if len(kept) < keep and total + size <= max_bytes:
+            kept.add(index)
+            total += size
+        else:
+            dropped += 1
+    if not dropped:
+        return messages, 0
+    out = list(messages)
+    for index in indexes:
+        if index not in kept:
+            out[index] = {**messages[index], 'content': _text_only(messages[index]['content'])}
+    return out, dropped
+
+
 class RouterClient:
     def __init__(self, url='http://127.0.0.1:3101'):
         self.url = url.rstrip('/')
@@ -150,6 +211,10 @@ class RouterClient:
         return None
 
     async def complete(self, messages, tools, route, on_thought=None, on_content=None, max_tokens=4096):
+        messages, dropped = bound_inline_media(messages)
+        if dropped:
+            system_log.write('model.media_pruned', session_id=route.get('sessionId'), dropped=dropped,
+                             kept=MAX_INLINE_MEDIA)
         async with httpx.AsyncClient(timeout=120, trust_env=False) as client:
             try:
                 async with client.stream(
