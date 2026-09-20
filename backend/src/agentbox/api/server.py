@@ -11,10 +11,19 @@ from ..observability.system_log import system_log
 from ..sandbox.executor import SandboxExecutor
 
 
+# The UI and the Vite proxy use 3102; the override lets a verification run bind an
+# isolated instance without changing the default posture.
+HARNESS_PORT = int(os.environ.get('BOXFOX_HARNESS_PORT', '3102'))
+ALLOWED_HOSTS = {
+    '127.0.0.1:3102', 'localhost:3102', '127.0.0.1:3100', 'localhost:3100',
+    f'127.0.0.1:{HARNESS_PORT}', f'localhost:{HARNESS_PORT}',
+}
+
+
 def create_app(runtime):
     @web.middleware
     async def boundary(request, handler):
-        if request.host not in {'127.0.0.1:3102', 'localhost:3102', '127.0.0.1:3100', 'localhost:3100'}:
+        if request.host not in ALLOWED_HOSTS:
             return web.json_response({'error': 'Host not allowed'}, status=403)
         if request.path != '/api/agent/health':
             if request.headers.get('X-BoxFox-Admin') != '1' or request.headers.get('Origin', 'http://localhost:3100') not in {'http://localhost:3100', 'http://127.0.0.1:3100'}:
@@ -162,14 +171,15 @@ def create_app(runtime):
 
 def main():
     data = Path(os.environ.get('BOXFOX_AGENT_DATA_DIR', str(Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'BoxFox/harness')))
+    port = HARNESS_PORT
     runtime = HarnessRuntime(SessionStore(data / 'sessions.sqlite'), SandboxExecutor(
         api_key=os.environ.get('BOXFOX_API_KEY', 'boxfox-local-dev-token')))
-    system_log.write('harness.start', dataDir=str(data), port=3102, pid=os.getpid(),
+    system_log.write('harness.start', dataDir=str(data), port=port, pid=os.getpid(),
                      python=sys.version.split()[0])
     try:
-        web.run_app(create_app(runtime), host='127.0.0.1', port=3102, print=None)
+        web.run_app(create_app(runtime), host='127.0.0.1', port=port, print=None)
     finally:
-        system_log.write('harness.stop', port=3102, pid=os.getpid())
+        system_log.write('harness.stop', port=port, pid=os.getpid())
 
 
 if __name__ == '__main__':
