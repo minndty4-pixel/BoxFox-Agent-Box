@@ -131,7 +131,14 @@ def _pointer_move(x: int, y: int) -> None:
         probe = subprocess.run(['xdotool', 'getmouselocation', '--shell'],
                                env={**os.environ, 'DISPLAY': ':99'}, capture_output=True, timeout=10)
         out = probe.stdout.decode(errors='replace') if isinstance(probe.stdout, bytes) else str(probe.stdout or '')
-        if f'X={x}' in out and f'Y={y}' in out:
+        # So khớp theo DÒNG `X=<số>`; tìm chuỗi con thì `X=64` khớp luôn `X=640` và lần
+        # kiểm tra đầu tiên sẽ đạt nhầm (vòng soát mã đợt 10 bắt được ở dòng này).
+        seen = {}
+        for line in out.splitlines():
+            key, _, value = line.partition('=')
+            if key in {'X', 'Y'}:
+                seen[key] = value.strip()
+        if seen.get('X') == str(x) and seen.get('Y') == str(y):
             return
         time.sleep(0.05)
 

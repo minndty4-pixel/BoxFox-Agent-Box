@@ -121,6 +121,33 @@ def test_cli_env_var_overrides_the_home_default(tmp_path):
     assert 'DEADLINE' in summary.stdout
 
 
+def test_cli_reset_all_leaves_exactly_one_previous_file(tmp_path):
+    """`reset --file all` không được đổi tên chính tệp *previous*.
+
+    Vòng soát mã đợt 10: bản cũ chạy qua mọi `*.jsonl`, kể cả `harness.previous.jsonl`, nên
+    sinh ra `harness.previous.previous.jsonl` — trái lời hứa "đúng một tệp previous" ở cả
+    docstring lẫn phần trợ giúp của CLI.
+    """
+    log = _log(tmp_path)
+    log.write('turn.start', session_id='cafebabe')
+    (tmp_path / 'harness.previous.jsonl').write_text('{"event": "lan-chay-truoc"}\n')
+    (tmp_path / 'router.jsonl').write_text('{"event": "router.start"}\n')
+    env = {**os.environ, 'BOXFOX_SYSTEM_LOG_DIR': str(tmp_path)}
+
+    result = subprocess.run([sys.executable, str(REPO / 'scripts' / 'system-log.py'),
+                             'reset', '--file', 'all'],
+                            capture_output=True, text=True, env=env, cwd=REPO)
+    assert result.returncode == 0, result.stderr
+    assert not list(tmp_path.glob('*.previous.previous.jsonl')), 'không sinh thế hệ previous thứ hai'
+    previous = (tmp_path / 'harness.previous.jsonl').read_text()
+    assert 'lan-chay-truoc' not in previous, \
+        'bản previous cũ phải bị THAY bằng lần chạy vừa kết thúc, không bị đổi tên đi'
+    assert 'turn.start' in previous, 'lần chạy vừa kết thúc nằm ở tệp previous'
+    assert (tmp_path / 'harness.jsonl').exists() is False, 'tệp đang ghi phải được xoay đi'
+    assert (tmp_path / 'router.previous.jsonl').exists()
+    assert (tmp_path / 'router.jsonl').exists() is False
+
+
 def test_cli_reports_a_missing_log(tmp_path):
     # Cùng lý do: bỏ biến của conftest để CLI đi theo nhánh mặc định `~/BoxFox/logs`.
     env = {**os.environ, 'HOME': str(tmp_path / 'empty-home')}

@@ -87,6 +87,18 @@ def test_a_missed_pointer_is_retried_a_bounded_number_of_times(monkeypatch):
     assert 'Input delivered' in result['content']
 
 
+def test_a_prefix_of_the_real_coordinates_does_not_count_as_arrival(monkeypatch):
+    """`X=64` không được khớp với dòng `X=640` — so chuỗi con thì lần thăm dò đầu đạt nhầm.
+
+    Vòng soát mã đợt 10: bản cũ dùng `f'X={x}' in out`, nên đích (64, 3) gặp con trỏ thật
+    ở (640, 300) là "tới nơi" ngay, và cú bấm rơi vào chỗ khác mà không ai biết.
+    """
+    fake = FakeRun(location_responses=('X=640\nY=300\n', 'X=640\nY=300\n', 'X=64\nY=3\n'))
+    monkeypatch.setattr(worker.subprocess, 'run', fake)
+    worker.execute('computer_use', {'action': 'click', 'x': 64, 'y': 3}, 'sess-f8')
+    assert fake.probes == 3, 'phải chờ tới khi dòng X/Y khớp đúng, không khớp tiền tố'
+
+
 def test_keyboard_actions_do_not_move_the_pointer(monkeypatch):
     fake = FakeRun()
     monkeypatch.setattr(worker.subprocess, 'run', fake)

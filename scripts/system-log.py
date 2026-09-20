@@ -106,9 +106,13 @@ def reset(which: str) -> int:
 
     Same rename as `SystemLog.rotate_on_shutdown()`: active file → `<name>.previous.jsonl`,
     replacing the older previous file. Nothing is deleted, so a manual reset can never
-    lose the run that just ended.
+    lose the run that just ended. A file that IS already a previous run (`*.previous.jsonl`)
+    is skipped: renaming it would keep two previous generations and dilute the promise that
+    exactly one previous file exists.
     """
     for path in _files(which):
+        if PREVIOUS_SUFFIX in path.stem:
+            continue
         if not path.exists():
             print(f'{path.name}: no active log file', file=sys.stderr)
             continue

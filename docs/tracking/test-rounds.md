@@ -234,10 +234,31 @@ Vòng này làm đúng bốn việc đó, cộng hai lỗi mà vòng kiểm ch�
 
 | Bộ | Kết quả |
 |---|---|
-| Backend | **479 passed, 2 failed, 2 skipped** — hai ca đỏ là hai ca cũ có điều kiện môi trường: `test_cua_element_selector.py` cần Internet, `test_terminal_tools.py::test_terminal_exec_echo` dùng builtin PowerShell trên box bash |
+| Backend | **488 passed, 2 failed, 2 skipped** (trước khi sửa tám phát hiện của vòng soát mã: 479/2; ca `test_eval_setup.py` đỏ vì cây sạch nay đã xanh) — hai ca đỏ còn lại là hai ca cũ có điều kiện môi trường: `test_cua_element_selector.py` cần Internet, `test_terminal_tools.py::test_terminal_exec_echo` dùng builtin PowerShell trên box bash |
 | `deploy/docker` | **359 OK** |
 | Router | **89 pass / 0 fail** |
 | Frontend | **682 passed / 4 failed** — bốn ca cũ (`Sidebar.test.tsx` ×3 dưới jsdom, `lib/workspace/index.test.ts` ×1 vì `frontend/.env.local` cục bộ); `tsc -b --noEmit` thoát 0 |
+
+### Vòng 12 (tiếp) — sửa bảy phát hiện của vòng soát mã đợt 10 — 2026-09-20, 08:0x
+
+Vòng soát mã độc lập đọc `58598c1..95076b5` và kết luận **APPROVE WITH COMMENTS**, rủi ro **3/10**,
+với tám phát hiện (ba TB, ba Thấp, hai nit). Bảy phát hiện cần sửa đã sửa trong đợt này; một phát hiện
+mức ghi chú được ghi nhận thành rủi ro có tên trong tài liệu thiết kế. Chi tiết từng phát hiện ở
+`docs/tracking/bug-register.md` §6.6.
+
+| Việc | Nội dung | Bằng chứng |
+|---|---|---|
+| R10-1 | Nhánh lỗi của công cụ web ghi nguyên câu có truy vấn và URL vào nhật ký DEV (`tool.error` lẫn `web.error`) | `WebError.log_message` + `failures.log_safe_failure()`; ca mới khẳng định truy vấn và chuỗi truy vấn trong URL đều KHÔNG có trong `harness.jsonl` |
+| R10-2 | SOP của vai gốc nói "there is NO web-search tool" trong khi cùng request quảng cáo `web_search`/`web_fetch` | ca mới khoá hai vế lại (quyền trong `ORCHESTRATOR_TOOLS` ⊂ câu chữ SOP) |
+| R10-3 | Ca kiểm `pins['repo']['dirty'] is True` đỏ trên cây sạch | ca cũ chỉ khẳng định kiểu/được đo; ca mới dựng repo tạm để kiểm cả cây sạch lẫn cây bẩn |
+| R10-4 | `reset --file all` đổi tên luôn tệp previous thành `*.previous.previous.jsonl` | ca CLI mới: chỉ còn đúng một tệp previous, và nó là lần chạy vừa kết thúc |
+| R10-5 | Nhà cung cấp trả 200 với thân không phải JSON làm đứt chuỗi tìm kiếm | ca mới: nhà cung cấp đầu trả trang chặn, nhà cung cấp sau vẫn được gọi và kết quả thật được trả về |
+| R10-6 | `web_fetch` là kênh GET ra ngoài (chiều rò ra khi trang bị tiêm nhiễm) | ghi nhận thành dòng "Rủi ro còn lại: kênh ra" trong `docs/research/host-web-tools.md` §3, kèm cách siết |
+| R10-7 | Phép so khớp con trỏ dùng tiền tố nên `X=64` khớp `X=640` | ca mới: đích (64, 3) gặp con trỏ (640, 300) không được coi là tới nơi |
+| R10-8 | README của `scripts/eval` ghi "hai biến" nhưng liệt kê bốn | sửa câu chữ |
+
+Tổng số ca sau khi sửa: backend **488 passed, 2 failed, 2 skipped** (+9 ca so với 479 của vòng 12, và ca đỏ vì cây sạch đã xanh);
+`deploy/docker` **359 OK**; router **89 pass / 0 fail**; frontend **682 passed / 4 failed**; `tsc` thoát 0.
 
 ### Điều vòng này CHƯA làm được
 

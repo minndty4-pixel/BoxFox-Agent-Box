@@ -283,6 +283,57 @@ def test_the_dev_log_records_the_call_without_content(tools, tmp_path, monkeypat
     assert 'bí mật nội bộ' not in json.dumps(lines[-1]), 'nội dung truy vấn không được vào nhật ký'
 
 
+def test_a_failed_call_never_writes_the_query_or_the_url(tools, tmp_path, monkeypatch):
+    """Dòng `web.error` chỉ được mang số đếm và mã lỗi.
+
+    Vòng soát mã đợt 10 tìm ra: nhánh lỗi ghi nguyên `str(exc)`, mà câu đó có cả truy vấn
+    (`no result for '<truy vấn>'`) lẫn URL đầy đủ — nút "Copy diagnostics" của bảng nhật ký
+    sẽ mang nội dung người dùng ra khỏi máy. Đo lại ở đây, cả hai đường.
+    """
+    for key in ('FIRECRAWL_API_KEY', 'BRAVE_API_KEY', 'TAVILY_API_KEY'):
+        monkeypatch.delenv(key, raising=False)
+    secret = 'hồ sơ bệnh nhân Nguyễn Văn A'
+    monkeypatch.setattr(web_module, 'http_request', lambda url, **kwargs: (_ for _ in ()).throw(
+        WebError('WEB_FETCH_FAILED', f'{url} answered HTTP 500: boom')))
+    with pytest.raises(WebError):
+        asyncio.run(tools.run('web_search', {'query': secret}, 'sess-web'))
+    monkeypatch.setattr(web_module, 'http_request', lambda url, **kwargs: (_ for _ in ()).throw(
+        WebError('WEB_FETCH_FAILED', f'{url} answered HTTP 500: boom')))
+    with pytest.raises(WebError):
+        asyncio.run(tools.run('web_fetch', {'url': 'https://example.com/tim?q=so-benh-an-nguyen-van-a'},
+                              'sess-web'))
+    raw = (tmp_path / 'harness.jsonl').read_text()
+    assert secret not in raw, 'nội dung truy vấn không được vào nhật ký'
+    assert 'so-benh-an-nguyen-van-a' not in raw, 'URL (kèm tham số) không được vào nhật ký'
+    lines = [json.loads(line) for line in raw.splitlines()]
+    assert [line['event'] for line in lines] == ['web.error', 'web.error']
+    assert lines[0]['data']['queryChars'] == len(secret)
+    assert lines[1]['data']['host'] == 'example.com'
+    assert 'request failed' in lines[1]['message'] or 'HTTP 500' in lines[1]['message']
+
+
+def test_the_provider_chain_survives_a_challenge_page(tools, monkeypatch):
+    """Một nhà cung cấp trả 200 nhưng không phải JSON thì phải nhường lượt cho nhà kế tiếp.
+
+    Đo sống 2026-09-20: front-end HTML trả trang "Just a moment…" với 200, và chuỗi dừng ngay
+    ở đó (chỉ firecrawl được gọi) dù Brave đã có khoá.
+    """
+    calls = []
+
+    def firecrawl(query, count):
+        calls.append('firecrawl')
+        json.loads('<html>Just a moment…</html>')  # giống hệt một trang chặn thật
+
+    def brave(query, count):
+        calls.append('brave')
+        return [{'title': 'kết quả thật', 'url': 'https://example.com/ok', 'snippet': 'x', 'source': 'brave'}]
+
+    monkeypatch.setenv('BRAVE_API_KEY', 'brave-key')
+    monkeypatch.setattr(web_module, 'GENERAL_PROVIDERS', (firecrawl, brave))
+    result = tools.search({'query': 'httpx timeout', 'count': 1})
+    assert calls == ['firecrawl', 'brave'] and result['results'][0]['title'] == 'kết quả thật'
+
+
 def test_a_failed_call_is_logged_as_a_warning(tools, tmp_path, monkeypatch):
     monkeypatch.setattr(web_module, 'http_request',
                         lambda url, **kwargs: (_ for _ in ()).throw(WebError('WEB_FETCH_FAILED', 'mạng đứt')))

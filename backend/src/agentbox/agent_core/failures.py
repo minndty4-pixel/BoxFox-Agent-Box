@@ -155,6 +155,20 @@ def classify_failure(exc: BaseException) -> tuple[str, str]:
     return code, f'{code}: {name}: {reason}'
 
 
+def log_safe_failure(exc: BaseException) -> tuple[str, str, str]:
+    """``(code, message, detail)`` for a log line that must not carry user content.
+
+    A tool that handles content the user did not write for us — a search query, a fetched
+    URL — marks its exception with ``log_message``. Those lines then log the code and the
+    counted shape only, and skip the traceback (which repeats the message verbatim).
+    """
+    code, message = classify_failure(exc)
+    safe = getattr(exc, 'log_message', None)
+    if safe:
+        return code, safe, ''
+    return code, message, failure_detail(exc)
+
+
 def describe_failure(exc: BaseException) -> str:
     """``'CODE: message'`` — the string a caller can emit or log directly."""
     code, message = classify_failure(exc)

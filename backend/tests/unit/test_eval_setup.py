@@ -372,11 +372,35 @@ def test_manifest_pins_every_field_the_plan_lists():
                 'deadlineSeconds', 'network', 'firewall', 'prompts', 'toolSchema'):
         assert key in pins, key
     assert pins['repo']['commit'] and len(pins['repo']['commit']) >= 7
-    assert pins['repo']['dirty'] is True  # cây này đang có tệp chưa commit, phải nói ra
+    # `dirty` phản ánh cây lúc chạy, nên ở đây chỉ khẳng định nó ĐƯỢC ĐO và có kiểu đúng —
+    # khẳng định giá trị sẽ đỏ ngay khi cây sạch (đã xảy ra ở vòng soát mã đợt 10).
+    assert isinstance(pins['repo']['dirty'], bool)
+    assert pins['repo']['dirtyFileCount'] == 0 or pins['repo']['note']
     assert pins['prompts']['judge']['version'] == 'layer2-v1'
     assert len(pins['toolSchema']['sha256']) == 64
     assert manifest['cost']['tokensIn'] is None
     assert manifest['missingPins'] == []
+
+
+def test_repo_state_sees_an_uncommitted_file_and_says_so(tmp_path):
+    """Cây bẩn phải được ghi lại kèm số tệp — dựng bằng một repo tạm, không dựa vào repo thật."""
+    import subprocess
+
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    for command in (['git', 'init', '-q'], ['git', 'config', 'user.email', 'e@example.com'],
+                    ['git', 'config', 'user.name', 'e']):
+        subprocess.run(command, cwd=repo, check=True, capture_output=True)
+    (repo / 'kept.txt').write_text('x')
+    subprocess.run(['git', 'add', '.'], cwd=repo, check=True, capture_output=True)
+    subprocess.run(['git', 'commit', '-qm', 'first'], cwd=repo, check=True, capture_output=True)
+
+    clean = manifest_mod.repo_state(repo)
+    assert clean['dirty'] is False and clean['dirtyFileCount'] == 0 and clean['note'] is None
+    (repo / 'moi.txt').write_text('y')
+    dirty = manifest_mod.repo_state(repo)
+    assert dirty['dirty'] is True and dirty['dirtyFileCount'] == 1
+    assert dirty['note'] and '1 tệp chưa commit' in dirty['note']
 
 
 def test_manifest_names_what_is_missing_instead_of_inventing_it():

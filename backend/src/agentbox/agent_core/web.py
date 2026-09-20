@@ -78,11 +78,18 @@ _VIETNAMESE = re.compile(r'[ăâđêôơưĂÂĐÊÔƠƯáàảãạấầẩẫ
 
 
 class WebError(ValueError):
-    """Failure carrying a ``CODE: message`` prefix that ``classify_failure`` preserves."""
+    """Failure carrying a ``CODE: message`` prefix that ``classify_failure`` preserves.
 
-    def __init__(self, code: str, message: str):
+    ``log_message`` is the variant that may reach the DEV system log. The model needs the
+    real message (it has to know which query or URL failed), but the log must not: a query
+    and a URL are user content, and the panel has a "copy diagnostics" button that would
+    carry them out of the machine. Sites that name content pass a content-free variant.
+    """
+
+    def __init__(self, code: str, message: str, log_message: str | None = None):
         super().__init__(f'{code}: {message}')
         self.code = code
+        self.log_message = f'{code}: {log_message}' if log_message else f'{code}: request failed'
 
 
 # --------------------------------------------------------------------- transport
@@ -155,11 +162,14 @@ def http_request(url: str, *, method: str = 'GET', body: bytes | None = None,
             detail = exc.read(400).decode(errors='replace').strip().splitlines()[0][:200]
         except Exception:  # pragma: no cover - a broken error body must not hide the status
             detail = ''
-        raise WebError('WEB_FETCH_FAILED', f'{url} answered HTTP {exc.code}{f": {detail}" if detail else ""}') from exc
+        raise WebError('WEB_FETCH_FAILED', f'{url} answered HTTP {exc.code}{f": {detail}" if detail else ""}',
+                       f'the host answered HTTP {exc.code}') from exc
     except urllib.error.URLError as exc:
-        raise WebError('WEB_FETCH_FAILED', f'{url} could not be reached ({exc.reason})') from exc
+        raise WebError('WEB_FETCH_FAILED', f'{url} could not be reached ({exc.reason})',
+                       f'the host could not be reached ({exc.reason})') from exc
     except (TimeoutError, socket.timeout) as exc:
-        raise WebError('WEB_FETCH_FAILED', f'{url} did not answer in {timeout:g}s') from exc
+        raise WebError('WEB_FETCH_FAILED', f'{url} did not answer in {timeout:g}s',
+                       f'the host did not answer in {timeout:g}s') from exc
     return status, ctype, raw.decode(charset, errors='replace'), final
 
 
@@ -399,17 +409,19 @@ class WebTools:
             else:
                 raise WebError('WEB_URL_INVALID', f'unknown web tool {name!r}')
         except WebError as exc:
-            self._log_error(name, exc, session_id, started)
+            self._log_error(name, exc, session_id, started, args)
             raise
         except (ValueError, TypeError) as exc:
             wrapped = WebError('WEB_SEARCH_UNAVAILABLE' if name == 'web_search' else 'WEB_FETCH_FAILED',
-                               f'the host-side {name} call failed ({exc.__class__.__name__}: {exc})')
-            self._log_error(name, wrapped, session_id, started)
+                               f'the host-side {name} call failed ({exc.__class__.__name__}: {exc})',
+                               f'the host-side {name} call failed ({exc.__class__.__name__})')
+            self._log_error(name, wrapped, session_id, started, args)
             raise wrapped from exc
         except Exception as exc:  # network/library surprises must stay classifiable
             wrapped = WebError('WEB_FETCH_FAILED' if name == 'web_fetch' else 'WEB_SEARCH_UNAVAILABLE',
-                               f'the host-side {name} call failed ({exc.__class__.__name__}: {exc})')
-            self._log_error(name, wrapped, session_id, started)
+                               f'the host-side {name} call failed ({exc.__class__.__name__}: {exc})',
+                               f'the host-side {name} call failed ({exc.__class__.__name__})')
+            self._log_error(name, wrapped, session_id, started, args)
             raise wrapped from exc
         self._log_ok(name, result, session_id, started)
         return result
@@ -426,9 +438,13 @@ class WebTools:
                            truncated=bool(result.get('truncated')), reader=result.get('reader'),
                            durationMs=duration)
 
-    def _log_error(self, name: str, exc: WebError, session_id: str | None, started: float) -> None:
+    def _log_error(self, name: str, exc: WebError, session_id: str | None, started: float,
+                   args: dict | None = None) -> None:
+        """Warn line for a refused call: counts and codes only (never the query or the URL)."""
+        shape = {'queryChars': len(str((args or {}).get('query') or ''))} if name == 'web_search' else \
+                {'host': urllib.parse.urlsplit(str((args or {}).get('url') or '')).hostname or ''}
         self.log.write('web.error', level='warn', session_id=session_id, source=name, code=exc.code,
-                       message=str(exc)[:400], durationMs=(time.time() - started) * 1000)
+                       message=exc.log_message, durationMs=(time.time() - started) * 1000, **shape)
 
     # ------------------------------------------------------------------ search
 
@@ -454,6 +470,15 @@ class WebTools:
             except WebError as exc:
                 errors.append(str(exc))
                 continue
+            except (ValueError, KeyError, TypeError) as exc:
+                # A live front-end can answer 200 with a challenge page or another shape
+                # entirely (measured 2026-09-20: `text/html` "Just a moment…"). One provider
+                # being unparsable must not abort the chain — the next one still gets a turn.
+                errors.append(f'{provider.__name__}: unreadable answer ({exc.__class__.__name__})')
+                continue
+            if not isinstance(results, list):
+                errors.append(f'{provider.__name__}: unreadable answer (not a list)')
+                continue
             if results:
                 break
         else:
@@ -461,7 +486,8 @@ class WebTools:
         if not results:
             hint = ('Every provider was refused or empty. Try source="wikipedia", "stackoverflow", '
                     'or "github", or fetch a known URL with web_fetch.')
-            raise WebError('WEB_SEARCH_UNAVAILABLE', f'no result for {query!r}: ' + ' | '.join(errors[:3]) + '. ' + hint)
+            raise WebError('WEB_SEARCH_UNAVAILABLE', f'no result for {query!r}: ' + ' | '.join(errors[:3]) + '. ' + hint,
+                           f'every provider refused or returned nothing ({len(errors)} attempt(s))')
         return {'query': query, 'source': source, 'count': len(results), 'results': results,
                 'untrusted': True, 'note': UNTRUSTED_NOTE,
                 'fetchedAt': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
@@ -492,7 +518,8 @@ class WebTools:
                 text, reader = reader_text, 'r.jina.ai'
         text = text.strip()
         if not text:
-            raise WebError('WEB_FETCH_EMPTY', f'{final} returned no readable text (content type {ctype or "unknown"})')
+            raise WebError('WEB_FETCH_EMPTY', f'{final} returned no readable text (content type {ctype or "unknown"})',
+                           f'the page returned no readable text (content type {ctype or "unknown"})')
         payload = {'url': url, 'finalUrl': final, 'host': host, 'status': status, 'contentType': ctype,
                    'title': title, 'text': text[:max_chars], 'textChars': len(text),
                    'truncated': len(text) > max_chars, 'links': links[:20], 'reader': reader,

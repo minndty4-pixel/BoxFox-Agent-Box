@@ -39,7 +39,7 @@ thay `socket.socket` bằng một lớp luôn ném lỗi rồi chạy `run_eval.
 | Đồng ý chi tiêu | `BOXFOX_EVAL_ALLOW_SPEND=1` (đúng chuỗi `1`) |
 | Ngân sách | `--budget-usd N` **hoặc** `BOXFOX_EVAL_BUDGET_USD=N`, với `N > 0` |
 
-Thêm hai biến kết nối, thiếu thì dừng với mã thoát 4 **trước khi** gọi gì:
+Thêm bốn biến kết nối, thiếu thì dừng với mã thoát 4 **trước khi** gọi gì:
 `BOXFOX_ROUTER_BASE_URL`, `BOXFOX_ROUTER_KEY` (khoá `bf_…`), `BOXFOX_HARNESS_BASE_URL`,
 `BOXFOX_HARNESS_ADMIN_TOKEN`.
 

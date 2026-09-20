@@ -7,7 +7,8 @@ chat rơi vào câu mặc định vô nghĩa `Agent run failed` và không thể
 import asyncio
 import builtins
 
-from agentbox.agent_core.failures import classify_failure, describe_failure, failure_detail, is_transient
+from agentbox.agent_core.failures import (classify_failure, describe_failure, failure_detail,
+                                          is_transient, log_safe_failure)
 
 
 class ServerDisconnectedError(Exception):
@@ -82,6 +83,26 @@ def test_failure_detail_contains_the_traceback():
         detail = failure_detail(exc)
     assert 'ServerDisconnectedError' in detail
     assert 'Traceback' in detail
+
+
+def test_log_safe_failure_strips_content_the_tool_marked_as_private():
+    """Dòng `tool.error` phải dùng bản an toàn của lỗi, không dùng bản gửi cho model.
+
+    Vòng soát mã đợt 10: nhánh lỗi của `runtime` ghi `message` (câu gửi cho model, có cả
+    truy vấn và URL) kèm `failure_detail` (vết lỗi, lặp lại y nguyên câu đó) vào nhật ký DEV.
+    """
+    exc = ValueError('WEB_SEARCH_UNAVAILABLE: no result for "hồ sơ bệnh nhân A"')
+    exc.log_message = 'WEB_SEARCH_UNAVAILABLE: every provider refused or returned nothing'
+    code, message, detail = log_safe_failure(exc)
+    assert code == 'WEB_SEARCH_UNAVAILABLE'
+    assert 'hồ sơ bệnh nhân A' not in message and message == exc.log_message
+    assert detail == '', 'vết lỗi lặp lại nội dung nên bị bỏ ở nhánh an toàn'
+
+
+def test_log_safe_failure_keeps_the_full_line_for_ordinary_tools():
+    code, message, detail = log_safe_failure(ValueError('dữ liệu đầu vào sai'))
+    assert code == 'TURN_FAILED_VALUEERROR' and 'dữ liệu đầu vào sai' in message
+    assert detail, 'công cụ thường vẫn phải có vết lỗi'
 
 
 def test_transient_classification():

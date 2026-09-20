@@ -11,7 +11,7 @@ import time
 import uuid
 import httpx
 from .compression import ContextCompressor, estimate_tokens
-from .failures import classify_failure, failure_detail, is_transient
+from .failures import classify_failure, failure_detail, is_transient, log_safe_failure
 from .plan_quality import check_plan_quality
 from .roles import ROLES, allowed_tools
 from .tool_contracts import schemas_for
@@ -58,7 +58,7 @@ CORE MULTI-AGENT DELEGATION PROTOCOL:
    - For any non-trivial development, bugfix, refactoring, or feature request: NEVER attempt to do everything in a single turn. You MUST invoke your specialists via `delegate_task`.
 2. Hierarchical 5-Phase Execution Workflow:
    - Phase 1 (Explore): Delegate to role='explore' to survey files, symbols, dependency trees, and existing architecture.
-     * Hand every external-knowledge question (a library's real API, a standard, a version, a web page) to role='research'. It is the ONLY role with browser access, there is NO web-search tool, and the sandbox network can be OFF — so a research answer may honestly say "could not verify". Accept that over a guessed source.
+     * Hand every external-knowledge question (a library's real API, a standard, a version, a web page) to role='research'. It reaches the browser AND the host-side `web_search`/`web_fetch` tools; you hold those two tools as well, so answer a quick fact yourself and delegate the deep survey. The sandbox network can be OFF — the host tools are not affected — so a research answer may still honestly say "could not verify". Accept that over a guessed source.
    - Phase 2 (Plan & Design):
      * Delegate to role='plan' to construct ordered milestones, risks, and acceptance criteria.
      * For user-facing or architectural changes, delegate to role='design' to specify API/UI contracts before coding.
@@ -793,9 +793,13 @@ class HarnessRuntime(RuntimeCommands):
                             result = await self.dispatch(session, name, args, call['id'])
                         except Exception as exc:
                             code, message = classify_failure(exc)
+                            # The model gets `message` (it may name the query or the URL); the DEV
+                            # log gets the log-safe variant, so "Copy diagnostics" cannot carry a
+                            # user query or a fetched URL off the machine.
+                            _, log_message, log_detail = log_safe_failure(exc)
                             system_log.write('tool.error', level='error', session_id=sid, turn_id=steps_used,
-                                             step=step + 1, tool=name, errorCode=code, message=message,
-                                             durationMs=(time.time() - tool_started) * 1000, detail=failure_detail(exc))
+                                             step=step + 1, tool=name, errorCode=code, message=log_message,
+                                             durationMs=(time.time() - tool_started) * 1000, detail=log_detail)
                             result = {'is_error': True, 'error': message, 'errorCode': code}
                         system_log.write('tool.end', session_id=sid, turn_id=steps_used, step=step + 1, tool=name,
                                          isError=bool(result.get('is_error')),
