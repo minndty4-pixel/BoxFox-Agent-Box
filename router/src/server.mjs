@@ -1,9 +1,21 @@
 import http from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { readFile, stat } from 'node:fs/promises';
 import { resolve, extname, sep } from 'node:path';
 import { assert, RouterError, safeError, errorEnvelope } from './errors.mjs';
 import { logEvent, logFailure } from './system-log.mjs';
+import {
+  anthropicApply,
+  anthropicError,
+  anthropicFrame,
+  anthropicMessageBody,
+  anthropicToOpenAI,
+  claudeCliHousekeeping,
+  createAnthropicState,
+  estimateInputTokens,
+  housekeepingEvents,
+} from './anthropic.mjs';
 
 function json(res, status, value) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
@@ -17,16 +29,34 @@ async function body(req) {
   catch (e) { if (e instanceof RouterError) throw e; throw new RouterError('INVALID_REQUEST', 'Invalid JSON.'); }
 }
 const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.woff2': 'font/woff2' };
+const STREAM_HEADERS = { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no' };
+// OpenAI dialect: `data: {json}\n\n` frames terminated by `data: [DONE]`.
+const openAIFrame = value => `data: ${typeof value === 'string' ? value : JSON.stringify(value)}\n\n`;
+// Anthropic dialect: `event: <type>\ndata: {json}\n\n` frames, no terminator.
+const anthropicFraming = value => (typeof value === 'string' ? value : anthropicFrame(value));
 export function createRouterServer({ service, engine, oauth, frontendDir = null, allowedOrigins = ['http://localhost:3100', 'http://127.0.0.1:3100'], allowedHosts = ['localhost:3100', '127.0.0.1:3100', 'localhost:3101', '127.0.0.1:3101'] }) {
   function admin(req) {
     assert(req.headers['x-boxfox-admin'] === '1', 'Local administration header required.', 'FORBIDDEN', 403);
     assert(!req.headers.origin || allowedOrigins.includes(req.headers.origin), 'Origin not allowed.', 'FORBIDDEN', 403);
     assert(!req.headers['sec-fetch-site'] || ['same-origin', 'same-site', 'none'].includes(req.headers['sec-fetch-site']), 'Cross-site administration is forbidden.', 'FORBIDDEN', 403);
   }
-  async function generate(req, res, input, clientKey) {
+  /**
+   * Client-disconnect cancellation, explicit SSE headers and back-pressure for
+   * every streaming dialect, so a Stop reaches the provider mid-answer.
+   */
+  function liveStream(req, res, frame = openAIFrame) {
     const controller = new AbortController();
     const cancel = () => { if (!res.writableEnded) controller.abort(new DOMException('Client disconnected', 'AbortError')); };
     res.on('close', cancel); req.on('aborted', cancel);
+    const write = async value => {
+      if (controller.signal.aborted) throw controller.signal.reason;
+      if (!res.headersSent) res.writeHead(200, STREAM_HEADERS);
+      if (!res.write(frame(value))) await once(res, 'drain', { signal: controller.signal });
+    };
+    return { controller, write, release: () => { res.removeListener('close', cancel); req.removeListener('aborted', cancel); } };
+  }
+  async function generate(req, res, input, clientKey) {
+    const { controller, write, release } = liveStream(req, res);
     let meta = null, content = '', reasoningContent = '', finishReason = null, usage = null; const toolCalls = new Map();
     const stream = input.stream === true;
     const started = Date.now();
@@ -36,11 +66,6 @@ export function createRouterServer({ service, engine, oauth, frontendDir = null,
       requestId: meta?.requestId, provider: meta?.provider || meta?.providerId, model: meta?.modelId,
       durationMs: Date.now() - started, stream, ...fields,
     });
-    const write = async value => {
-      if (controller.signal.aborted) throw controller.signal.reason;
-      if (!res.headersSent) res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no' });
-      if (!res.write(`data: ${typeof value === 'string' ? value : JSON.stringify(value)}\n\n`)) await once(res, 'drain', { signal: controller.signal });
-    };
     const chunk = (delta, reason = null, extra = {}) => ({ id: `chatcmpl-${meta.requestId}`, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: `${meta.connectionId}/${meta.modelId}`, choices: [{ index: 0, delta, finish_reason: reason }], ...extra });
     try {
       for await (const event of engine.generate(input, { key: clientKey, signal: controller.signal })) {
@@ -88,7 +113,93 @@ export function createRouterServer({ service, engine, oauth, frontendDir = null,
       });
       if (res.headersSent) { await write({ ...errorEnvelope(e), boxfox: meta }).catch(() => {}); res.end(); }
       else json(res, safe.status, errorEnvelope(e));
-    } finally { res.removeListener('close', cancel); req.removeListener('aborted', cancel); }
+    } finally { release(); }
+  }
+  /**
+   * Anthropic Messages ingress. The translation lives in anthropic.mjs; this owns
+   * the HTTP concerns, which are deliberately the same as the OpenAI path: the
+   * same key store, the same engine (so the same route resolution, allowlist and
+   * 90 s deadline), client-disconnect cancellation and the developer system log.
+   * `provider` yields engine events — the model pipeline, or the local answer to
+   * a Claude Code housekeeping call.
+   */
+  async function anthropicMessages(req, res, { input, provider }) {
+    const stream = input.stream === true;
+    const started = Date.now();
+    const messageId = `msg_${randomUUID().replace(/-/g, '').slice(0, 24)}`;
+    const state = createAnthropicState({ id: messageId, model: input.model, inputTokens: estimateInputTokens(input) });
+    const { controller, write, release } = liveStream(req, res, anthropicFraming);
+    let meta = null;
+    const logChat = (event, fields = {}) => logEvent(event, {
+      requestId: meta?.requestId, provider: meta?.provider || meta?.providerId, model: meta?.modelId,
+      messageId, durationMs: Date.now() - started, stream, ...fields,
+    });
+    try {
+      // message_start leaves before the provider's usage is known; the response
+      // header names the request for the client and for the system log.
+      res.setHeader('request-id', messageId);
+      for await (const event of provider(controller.signal)) {
+        if (event.type === 'start') { meta = event.meta; continue; }
+        for (const frame of anthropicApply(state, event)) if (stream) await write(frame);
+      }
+      logChat('anthropic.end', {
+        stopReason: state.stopReason, inputTokens: state.inputTokens,
+        contentChars: state.blocks.reduce((total, block) => total + block.text.length, 0),
+        thinkingChars: state.blocks.reduce((total, block) => total + block.thinking.length, 0),
+        toolCalls: state.toolCalls.size,
+      });
+      if (stream) { res.end(); return true; }
+      json(res, 200, anthropicMessageBody(state));
+      return true;
+    } catch (e) {
+      if (controller.signal.aborted) {
+        logChat('anthropic.aborted', { level: 'warn', message: 'client disconnected before the model finished' });
+        return false;
+      }
+      const safe = safeError(e);
+      logFailure('anthropic.failed', e, {
+        requestId: meta?.requestId, provider: meta?.provider || meta?.providerId, model: meta?.modelId,
+        messageId, durationMs: Date.now() - started, stream, code: safe.code, httpStatus: safe.status,
+      });
+      const payload = anthropicError(safe);
+      if (res.headersSent) { await write(anthropicFrame(payload)).catch(() => {}); res.end(); return false; }
+      json(res, safe.status, payload);
+      return false;
+    } finally { release(); }
+  }
+  // 9Router's `extractApiKey` order: `Authorization: Bearer` first, then the
+  // Anthropic `x-api-key` header, both against the same key store.
+  function ingressKey(req) {
+    const bearer = (req.headers.authorization || '').match(/^Bearer (.+)$/)?.[1];
+    return service.store.authenticateKey(bearer) || service.store.authenticateKey(req.headers['x-api-key']);
+  }
+  /** `/v1/messages` and `/v1/messages/count_tokens`, every error Anthropic-shaped. */
+  async function anthropicRoute(req, res, path, method) {
+    try {
+      assert(method === 'POST', 'Endpoint not found.', 'NOT_FOUND', 404);
+      const key = ingressKey(req);
+      assert(key, 'Valid BoxFox API key required.', 'AUTH', 401);
+      const input = await body(req);
+      if (path === '/v1/messages/count_tokens') {
+        // The same 4-characters-per-token estimate the streaming usage falls back
+        // to; no provider call, no routing, nothing invented.
+        json(res, 200, { input_tokens: estimateInputTokens(input) });
+        return;
+      }
+      const housekeeping = claudeCliHousekeeping(input, req.headers['user-agent']);
+      if (housekeeping) {
+        logEvent('anthropic.housekeeping', { kind: housekeeping.kind, stream: input.stream === true, userAgent: req.headers['user-agent'] });
+        await anthropicMessages(req, res, { input, provider: () => housekeepingEvents(housekeeping) });
+        return;
+      }
+      const translated = anthropicToOpenAI(input);
+      await anthropicMessages(req, res, { input, provider: signal => engine.generate(translated, { key, signal }) });
+    } catch (e) {
+      const safe = safeError(e);
+      logFailure('anthropic.request_rejected', e, { path, code: safe.code, httpStatus: safe.status });
+      if (!res.headersSent && !res.destroyed) json(res, safe.status, anthropicError(safe));
+      else res.end();
+    }
   }
   const server = http.createServer(async (req, res) => {
     try {
@@ -111,19 +222,7 @@ export function createRouterServer({ service, engine, oauth, frontendDir = null,
         if (path === '/v1/models' && method === 'GET') return json(res, 200, { object: 'list', data: service.publicModels(key) });
         if (path === '/v1/chat/completions' && method === 'POST') return await generate(req, res, await body(req), key);
       }
-      if (path === '/v1/messages' && method === 'POST') {
-        const rawAuth = req.headers['x-api-key'] || (req.headers.authorization || '').match(/^Bearer (.+)$/)?.[1];
-        const key = service.store.authenticateKey(rawAuth);
-        assert(key, 'Valid BoxFox API key required.', 'AUTH', 401);
-        const input = await body(req);
-        const messages = [];
-        if (input.system) messages.push({ role: 'system', content: typeof input.system === 'string' ? input.system : String(input.system) });
-        for (const m of input.messages || []) {
-          const content = typeof m.content === 'string' ? m.content : Array.isArray(m.content) ? m.content.map(c => c?.text || '').join('\n') : '';
-          messages.push({ role: m.role, content });
-        }
-        return await generate(req, res, { ...input, messages }, key);
-      }
+      if (path === '/v1/messages' || path === '/v1/messages/count_tokens') return await anthropicRoute(req, res, path, method);
       if (path === '/api/router/state' && method === 'GET') return json(res, 200, service.snapshot());
       if (path === '/api/router/providers' && method === 'GET') return json(res, 200, service.snapshot().providers);
       const providerDetail = path.match(/^\/api\/router\/providers\/([^/]+)$/);

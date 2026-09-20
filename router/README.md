@@ -19,7 +19,24 @@ See [CONTRACT.md](CONTRACT.md) for routes and event contracts. API model IDs are
 ```sh
 curl http://localhost:3100/v1/models -H "Authorization: Bearer YOUR_BOXFOX_KEY"
 curl http://localhost:3100/v1/chat/completions -H "Authorization: Bearer YOUR_BOXFOX_KEY" -H "Content-Type: application/json" -d '{"model":"YOUR_ALIAS","messages":[{"role":"user","content":"Hello"}],"stream":true}'
+curl http://localhost:3100/v1/messages -H "x-api-key: YOUR_BOXFOX_KEY" -H "Content-Type: application/json" -d '{"model":"YOUR_ALIAS","max_tokens":256,"messages":[{"role":"user","content":"Hello"}]}'
 ```
+
+## Pointing Claude Code at the router
+
+The router speaks Anthropic's Messages protocol, so the Claude Code CLI can use it as its API endpoint with **no Anthropic account, subscription or API key** — every request is routed to whichever provider connection the router is configured with. Make sure the selected model is one the connection actually serves (see `GET /v1/models`).
+
+```sh
+export ANTHROPIC_BASE_URL=http://127.0.0.1:3101/v1   # must end in /v1; 3100/v1 is the same thing via Vite/production
+export ANTHROPIC_AUTH_TOKEN=bf_YOUR_BOXFOX_KEY       # a gateway key from Provider > Keys
+unset ANTHROPIC_API_KEY                              # no Anthropic credential is used
+export ANTHROPIC_DEFAULT_OPUS_MODEL=YOUR_ALIAS       # or connectionId/modelId
+export ANTHROPIC_DEFAULT_SONNET_MODEL=YOUR_ALIAS
+export ANTHROPIC_DEFAULT_HAIKU_MODEL=YOUR_ALIAS
+claude
+```
+
+`ANTHROPIC_BASE_URL` is the router itself, so the model ids must be router model ids (`connectionId/modelId` or an alias name): the router does not translate a bare `claude-*` name into a provider model. A connection selected by an alias applies to all three model slots unless separate aliases are configured. Claude Code's small housekeeping calls (warm-up, title generation) are answered locally by the router, so they cost no tokens even if the model id they name is unavailable.
 
 `npm test` runs local tests; the simulator exists only in tests. `npm run test:live` checks JSON/SSE through BoxFox after Antigravity login, emits passed/failed/blocked/skipped and exits 2 when blocked. HTTP 400/401/403/429 never count as successful inference. Interactive Stop/restart/tool/disconnect acceptance remains separate.
 
