@@ -7,6 +7,7 @@ import { createRouterServer } from './server.mjs';
 import { createSafeFetch } from './network.mjs';
 import { createProviders } from './providers/index.mjs';
 import { ModelSyncScheduler } from './model-sync.mjs';
+import { logEvent, logFailure, logPath } from './system-log.mjs';
 
 const production = process.argv.includes('--production');
 const port = Number(process.env.BOXFOX_ROUTER_PORT || (production ? 3100 : 3101));
@@ -17,8 +18,8 @@ const engine = new RouterEngine({ service });
 const oauth = new OAuthManager({ service, port: Number(process.env.BOXFOX_OAUTH_PORT || 51121) });
 const modelSync = new ModelSyncScheduler({ service, intervalMs: Number(process.env.BOXFOX_MODEL_SYNC_MS || 6 * 60 * 60 * 1000) });
 const server = createRouterServer({ service, engine, oauth, frontendDir: production ? fileURLToPath(new URL('../../frontend/dist', import.meta.url)) : null, allowedOrigins: ['http://localhost:3100', 'http://127.0.0.1:3100', ...(production ? [`http://localhost:${port}`, `http://127.0.0.1:${port}`] : [])], allowedHosts: [`localhost:${port}`, `127.0.0.1:${port}`, 'localhost:3100', '127.0.0.1:3100'] });
-server.on('error', async error => { console.error(`BoxFox Router startup failed (${error.code || 'ERROR'}). Check port ${port} and host storage permissions.`); await oauth.close(); store.close(); process.exitCode = 1; });
-server.listen(port, '127.0.0.1', () => { modelSync.start(); console.log(`BoxFox Router ready: http://localhost:${port}/api/router/health`); });
+server.on('error', async error => { logFailure('router.startup_failed', error, { code: error.code, port }); console.error(`BoxFox Router startup failed (${error.code || 'ERROR'}). Check port ${port} and host storage permissions.`); await oauth.close(); store.close(); process.exitCode = 1; });
+server.listen(port, '127.0.0.1', () => { logEvent('router.start', { port, pid: process.pid, node: process.version, log: logPath }); modelSync.start(); console.log(`BoxFox Router ready: http://localhost:${port}/api/router/health`); });
 let closing = false;
-async function shutdown() { if (closing) return; closing = true; modelSync.stop(); for (const request of service.active.values()) request.controller.abort(); server.closeAllConnections(); await new Promise(r => server.close(r)); await oauth.close(); store.close(); }
+async function shutdown() { if (closing) return; closing = true; logEvent('router.stop', { port, pid: process.pid }); modelSync.stop(); for (const request of service.active.values()) request.controller.abort(); server.closeAllConnections(); await new Promise(r => server.close(r)); await oauth.close(); store.close(); }
 process.on('SIGINT', () => shutdown()); process.on('SIGTERM', () => shutdown());

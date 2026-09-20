@@ -1,11 +1,13 @@
 """Loopback harness API; UI uses the Vite /api/agent proxy."""
 import asyncio
 import os
+import sys
 from pathlib import Path
 from aiohttp import web
 from ..agent_core.runtime import HarnessRuntime, DecisionError
 from ..agent_core.roles import ROLES
 from ..memory.session_store import SessionStore
+from ..observability.system_log import system_log
 from ..sandbox.executor import SandboxExecutor
 
 
@@ -162,7 +164,12 @@ def main():
     data = Path(os.environ.get('BOXFOX_AGENT_DATA_DIR', str(Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'BoxFox/harness')))
     runtime = HarnessRuntime(SessionStore(data / 'sessions.sqlite'), SandboxExecutor(
         api_key=os.environ.get('BOXFOX_API_KEY', 'boxfox-local-dev-token')))
-    web.run_app(create_app(runtime), host='127.0.0.1', port=3102, print=None)
+    system_log.write('harness.start', dataDir=str(data), port=3102, pid=os.getpid(),
+                     python=sys.version.split()[0])
+    try:
+        web.run_app(create_app(runtime), host='127.0.0.1', port=3102, print=None)
+    finally:
+        system_log.write('harness.stop', port=3102, pid=os.getpid())
 
 
 if __name__ == '__main__':

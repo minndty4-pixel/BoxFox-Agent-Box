@@ -3,6 +3,7 @@ import { once } from 'node:events';
 import { readFile, stat } from 'node:fs/promises';
 import { resolve, extname, sep } from 'node:path';
 import { assert, RouterError, safeError, errorEnvelope } from './errors.mjs';
+import { logEvent, logFailure } from './system-log.mjs';
 
 function json(res, status, value) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
@@ -28,6 +29,13 @@ export function createRouterServer({ service, engine, oauth, frontendDir = null,
     res.on('close', cancel); req.on('aborted', cancel);
     let meta = null, content = '', reasoningContent = '', finishReason = null, usage = null; const toolCalls = new Map();
     const stream = input.stream === true;
+    const started = Date.now();
+    // The developer system log records every model request: what was asked, how long it
+    // took, how it ended, and — on failure — the code and reason. Never agent-visible.
+    const logChat = (event, fields = {}) => logEvent(event, {
+      requestId: meta?.requestId, provider: meta?.provider || meta?.providerId, model: meta?.modelId,
+      durationMs: Date.now() - started, stream, ...fields,
+    });
     const write = async value => {
       if (controller.signal.aborted) throw controller.signal.reason;
       if (!res.headersSent) res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no' });
@@ -57,12 +65,29 @@ export function createRouterServer({ service, engine, oauth, frontendDir = null,
         if (event.type === 'usage') { usage = event.usage; if (stream) await write({ ...chunk({}, null), choices: [], usage }); }
         if (event.type === 'finish') { finishReason = event.finishReason; if (stream) await write(chunk({}, finishReason)); }
       }
+      logChat('chat.end', {
+        finishReason,
+        inputTokens: usage?.prompt_tokens ?? usage?.input_tokens ?? null,
+        outputTokens: usage?.completion_tokens ?? usage?.output_tokens ?? null,
+        contentChars: content.length,
+        reasoningChars: reasoningContent.length,
+        toolCalls: toolCalls.size,
+      });
       if (stream) { await write('[DONE]'); res.end(); }
       else json(res, 200, { id: `chatcmpl-${meta.requestId}`, object: 'chat.completion', created: Math.floor(Date.now() / 1000), model: `${meta.connectionId}/${meta.modelId}`, choices: [{ index: 0, message: { role: 'assistant', content: content || null, ...(reasoningContent ? { reasoning_content: reasoningContent } : {}), ...(toolCalls.size ? { tool_calls: [...toolCalls.values()] } : {}) }, finish_reason: finishReason }], usage, boxfox: meta });
     } catch (e) {
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted) {
+        logChat('chat.aborted', { level: 'warn', message: 'client disconnected before the model finished', contentChars: content.length });
+        return;
+      }
+      const safe = safeError(e);
+      logFailure('chat.failed', e, {
+        requestId: meta?.requestId, provider: meta?.provider || meta?.providerId, model: meta?.modelId,
+        durationMs: Date.now() - started, stream, code: safe.code, httpStatus: safe.status,
+        contentChars: content.length, toolCalls: toolCalls.size,
+      });
       if (res.headersSent) { await write({ ...errorEnvelope(e), boxfox: meta }).catch(() => {}); res.end(); }
-      else json(res, safeError(e).status, errorEnvelope(e));
+      else json(res, safe.status, errorEnvelope(e));
     } finally { res.removeListener('close', cancel); req.removeListener('aborted', cancel); }
   }
   const server = http.createServer(async (req, res) => {

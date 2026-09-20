@@ -4,6 +4,8 @@ import json
 import uuid
 from dataclasses import asdict
 from .commands import INFO, ROLE_SKILLS, EXTERNAL
+from ..agent_core.failures import classify_failure, failure_detail
+from ..observability.system_log import system_log
 from ..agent_core.compression import ContextCompressor, estimate_tokens
 
 
@@ -55,8 +57,11 @@ class RuntimeCommands:
                         self.store.save(sid, session['messages'], 'cancelled')
                         raise
                     except Exception as exc:
+                        code, message = classify_failure(exc)
                         self.store.save(sid, session['messages'], 'failed')
-                        self.store.emit(sid, 'error', {'message': str(exc)})
+                        self.store.emit(sid, 'error', {'message': message, 'code': code})
+                        system_log.write('compact.failed', level='error', session_id=sid, errorCode=code,
+                                         message=message, detail=failure_detail(exc))
                 self.tasks[sid] = asyncio.create_task(compact())
                 return result
             elif resolved.command == 'help':
@@ -164,8 +169,11 @@ class RuntimeCommands:
             raise
         except Exception as exc:
             state = self.store.get(sid)
+            code, message = classify_failure(exc)
             self.store.save(sid, state['messages'], 'failed')
-            self.store.emit(sid, 'error', {'message': str(exc)})
+            self.store.emit(sid, 'error', {'message': message, 'code': code})
+            system_log.write('command.failed', level='error', session_id=sid, errorCode=code,
+                             message=message, detail=failure_detail(exc))
 
     async def _run_cli(self, child, prompt):
         from ..sandbox.claude_executor import ClaudeExecutor
@@ -183,6 +191,9 @@ class RuntimeCommands:
             self.store.save(sid, child['messages'], 'cancelled')
             raise
         except Exception as exc:
+            code, message = classify_failure(exc)
             self.store.save(sid, child['messages'], 'failed')
-            self.store.emit(sid, 'error', {'message': str(exc)})
+            self.store.emit(sid, 'error', {'message': message, 'code': code})
+            system_log.write('executor.failed', level='error', session_id=sid, errorCode=code,
+                             message=message, detail=failure_detail(exc))
             return None

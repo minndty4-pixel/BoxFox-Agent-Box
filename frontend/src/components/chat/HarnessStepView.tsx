@@ -25,6 +25,7 @@ import type { HarnessEvent } from '../../store/harnessChatStore'
 import type { ProviderSnapshot } from '../../types/provider'
 import type { RouterChatSelection } from '../../store/routerChatStore'
 import { MarkdownRenderer } from './MarkdownRenderer'
+import { appendStreamText } from '../../lib/streamText'
 import { ProviderIcon } from '../providers/ProviderIcon'
 import type { LightboxMediaProps } from './MediaLightboxModal'
 
@@ -364,7 +365,8 @@ function applyTimelineEvent(turn: HarnessTurn, event: HarnessEvent) {
 
   switch (event.type) {
     case 'thought': {
-      turn.thought = String(event.data.text ?? '')
+      // Event có thể là văn bản tích luỹ (harness cũ) hoặc mảnh rời (harness mới).
+      turn.thought = appendStreamText(turn.thought ?? '', String(event.data.text ?? ''))
       return
     }
     case 'usage': {
@@ -377,8 +379,7 @@ function applyTimelineEvent(turn: HarnessTurn, event: HarnessEvent) {
       const text = String(event.data.text ?? '')
       const last = turn.items[turn.items.length - 1]
       if (last && last.kind === 'text' && last.live) {
-        // Delta của backend là văn bản tích luỹ; nhánh sau chỉ để phòng adapter gửi từng mảnh.
-        last.text = text.startsWith(last.text) ? text : last.text + text
+        last.text = appendStreamText(last.text, text)
       } else {
         turn.items.push({ kind: 'text', id: `text_${event.seq}`, seq: event.seq, text, live: true })
       }

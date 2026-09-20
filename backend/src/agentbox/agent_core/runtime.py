@@ -11,12 +11,14 @@ import time
 import uuid
 import httpx
 from .compression import ContextCompressor, estimate_tokens
+from .failures import classify_failure, failure_detail, is_transient
 from .roles import ROLES, allowed_tools
 from .tool_contracts import schemas_for
 from ..skills.catalog import SkillCatalog, DEFAULT_SKILLS
 from ..skills.commands import CommandRegistry, ROLE_SKILLS, EXTERNAL
 from ..skills.lifecycle import SkillLoader
 from ..skills.runtime_commands import RuntimeCommands
+from ..observability.system_log import system_log
 from ..vendor.hermes.tool_arguments import _parse_tool_arguments
 
 TOOL_USE_ENFORCEMENT_GUIDANCE = """# Tool-Use Enforcement
@@ -625,6 +627,15 @@ class HarnessRuntime(RuntimeCommands):
         tools = schemas_for(config['tools'])
         compressor = ContextCompressor(config['contextWindow'])
         loop_guard = AntiLoopGuard(threshold=3)
+        started = time.time()
+        steps_used = 0
+        system_log.write('turn.start', session_id=sid, role=session.get('role'),
+                         model=(config.get('route') or {}).get('modelId'),
+                         connectionId=(config.get('route') or {}).get('connectionId'),
+                         contextWindow=config.get('contextWindow'), maxSteps=config.get('maxSteps'),
+                         deadlineSeconds=config.get('deadlineSeconds'),
+                         contextEstimate=estimate_tokens(messages, tools),
+                         messages=len(messages))
         try:
             async with asyncio.timeout(config['deadlineSeconds']) as budget:
                 self.run_budget[sid] = budget
@@ -641,11 +652,51 @@ class HarnessRuntime(RuntimeCommands):
                             self.store.save(sid, messages)
                         self.store.emit(sid, 'compression', event)
                     self.store.emit(sid, 'step', {'iteration': step + 1, 'contextEstimate': estimate_tokens(messages, tools)})
+                    # The router callback hands over the text accumulated so far (that is the shape
+                    # every provider adapter can satisfy). Events must carry only the NEW part:
+                    # a consumer that appends `assistant_delta.text` would otherwise reprint the
+                    # whole answer once per token, and every event would store the full text again.
+                    streamed = {'content': '', 'thought': ''}
+
+                    def _suffix(previous, current):
+                        return current[len(previous):] if current.startswith(previous) else current
+
                     def handle_thought(thought_text):
-                        self.store.emit(sid, 'thought', {'text': thought_text})
+                        new_text = _suffix(streamed['thought'], thought_text)
+                        streamed['thought'] = thought_text
+                        if new_text:
+                            self.store.emit(sid, 'thought', {'text': new_text})
+
                     def handle_content(content_text):
-                        self.store.emit(sid, 'assistant_delta', {'text': content_text})
-                    response = await self.client.complete(messages, tools, config['route'], on_thought=handle_thought, on_content=handle_content)
+                        new_text = _suffix(streamed['content'], content_text)
+                        streamed['content'] = content_text
+                        if new_text:
+                            self.store.emit(sid, 'assistant_delta', {'text': new_text})
+                    steps_used = step + 1
+                    # One bounded retry for a dropped socket / restarted router / empty stream,
+                    # inside the same turn budget: this is the main cause of "Agent run failed"
+                    # on long chats where the provider connection blips mid-answer.
+                    attempts = 0
+                    while True:
+                        step_started = time.time()
+                        try:
+                            response = await self.client.complete(messages, tools, config['route'], on_thought=handle_thought, on_content=handle_content)
+                            break
+                        except Exception as exc:
+                            code, message = classify_failure(exc)
+                            transient = is_transient(exc)
+                            system_log.write('model.error', level='warn', session_id=sid, turn_id=steps_used,
+                                             step=step + 1, attempt=attempts + 1, errorCode=code, message=message,
+                                             durationMs=(time.time() - step_started) * 1000,
+                                             detail=failure_detail(exc))
+                            if not transient or attempts >= 1:
+                                raise
+                            attempts += 1
+                            self.store.emit(sid, 'notice', {
+                                'code': 'UPSTREAM_RETRY',
+                                'message': f'{code}: retrying the model request once ({message})',
+                            })
+                            await asyncio.sleep(1.5)
                     choice = response['choices'][0]
                     message = choice['message']
                     text, calls = message.get('content') or '', message.get('tool_calls') or []
@@ -671,6 +722,9 @@ class HarnessRuntime(RuntimeCommands):
                     if not calls:
                         self.store.save(sid, messages, 'completed')
                         self.store.emit(sid, 'finish', {'status': 'completed'})
+                        system_log.write('turn.end', session_id=sid, status='completed', steps=steps_used,
+                                         textChars=len(text or ''),
+                                         durationMs=(time.time() - started) * 1000)
                         return text
                     if len(calls) > 16:
                         raise ValueError('Tool-call batch exceeds limit')
@@ -679,6 +733,7 @@ class HarnessRuntime(RuntimeCommands):
                         args, error = _parse_tool_arguments(fn.get('arguments'))
                         name = fn.get('name', '')
                         self.store.emit(sid, 'tool_start', {'id': call['id'], 'name': name, 'args': args})
+                        tool_started = time.time()
                         try:
                             if error:
                                 raise ValueError(error)
@@ -686,7 +741,14 @@ class HarnessRuntime(RuntimeCommands):
                                 raise PermissionError('Tool not permitted for this role: ' + name)
                             result = await self.dispatch(session, name, args, call['id'])
                         except Exception as exc:
-                            result = {'is_error': True, 'error': str(exc)}
+                            code, message = classify_failure(exc)
+                            system_log.write('tool.error', level='error', session_id=sid, turn_id=steps_used,
+                                             step=step + 1, tool=name, errorCode=code, message=message,
+                                             durationMs=(time.time() - tool_started) * 1000, detail=failure_detail(exc))
+                            result = {'is_error': True, 'error': message, 'errorCode': code}
+                        system_log.write('tool.end', session_id=sid, turn_id=steps_used, step=step + 1, tool=name,
+                                         isError=bool(result.get('is_error')),
+                                         durationMs=(time.time() - tool_started) * 1000)
                         safe = {k: v for k, v in result.items() if k not in {'image', 'base64'}}
                         if safe.get('is_error'):
                             safe['reflection_hint'] = 'AUTONOMOUS_DIAGNOSIS: The previous action returned an error. Inspect the message, avoid repeating identical inputs, and pivot strategy or invoke debug specialist if necessary.'
@@ -706,11 +768,16 @@ class HarnessRuntime(RuntimeCommands):
         except asyncio.CancelledError:
             self.store.save(sid, messages, 'cancelled')
             self.store.emit(sid, 'finish', {'status': 'cancelled'})
+            system_log.write('turn.end', session_id=sid, status='cancelled', steps=steps_used,
+                             durationMs=(time.time() - started) * 1000)
             raise
         except Exception as exc:
-            error = 'DEADLINE: run timed out' if isinstance(exc, TimeoutError) else str(exc)
+            code, error = classify_failure(exc)
             self.store.save(sid, messages, 'failed')
-            self.store.emit(sid, 'error', {'message': error})
+            self.store.emit(sid, 'error', {'message': error, 'code': code})
+            system_log.write('turn.failed', level='error', session_id=sid, turn_id=steps_used, status='failed',
+                             errorCode=code, message=error, steps=steps_used,
+                             durationMs=(time.time() - started) * 1000, detail=failure_detail(exc))
             return None
         finally:
             self.run_budget.pop(sid, None)
