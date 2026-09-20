@@ -296,7 +296,12 @@ tin nhắn mới nhất), đầu vào tóm tắt do `summarizer_material()` làm
 phép tỉa một ảnh chụp giữ phần chữ thay vì cắt nát chính ảnh mới nhất. **Diễn lại phiên thật
 `9ec9bf1d`**: `beforeEstimate 1075446 → afterEstimate 314771`, đầu vào tóm tắt còn **15 397 ký tự**.
 
-Tổng số ca sau bốn lớp này: backend **515 passed, 2 failed, 2 skipped** — hai ca đỏ vẫn là hai ca cũ
+Hai phát hiện đo được nữa (commit `d0adf36`, ghi ở §6.7 mục F-1f/F-1g): ước lượng ngữ cảnh đếm **hai
+lần** cùng một chữ ký suy luận — cùng hai phiên trên nay còn **576 592** và **509 005** token, tức
+dưới ngưỡng nén 697 132 nên nhiệm vụ nặng không còn bị nén sớm; và `_drop_oldest_round()` không còn
+kéo tin nhắn trong đuôi đang chạy vào tập bị bỏ.
+
+Tổng số ca sau các lớp này: backend **519 passed, 2 failed, 2 skipped** — hai ca đỏ vẫn là hai ca cũ
 có điều kiện môi trường. `deploy/docker` **359 OK**; router **89 pass / 0 fail**; frontend
 **682 passed / 4 failed**; `tsc` thoát 0.
 
