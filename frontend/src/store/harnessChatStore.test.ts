@@ -66,3 +66,37 @@ describe('harnessChatStore error persistence', () => {
     expect(useHarnessChatStore.getState().sessions[CHAT]?.error ?? null).toBeNull()
   })
 })
+
+describe('harnessChatStore — câu lỗi rỗng', () => {
+  it('thay câu lỗi rỗng bằng mã + lý do thay vì "Agent run failed"', async () => {
+    // Hàng cũ trong DB có thể mang `message` rỗng. Panel tách mã bằng tiền tố "MÃ_VIẾT_HOA:",
+    // nên câu thay thế phải bắt đầu bằng mã để vẫn hiện được nhãn mã lỗi.
+    sessions['sid-4'] = {
+      id: 'sid-4',
+      status: 'failed',
+      events: [{ seq: 5, type: 'error', data: { message: '', code: 'TURN_EMPTY_STREAM' }, created: 5 }],
+    }
+    useHarnessChatStore.setState({ sessions: { [CHAT]: { id: 'sid-4', status: 'running', events: [], error: null } } })
+
+    await useHarnessChatStore.getState().refresh(CHAT)
+
+    const error = useHarnessChatStore.getState().sessions[CHAT].error ?? ''
+    expect(error.startsWith('TURN_EMPTY_STREAM:')).toBe(true)
+    expect(error).not.toBe('Agent run failed')
+  })
+
+  it('dùng mã RUN_FAILED khi event lỗi cũ không có cả message lẫn code', async () => {
+    sessions['sid-5'] = {
+      id: 'sid-5',
+      status: 'failed',
+      events: [{ seq: 6, type: 'error', data: {}, created: 6 }],
+    }
+    useHarnessChatStore.setState({ sessions: { [CHAT]: { id: 'sid-5', status: 'running', events: [], error: null } } })
+
+    await useHarnessChatStore.getState().refresh(CHAT)
+
+    expect(useHarnessChatStore.getState().sessions[CHAT].error).toBe(
+      'RUN_FAILED: the run stopped before it reported a reason',
+    )
+  })
+})
