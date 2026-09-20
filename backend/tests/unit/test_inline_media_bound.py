@@ -9,12 +9,18 @@ tự chọn chụp màn hình giữa các bước làm thân request phình lên
 Cách sửa: giữ ảnh của các lần chụp MỚI NHẤT trong thân request, các ảnh cũ rút về phần chữ
 đi kèm (đường dẫn tệp vẫn nằm trong đó). Bản lưu trong store — và do đó giao diện chat —
 không bị đụng tới.
+
+Vòng kiểm chứng thứ hai đo lại sau bản sửa đó: thân request còn **1 017 382 B, vẫn quá trần
+17 382 B**, vì phần lớn nhất còn lại là chữ ký suy luận bị ghi **hai lần**
+(`thought_signature` + `thoughtSignature`, tổng 761 888 B) — không đường nào cắt nó. Nên có
+thêm `dedupe_thought_signatures()`: thân request chỉ mang một cách viết, bản lưu giữ nguyên.
 """
 import copy
 import json
 
 from agentbox.agent_core import runtime as runtime_module
-from agentbox.agent_core.runtime import MAX_INLINE_MEDIA_BYTES, bound_inline_media
+from agentbox.agent_core.runtime import (MAX_INLINE_MEDIA_BYTES, bound_inline_media,
+                                         dedupe_thought_signatures)
 
 
 def _capture(index: int, payload: int) -> dict:
@@ -83,3 +89,50 @@ def test_the_bound_is_applied_on_the_way_to_the_router():
     assert 'messages, dropped = bound_inline_media(messages)' in text
     assert text.index('bound_inline_media(messages)') < text.index("json={**route, 'messages': messages")
     assert 'model.media_pruned' in text
+
+
+# --------------------------------------------------- chữ ký suy luận bị ghi hai lần
+
+def _assistant_with_signature(index: int, size: int) -> dict:
+    """Thông điệp `assistant` mang chữ ký suy luận — cả hai cách viết, như `runtime` lưu."""
+    signature = 'S' * size
+    return {
+        'role': 'assistant',
+        'content': None,
+        'tool_calls': [{
+            'id': f'call_{index}',
+            'type': 'function',
+            'function': {'name': 'computer_screen_capture', 'arguments': '{"x": 10}'},
+            'thought_signature': signature,
+            'thoughtSignature': signature,
+        }],
+    }
+
+
+def test_a_thought_signature_is_sent_once():
+    messages = [_assistant_with_signature(0, 4096)]
+    deduped, saved = dedupe_thought_signatures(messages)
+    assert saved == 4096
+    call = deduped[0]['tool_calls'][0]
+    assert 'thoughtSignature' not in call and call['thought_signature'] == 'S' * 4096
+    assert messages[0]['tool_calls'][0]['thoughtSignature'] == 'S' * 4096, 'bản lưu không đổi'
+
+
+def test_messages_without_signatures_are_returned_untouched():
+    messages = [{'role': 'user', 'content': 'xin chào'}, _capture(0, 10)]
+    returned, saved = dedupe_thought_signatures(messages)
+    assert saved == 0 and returned is messages
+
+
+def test_a_long_mission_body_fits_after_both_passes():
+    """Ca của vòng kiểm chứng: ảnh base64 + chữ ký ghi hai lần làm thân vượt trần 1 MiB."""
+    messages = []
+    for index in range(6):
+        messages.append(_assistant_with_signature(index, 120 * 1024))
+        messages.append(_capture(index, 90 * 1024))
+    before = len(json.dumps(messages, ensure_ascii=False).encode('utf-8'))
+    bounded, dropped = bound_inline_media(messages)
+    bounded, saved = dedupe_thought_signatures(bounded)
+    after = len(json.dumps(bounded, ensure_ascii=False).encode('utf-8'))
+    assert before > 1048576 and after < 1048576, (before, after)
+    assert dropped == 4 and saved == 6 * 120 * 1024

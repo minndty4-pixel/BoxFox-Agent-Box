@@ -182,6 +182,38 @@ def bound_inline_media(messages, keep: int = MAX_INLINE_MEDIA,
     return out, dropped
 
 
+def dedupe_thought_signatures(messages) -> tuple[list, int]:
+    """One spelling per thought signature in the request body.
+
+    Every signature is stored under both names — the router normalises either one, and so does
+    this client — which is fine on disk but doubles a large opaque blob on every later request.
+    Measured on a heavy CUA mission (2026-09-20): 761 888 B of a 1.7 MiB body were the two
+    copies of the same signatures, which is what kept the body over the router's 1 MiB cap even
+    after the inline images were bounded. The request keeps `thought_signature`; the stored
+    transcript is left alone.
+    """
+    out, saved = [], 0
+    for message in messages:
+        calls = message.get('tool_calls') if isinstance(message, dict) else None
+        if not isinstance(calls, list) or not calls:
+            out.append(message)
+            continue
+        trimmed, local = [], 0
+        for call in calls:
+            if (isinstance(call, dict) and call.get('thought_signature') and call.get('thoughtSignature')):
+                local += len(str(call['thoughtSignature']))
+                call = {key: value for key, value in call.items() if key != 'thoughtSignature'}
+            trimmed.append(call)
+        if local:
+            saved += local
+            out.append({**message, 'tool_calls': trimmed})
+        else:
+            out.append(message)
+    if not saved:
+        return messages, 0
+    return out, saved
+
+
 class RouterClient:
     def __init__(self, url='http://127.0.0.1:3101'):
         self.url = url.rstrip('/')
@@ -215,6 +247,10 @@ class RouterClient:
         if dropped:
             system_log.write('model.media_pruned', session_id=route.get('sessionId'), dropped=dropped,
                              kept=MAX_INLINE_MEDIA)
+        messages, signature_chars = dedupe_thought_signatures(messages)
+        if signature_chars:
+            system_log.write('model.signature_deduped', session_id=route.get('sessionId'),
+                             chars=signature_chars)
         async with httpx.AsyncClient(timeout=120, trust_env=False) as client:
             try:
                 async with client.stream(
