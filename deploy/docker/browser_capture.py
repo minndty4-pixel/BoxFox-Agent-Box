@@ -158,18 +158,24 @@ class WebSocket:
             pass
         self._sock = None
 
-    def call(self, method: str, params: dict | None = None) -> dict:
+    def call(self, method: str, params: dict | None = None, session_id: str | None = None) -> dict:
         """Gửi một lệnh CDP, đọc frame cho tới khi nhận response khớp `id`.
+
+        `session_id` gắn lệnh vào một phiên `Target.attachToTarget` (flatten) — cần
+        cho các lệnh cấp trang khi ta chỉ có kết nối cấp browser (§F5).
 
         Các event CDP (không có `id`) bị đọc và bỏ qua; ping được trả pong.
         """
         self._next_id += 1
         message_id = self._next_id
-        self.send_text(json.dumps({
+        message = {
             "id": message_id,
             "method": method,
             "params": params or {},
-        }))
+        }
+        if session_id:
+            message["sessionId"] = session_id
+        self.send_text(json.dumps(message))
 
         fragments: list[str] = []
         while True:
@@ -210,6 +216,12 @@ class WebSocket:
 # Ngưỡng khớp cửa sổ khi có nhiều CDP target ứng viên (Browser.getWindowForTarget
 # so với hình học X11 đã hit-test).
 WINDOW_MATCH_TOLERANCE_PX = 80
+# F5: trần số tab được hỏi trạng thái hiển thị khi điểm hình học hoà nhau, và trần
+# số tab liệt kê trong payload lỗi. Chromium của agent có thể mở hàng chục tab; hai
+# trần này giữ một lần soi vẫn dưới ngân sách thời gian của request.
+MAX_VISIBILITY_PROBES = 24
+MAX_AMBIGUOUS_CANDIDATES = 10
+VISIBILITY_EXPRESSION = "document.visibilityState + ':' + (document.hasFocus() ? '1' : '0')"
 # Chốt chặn 2 (sanity check còn lại sau khi đã loại DevTools docked ở chốt chặn 1):
 # side panel / theme lạ vượt ngưỡng này ⇒ viewport_origin_unknown thay vì suy sai.
 MAX_CHROME_HEIGHT_PX = 200
@@ -383,6 +395,59 @@ def _viewport_origin_plausible(win_geom: dict, metrics: dict) -> bool:
     return 0 <= slack_y <= MAX_CHROME_HEIGHT_PX and 0 <= slack_x <= MAX_SIDE_SLACK_PX
 
 
+def _visibility_state(ws_browser: "WebSocket", target_id: str) -> tuple[str | None, bool]:
+    """(`document.visibilityState`, có focus hay không) của MỘT tab — (None, False) khi
+    không đọc được. Mọi lỗi CDP đều nuốt: hàm này chỉ để thu hẹp, không phải chốt an toàn."""
+    if not target_id:
+        return None, False
+    session_id: str | None = None
+    try:
+        opened = ws_browser.call("Target.attachToTarget", {"targetId": target_id, "flatten": True})
+        session_id = str(opened.get("result", {}).get("sessionId") or "") or None
+        if not session_id:
+            return None, False
+        response = ws_browser.call(
+            "Runtime.evaluate",
+            {"expression": VISIBILITY_EXPRESSION, "returnByValue": True},
+            session_id=session_id,
+        )
+        value = response.get("result", {}).get("result", {}).get("value")
+        if not isinstance(value, str) or ":" not in value:
+            return None, False
+        state, focused = value.split(":", 1)
+        return (state or None), focused == "1"
+    except (WebSocketError, OSError, KeyError, TypeError, ConnectionError):
+        return None, False
+    finally:
+        if session_id:
+            try:
+                ws_browser.call("Target.detachFromTarget", {"sessionId": session_id})
+            except (WebSocketError, OSError, KeyError, TypeError, ConnectionError):
+                pass
+
+
+def _visible_target(ws_browser: "WebSocket | None", candidates: list[dict]) -> dict | None:
+    """Tab đang THẬT SỰ hiển thị, hoặc None khi không tất định.
+
+    Nhiều cửa sổ Chromium cùng mở ⇒ mỗi cửa sổ có một tab hiển thị, nên chỉ nhận kết
+    quả khi đúng MỘT tab hiển thị; nếu nhiều hơn thì `document.hasFocus()` phân xử và
+    vẫn phải còn đúng một.
+    """
+    if ws_browser is None:
+        return None
+    visible: list[tuple[dict, bool]] = []
+    for candidate in candidates[:MAX_VISIBILITY_PROBES]:
+        state, focused = _visibility_state(ws_browser, str(candidate.get("targetId") or ""))
+        if state == "visible":
+            visible.append((candidate, focused))
+    if len(visible) == 1:
+        return visible[0][0]
+    focused_only = [item for item in visible if item[1]]
+    if len(focused_only) == 1:
+        return focused_only[0][0]
+    return None
+
+
 def viewport_metrics(ws: "WebSocket") -> dict:
     response = ws.call("Runtime.evaluate", {
         "expression": VIEWPORT_EXPRESSION,
@@ -418,6 +483,13 @@ def _select_target(ws_browser: "WebSocket | None", candidates: list[dict], win_g
         if len(within_tolerance) == 1:
             return within_tolerance[0][1], None
 
+    # F5: nhiều tab CÙNG một cửa sổ Chromium ⇒ điểm hình học bằng nhau tuyệt đối và
+    # tiêu đề giống nhau (tab nền giữ tiêu đề trang). Chọn theo trạng thái hiển thị
+    # là tất định: chỉ tab tiền cảnh có `document.visibilityState === 'visible'`.
+    visible = _visible_target(ws_browser, candidates)
+    if visible is not None:
+        return visible, None
+
     # Dự phòng cuối: khớp theo tiêu đề (tiêu đề trang thường là tiền tố tiêu đề cửa sổ).
     window_title = win_geom.get("title") or ""
     title_matches = [
@@ -428,6 +500,23 @@ def _select_target(ws_browser: "WebSocket | None", candidates: list[dict], win_g
         return title_matches[0], None
 
     return None, "ambiguous_target"
+
+
+def ambiguous_candidates(candidates: list[dict]) -> list[dict]:
+    """Danh sách tab khớp để agent TỰ thu hẹp khi không chọn được tab nào.
+
+    Chỉ ba trường KHÔNG nhạy cảm: `targetId` (id CDP công khai), `title`, `url`
+    (URL trang web). TUYỆT ĐỐI không đưa `webSocketDebuggerUrl` vào payload — cùng
+    bất biến với phần còn lại của tệp này: URL debugger không rời khỏi tiến trình.
+    """
+    out: list[dict] = []
+    for candidate in candidates[:MAX_AMBIGUOUS_CANDIDATES]:
+        out.append({
+            "targetId": str(candidate.get("targetId") or ""),
+            "title": str(candidate.get("title") or "")[:120],
+            "url": str(candidate.get("url") or "")[:300],
+        })
+    return out
 
 
 def _devtools_docked(ws_browser: "WebSocket | None", page_target_id: str, devtools_target_ids: list[str]) -> bool:
@@ -573,7 +662,11 @@ def inspect_point(request: dict) -> dict:
 
         selected, reason = _select_target(ws_browser, candidates, win_geom)
         if selected is None:
-            return {"ok": False, "reason": reason or "ambiguous_target"}
+            failure: dict = {"ok": False, "reason": reason or "ambiguous_target"}
+            if failure["reason"] == "ambiguous_target":
+                # F5: kèm danh sách tab khớp để agent tự thu hẹp thay vì đốt bước mò.
+                failure["candidates"] = ambiguous_candidates(candidates)
+            return failure
 
         if _devtools_docked(ws_browser, str(selected.get("targetId") or ""), devtools_ids):
             return {"ok": False, "reason": "devtools_docked"}

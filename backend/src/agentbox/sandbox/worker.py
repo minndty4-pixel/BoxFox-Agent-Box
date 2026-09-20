@@ -18,6 +18,60 @@ import uuid
 
 ROOT = Path('/home/agent/workspace').resolve()
 
+# F6 (đợt 8): Xvnc chạy `-AcceptSetDesktopSize` nên client RFB kéo được framebuffer nhỏ
+# đi (tester từng thấy 286x311) — toạ độ bấm sau đó trỏ sai mà không ai báo. Giữ auto-fit
+# nhưng chặn SÀN: trước thao tác theo toạ độ, nếu màn hình nhỏ hơn cỡ cấu hình thì đặt lại.
+SCREEN_ENV = 'BOX_SCREEN'
+DEFAULT_SCREEN = (1280, 800)
+VNC_OUTPUT = 'VNC-0'
+DISPLAY_ENV = {**os.environ, 'DISPLAY': ':99'}
+
+
+def desktop_target():
+    """Cỡ màn hình cấu hình (`BOX_SCREEN` = `WxH` hoặc `WxHxD`), mặc định 1280x800."""
+    match = re.match(r'^(\d{3,5})x(\d{3,5})', (os.environ.get(SCREEN_ENV) or '').strip())
+    if not match:
+        return DEFAULT_SCREEN
+    return int(match.group(1)), int(match.group(2))
+
+
+def screen_size():
+    """(rộng, cao) thật của framebuffer, hoặc None khi không đọc được."""
+    try:
+        proc = subprocess.run(['xrandr', '--current'], env=DISPLAY_ENV, capture_output=True, timeout=10)
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if proc.returncode:
+        return None
+    match = re.search(r'current (\d+) x (\d+)', proc.stdout.decode(errors='replace'))
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def ensure_desktop_size():
+    """Đặt lại framebuffer nếu nó bị kéo nhỏ hơn cỡ cấu hình.
+
+    Trả `{'from': 'WxH', 'to': 'WxH'}` khi có đặt lại, `{'from': ..., 'warning': ...}`
+    khi đặt lại thất bại (không ném lỗi — ảnh chụp vẫn là ảnh thật), `None` khi không cần.
+    """
+    current = screen_size()
+    if not current:
+        return None
+    target = desktop_target()
+    if current[0] >= target[0] and current[1] >= target[1]:
+        return None
+    mode = '%dx%d' % target
+    try:
+        proc = subprocess.run(['xrandr', '--output', VNC_OUTPUT, '--mode', mode], env=DISPLAY_ENV,
+                              capture_output=True, timeout=10)
+    except (subprocess.SubprocessError, OSError) as exc:
+        return {'from': '%dx%d' % current, 'warning': 'xrandr failed: %s' % exc}
+    if proc.returncode:
+        detail = (proc.stderr or proc.stdout).decode(errors='replace').strip()[:200]
+        return {'from': '%dx%d' % current, 'warning': 'xrandr exit %d: %s' % (proc.returncode, detail)}
+    return {'from': '%dx%d' % current, 'to': mode}
+
 # Plan filename rules, identical to deploy/docker/plan_files.py:18-22 (the reader that enforces them).
 PLAN_FILENAME = re.compile(r'^v([1-9][0-9]{0,9})-([a-z0-9]+(-[a-z0-9]+)*)\.md$')
 PLAN_SLUG = re.compile(r'^[a-z0-9]+(-[a-z0-9]+)*$')
@@ -258,6 +312,8 @@ def execute(name, args, session):
         }
         if action not in commands:
             raise ValueError('Unknown computer action')
+        # F6: các thao tác theo toạ độ phải chạy trên framebuffer đúng cỡ cấu hình.
+        desktop_note = ensure_desktop_size() if action != 'type' and action != 'key' else None
         # F4 (đợt 7): bàn phím chỉ tới cửa sổ ĐANG được focus. Không có cửa sổ nào thì
         # `xdotool` vẫn thoát 0, nên phải nói rõ là chưa gửi được thay vì báo đã gửi.
         if action in {'type', 'key'}:
@@ -273,7 +329,10 @@ def execute(name, args, session):
         noisy = (proc.stdout + proc.stderr).decode(errors='replace')
         if 'No such key name' in noisy or 'Ignoring it' in noisy:
             raise ValueError('Unsupported key name: ' + str(args.get('key', '')) + '. Use an X keysym such as Return, Tab, ctrl+c.')
-        return {'content': 'Input delivered; capture the screen to verify the effect.'}
+        payload = {'content': 'Input delivered; capture the screen to verify the effect.'}
+        if desktop_note:
+            payload['desktopRestored' if 'to' in desktop_note else 'desktopWarning'] = desktop_note
+        return payload
     raise ValueError('Unsupported sandbox tool: ' + name)
 
 

@@ -124,12 +124,19 @@ Kế hoạch của đợt: [round7-batch-plan.md](../plan/round7-batch-plan.md).
 
 Ghi chú F3: worker được host đọc từ repo và gửi vào box bằng `python3 -c`, nên bản sửa có hiệu lực ngay sau khi harness khởi động lại — không cần dựng lại ảnh container.
 
-### 6.2 Hai lỗi còn nợ của vòng kiểm chứng đợt 7
+### 6.2 Hai lỗi còn nợ của vòng kiểm chứng đợt 7 — ĐÃ SỬA ở đợt 9
 
-| Mã | Lỗi | Trạng thái | Vì sao chưa sửa |
+| Mã | Lỗi | Trạng thái | Cách sửa và bằng chứng |
 |---|---|---|---|
-| F5 | `inspect_element` trả `ambiguous_target` khi cửa sổ Chromium khớp nhiều tab, làm agent đốt bước | CHƯA SỬA | Đây là chốt an toàn cố ý (soi nhầm tab = sai toạ độ). Cách sửa đúng là trả danh sách tab khớp trong payload lỗi để agent tự thu hẹp, cần đổi cả host lẫn container — để chủ sở hữu quyết định |
-| F6 | Desktop trong box bị client kéo nhỏ tận 286×311 qua `Xvnc -AcceptSetDesktopSize` | CHƯA SỬA | Cờ này là **tính năng cố ý** (auto-fit cho noVNC khi tỉ lệ khung khác 1.6). Bỏ cờ là mất auto-fit; muốn giữ cả hai thì phải chặn cỡ nhỏ nhất ở tầng khác. Hiện xử lý được bằng cách đặt lại cỡ: `xrandr --output VNC-0 --mode 1280x800` |
+| F5 | `inspect_element` trả `ambiguous_target` khi cửa sổ Chromium khớp nhiều tab, làm agent đốt bước | **ĐÃ SỬA** | Thêm bước chọn **theo trạng thái hiển thị**: khi điểm hình học hoà nhau (nhiều tab CÙNG một cửa sổ), `browser_capture._select_target` hỏi `document.visibilityState`/`hasFocus` của từng ứng viên qua `Target.attachToTarget` và chọn tab tiền cảnh — tất định, trần 24 tab. Nếu vẫn mơ hồ, payload lỗi mang thêm `candidates`/`tabs` (chỉ `targetId`, `title`, `url` — không bao giờ có URL debugger) để agent tự thu hẹp. Live: đúng toạ độ (640,300) trước đây trả `reason: ambiguous_target` với 34 tab `vi.wikipedia.org`, nay trả `{"type":"dom","selector":"#main-content","tag":"div"}`. Test: `VisibleTargetTest` (6 ca), `SafeTabListTest` (2 ca); kiểm ngược: bỏ bước chọn theo hiển thị thì 3 ca đỏ |
+| F6 | Desktop trong box bị client kéo nhỏ tận 286×311 qua `Xvnc -AcceptSetDesktopSize` | **ĐÃ SỬA** | Giữ auto-fit, chặn **sàn** kích thước: `capture.ensure_desktop_size()` (gọi trước chụp màn hình, trước `record start`, và trước hit-test của `inspect_element`) + `worker.ensure_desktop_size()` (gọi trước mọi thao tác `computer_use` theo toạ độ). Cỡ đích lấy từ `BOX_SCREEN` (mặc định 1280×800). Khi đặt lại được, payload mang `desktopRestored {from,to}`; khi thất bại, `desktopWarning` (không ném lỗi — ảnh vẫn là ảnh thật). Host ghi cả hai vào nhật ký DEV (`box.desktop_restored` / `box.desktop_warning`). Live: kéo xuống 286×311 rồi chụp → `desktopRestored {'from': '286x311', 'to': '1280x800'}`, ảnh 1280×800; `computer_use click` → cùng ghi chú; log ghi `box.desktop_restored` với `sessionId`/`tool`. Test: `test_sandbox_worker_desktop_floor.py` (7 ca), `DesktopFloorTest` (6 ca), `test_sandbox_executor_desktop_note.py` (5 ca); kiểm ngược: bỏ hàm chặn sàn thì 2 ca đỏ, bỏ chuyển tiếp ghi chú thì 1 ca đỏ |
+
+Ghi chú vận hành: hai bản sửa này nằm trong `deploy/docker/*.py` và `sandbox/worker.py`.
+`worker.py` được host truyền vào box theo từng lệnh nên có hiệu lực ngay; còn
+`browser_capture.py`/`inspect_element.py`/`capture.py` phải nằm trong **ảnh** container
+— lần kiểm chứng này chép tay ba tệp đó vào container đang chạy rồi khởi động lại
+`ide-proxy` (không đụng X/Chromium). Lần tạo lại container tiếp theo sẽ lấy đúng các
+tệp trong kho.
 
 ### 6.3 Chín phát hiện của vòng soát mã đợt 8 — bảy lỗi, một ghi chú, một nit
 

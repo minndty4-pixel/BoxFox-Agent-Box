@@ -4,6 +4,7 @@ import base64
 import json
 from pathlib import Path
 import httpx
+from ..observability.system_log import system_log
 from ..vendor.hermes.computer_backend import image_dimensions_from_bytes
 
 WORKER = Path(__file__).with_name('worker.py').read_text(encoding='utf-8')
@@ -28,8 +29,35 @@ class SandboxExecutor:
     async def execute(self, name, args, session):
         if name in {'computer_screen_capture', 'computer_screen_record', 'computer_use', 'browser_use', 'inspect_element'}:
             async with self.visual_lock:
-                return await self._execute(name, args, session)
-        return await self._execute(name, args, session)
+                result = await self._execute(name, args, session)
+        else:
+            result = await self._execute(name, args, session)
+        self._log_desktop_note(name, result, session)
+        return result
+
+    def _log_desktop_note(self, name, result, session):
+        """Ghi lại việc màn hình bị kéo nhỏ (F6) vào nhật ký hệ thống cho DEV.
+
+        F6 xảy ra ÂM THẦM: client RFB kéo framebuffer nhỏ đi là toạ độ CUA trỏ sai mà
+        không lỗi nào nổi lên. Dòng log này là bằng chứng duy nhất khi truy lỗi về sau.
+        """
+        if not isinstance(result, dict):
+            return
+        note = result.get('desktopRestored') or result.get('desktopWarning')
+        if not isinstance(note, dict):
+            return
+        restored = 'to' in note
+        system_log.write(
+            'box.desktop_restored' if restored else 'box.desktop_warning',
+            level='info' if restored else 'warn',
+            code='DESKTOP_RESTORED' if restored else 'DESKTOP_TOO_SMALL',
+            message=(f"the sandbox desktop was {note.get('from')} and is back at {note.get('to')}"
+                     if restored else
+                     f"the sandbox desktop is smaller than configured ({note.get('from')}): {note.get('warning')}"),
+            session_id=session,
+            tool=name,
+            **note,
+        )
 
     async def _execute(self, name, args, session):
         if name == 'inspect_element':
@@ -40,8 +68,13 @@ class SandboxExecutor:
             dimensions = image_dimensions_from_bytes(raw)
             if not dimensions:
                 raise ValueError('Sandbox returned no valid screenshot')
-            return {'content': f'Sandbox screenshot {dimensions[0]}x{dimensions[1]}', 'artifact': data.get('path'),
-                    'image': data['data'], 'mime': 'image/png', 'dimensions': dimensions}
+            payload = {'content': f'Sandbox screenshot {dimensions[0]}x{dimensions[1]}', 'artifact': data.get('path'),
+                       'image': data['data'], 'mime': 'image/png', 'dimensions': dimensions}
+            # F6: chuyển tiếp ghi chú kích thước desktop để `execute()` ghi vào nhật ký DEV.
+            for key in ('desktopRestored', 'desktopWarning'):
+                if key in data:
+                    payload[key] = data[key]
+            return payload
         if name == 'computer_screen_record':
             action = args['action']
             rid = self.recordings.get(session)
