@@ -456,6 +456,67 @@ def screen_size() -> tuple[int, int]:
     raise CaptureError("Không tìm thấy kích thước 'current' trong xrandr.", status_code=500)
 
 
+# --- F6 (đợt 8): chặn SÀN kích thước framebuffer ---------------------------------
+# Xvnc chạy `-AcceptSetDesktopSize` (auto-fit cho noVNC — tính năng cố ý), nhưng nó
+# cho BẤT KỲ trình xem RFB nào kéo framebuffer nhỏ đi (tester từng thấy 286x311).
+# Toạ độ CUA sau đó trỏ sai mà không ai báo. Giữ auto-fit, chỉ chặn sàn: trước mọi
+# thao tác đọc/ghi toạ độ, nếu màn hình nhỏ hơn cỡ cấu hình thì đặt lại.
+DESKTOP_ENV = "BOX_SCREEN"
+DEFAULT_DESKTOP = (1280, 800)
+VNC_OUTPUT = "VNC-0"
+
+
+def desktop_target() -> tuple[int, int]:
+    """Cỡ màn hình cấu hình (`BOX_SCREEN` = `WxH` hoặc `WxHxD`), mặc định 1280x800."""
+    raw = os.environ.get(DESKTOP_ENV) or ""
+    match = re.match(r"^(\d{3,5})x(\d{3,5})", raw.strip())
+    if not match:
+        return DEFAULT_DESKTOP
+    return int(match.group(1)), int(match.group(2))
+
+
+def _output_text(value) -> str:
+    """Đầu ra của lệnh con, dù là `str` (`text=True`) hay `bytes` (test cũ)."""
+    if isinstance(value, bytes):
+        return value.decode(errors="replace")
+    return str(value or "")
+
+
+def ensure_desktop_size() -> dict | None:
+    """Đặt lại framebuffer nếu nó đã bị kéo nhỏ hơn cỡ cấu hình.
+
+    Trả `{"from": "WxH", "to": "WxH"}` khi CÓ đặt lại, `{"from": ..., "warning": ...}`
+    khi đặt lại thất bại (không ném lỗi: ảnh chụp vẫn hợp lệ, chỉ là đúng cỡ thật của
+    màn hình), và `None` khi không cần làm gì.
+    """
+    try:
+        current = screen_size()
+    except (CaptureError, subprocess.SubprocessError, OSError):
+        return None
+    target = desktop_target()
+    if current[0] >= target[0] and current[1] >= target[1]:
+        return None
+    mode = f"{target[0]}x{target[1]}"
+    try:
+        proc = _run_as_agent(["xrandr", "--output", VNC_OUTPUT, "--mode", mode], timeout=10)
+    except (subprocess.SubprocessError, OSError) as exc:
+        return {"from": f"{current[0]}x{current[1]}", "warning": f"xrandr failed: {exc}"}
+    if proc.returncode != 0:
+        # F6b (đợt 9): `_run_as_agent` chạy `text=True` nên đầu ra là `str`; gọi `.decode()`
+        # lên nó làm cả nhánh "đặt lại thất bại" ném AttributeError → route trả 500 trong khi
+        # hợp đồng là KHÔNG BAO GIỜ ném lỗi. Nhận cả `str` lẫn `bytes`.
+        detail = _output_text(proc.stderr or proc.stdout).strip()[:200]
+        return {"from": f"{current[0]}x{current[1]}", "warning": f"xrandr exit {proc.returncode}: {detail}"}
+    return {"from": f"{current[0]}x{current[1]}", "to": mode}
+
+
+def _attach_desktop_note(result: dict, note: dict | None) -> dict:
+    if note:
+        result = dict(result)
+        result["desktopRestored" if "to" in note else "desktopWarning"] = note
+    return result
+
+
 def _raise_window(win_id: str) -> None:
     # Activate + raise. Không dùng `xdotool windowactivate --sync` (có thể treo khi WM
     # không hỗ trợ _NET_ACTIVE_WINDOW). Mỗi lệnh là best-effort: lỗi/timeout không được
@@ -906,16 +967,18 @@ def dispatch_list_tabs() -> dict:
 
 
 def dispatch_capture(target: dict, output: str = "file") -> dict:
+    note = ensure_desktop_size() if (target or {}).get("kind", "screen") == "screen" else None
     result = capture(target)
     if output == "base64":
         import base64
         path = Path(result["path"])
         result["data"] = base64.b64encode(path.read_bytes()).decode("ascii")
-    return result
+    return _attach_desktop_note(result, note)
 
 
 def dispatch_record_start(target: dict) -> dict:
-    return record_start(target)
+    note = ensure_desktop_size() if (target or {}).get("kind", "screen") == "screen" else None
+    return _attach_desktop_note(record_start(target), note)
 
 
 def dispatch_record_stop(recording_id: str) -> dict:

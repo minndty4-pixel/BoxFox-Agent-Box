@@ -47,6 +47,8 @@ except ImportError:  # chạy như package con (test import tương đối)
 # Hằng số
 # ---------------------------------------------------------------------------
 MAX_HTML_BYTES = 8 * 1024
+# F5: trần số tab khớp liệt kê trong payload khi không chọn được tab nào.
+MAX_TABS_IN_PAYLOAD = 10
 MAX_TEXT_BYTES = 2 * 1024
 MAX_ATTRS = 32
 MAX_ATTR_VALUE_BYTES = 512
@@ -376,6 +378,26 @@ def _desktop_response(win: dict, reason: str = "", message: str = "") -> dict:
     return payload
 
 
+def _safe_tab_list(raw) -> list[dict]:
+    """Ba trường KHÔNG nhạy cảm của một tab khớp: id CDP, tiêu đề, URL trang web.
+
+    Hàm này là hàng rào thứ hai: dù tiến trình con có trả gì đi nữa, payload ra ngoài
+    chỉ mang ba khoá này — không bao giờ có `webSocketDebuggerUrl`.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for item in raw[:MAX_TABS_IN_PAYLOAD]:
+        if not isinstance(item, dict):
+            continue
+        out.append({
+            "targetId": str(item.get("targetId") or "")[:64],
+            "title": str(item.get("title") or "")[:120],
+            "url": str(item.get("url") or "")[:300],
+        })
+    return out
+
+
 def _dom_response(win: dict, child: dict) -> dict:
     html, html_truncated = _truncate_text(child.get("html") or "", MAX_HTML_BYTES)
     text, text_truncated = _truncate_text(child.get("text") or "", MAX_TEXT_BYTES)
@@ -476,7 +498,13 @@ def _dispatch_inspect_element_locked(x, y) -> dict:
         reason = child.get("reason") or "extract_failed"
         if reason not in MSG:
             reason = "extract_failed"
-        return _desktop_response(win, reason, MSG[reason])
+        payload = _desktop_response(win, reason, MSG[reason])
+        tabs = _safe_tab_list(child.get("candidates"))
+        if tabs:
+            # F5: nói rõ ĐANG có tab nào khớp để agent tự thu hẹp (đóng tab thừa, hoặc
+            # dùng browser_use) thay vì thử lại mù và đốt bước.
+            payload["tabs"] = tabs
+        return payload
 
     return _dom_response(win, child)
 
@@ -489,6 +517,12 @@ def dispatch_inspect_element(x, y) -> dict:
             status_code=429,
         )
     try:
+        # F6: toạ độ dưới đây được hit-test theo framebuffer THẬT, nên phải chặn sàn
+        # kích thước trước khi soi — nếu không, client RFB kéo nhỏ là soi sai chỗ.
+        try:
+            capture.ensure_desktop_size()
+        except Exception:
+            pass
         return _dispatch_inspect_element_locked(x, y)
     finally:
         _INSPECT_SEMAPHORE.release()

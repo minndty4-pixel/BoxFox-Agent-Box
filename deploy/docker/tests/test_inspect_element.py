@@ -8,6 +8,7 @@ Chạy được KHÔNG cần X server, KHÔNG cần Chromium thật: mọi lời
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -38,14 +39,16 @@ class FakeWebSocket:
     def __init__(self, script, ws_url: str = "ws://127.0.0.1:9222/devtools/page/FAKE"):
         self.script = list(script)
         self.calls: list[tuple[str, dict | None]] = []
+        self.session_ids: list[str | None] = []
         self.ws_url = ws_url
         self.closed = False
 
     def connect(self) -> None:
         pass
 
-    def call(self, method: str, params: dict | None = None) -> dict:
+    def call(self, method: str, params: dict | None = None, session_id: str | None = None) -> dict:
         self.calls.append((method, params))
+        self.session_ids.append(session_id)
         if not self.script:
             raise AssertionError(f"FakeWebSocket: hết script, bị gọi thừa {method}")
         expected_method, response = self.script.pop(0)
@@ -226,6 +229,9 @@ class SelectTargetTest(unittest.TestCase):
         ws = FakeWebSocket([
             ("Browser.getWindowForTarget", {"result": {"bounds": {"left": 500, "top": 0, "width": 800, "height": 600}}}),
             ("Browser.getWindowForTarget", {"result": {"bounds": {"left": 500, "top": 0, "width": 800, "height": 600}}}),
+            # Không tab nào đọc được trạng thái hiển thị ⇒ rơi xuống dự phòng tiêu đề.
+            ("Target.attachToTarget", browser_capture.WebSocketError("loi")),
+            ("Target.attachToTarget", browser_capture.WebSocketError("loi")),
         ])
         selected, reason = browser_capture._select_target(ws, candidates, win_geom)
         self.assertEqual(selected["targetId"], "T1")
@@ -237,10 +243,210 @@ class SelectTargetTest(unittest.TestCase):
         ws = FakeWebSocket([
             ("Browser.getWindowForTarget", browser_capture.WebSocketError("loi")),
             ("Browser.getWindowForTarget", browser_capture.WebSocketError("loi")),
+            # F5: sau bước hình học là bước hỏi trạng thái hiển thị — cũng lỗi.
+            ("Target.attachToTarget", browser_capture.WebSocketError("loi")),
+            ("Target.attachToTarget", browser_capture.WebSocketError("loi")),
         ])
         selected, reason = browser_capture._select_target(ws, candidates, win_geom)
         self.assertIsNone(selected)
         self.assertEqual(reason, "ambiguous_target")
+
+
+# ===========================================================================
+# 3b. F5 — chọn tab theo trạng thái hiển thị, và payload lỗi liệt kê tab khớp
+# ===========================================================================
+def _visibility_script(states: list[tuple[str, str]]) -> list:
+    """Dựng chuỗi CDP cho `_visibility_state`: attach → evaluate → detach mỗi tab."""
+    script: list = []
+    for session, value in states:
+        script.append(("Target.attachToTarget", {"result": {"sessionId": session}}))
+        script.append(("Runtime.evaluate", _eval_result(value)))
+        script.append(("Target.detachFromTarget", {"result": {}}))
+    return script
+
+
+class VisibleTargetTest(unittest.TestCase):
+    """Bối cảnh thật của F5: 34 tab cùng một cửa sổ Chromium, tiêu đề y hệt nhau,
+    hình học bằng nhau tuyệt đối ⇒ chỉ trạng thái hiển thị mới phân xử được."""
+
+    def test_visible_tab_wins_when_bounds_tie(self) -> None:
+        win_geom = {"x": 10, "y": 10, "w": 1050, "h": 743, "title": "vi.wikipedia.org - Chromium"}
+        candidates = [{"targetId": "T1", "title": "vi.wikipedia.org"},
+                      {"targetId": "T2", "title": "vi.wikipedia.org"}]
+        ws = FakeWebSocket([
+            ("Browser.getWindowForTarget", {"result": {"bounds": {"left": 10, "top": 10, "width": 1050, "height": 743}}}),
+            ("Browser.getWindowForTarget", {"result": {"bounds": {"left": 10, "top": 10, "width": 1050, "height": 743}}}),
+            *_visibility_script([("S1", "hidden:0"), ("S2", "visible:1")]),
+        ])
+        selected, reason = browser_capture._select_target(ws, candidates, win_geom)
+        self.assertEqual(selected["targetId"], "T2")
+        self.assertIsNone(reason)
+
+    def test_two_visible_tabs_need_focus_to_decide(self) -> None:
+        win_geom = {"w": 1050, "h": 743, "title": ""}
+        candidates = [{"targetId": "T1"}, {"targetId": "T2"}]
+        ws = FakeWebSocket([
+            ("Browser.getWindowForTarget", {"result": {"bounds": {"left": 0, "top": 0, "width": 1050, "height": 743}}}),
+            ("Browser.getWindowForTarget", {"result": {"bounds": {"left": 0, "top": 0, "width": 1050, "height": 743}}}),
+            *_visibility_script([("S1", "visible:0"), ("S2", "visible:1")]),
+        ])
+        selected, reason = browser_capture._select_target(ws, candidates, win_geom)
+        self.assertEqual(selected["targetId"], "T2")
+        self.assertIsNone(reason)
+
+    def test_two_visible_unfocused_tabs_stay_ambiguous(self) -> None:
+        win_geom = {"w": 1050, "h": 743, "title": ""}
+        candidates = [{"targetId": "T1"}, {"targetId": "T2"}]
+        ws = FakeWebSocket([
+            ("Browser.getWindowForTarget", {"result": {"bounds": {"left": 0, "top": 0, "width": 1050, "height": 743}}}),
+            ("Browser.getWindowForTarget", {"result": {"bounds": {"left": 0, "top": 0, "width": 1050, "height": 743}}}),
+            *_visibility_script([("S1", "visible:0"), ("S2", "visible:0")]),
+        ])
+        selected, reason = browser_capture._select_target(ws, candidates, win_geom)
+        self.assertIsNone(selected)
+        self.assertEqual(reason, "ambiguous_target")
+
+    def test_visibility_probe_is_bounded(self) -> None:
+        win_geom = {"w": 10, "h": 10, "title": ""}
+        candidates = [{"targetId": f"T{index}"} for index in range(30)]
+        script = [("Browser.getWindowForTarget", browser_capture.WebSocketError("loi"))] * 30
+        script += [("Target.attachToTarget", browser_capture.WebSocketError("loi"))] * browser_capture.MAX_VISIBILITY_PROBES
+        ws = FakeWebSocket(script)
+        selected, reason = browser_capture._select_target(ws, candidates, win_geom)
+        self.assertIsNone(selected)
+        self.assertEqual(reason, "ambiguous_target")
+        attaches = [call for call in ws.calls if call[0] == "Target.attachToTarget"]
+        self.assertEqual(len(attaches), browser_capture.MAX_VISIBILITY_PROBES)
+
+    def test_ambiguous_candidates_keep_three_safe_fields_only(self) -> None:
+        raw = [{"targetId": "T1", "title": "A", "url": "https://a/", "webSocketDebuggerUrl": "ws://secret/devtools/page/T1"}]
+        raw += [{"targetId": f"T{i}", "title": "x", "url": "https://x/"} for i in range(2, 20)]
+        out = browser_capture.ambiguous_candidates(raw)
+        self.assertEqual(len(out), browser_capture.MAX_AMBIGUOUS_CANDIDATES)
+        self.assertEqual(sorted(out[0].keys()), ["targetId", "title", "url"])
+        self.assertNotIn("ws://", json.dumps(out))
+
+
+class SafeTabListTest(unittest.TestCase):
+    """Hàng rào thứ hai ở `inspect_element.py`: payload ra ngoài chỉ mang ba khoá."""
+
+    def test_keeps_three_fields_and_caps_length(self) -> None:
+        raw = [{"targetId": "T1", "title": "A", "url": "https://a/", "webSocketDebuggerUrl": "ws://secret"}]
+        raw += [{"targetId": f"T{i}", "title": "x", "url": "https://x/"} for i in range(2, 20)]
+        out = inspect_element._safe_tab_list(raw)
+        self.assertEqual(len(out), inspect_element.MAX_TABS_IN_PAYLOAD)
+        self.assertEqual(sorted(out[0].keys()), ["targetId", "title", "url"])
+
+    def test_non_list_and_non_dict_entries_are_ignored(self) -> None:
+        self.assertEqual(inspect_element._safe_tab_list(None), [])
+        self.assertEqual(inspect_element._safe_tab_list("nope"), [])
+        self.assertEqual(inspect_element._safe_tab_list(["nope", 7]), [])
+
+
+# ===========================================================================
+# 3c. F6 — chặn sàn kích thước framebuffer trước mọi thao tác theo toạ độ
+# ===========================================================================
+CURRENT_SMALL = "Screen 0: minimum 32 x 32, current 286 x 311, maximum 32768 x 32768\n"
+CURRENT_OK = "Screen 0: minimum 32 x 32, current 1280 x 800, maximum 32768 x 32768\n"
+
+
+class DesktopFloorTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.calls: list[list[str]] = []
+
+    def _patch_run(self, *, current=CURRENT_OK, restore_ok=True):
+        def run(args, **kwargs):
+            self.calls.append(list(args))
+            if args[:2] == ["xrandr", "--output"]:
+                return subprocess.CompletedProcess(args, 0 if restore_ok else 1, b"", b"" if restore_ok else b"cannot find mode")
+            return subprocess.CompletedProcess(args, 0, current, "")
+        return patch.object(capture, "_run_as_agent", run)
+
+    def test_target_default_and_env(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("BOX_SCREEN", None)
+            self.assertEqual(capture.desktop_target(), capture.DEFAULT_DESKTOP)
+        with patch.dict(os.environ, {"BOX_SCREEN": "1920x1080x24"}):
+            self.assertEqual(capture.desktop_target(), (1920, 1080))
+        with patch.dict(os.environ, {"BOX_SCREEN": "khong-phai-so"}):
+            self.assertEqual(capture.desktop_target(), capture.DEFAULT_DESKTOP)
+
+    def test_no_note_when_the_screen_is_already_big_enough(self) -> None:
+        with self._patch_run(current=CURRENT_OK):
+            self.assertIsNone(capture.ensure_desktop_size())
+        self.assertEqual([call for call in self.calls if call[:2] == ["xrandr", "--output"]], [])
+
+    def test_shrunk_screen_is_restored_and_reported(self) -> None:
+        with self._patch_run(current=CURRENT_SMALL):
+            note = capture.ensure_desktop_size()
+        self.assertEqual(note, {"from": "286x311", "to": "1280x800"})
+        self.assertIn(["xrandr", "--output", "VNC-0", "--mode", "1280x800"], self.calls)
+
+    def test_failed_restore_warns_without_raising(self) -> None:
+        with self._patch_run(current=CURRENT_SMALL, restore_ok=False):
+            note = capture.ensure_desktop_size()
+        self.assertEqual(note["from"], "286x311")
+        self.assertIn("warning", note)
+
+    def test_failed_restore_with_text_output_still_warns(self) -> None:
+        """F6b: `_run_as_agent` chạy `text=True` nên đầu ra là `str`, không phải `bytes`.
+
+        Bản cũ gọi `.decode()` lên `str` → AttributeError → route /__box/capture trả 500
+        thay vì trả ảnh kèm `desktopWarning` (đúng hợp đồng "không bao giờ ném lỗi").
+        """
+        def run(args, **kwargs):
+            self.calls.append(list(args))
+            if args[:2] == ["xrandr", "--output"]:
+                return subprocess.CompletedProcess(args, 1, "", "xrandr: cannot find mode 1280x800")
+            return subprocess.CompletedProcess(args, 0, CURRENT_SMALL, "")
+        with patch.object(capture, "_run_as_agent", run):
+            note = capture.ensure_desktop_size()
+        self.assertEqual(note["from"], "286x311")
+        self.assertIn("cannot find mode 1280x800", note["warning"])
+        self.assertNotIn("to", note)
+        self.assertEqual(capture._attach_desktop_note({"path": "x"}, note)["desktopWarning"], note)
+
+    def test_failed_restore_without_output_yields_a_clean_warning(self) -> None:
+        for empty in (None, "", b""):
+            with self.subTest(empty=empty):
+                def run(args, **kwargs):
+                    if args[:2] == ["xrandr", "--output"]:
+                        return subprocess.CompletedProcess(args, 1, empty, empty)
+                    return subprocess.CompletedProcess(args, 0, CURRENT_SMALL, "")
+                with patch.object(capture, "_run_as_agent", run):
+                    note = capture.ensure_desktop_size()
+                self.assertTrue(note["warning"].startswith("xrandr exit 1:"), note["warning"])
+
+    def test_output_text_accepts_both_types(self) -> None:
+        self.assertEqual(capture._output_text(b"abc"), "abc")
+        self.assertEqual(capture._output_text("abc"), "abc")
+        self.assertEqual(capture._output_text(None), "")
+
+    def test_attach_note_uses_the_right_key(self) -> None:
+        self.assertEqual(capture._attach_desktop_note({"path": "x"}, None), {"path": "x"})
+        self.assertEqual(capture._attach_desktop_note({"path": "x"}, {"from": "a", "to": "b"}),
+                         {"path": "x", "desktopRestored": {"from": "a", "to": "b"}})
+        self.assertEqual(capture._attach_desktop_note({"path": "x"}, {"from": "a", "warning": "w"}),
+                         {"path": "x", "desktopWarning": {"from": "a", "warning": "w"}})
+
+    def test_dispatch_capture_restores_before_shooting(self) -> None:
+        order: list[str] = []
+        def run(args, **kwargs):
+            order.append("xrandr")
+            if args[:2] == ["xrandr", "--output"]:
+                return subprocess.CompletedProcess(args, 0, b"", b"")
+            return subprocess.CompletedProcess(args, 0, CURRENT_SMALL, "")
+        with patch.object(capture, "_run_as_agent", run), \
+             patch.object(capture, "capture", lambda target: order.append("capture") or {"path": "/tmp/x.png"}):
+            result = capture.dispatch_capture({"kind": "screen"})
+        self.assertEqual(order[0], "xrandr", "phải đặt lại cỡ TRƯỚC khi chụp")
+        self.assertEqual(result["desktopRestored"]["to"], "1280x800")
+
+    def test_dispatch_capture_skips_the_guard_for_window_targets(self) -> None:
+        with patch.object(capture, "capture", lambda target: {"path": "/tmp/x.png"}):
+            with patch.object(capture, "ensure_desktop_size", side_effect=AssertionError("không được gọi")):
+                result = capture.dispatch_capture({"kind": "window", "window": "0x1"})
+        self.assertNotIn("desktopRestored", result)
 
 
 # ===========================================================================
@@ -532,6 +738,8 @@ class InspectPointOrchestrationTest(unittest.TestCase):
         browser_ws = FakeWebSocket([
             ("Browser.getWindowForTarget", browser_capture.WebSocketError("loi")),
             ("Browser.getWindowForTarget", browser_capture.WebSocketError("loi")),
+            ("Target.attachToTarget", browser_capture.WebSocketError("loi")),
+            ("Target.attachToTarget", browser_capture.WebSocketError("loi")),
         ])
         request = {
             "point": {"x": 500, "y": 350},
@@ -545,6 +753,10 @@ class InspectPointOrchestrationTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["reason"], "ambiguous_target")
         self.assertEqual(ws_ctor.call_count, 1)
+        # F5: payload lỗi mang danh sách tab khớp (chỉ id/tiêu đề/URL trang)…
+        self.assertEqual([tab["targetId"] for tab in result["candidates"]], ["T1", "T2"])
+        # …và KHÔNG BAO GIỜ mang URL debugger.
+        self.assertNotIn("webSocketDebuggerUrl", json.dumps(result))
 
     def test_selected_candidate_missing_page_ws_url_is_no_cdp_target(self) -> None:
         request = {

@@ -209,3 +209,23 @@ def test_custom_template_never_executes_or_reparses(registry, argument):
         with pytest.raises(ValueError): registry.resolve('/literal-task ' + argument)
     else:
         assert registry.resolve('/literal-task ' + argument).prompt == 'Inspect: ' + argument
+
+
+def test_command_child_inherits_the_session_time_budget(registry):
+    """Con của lệnh phải có cùng ngân sách thời gian với phiên, không phải mặc định 180 giây.
+
+    Đo sống 2026-09-20: phiên đặt 600 giây vẫn kết thúc `DEADLINE` ở lượt `/claude-code`, vì
+    con của lệnh không được truyền `deadlineSeconds` nên rơi về mặc định 180 giây.
+    """
+    async def run():
+        runtime = HarnessRuntime(registry.store, Executor(), Model(), registry.catalog)
+        # Phiên chốt trần 600 giây (create_session), nên so với chính giá trị đã lưu của phiên.
+        parent = runtime.create({'skills': [], 'deadlineSeconds': 600})
+        await runtime.submit(parent['id'], '/plan Inspect the system', invocation_id='invocation-2')
+        await runtime.tasks[parent['id']]
+        children = registry.store.db.execute('SELECT id FROM sessions WHERE parent_id=?', (parent['id'],)).fetchall()
+        child = registry.store.get(children[0]['id'])
+        budget = registry.store.get(parent['id'])['config']['deadlineSeconds']
+        assert budget == 600
+        assert child['config']['deadlineSeconds'] == budget, 'con lấy đúng ngân sách của phiên'
+    asyncio.run(run())

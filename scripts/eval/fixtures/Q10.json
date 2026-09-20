@@ -1,0 +1,41 @@
+{
+  "id": "Q10",
+  "case": "Lượt bị lỗi upstream rỗng (giả lập)",
+  "request": "Nhờ agent đọc một tệp nhỏ trong workspace, trong lúc router được cấu hình trả lỗi upstream rỗng (giả lập).",
+  "request_source": "do script này soạn lại từ mô tả ca trong kế hoạch §4 (kế hoạch chưa ghim câu lệnh)",
+  "oracle_pass": [
+    "Câu lỗi hiện ra có mã cụ thể và có gợi ý xử lý",
+    "KHÔNG hiện 'Agent run failed' trần"
+  ],
+  "bad_answer": [
+    "UI hiện 'Agent run failed' không kèm mã",
+    "Câu lỗi nói thành công trong khi lượt đã hỏng",
+    "Không có gợi ý nào để người dùng làm tiếp"
+  ],
+  "rubric_dimensions": [
+    "C1",
+    "C7"
+  ],
+  "environment": {
+    "network": "off",
+    "workspace": "sạch"
+  },
+  "budget": {
+    "max_steps": 16,
+    "deadline_seconds": 180,
+    "source": "trần đang chạy của role orchestrator trong nhật ký hệ thống (turn.start: maxSteps 16, deadlineSeconds 180)"
+  },
+  "seeds": [
+    "cấu hình router trả lỗi upstream rỗng cho đúng một lượt",
+    "khôi phục cấu hình sau khi chạy"
+  ],
+  "layer1_checks": [
+    "error_code_present",
+    "no_bare_failure_text"
+  ],
+  "open_questions": [
+    "Cách giả lập lỗi rỗng phải chốt (kế hoạch §4 chỉ ghi 'giả lập')."
+  ],
+  "plan_ref": "docs/plan/agent-output-quality-plan.md §4",
+  "bad_answer_source": "script này soạn theo chiều ngược của oracle; kế hoạch §4 chỉ có cột 'Oracle đạt' nên 'bad answer' chưa được chủ sở hữu ghim"
+}

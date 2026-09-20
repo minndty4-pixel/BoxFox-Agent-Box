@@ -12,6 +12,7 @@
 | Model synchronization | OmniRoute modelSyncScheduler | model-sync.mjs, service.mjs | Six-hour bounded sync, manual refresh, single-flight discovery, stale/degraded inventory cannot route; core tests |
 | Quota/usage | OmniRoute Antigravity usage; 9Router weekly quota | providers/antigravity.mjs, store.mjs | retrieveUserQuota takes precedence over catalog quota; weekly families and plan are best effort; unknown tokens/cost stay null; provider tests |
 | Gateway client key | Upstream gateway-key behavior | server.mjs, store.mjs | One-time secret, SHA-256 hash, revoke/allowlist/last-used; core HTTP tests |
+| Anthropic Messages ingress | 9router claude-to-openai/openai-to-claude translators, bypassHandler, count_tokens route | anthropic.mjs, server.mjs | Both translation directions plus Anthropic SSE framing, `x-api-key`/Bearer auth, `count_tokens` estimate, CLI housekeeping bypass and the Gemini thought-signature round trip; ingress tests |
 
 The Gemini helpers are adapted subsets, not claims of complete upstream feature parity. Provider API adapters are BoxFox-specific implementations of those protocols. Behavioral reuse (selection, gateway policy) is documented separately from verbatim module copying.
 
@@ -23,6 +24,6 @@ BoxFox exposes the merged upstream catalog but labels each entry `ready`, `exper
 
 Usage accounting follows the shared upstream convention: prompt/input tokens are cache-inclusive, cache-read and cache-write tokens are tracked separately, output/completion tokens remain distinct, and reasoning tokens are retained when reported. Totals use provider-reported `total_tokens` when available, otherwise the normalized input plus output counts. Cost uses a provider-reported value only; the 9Router pricing formula (fresh input × input rate + cache read × cached rate + cache write × creation rate + output × output rate, with reasoning premium where declared) is documented for a future pricing registry, so BoxFox shows `No data` instead of estimating against an unknown model.
 
-Deferred: Codex/Claude Code/Copilot/Kiro OAuth; Responses/Anthropic/Gemini ingress; advanced fusion/auto-combo; prompt compression; image/audio; MITM.
+Deferred: Codex/Claude Code/Copilot/Kiro OAuth; Responses/Gemini ingress; advanced fusion/auto-combo; prompt compression; image/audio; MITM.
 
 User override: the original Git chat UI is preserved and Router Test is not mounted. Router testing is available within Provider account detail and HTTP harness; reattaching the test transport to the original chat UI is deferred until the user confirms the approach.

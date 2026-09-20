@@ -79,6 +79,20 @@ def test_orchestrator_sop_guidance_multi_agent():
     assert "delegate_task" in ORCHESTRATOR_SOP_GUIDANCE
 
 
+def test_the_orchestrator_guidance_matches_the_tools_it_really_holds():
+    """SOP không được phủ nhận thứ `ORCHESTRATOR_TOOLS` vừa cấp.
+
+    Vòng soát mã đợt 10 bắt được: `roles.py` cấp `web_search`/`web_fetch` cho vai gốc, còn
+    SOP vẫn khẳng định "is the ONLY role with browser access, there is NO web-search tool",
+    trong khi cùng một request cũng quảng cáo hai công cụ đó. Câu sai làm agent từ chối
+    tra cứu rồi đoán. Bài này khoá hai vế lại với nhau.
+    """
+    from agentbox.agent_core.roles import ORCHESTRATOR_TOOLS
+    assert {'web_search', 'web_fetch'} <= ORCHESTRATOR_TOOLS
+    assert 'no web-search tool' not in ORCHESTRATOR_SOP_GUIDANCE.lower()
+    assert 'web_search' in ORCHESTRATOR_SOP_GUIDANCE and 'web_fetch' in ORCHESTRATOR_SOP_GUIDANCE
+
+
 def test_anti_loop_guard_repetition_recovery():
     """Verify that AntiLoopGuard flags repetitive errors after 3 consecutive failures."""
     guard = AntiLoopGuard(threshold=3)

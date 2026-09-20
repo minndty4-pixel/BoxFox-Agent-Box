@@ -1,0 +1,44 @@
+{
+  "id": "Q4",
+  "case": "Viết hàm X kèm test",
+  "request": "Viết hàm `slugify(text)` trong Python: chuẩn hoá tiếng Việt có dấu thành slug ASCII (chữ thường, gạch ngang). Kèm test chạy được và in ra kết quả khi chạy test.",
+  "request_source": "do script này soạn lại từ mô tả ca trong kế hoạch §4 (kế hoạch chưa ghim câu lệnh)",
+  "oracle_pass": [
+    "Có tệp test chạy được, và đầu ra dán vào câu trả lời khớp với lần chạy thật",
+    "Hàm xử lý được cả chữ có dấu tiếng Việt và chuỗi đã là ASCII"
+  ],
+  "bad_answer": [
+    "Có test nhưng chưa bao giờ chạy, hoặc dán đầu ra không khớp",
+    "Hàm chỉ hoạt động với chuỗi ASCII",
+    "Test khẳng định đúng cái hàm đang làm thay vì đúng cái đã yêu cầu"
+  ],
+  "rubric_dimensions": [
+    "C1",
+    "C2",
+    "C3",
+    "C5",
+    "C8"
+  ],
+  "environment": {
+    "network": "off",
+    "workspace": "sạch"
+  },
+  "budget": {
+    "max_steps": 16,
+    "deadline_seconds": 180,
+    "source": "trần đang chạy của role orchestrator trong nhật ký hệ thống (turn.start: maxSteps 16, deadlineSeconds 180)"
+  },
+  "seeds": [
+    "workspace sạch"
+  ],
+  "layer1_checks": [
+    "test_file_runs",
+    "stdout_matches_answer",
+    "no_new_dependency"
+  ],
+  "open_questions": [
+    "Kế hoạch ghi 'hàm X' — script này chốt X = `slugify`; chủ sở hữu có thể đổi bằng cách sửa trường request."
+  ],
+  "plan_ref": "docs/plan/agent-output-quality-plan.md §4",
+  "bad_answer_source": "script này soạn theo chiều ngược của oracle; kế hoạch §4 chỉ có cột 'Oracle đạt' nên 'bad answer' chưa được chủ sở hữu ghim"
+}

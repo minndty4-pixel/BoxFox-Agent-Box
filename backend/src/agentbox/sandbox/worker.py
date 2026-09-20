@@ -18,6 +18,60 @@ import uuid
 
 ROOT = Path('/home/agent/workspace').resolve()
 
+# F6 (đợt 8): Xvnc chạy `-AcceptSetDesktopSize` nên client RFB kéo được framebuffer nhỏ
+# đi (tester từng thấy 286x311) — toạ độ bấm sau đó trỏ sai mà không ai báo. Giữ auto-fit
+# nhưng chặn SÀN: trước thao tác theo toạ độ, nếu màn hình nhỏ hơn cỡ cấu hình thì đặt lại.
+SCREEN_ENV = 'BOX_SCREEN'
+DEFAULT_SCREEN = (1280, 800)
+VNC_OUTPUT = 'VNC-0'
+DISPLAY_ENV = {**os.environ, 'DISPLAY': ':99'}
+
+
+def desktop_target():
+    """Cỡ màn hình cấu hình (`BOX_SCREEN` = `WxH` hoặc `WxHxD`), mặc định 1280x800."""
+    match = re.match(r'^(\d{3,5})x(\d{3,5})', (os.environ.get(SCREEN_ENV) or '').strip())
+    if not match:
+        return DEFAULT_SCREEN
+    return int(match.group(1)), int(match.group(2))
+
+
+def screen_size():
+    """(rộng, cao) thật của framebuffer, hoặc None khi không đọc được."""
+    try:
+        proc = subprocess.run(['xrandr', '--current'], env=DISPLAY_ENV, capture_output=True, timeout=10)
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if proc.returncode:
+        return None
+    match = re.search(r'current (\d+) x (\d+)', proc.stdout.decode(errors='replace'))
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def ensure_desktop_size():
+    """Đặt lại framebuffer nếu nó bị kéo nhỏ hơn cỡ cấu hình.
+
+    Trả `{'from': 'WxH', 'to': 'WxH'}` khi có đặt lại, `{'from': ..., 'warning': ...}`
+    khi đặt lại thất bại (không ném lỗi — ảnh chụp vẫn là ảnh thật), `None` khi không cần.
+    """
+    current = screen_size()
+    if not current:
+        return None
+    target = desktop_target()
+    if current[0] >= target[0] and current[1] >= target[1]:
+        return None
+    mode = '%dx%d' % target
+    try:
+        proc = subprocess.run(['xrandr', '--output', VNC_OUTPUT, '--mode', mode], env=DISPLAY_ENV,
+                              capture_output=True, timeout=10)
+    except (subprocess.SubprocessError, OSError) as exc:
+        return {'from': '%dx%d' % current, 'warning': 'xrandr failed: %s' % exc}
+    if proc.returncode:
+        detail = (proc.stderr or proc.stdout).decode(errors='replace').strip()[:200]
+        return {'from': '%dx%d' % current, 'warning': 'xrandr exit %d: %s' % (proc.returncode, detail)}
+    return {'from': '%dx%d' % current, 'to': mode}
+
 # Plan filename rules, identical to deploy/docker/plan_files.py:18-22 (the reader that enforces them).
 PLAN_FILENAME = re.compile(r'^v([1-9][0-9]{0,9})-([a-z0-9]+(-[a-z0-9]+)*)\.md$')
 PLAN_SLUG = re.compile(r'^[a-z0-9]+(-[a-z0-9]+)*$')
@@ -60,6 +114,39 @@ def shell(command, timeout=30, session='default'):
         artifact = str(file.relative_to(ROOT))
     return {'content': output[:15000] + ('\n[truncated; see artifact]' if artifact else ''),
             'exit_code': proc.returncode, 'is_error': proc.returncode != 0, 'artifact': artifact}
+
+
+def _pointer_move(x: int, y: int) -> None:
+    """Đưa con trỏ tới (x, y) rồi CHỜ nó tới nơi — không dùng `mousemove --sync`.
+
+    F8 (đợt 9): `xdotool mousemove --sync` treo đúng 15 giây khi con trỏ ĐÃ ở toạ độ
+    đích (đo trong box: 15.16 s và 15.15 s, trong khi điểm mới mất 0.0 s), mà lệnh bị
+    cắt ở `timeout=15` nên lần bấm thứ hai vào cùng một chỗ báo lỗi hết giờ. Đó chính
+    là thứ làm lượt CUA nặng đốt 20/20 bước ở đợt 7. Ở đây di chuyển trước, rồi tự
+    kiểm tra vị trí bằng `getmouselocation` — vẫn đảm bảo bấm đúng chỗ, không treo.
+    """
+    subprocess.run(['xdotool', 'mousemove', str(x), str(y)], env={**os.environ, 'DISPLAY': ':99'},
+                   capture_output=True, timeout=10)
+    for _ in range(20):
+        probe = subprocess.run(['xdotool', 'getmouselocation', '--shell'],
+                               env={**os.environ, 'DISPLAY': ':99'}, capture_output=True, timeout=10)
+        out = probe.stdout.decode(errors='replace') if isinstance(probe.stdout, bytes) else str(probe.stdout or '')
+        # So khớp theo DÒNG `X=<số>`; tìm chuỗi con thì `X=64` khớp luôn `X=640` và lần
+        # kiểm tra đầu tiên sẽ đạt nhầm (vòng soát mã đợt 10 bắt được ở dòng này).
+        seen = {}
+        for line in out.splitlines():
+            key, _, value = line.partition('=')
+            if key in {'X', 'Y'}:
+                seen[key] = value.strip()
+        if seen.get('X') == str(x) and seen.get('Y') == str(y):
+            return
+        time.sleep(0.05)
+
+
+def _pointer_click(args, *click_args) -> list:
+    """Lệnh bấm chuột tại (x, y): di chuyển (không `--sync`) rồi bấm."""
+    _pointer_move(int(args['x']), int(args['y']))
+    return ['xdotool', 'click', *click_args]
 
 
 def browser(args, session):
@@ -248,20 +335,37 @@ def execute(name, args, session):
     if name == 'computer_use':
         action = args['action']
         commands = {
-            'click': lambda: ['xdotool', 'mousemove', '--sync', str(int(args['x'])), str(int(args['y'])), 'click', '1'],
-            'double_click': lambda: ['xdotool', 'mousemove', '--sync', str(int(args['x'])), str(int(args['y'])), 'click', '--repeat', '2', '--delay', '100', '1'],
-            'right_click': lambda: ['xdotool', 'mousemove', '--sync', str(int(args['x'])), str(int(args['y'])), 'click', '3'],
-            'middle_click': lambda: ['xdotool', 'mousemove', '--sync', str(int(args['x'])), str(int(args['y'])), 'click', '2'],
+            'click': lambda: _pointer_click(args, '1'),
+            'double_click': lambda: _pointer_click(args, '--repeat', '2', '--delay', '100', '1'),
+            'right_click': lambda: _pointer_click(args, '3'),
+            'middle_click': lambda: _pointer_click(args, '2'),
             'type': lambda: ['xdotool', 'type', '--clearmodifiers', '--', args['text']],
             'key': lambda: ['xdotool', 'key', '--clearmodifiers', args['key']],
             'scroll': lambda: ['xdotool', 'click', '--repeat', str(min(20, max(1, int(args.get('steps', 3))))), '5' if args.get('direction') == 'down' else '4'],
         }
         if action not in commands:
             raise ValueError('Unknown computer action')
+        # F6: các thao tác theo toạ độ phải chạy trên framebuffer đúng cỡ cấu hình.
+        desktop_note = ensure_desktop_size() if action != 'type' and action != 'key' else None
+        # F4 (đợt 7): bàn phím chỉ tới cửa sổ ĐANG được focus. Không có cửa sổ nào thì
+        # `xdotool` vẫn thoát 0, nên phải nói rõ là chưa gửi được thay vì báo đã gửi.
+        if action in {'type', 'key'}:
+            focused = subprocess.run(['xdotool', 'getactivewindow'], env={**os.environ, 'DISPLAY': ':99'},
+                                     capture_output=True, timeout=15)
+            if focused.returncode:
+                raise ValueError('No focused window: click the target window first, then send keys.')
         proc = subprocess.run(commands[action](), env={**os.environ, 'DISPLAY': ':99'}, capture_output=True, timeout=15)
         if proc.returncode:
             raise ValueError(proc.stderr.decode(errors='replace'))
-        return {'content': 'Input delivered; capture the screen to verify the effect.'}
+        # F3 (đợt 7): `xdotool key NotARealKey` in 'No such key name ... Ignoring it.' ra
+        # stdout rồi thoát 0. Coi cảnh báo đó là thất bại, kèm tên phím sai.
+        noisy = (proc.stdout + proc.stderr).decode(errors='replace')
+        if 'No such key name' in noisy or 'Ignoring it' in noisy:
+            raise ValueError('Unsupported key name: ' + str(args.get('key', '')) + '. Use an X keysym such as Return, Tab, ctrl+c.')
+        payload = {'content': 'Input delivered; capture the screen to verify the effect.'}
+        if desktop_note:
+            payload['desktopRestored' if 'to' in desktop_note else 'desktopWarning'] = desktop_note
+        return payload
     raise ValueError('Unsupported sandbox tool: ' + name)
 
 

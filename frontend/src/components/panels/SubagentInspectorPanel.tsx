@@ -33,6 +33,7 @@ import { useHarnessChatStore, type HarnessEvent } from '../../store/harnessChatS
 import { useAgentStore } from '../../store/agentStore'
 import { useUiStore } from '../../store/uiStore'
 import { MarkdownRenderer } from '../chat/MarkdownRenderer'
+import { appendStreamText } from '../../lib/streamText'
 
 const ROLE_DESCRIPTIONS: Record<string, string> = {
   explore: 'Inspect the repository. Return file/symbol evidence, dependencies and unknowns.',
@@ -264,13 +265,19 @@ export function SubagentInspectorPanel() {
     const toolStarts = new Map<string, { name: string; args: Record<string, unknown> | null }>()
 
     for (const ev of childEvents) {
-      if (ev.type === 'thought') {
-        const t = String(ev.data.thought ?? ev.data.text ?? '')
-        if (t) thought += (thought ? '\n' : '') + t
+      if (ev.type === 'notice' && ev.data.reset) {
+        // Harness thử lại yêu cầu model: phần văn bản của lần thử trước bị bỏ, nên bộ đệm
+        // phải xoá trước khi ghép câu trả lời mới (nếu không sẽ dán hai câu vào nhau).
+        thought = ''
+        output = ''
+      } else if (ev.type === 'thought') {
+        // `thought` có thể là tích luỹ (harness cũ) hoặc mảnh rời: dùng chung một hàm ghép.
+        thought = appendStreamText(thought, String(ev.data.thought ?? ev.data.text ?? ''))
       } else if (ev.type === 'tool_start') {
         const name = String(ev.data.name ?? 'tool')
         const args = typeof ev.data.args === 'object' && ev.data.args !== null ? (ev.data.args as Record<string, unknown>) : null
-        const callId = String(ev.data.tool_call_id ?? `${name}-${tools.length}`)
+        // Harness phát `id` cho tool_start/tool_end; `tool_call_id` là tên cũ ở một số adapter.
+        const callId = String(ev.data.id ?? ev.data.tool_call_id ?? `${name}-${tools.length}`)
         toolStarts.set(callId, { name, args })
         tools.push({
           id: callId,
@@ -279,9 +286,9 @@ export function SubagentInspectorPanel() {
           isRunning: true,
         })
       } else if (ev.type === 'tool_end') {
-        const callId = String(ev.data.tool_call_id ?? '')
+        const callId = String(ev.data.id ?? ev.data.tool_call_id ?? '')
         const res = ev.data.result ? (typeof ev.data.result === 'object' ? JSON.stringify(ev.data.result, null, 2) : String(ev.data.result)) : null
-        const isError = Boolean(ev.data.is_error)
+        const isError = Boolean(ev.data.is_error ?? (ev.data.result as Record<string, unknown> | null)?.is_error)
         const item = tools.find((t) => t.id === callId)
         if (item) {
           item.result = res
@@ -289,8 +296,7 @@ export function SubagentInspectorPanel() {
           item.isRunning = false
         }
       } else if (ev.type === 'assistant_delta' || ev.type === 'assistant') {
-        const text = String(ev.data.text ?? '')
-        if (text) output += text
+        output = appendStreamText(output, String(ev.data.text ?? ''))
       }
     }
 

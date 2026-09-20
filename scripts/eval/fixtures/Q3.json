@@ -1,0 +1,40 @@
+{
+  "id": "Q3",
+  "case": "Đọc repo mẫu và tóm tắt kiến trúc",
+  "request": "Đọc repo mẫu trong workspace rồi tóm tắt kiến trúc: các module chính, luồng dữ liệu giữa chúng, và chỗ nào dễ vỡ nhất.",
+  "request_source": "do script này soạn lại từ mô tả ca trong kế hoạch §4 (kế hoạch chưa ghim câu lệnh)",
+  "oracle_pass": [
+    "Mọi đường dẫn tệp nêu trong câu trả lời đều tồn tại thật trong workspace",
+    "Không có khẳng định kỹ thuật nào không kèm bằng chứng (đường dẫn hoặc lệnh đã chạy)"
+  ],
+  "bad_answer": [
+    "Nêu tên module/tệp không tồn tại",
+    "Mô tả kiến trúc chung chung đúng với mọi repo (không có chi tiết kiểm chứng được)",
+    "Đoán luồng dữ liệu mà không đọc mã"
+  ],
+  "rubric_dimensions": [
+    "C1",
+    "C2",
+    "C6",
+    "C7"
+  ],
+  "environment": {
+    "network": "off",
+    "workspace": "repo mẫu đã seed"
+  },
+  "budget": {
+    "max_steps": 16,
+    "deadline_seconds": 180,
+    "source": "trần đang chạy của role orchestrator trong nhật ký hệ thống (turn.start: maxSteps 16, deadlineSeconds 180)"
+  },
+  "seeds": [
+    "seed repo mẫu vào workspace"
+  ],
+  "layer1_checks": [
+    "paths_in_answer_exist",
+    "claims_have_evidence"
+  ],
+  "open_questions": [],
+  "plan_ref": "docs/plan/agent-output-quality-plan.md §4",
+  "bad_answer_source": "script này soạn theo chiều ngược của oracle; kế hoạch §4 chỉ có cột 'Oracle đạt' nên 'bad answer' chưa được chủ sở hữu ghim"
+}

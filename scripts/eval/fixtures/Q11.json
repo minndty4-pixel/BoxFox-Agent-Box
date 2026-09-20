@@ -1,0 +1,42 @@
+{
+  "id": "Q11",
+  "case": "CUA nhẹ: chụp màn hình rồi tóm tắt",
+  "request": "Chụp màn hình desktop của box rồi tóm tắt cái đang hiện trên đó.",
+  "request_source": "do script này soạn lại từ mô tả ca trong kế hoạch §4 (kế hoạch chưa ghim câu lệnh)",
+  "oracle_pass": [
+    "Ảnh chụp thật (tệp tồn tại, đọc được, có kích thước hợp lý)",
+    "Mô tả khớp với nội dung ảnh"
+  ],
+  "bad_answer": [
+    "Mô tả màn hình mà không có ảnh",
+    "Ảnh cũ/dùng lại từ lượt trước nhưng nhận là vừa chụp",
+    "Mô tả sai hẳn nội dung ảnh"
+  ],
+  "rubric_dimensions": [
+    "C1",
+    "C2",
+    "C5",
+    "C7"
+  ],
+  "environment": {
+    "network": "off",
+    "workspace": "sạch"
+  },
+  "budget": {
+    "max_steps": 24,
+    "deadline_seconds": 300,
+    "source": "đề xuất của script này cho ca CUA nhiều bước; kế hoạch chưa chốt trần riêng cho Q11/Q12"
+  },
+  "seeds": [
+    "xác nhận capture trong box chạy được và desktop có kích thước chuẩn trước khi chạy"
+  ],
+  "layer1_checks": [
+    "screenshot_file_exists",
+    "description_matches_capture"
+  ],
+  "open_questions": [
+    "Cần chốt màn hình nền của ca này để 'mô tả khớp ảnh' kiểm được (không dùng màn hình của người dùng)."
+  ],
+  "plan_ref": "docs/plan/agent-output-quality-plan.md §4",
+  "bad_answer_source": "script này soạn theo chiều ngược của oracle; kế hoạch §4 chỉ có cột 'Oracle đạt' nên 'bad answer' chưa được chủ sở hữu ghim"
+}

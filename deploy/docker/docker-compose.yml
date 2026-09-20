@@ -38,6 +38,14 @@ services:
       # VITE_BOX_API_KEY phía frontend. Bỏ trống (= "") thì fail-closed với
       # network/power: không ai bật/tắt được.
       BOXFOX_API_KEY: "${BOXFOX_API_KEY:-boxfox-local-dev-token}"
+      # CẦU NỐI LLM (opt-in, MẶC ĐỊNH TẮT): mở egress TCP tới router BoxFox để
+      # Claude Code trong box chạy được `/claude-code` mà không cần tài khoản
+      # Anthropic. Bật bằng BOX_LLM_BRIDGE=on trong .env cùng thư mục; địa chỉ
+      # mặc định là gateway mặc định của container (172.18.0.1), cổng 3101.
+      # Đọc kỹ phần rủi ro trong deploy/docker/README-claude-code.md trước khi bật.
+      BOX_LLM_BRIDGE: "${BOX_LLM_BRIDGE:-off}"
+      BOX_LLM_BRIDGE_HOST: "${BOX_LLM_BRIDGE_HOST:-}"
+      BOX_LLM_BRIDGE_PORT: "${BOX_LLM_BRIDGE_PORT:-3101}"
     networks:
       - boxnet
     ports:

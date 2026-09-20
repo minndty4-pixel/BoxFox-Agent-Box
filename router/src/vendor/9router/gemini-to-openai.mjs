@@ -1,5 +1,12 @@
 // Adapted from 9router open-sse/translator/response/gemini-to-openai.js (MIT).
 
+// Fallback ids must be unique across the whole process: the Anthropic ingress remembers a
+// thought signature under the id it handed to the client and looks it up when the id comes
+// back in a `tool_result`, so two requests minting the same id in the same millisecond
+// (same index, `Date.now()` resolution) would cross-attach another request's signature —
+// which Gemini rejects. A monotonic counter plus the timestamp removes the collision.
+let fallbackCallCounter = 0;
+
 export function geminiFinishReason(reason, hadToolCall = false) {
   const normalized = String(reason || '').toUpperCase();
   if (hadToolCall && ['STOP', 'FINISH_REASON_UNSPECIFIED'].includes(normalized)) return 'tool_calls';
@@ -48,7 +55,7 @@ export function geminiChunkToEvents(chunk, state = { toolIndex: 0, hadToolCall: 
       const sig = part.functionCall?.thoughtSignature || part.functionCall?.thought_signature || part.thoughtSignature || part.thought_signature || state.lastThoughtSignature || null;
       events.push({ type: 'delta', delta: { tool_calls: [{
         index,
-        id: part.functionCall.id || `call_${index}_${Date.now().toString(36)}`,
+        id: part.functionCall.id || `call_${index}_${(fallbackCallCounter += 1).toString(36)}_${Date.now().toString(36)}`,
         type: 'function',
         function: { name: part.functionCall.name || 'tool', arguments: JSON.stringify(part.functionCall.args || {}) },
         ...(sig ? { thought_signature: sig, thoughtSignature: sig } : {}),

@@ -196,8 +196,17 @@ export function ContextUsageBar() {
   // Tính toán tokens ước lượng từ event step của harnessRun hoặc fallback contextChunks
   const currentTokens = useMemo(() => {
     if (harnessRun?.events && harnessRun.events.length > 0) {
-      const stepEvents = harnessRun.events.filter(e => e.type === 'step')
-      const lastStep = stepEvents.at(-1)
+      // F7 (đợt 7): sau khi nén, `step` cuối vẫn mang ước lượng TRƯỚC khi nén, nên thanh
+      // ngữ cảnh hiện số cũ cho tới lượt sau. Event `compression` mới hơn thì thắng.
+      const sized = harnessRun.events.filter(
+        e => e.type === 'step' || e.type === 'compression',
+      )
+      const lastSized = sized.at(-1)
+      if (lastSized?.type === 'compression') {
+        const after = lastSized.data?.afterEstimate
+        if (typeof after === 'number') return after
+      }
+      const lastStep = sized.filter(e => e.type === 'step').at(-1)
       if (lastStep && typeof lastStep.data?.contextEstimate === 'number') {
         return lastStep.data.contextEstimate
       }

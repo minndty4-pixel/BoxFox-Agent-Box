@@ -11,12 +11,16 @@ import time
 import uuid
 import httpx
 from .compression import ContextCompressor, estimate_tokens
+from .failures import classify_failure, failure_detail, is_transient, log_safe_failure
+from .plan_quality import check_plan_quality
 from .roles import ROLES, allowed_tools
 from .tool_contracts import schemas_for
+from .web import WebTools
 from ..skills.catalog import SkillCatalog, DEFAULT_SKILLS
 from ..skills.commands import CommandRegistry, ROLE_SKILLS, EXTERNAL
 from ..skills.lifecycle import SkillLoader
 from ..skills.runtime_commands import RuntimeCommands
+from ..observability.system_log import system_log
 from ..vendor.hermes.tool_arguments import _parse_tool_arguments
 
 TOOL_USE_ENFORCEMENT_GUIDANCE = """# Tool-Use Enforcement
@@ -54,6 +58,7 @@ CORE MULTI-AGENT DELEGATION PROTOCOL:
    - For any non-trivial development, bugfix, refactoring, or feature request: NEVER attempt to do everything in a single turn. You MUST invoke your specialists via `delegate_task`.
 2. Hierarchical 5-Phase Execution Workflow:
    - Phase 1 (Explore): Delegate to role='explore' to survey files, symbols, dependency trees, and existing architecture.
+     * Hand every external-knowledge question (a library's real API, a standard, a version, a web page) to role='research'. It reaches the browser AND the host-side `web_search`/`web_fetch` tools; you hold those two tools as well, so answer a quick fact yourself and delegate the deep survey. The sandbox network can be OFF — the host tools are not affected — so a research answer may still honestly say "could not verify". Accept that over a guessed source.
    - Phase 2 (Plan & Design):
      * Delegate to role='plan' to construct ordered milestones, risks, and acceptance criteria.
      * For user-facing or architectural changes, delegate to role='design' to specify API/UI contracts before coding.
@@ -65,8 +70,10 @@ CORE MULTI-AGENT DELEGATION PROTOCOL:
      * Delegate to role='review' to audit diffs for security, regressions, and quality.
      * Delegate to role='simplify' if code cleanup is needed.
 3. Subagent Context & Handoff Management:
-   - When calling `delegate_task(role=..., goal=..., context=...)`, provide concise, highly relevant context from earlier phases.
-   - Do NOT assume a child agent succeeded merely because it finished. Inspect its summary, executed tools, and error status. If a child agent fails, diagnose why and assign a targeted corrective task.
+   - State the required RESULT SHAPE in `expect` for EVERY delegation: the exact deliverable plus the evidence you need back (which files with line numbers, which commands and what their output must show, which sources). A child that is not told what to return will return prose.
+   - When calling `delegate_task(role=..., goal=..., context=..., expect=...)`, provide concise, highly relevant context from earlier phases.
+   - Do NOT assume a child agent succeeded merely because it finished. Inspect its summary, the `truncated` flag, executed tools, and error status. Require evidence (file path + line, command + observed output, citation) for every claim; if a child returns none, re-delegate with `expect` naming the missing evidence or verify it yourself. If a child agent fails, diagnose why and assign a targeted corrective task.
+   - A plan you accept must contain a Verification / Acceptance criteria section with an exact command or check and its expected result, and a Risks / Limitations section; `write_plan` refuses anything less.
 4. Final Synthesis & Delivery:
    - Deliver a clear, professional summary to the user highlighting: (1) what changed, (2) verified test outputs, and (3) any operational notes. No filler, no sycophancy."""
 
@@ -114,6 +121,260 @@ class AntiLoopGuard:
         return False
 
 
+# The router refuses a request body over 1 MiB (`router/src/server.mjs`). Every capture is
+# inlined as base64, and a CUA mission takes one per step, so a long turn grows past that cap
+# and every later model call dies with `UPSTREAM_HTTP_413: Request is too large.` — measured
+# 2026-09-20: of a 1 107 315-char body, 1 018 908 chars were base64 images. The newest
+# captures stay inline; an older one shrinks to the text it came with, and the file stays on
+# disk exactly as the transcript shows it.
+MAX_INLINE_MEDIA = 2
+MAX_INLINE_MEDIA_BYTES = 512 * 1024
+
+
+def _media_payload_size(message) -> int:
+    """Base64 payload carried by one message, 0 when it carries no image."""
+    content = message.get('content')
+    if not isinstance(content, list):
+        return 0
+    size = 0
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        if part.get('type') == 'image_url':
+            size += len(str((part.get('image_url') or {}).get('url') or ''))
+        elif part.get('type') == 'image':
+            size += len(str((part.get('source') or {}).get('data') or ''))
+    return size
+
+
+def _text_only(content) -> str:
+    text = '\n'.join(str(part.get('text') or '') for part in content
+                      if isinstance(part, dict) and part.get('type') == 'text')
+    note = ('[Older screenshot left out of this request so the body stays under the router cap; '
+            'the file is unchanged on disk at the path named above.]')
+    return f'{text.strip()}\n{note}'.strip()
+
+
+def bound_inline_media(messages, keep: int = MAX_INLINE_MEDIA,
+                       max_bytes: int = MAX_INLINE_MEDIA_BYTES) -> tuple[list, int]:
+    """A request-ready copy of ``messages`` that carries only the newest captures inline.
+
+    Returns ``(messages_for_the_request, dropped)``. The input list is never mutated, so the
+    stored transcript — and therefore the chat UI — keeps every image.
+    """
+    indexes = [index for index, message in enumerate(messages) if _media_payload_size(message)]
+    if not indexes:
+        return messages, 0
+    kept, total, dropped = set(), 0, 0
+    for index in reversed(indexes):  # newest first
+        size = _media_payload_size(messages[index])
+        if len(kept) < keep and total + size <= max_bytes:
+            kept.add(index)
+            total += size
+        else:
+            dropped += 1
+    if not dropped:
+        return messages, 0
+    out = list(messages)
+    for index in indexes:
+        if index not in kept:
+            out[index] = {**messages[index], 'content': _text_only(messages[index]['content'])}
+    return out, dropped
+
+
+ROUTER_BODY_BUDGET = 900 * 1024
+
+TRIMMED_TEXT_NOTE = ('\n[Older step trimmed so the request body fits the router; the full entry '
+                     'stays in the transcript.]')
+TRIMMED_ARGUMENTS = '{"note": "[older tool arguments trimmed to fit the router body cap]"}'
+
+
+def request_body_bytes(payload) -> int:
+    """Bytes the router will receive — it counts the serialized body, not tokens.
+
+    The same call `httpx` makes for a `json=` body, so this number is the router's own
+    `Content-Length` (it refuses anything over 1 MiB).
+    """
+    blob = json.dumps(payload, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
+    return len(blob.encode('utf-8'))
+
+
+# Messages the model still needs verbatim: the step it is in, plus the rounds that produced it.
+LIVE_TAIL = 8
+
+
+def _reducible(messages) -> list:
+    """Indexes the model can lose detail on: not a user instruction, not the newest step.
+
+    A heavy CUA mission is one user prompt followed by dozens of assistant/tool rounds, so
+    "everything before the last user message" is the whole mission — that is why the first
+    byte-budget pass freed 7 841 B of a 1 060 902 B body and the call still died with 413.
+    """
+    stop = max(0, len(messages) - LIVE_TAIL)
+    if not stop:  # a short session still has history worth trimming — keep only the last two
+        stop = max(0, len(messages) - 2)
+    return [index for index in range(0, stop) if messages[index].get('role') != 'user']
+
+
+def _shrink_old_text(messages, indexes):
+    out = list(messages)
+    for index in indexes:
+        text = out[index].get('content')
+        if isinstance(text, str) and len(text) > 2000:
+            out[index] = {**out[index], 'content': text[:1000] + TRIMMED_TEXT_NOTE}
+    return out
+
+
+def _drop_old_thoughts(messages, indexes):
+    """Reasoning traces are not part of any provider protocol — only the signature is."""
+    out = list(messages)
+    for index in indexes:
+        if out[index].get('thought'):
+            out[index] = {**out[index], 'thought': ''}
+    return out
+
+
+def _shrink_old_tool_arguments(messages, indexes):
+    """Keep the call id and the tool name — the pairing every provider validates — drop the blob."""
+    out = list(messages)
+    for index in indexes:
+        calls = out[index].get('tool_calls')
+        if not isinstance(calls, list) or not calls:
+            continue
+        replaced = False
+        rewritten = []
+        for call in calls:
+            function = call.get('function') if isinstance(call, dict) else None
+            arguments = function.get('arguments') if isinstance(function, dict) else None
+            if isinstance(arguments, str) and len(arguments) > 400:
+                function = {**function, 'arguments': TRIMMED_ARGUMENTS}
+                call = {**call, 'function': function}
+                replaced = True
+            rewritten.append(call)
+        if replaced:
+            out[index] = {**out[index], 'tool_calls': rewritten}
+    return out
+
+
+def _drop_oldest_round(messages):
+    """Drop the oldest complete tool round: the assistant call and the results it produced.
+
+    The last resort, and the only way to bound a mission whose **signatures** alone outgrow the
+    cap: a Gemini provider refuses a replayed function call that lost its signature, so an old
+    call cannot be kept without one — but a call that is not in the request at all needs no
+    signature. The oldest round goes first, its parts always leave together (so no `tool` message
+    is left orphaned), and user instructions and the live tail are never touched.
+    """
+    out = list(messages)
+    tail = max(0, len(out) - LIVE_TAIL)
+    fallback = None
+    for index in range(0, tail):
+        message = out[index]
+        if message.get('role') != 'assistant' or not isinstance(message.get('tool_calls'), list):
+            continue
+        ids = {call.get('id') for call in message['tool_calls'] if isinstance(call, dict)}
+        dropping = {index}
+        cursor = index + 1
+        while cursor < len(out) and out[cursor].get('role') == 'tool' \
+                and out[cursor].get('tool_call_id') in ids:
+            dropping.add(cursor)
+            cursor += 1
+        if len(dropping) > 1:
+            if cursor <= tail:
+                return [item for position, item in enumerate(out) if position not in dropping]
+            # A round that runs into the tail can only leave together with the results it produced,
+            # so it is a last resort: the newest observations are worth more than the oldest round.
+            if fallback is None:
+                fallback = dropping
+    if fallback is not None:
+        return [item for position, item in enumerate(out) if position not in fallback]
+    return out
+
+
+def shrink_request_to_budget(body, messages, budget: int = ROUTER_BODY_BUDGET) -> tuple[list, int, str]:
+    """Last-resort byte budget for the **whole** request, least destructive reduction first.
+
+    `ContextCompressor` works in tokens while the router caps the body in bytes, so on a model
+    with a large context window (1M) a long mission grows past 1 MiB without ever crossing the
+    token threshold and every later call is refused (`UPSTREAM_HTTP_413`).
+
+    `body` is the request as it would be sent: the cap counts the role prompt and the tool
+    schemas too, and measuring `messages` alone underestimates it by their size (measured
+    2026-09-20: a body 1 060 902 B large whose `messages` list was 1 043 364 B — 12 326 B over
+    the cap, and the earlier messages-only check never saw it).
+
+    The reductions run over the history before the live tail only, each one whole-list at a time,
+    in order of what costs the model least: old text, old reasoning traces, old tool arguments,
+    the older inline captures down to one and then to none, and finally — the only reduction that
+    is not bounded by what a single round holds — dropping the oldest tool rounds outright. The
+    moment the body fits it stops. Returns `(messages, freed_bytes, phase)`; `freed_bytes` is 0
+    (and the input list comes back) when nothing helped, so a request that cannot be reduced still
+    fails honestly. The stored transcript is never mutated — the chat UI keeps every byte.
+    """
+    def size(candidate):
+        return request_body_bytes({**body, 'messages': candidate})
+
+    original = size(messages)
+    if original <= budget:
+        return messages, 0, ''
+    out = list(messages)
+    freed, phase, current = 0, '', original
+    steps = [
+        ('text', lambda history: _shrink_old_text(history, _reducible(history))),
+        ('thought', lambda history: _drop_old_thoughts(history, _reducible(history))),
+        ('arguments', lambda history: _shrink_old_tool_arguments(history, _reducible(history))),
+        ('media-1', lambda history: bound_inline_media(history, keep=1)[0]),
+        ('media-0', lambda history: bound_inline_media(history, keep=0)[0]),
+    ]
+    # Dropping rounds is the only reduction that is not bounded by what one round holds, so it
+    # repeats — the oldest first, and only for as long as the body is still over the budget.
+    steps += [('round', _drop_oldest_round)] * len(messages)
+    for name, reduce in steps:
+        before = current
+        out = reduce(out)
+        current = size(out)
+        if current < before:
+            freed += before - current
+            phase = name
+        if current <= budget:
+            break
+    if not freed:
+        return messages, 0, ''
+    return out, freed, phase
+
+
+def dedupe_thought_signatures(messages) -> tuple[list, int]:
+    """One spelling per thought signature in the request body.
+
+    Every signature is stored under both names — the router normalises either one, and so does
+    this client — which is fine on disk but doubles a large opaque blob on every later request.
+    Measured on a heavy CUA mission (2026-09-20): 761 888 B of a 1.7 MiB body were the two
+    copies of the same signatures, which is what kept the body over the router's 1 MiB cap even
+    after the inline images were bounded. The request keeps `thought_signature`; the stored
+    transcript is left alone.
+    """
+    out, saved = [], 0
+    for message in messages:
+        calls = message.get('tool_calls') if isinstance(message, dict) else None
+        if not isinstance(calls, list) or not calls:
+            out.append(message)
+            continue
+        trimmed, local = [], 0
+        for call in calls:
+            if (isinstance(call, dict) and call.get('thought_signature') and call.get('thoughtSignature')):
+                local += len(str(call['thoughtSignature']))
+                call = {key: value for key, value in call.items() if key != 'thoughtSignature'}
+            trimmed.append(call)
+        if local:
+            saved += local
+            out.append({**message, 'tool_calls': trimmed})
+        else:
+            out.append(message)
+    if not saved:
+        return messages, 0
+    return out, saved
+
+
 class RouterClient:
     def __init__(self, url='http://127.0.0.1:3101'):
         self.url = url.rstrip('/')
@@ -143,6 +404,20 @@ class RouterClient:
         return None
 
     async def complete(self, messages, tools, route, on_thought=None, on_content=None, max_tokens=4096):
+        messages, dropped = bound_inline_media(messages)
+        if dropped:
+            system_log.write('model.media_pruned', session_id=route.get('sessionId'), dropped=dropped,
+                             kept=MAX_INLINE_MEDIA)
+        messages, signature_chars = dedupe_thought_signatures(messages)
+        if signature_chars:
+            system_log.write('model.signature_deduped', session_id=route.get('sessionId'),
+                             chars=signature_chars)
+        messages, freed, phase = shrink_request_to_budget(
+            {**route, 'messages': messages, 'tools': tools, 'stream': True, 'max_tokens': max_tokens},
+            messages)
+        if freed:
+            system_log.write('model.request_trimmed', level='warn', session_id=route.get('sessionId'),
+                             chars=freed, phase=phase, budgetBytes=ROUTER_BODY_BUDGET)
         async with httpx.AsyncClient(timeout=120, trust_env=False) as client:
             try:
                 async with client.stream(
@@ -390,6 +665,33 @@ def plan_identity(relative_path):
     return (directory + '/' if directory else '') + match.group('slug')
 
 
+# The child of `delegate_task` is a real session whose answer lands in the durable event stream AND in the
+# parent's tool result, so every child string is bounded: a runaway child must not balloon either one.
+# 8000 chars of answer is ~2000 tokens — enough for real findings, small enough to stay in the parent prompt.
+CHILD_ANSWER_MAX_CHARS = 8000
+# Echoes of the parent's own goal/context/prompt are already in the parent's `tool_start` event verbatim.
+CHILD_ECHO_MAX_CHARS = 3000
+CHILD_EXPECT_MAX_CHARS = 2000
+# Appended to every child prompt (<= 1200 chars, asserted by tests). Free-form prose from a child is what
+# made the first round of plans unusable: no evidence, no verification, no honest limits.
+CHILD_RESULT_CONTRACT = """
+
+Result contract (the parent needs exactly this back):
+## Findings — what you established, most important first.
+## Evidence — file paths with line numbers, exact commands, and the real observed output quoted.
+## Verification performed — each check you actually ran and its result. Never claim success without evidence; if you could not run a check, say so.
+## Limitations & open questions — what you could not verify, your assumptions, and what the parent must decide.
+Keep it compact and drop nothing that proves a claim. An unevidenced claim is a failure, not an answer."""
+
+
+def bound_child_text(text, limit):
+    """(bounded, truncated) — one child string must never grow the event stream without limit."""
+    raw = str(text or '')
+    if len(raw) <= limit:
+        return raw, False
+    return raw[:limit] + f'\n[Bounded at {limit} characters; the full text stays in the child transcript.]', True
+
+
 def normalize_decision_options(raw, kind):
     """Normalize 2-5 options to the contract shape {id, label, kind} and guarantee the pair.
 
@@ -470,6 +772,8 @@ class HarnessRuntime(RuntimeCommands):
         self.run_budget = {}
         self.child_slots = asyncio.Semaphore(3)
         self.writer_lock = asyncio.Lock()
+        # web_search / web_fetch run on the HOST: the box has no Internet (only loopback).
+        self.web = WebTools()
 
     def create(self, values, parent_id=None, role='orchestrator', parent_tools=None):
         skills = values.get('skills', sorted(DEFAULT_SKILLS))
@@ -625,6 +929,15 @@ class HarnessRuntime(RuntimeCommands):
         tools = schemas_for(config['tools'])
         compressor = ContextCompressor(config['contextWindow'])
         loop_guard = AntiLoopGuard(threshold=3)
+        started = time.time()
+        steps_used = 0
+        system_log.write('turn.start', session_id=sid, role=session.get('role'),
+                         model=(config.get('route') or {}).get('modelId'),
+                         connectionId=(config.get('route') or {}).get('connectionId'),
+                         contextWindow=config.get('contextWindow'), maxSteps=config.get('maxSteps'),
+                         deadlineSeconds=config.get('deadlineSeconds'),
+                         contextEstimate=estimate_tokens(messages, tools),
+                         messages=len(messages))
         try:
             async with asyncio.timeout(config['deadlineSeconds']) as budget:
                 self.run_budget[sid] = budget
@@ -641,11 +954,68 @@ class HarnessRuntime(RuntimeCommands):
                             self.store.save(sid, messages)
                         self.store.emit(sid, 'compression', event)
                     self.store.emit(sid, 'step', {'iteration': step + 1, 'contextEstimate': estimate_tokens(messages, tools)})
+                    # The router callback hands over the text accumulated so far (that is the shape
+                    # every provider adapter can satisfy). Events must carry only the NEW part:
+                    # a consumer that appends `assistant_delta.text` would otherwise reprint the
+                    # whole answer once per token, and every event would store the full text again.
+                    streamed = {'content': '', 'thought': ''}
+
+                    def _suffix(previous, current):
+                        # `current` is the text accumulated by the provider so far. While it grows by
+                        # appending, only the new tail is emitted. `current` that does NOT start with
+                        # `previous` means the provider restarted its accumulation (a fresh attempt,
+                        # or a rewritten answer): the whole `current` is then new, and the consumer
+                        # must drop what it already showed for this step — hence the reset below and
+                        # the `UPSTREAM_RETRY` notice consumers treat as a reset.
+                        return current[len(previous):] if current.startswith(previous) else current
+
+                    def _reset_stream():
+                        streamed['content'] = ''
+                        streamed['thought'] = ''
+
                     def handle_thought(thought_text):
-                        self.store.emit(sid, 'thought', {'text': thought_text})
+                        new_text = _suffix(streamed['thought'], thought_text)
+                        streamed['thought'] = thought_text
+                        if new_text:
+                            self.store.emit(sid, 'thought', {'text': new_text})
+
                     def handle_content(content_text):
-                        self.store.emit(sid, 'assistant_delta', {'text': content_text})
-                    response = await self.client.complete(messages, tools, config['route'], on_thought=handle_thought, on_content=handle_content)
+                        new_text = _suffix(streamed['content'], content_text)
+                        streamed['content'] = content_text
+                        if new_text:
+                            self.store.emit(sid, 'assistant_delta', {'text': new_text})
+                    steps_used = step + 1
+                    # One bounded retry for a dropped socket / restarted router / empty stream,
+                    # inside the same turn budget: this is the main cause of "Agent run failed"
+                    # on long chats where the provider connection blips mid-answer.
+                    attempts = 0
+                    while True:
+                        step_started = time.time()
+                        # A retry restarts the answer: without this, the abandoned partial text of
+                        # the previous attempt stays on screen and the new answer is glued to it.
+                        if attempts:
+                            _reset_stream()
+                        try:
+                            response = await self.client.complete(messages, tools, config['route'], on_thought=handle_thought, on_content=handle_content)
+                            break
+                        except Exception as exc:
+                            code, message = classify_failure(exc)
+                            transient = is_transient(exc)
+                            system_log.write('model.error', level='warn', session_id=sid, turn_id=steps_used,
+                                             step=step + 1, attempt=attempts + 1, errorCode=code, message=message,
+                                             durationMs=(time.time() - step_started) * 1000,
+                                             detail=failure_detail(exc))
+                            if not transient or attempts >= 1:
+                                raise
+                            attempts += 1
+                            self.store.emit(sid, 'notice', {
+                                'code': 'UPSTREAM_RETRY',
+                                # Consumers use this notice to drop the live text of the attempt
+                                # that just died; the text after it is a complete answer again.
+                                'reset': True,
+                                'message': f'{code}: retrying the model request once ({message})',
+                            })
+                            await asyncio.sleep(1.5)
                     choice = response['choices'][0]
                     message = choice['message']
                     text, calls = message.get('content') or '', message.get('tool_calls') or []
@@ -671,6 +1041,9 @@ class HarnessRuntime(RuntimeCommands):
                     if not calls:
                         self.store.save(sid, messages, 'completed')
                         self.store.emit(sid, 'finish', {'status': 'completed'})
+                        system_log.write('turn.end', session_id=sid, status='completed', steps=steps_used,
+                                         textChars=len(text or ''),
+                                         durationMs=(time.time() - started) * 1000)
                         return text
                     if len(calls) > 16:
                         raise ValueError('Tool-call batch exceeds limit')
@@ -679,6 +1052,7 @@ class HarnessRuntime(RuntimeCommands):
                         args, error = _parse_tool_arguments(fn.get('arguments'))
                         name = fn.get('name', '')
                         self.store.emit(sid, 'tool_start', {'id': call['id'], 'name': name, 'args': args})
+                        tool_started = time.time()
                         try:
                             if error:
                                 raise ValueError(error)
@@ -686,7 +1060,18 @@ class HarnessRuntime(RuntimeCommands):
                                 raise PermissionError('Tool not permitted for this role: ' + name)
                             result = await self.dispatch(session, name, args, call['id'])
                         except Exception as exc:
-                            result = {'is_error': True, 'error': str(exc)}
+                            code, message = classify_failure(exc)
+                            # The model gets `message` (it may name the query or the URL); the DEV
+                            # log gets the log-safe variant, so "Copy diagnostics" cannot carry a
+                            # user query or a fetched URL off the machine.
+                            _, log_message, log_detail = log_safe_failure(exc)
+                            system_log.write('tool.error', level='error', session_id=sid, turn_id=steps_used,
+                                             step=step + 1, tool=name, errorCode=code, message=log_message,
+                                             durationMs=(time.time() - tool_started) * 1000, detail=log_detail)
+                            result = {'is_error': True, 'error': message, 'errorCode': code}
+                        system_log.write('tool.end', session_id=sid, turn_id=steps_used, step=step + 1, tool=name,
+                                         isError=bool(result.get('is_error')),
+                                         durationMs=(time.time() - tool_started) * 1000)
                         safe = {k: v for k, v in result.items() if k not in {'image', 'base64'}}
                         if safe.get('is_error'):
                             safe['reflection_hint'] = 'AUTONOMOUS_DIAGNOSIS: The previous action returned an error. Inspect the message, avoid repeating identical inputs, and pivot strategy or invoke debug specialist if necessary.'
@@ -706,11 +1091,16 @@ class HarnessRuntime(RuntimeCommands):
         except asyncio.CancelledError:
             self.store.save(sid, messages, 'cancelled')
             self.store.emit(sid, 'finish', {'status': 'cancelled'})
+            system_log.write('turn.end', session_id=sid, status='cancelled', steps=steps_used,
+                             durationMs=(time.time() - started) * 1000)
             raise
         except Exception as exc:
-            error = 'DEADLINE: run timed out' if isinstance(exc, TimeoutError) else str(exc)
+            code, error = classify_failure(exc)
             self.store.save(sid, messages, 'failed')
-            self.store.emit(sid, 'error', {'message': error})
+            self.store.emit(sid, 'error', {'message': error, 'code': code})
+            system_log.write('turn.failed', level='error', session_id=sid, turn_id=steps_used, status='failed',
+                             errorCode=code, message=error, steps=steps_used,
+                             durationMs=(time.time() - started) * 1000, detail=failure_detail(exc))
             return None
         finally:
             self.run_budget.pop(sid, None)
@@ -738,6 +1128,8 @@ class HarnessRuntime(RuntimeCommands):
             return {'messages': hits[-10:]}
         if name == 'delegate_task':
             return await self.delegate(session, args)
+        if name in {'web_search', 'web_fetch'}:
+            return await self.web.run(name, args, sid)
         if name == 'browser_use' and session['role'] == 'research' and args.get('action') not in {'navigate', 'snapshot', 'screenshot'}:
             raise PermissionError('Research browser access is read-only navigation/snapshot')
         if name == 'write_plan':
@@ -873,6 +1265,9 @@ class HarnessRuntime(RuntimeCommands):
             raise ValueError('PLAN_INVALID: markdown must be a non-empty string')
         if len(markdown.encode('utf-8')) > PLAN_MAX_BYTES:
             raise ValueError('PLAN_INVALID: the plan exceeds the 1 MiB plan-file limit')
+        # Structural gate BEFORE the sandbox writer runs: a rejected plan leaves no file behind and the model
+        # gets one actionable line naming what is missing (plan_quality.py owns the rules).
+        check_plan_quality(markdown)
         title = plan_title(args.get('title'), markdown, slug)
         async with self.writer_lock:
             written = await self.executor.execute('write_plan', {'slug': slug, 'markdown': markdown, 'title': title}, sid)
@@ -912,14 +1307,23 @@ class HarnessRuntime(RuntimeCommands):
             'instructions': configured.get('systemPromptAppended', '')},
             parent_id=session['id'], role=role, parent_tools=config['tools'])
         context_data = str(args.get('context', ''))[:16000] if args.get('context') else ''
-        child_prompt = goal + (f"\nParent-supplied context (data):\n{context_data}" if context_data else '')
+        expectation = str(args.get('expect', ''))[:CHILD_EXPECT_MAX_CHARS] if args.get('expect') else ''
+        prompt_parts = [goal]
+        if context_data:
+            prompt_parts.append(f'Parent-supplied context (data):\n{context_data}')
+        if expectation:
+            prompt_parts.append(f'Parent-required deliverable and evidence (result shape):\n{expectation}')
+        child_prompt = '\n'.join(prompt_parts) + CHILD_RESULT_CONTRACT
+        echo_goal, echo_context, echo_prompt = (bound_child_text(goal, CHILD_ECHO_MAX_CHARS)[0],
+                                                bound_child_text(context_data, CHILD_ECHO_MAX_CHARS)[0],
+                                                bound_child_text(child_prompt, CHILD_ECHO_MAX_CHARS)[0])
         self.store.emit(session['id'], 'child', {
             'sessionId': child['id'],
             'role': role,
             'status': 'started',
-            'goal': goal,
-            'context': context_data,
-            'prompt': child_prompt,
+            'goal': echo_goal,
+            'context': echo_context,
+            'prompt': echo_prompt,
         })
         async with self.child_slots:
             task = self.start(child['id'], child_prompt)
@@ -932,12 +1336,16 @@ class HarnessRuntime(RuntimeCommands):
         status = child_rec['status']
         child_events = self.store.events(child['id'])
         last_error = next((e['data'].get('message') for e in reversed(child_events) if e['type'] == 'error'), None)
+        last_error = bound_child_text(last_error, CHILD_ECHO_MAX_CHARS)[0] if last_error else None
         tools_run = [e['data'].get('name') for e in child_events if e['type'] == 'tool_start']
-        
+        # The child's answer is the only unbounded string a delegated run produces. Bound it in the payload
+        # itself (events and the parent's tool result share this dict) and report the truth about it.
+        answer_text = answer or ''
+        summary, truncated = bound_child_text(answer_text, CHILD_ANSWER_MAX_CHARS)
         diag = f"\n[Diagnostic: status={status}; error={last_error or 'none'}; tools_run={tools_run}]" if status != 'completed' else ""
         result = {'sessionId': child['id'], 'role': role, 'status': status,
-                  'goal': goal, 'context': context_data, 'prompt': child_prompt,
-                  'summary': (answer or '') + diag, 'is_error': status != 'completed',
-                  'last_error': last_error, 'tools_run': tools_run}
+                  'goal': echo_goal, 'context': echo_context, 'prompt': echo_prompt,
+                  'summary': summary + diag, 'answerChars': len(answer_text), 'truncated': truncated,
+                  'is_error': status != 'completed', 'last_error': last_error, 'tools_run': tools_run}
         self.store.emit(session['id'], 'child', result)
         return result

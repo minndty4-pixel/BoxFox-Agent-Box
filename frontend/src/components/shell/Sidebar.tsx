@@ -36,10 +36,19 @@ import { useT } from '../../i18n/context'
 import { useUiStore } from '../../store/uiStore'
 import { useAgentStore } from '../../store/agentStore'
 import { ASSIGNEES, MOCK_ACCOUNT } from '../../lib/mock/sessions'
-import type { SessionSummary } from '../../types/session'
+import type { SessionStatus, SessionSummary } from '../../types/session'
 import { ShortcutsPopover } from '../chat/ShortcutsPopover'
 import { useHarnessChatStore, type SavedSessionRow } from '../../store/harnessChatStore'
 import { isNarrowViewport, useViewportWidth } from './useViewportWidth'
+
+/** F2 (đợt 7): session `failed` từng bị gộp vào `idle` nên hiện chip IDLE như phiên rảnh. */
+export function mapSavedSessionStatus(status: string): SessionStatus {
+  if (status === 'running') return 'dang_chay'
+  if (status === 'completed') return 'xong'
+  if (status === 'failed') return 'loi'
+  if (status === 'awaiting_decision') return 'cho_nguoi_dung'
+  return 'idle'
+}
 
 
 export function Sidebar() {
@@ -95,7 +104,7 @@ export function Sidebar() {
           initials: 'BF',
           title: `Session ${r.id.slice(0, 8)}`,
           relative_time: 'SQLite',
-          status: r.status === 'running' ? 'dang_chay' : r.status === 'completed' ? 'xong' : 'idle',
+          status: mapSavedSessionStatus(r.status),
           mode: 'PLAN',
           active_lease_count: 0,
           step_count: 1,
@@ -622,10 +631,11 @@ function SessionRow({
                 <span className="size-1 rounded-full bg-amber-400 animate-pulse" />
                 BLOCKED
               </span>
-            ) : session.status === 'idle' ? (
+            ) : session.status === 'idle' || session.status === 'loi' ? (
+              // Cùng đúng khung chip của trạng thái rảnh; chỉ nhãn đổi theo trạng thái thật.
               <span className="inline-flex items-center gap-1 rounded bg-panel px-1.5 py-0.2 text-[9px] font-bold uppercase tracking-wider text-muted border border-line">
                 <span className="size-1 rounded-full bg-zinc-500" />
-                IDLE
+                {t(`sidebar.status.${session.status}`)}
               </span>
             ) : (
               <span className="inline-flex items-center gap-1 rounded bg-panel px-1.5 py-0.2 text-[9px] font-medium text-muted border border-line">

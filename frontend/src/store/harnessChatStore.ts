@@ -277,8 +277,12 @@ export const useHarnessChatStore = create<State>((set, get) => ({
       const lastIsError = lastEvent?.type === 'error'
       // Keep a reported error on screen until the user dismisses it or starts a new turn:
       // the 1200 ms poll must not wipe a message the user is still reading.
+      // The harness always reports a message + a code, but a legacy row can still carry an
+      // empty one. Say what we know in the code form the panel already understands, instead
+      // of the bare "Agent run failed" that tells the user nothing.
+      const reportedCode = String(lastEvent?.data?.code ?? 'RUN_FAILED')
       const sessionError = isFailed && lastIsError
-        ? String(lastEvent?.data?.message || 'Agent run failed')
+        ? String(lastEvent?.data?.message || `${reportedCode}: the run stopped before it reported a reason`)
         : (current.error ?? null)
       set((state) => {
         const parsed = parseDecisions(allEvents)

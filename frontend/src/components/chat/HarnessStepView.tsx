@@ -20,11 +20,13 @@ import {
   Layers,
   Film,
   ShieldAlert,
+  RefreshCw,
 } from 'lucide-react'
 import type { HarnessEvent } from '../../store/harnessChatStore'
 import type { ProviderSnapshot } from '../../types/provider'
 import type { RouterChatSelection } from '../../store/routerChatStore'
 import { MarkdownRenderer } from './MarkdownRenderer'
+import { appendStreamText } from '../../lib/streamText'
 import { ProviderIcon } from '../providers/ProviderIcon'
 import type { LightboxMediaProps } from './MediaLightboxModal'
 
@@ -55,6 +57,7 @@ type TurnTimelineItem =
   | { kind: 'plan'; id: string; seq: number; event: HarnessEvent }
   | { kind: 'decision'; id: string; seq: number; event: HarnessEvent; resolution?: HarnessEvent }
   | { kind: 'compression'; id: string; seq: number; event: HarnessEvent }
+  | { kind: 'notice'; id: string; seq: number; event: HarnessEvent }
 
 interface HarnessTurn {
   id: string
@@ -217,6 +220,10 @@ export function extractToolMedia(event: HarnessEvent): ToolMedia | null {
   if (!src && artifactPath) {
     const ext = extensionOf(artifactPath)
     if (VIDEO_EXTENSIONS.includes(ext)) {
+      // `action=start` của computer_screen_record trả về đường dẫn tệp đang ghi (chưa có
+      // durationSec). Nếu nhận nó, một bản ghi hiện thành hai player: một ở hàng `start`,
+      // một ở hàng `stop`. Chỉ hàng đã ghi xong mới là media.
+      if (typeof durationSec !== 'number') return null
       src = boxMediaUrl(artifactPath)
       kind = 'video'
     } else if (IMAGE_EXTENSIONS.includes(ext)) {
@@ -364,7 +371,8 @@ function applyTimelineEvent(turn: HarnessTurn, event: HarnessEvent) {
 
   switch (event.type) {
     case 'thought': {
-      turn.thought = String(event.data.text ?? '')
+      // Event có thể là văn bản tích luỹ (harness cũ) hoặc mảnh rời (harness mới).
+      turn.thought = appendStreamText(turn.thought ?? '', String(event.data.text ?? ''))
       return
     }
     case 'usage': {
@@ -377,8 +385,7 @@ function applyTimelineEvent(turn: HarnessTurn, event: HarnessEvent) {
       const text = String(event.data.text ?? '')
       const last = turn.items[turn.items.length - 1]
       if (last && last.kind === 'text' && last.live) {
-        // Delta của backend là văn bản tích luỹ; nhánh sau chỉ để phòng adapter gửi từng mảnh.
-        last.text = text.startsWith(last.text) ? text : last.text + text
+        last.text = appendStreamText(last.text, text)
       } else {
         turn.items.push({ kind: 'text', id: `text_${event.seq}`, seq: event.seq, text, live: true })
       }
@@ -460,6 +467,20 @@ function applyTimelineEvent(turn: HarnessTurn, event: HarnessEvent) {
     }
     case 'compression': {
       turn.items.push({ kind: 'compression', id: `compaction_${event.seq}`, seq: event.seq, event })
+      return
+    }
+    case 'notice': {
+      // Harness báo thử lại yêu cầu model: câu trả lời vừa stream bị bỏ, nên phần văn bản
+      // đang hiện của lượt này phải biến mất — nếu không, câu trả lời mới bị dán vào phần cũ.
+      if (event.data.reset) {
+        while (turn.items.length > 0) {
+          const last = turn.items[turn.items.length - 1]
+          if (last.kind !== 'text' || !last.live) break
+          turn.items.pop()
+        }
+        turn.thought = ''
+      }
+      turn.items.push({ kind: 'notice', id: `notice_${event.seq}`, seq: event.seq, event })
       return
     }
     case 'finish': {
@@ -730,10 +751,16 @@ function TurnBlock({
 
   const turnMedia = useMemo(() => {
     const media: ToolMedia[] = []
+    const seen = new Set<string>()
     for (const item of turn.items) {
       if (item.kind !== 'tool' || !item.end) continue
       const found = extractToolMedia(item.end)
-      if (found) media.push(found)
+      // Cùng một tệp có thể xuất hiện ở nhiều tool_end; chỉ hiện một lần.
+      const key = found?.artifactPath ?? found?.src ?? ''
+      if (found && !seen.has(key)) {
+        seen.add(key)
+        media.push(found)
+      }
     }
     return media
   }, [turn.items])
@@ -899,6 +926,9 @@ function TurnBlock({
                 onOpenTab={onOpenTab}
               />
             )
+          }
+          if (item.kind === 'notice') {
+            return <ServicingNotice key={item.id} event={item.event} />
           }
           return <CompactionNotice key={item.id} event={item.event} />
         })}
@@ -1089,6 +1119,28 @@ function ToolMediaBlock({
 }
 
 /** F7: thông báo nén context ở cấp cao nhất của lượt, bấm để xem chi tiết. */
+/** Thông báo ngắn của harness (ví dụ `UPSTREAM_RETRY`). Cùng khung chữ mờ như nhật ký
+ * hệ thống khác trong lượt; không thêm bảng màu mới. */
+function ServicingNotice({ event }: { event: HarnessEvent }) {
+  const code = String(event.data.code ?? 'NOTICE')
+  const message = String(event.data.message ?? '').trim()
+  return (
+    <div
+      className="max-w-2xl rounded-xl border border-line/60 bg-panel/40 px-3 py-2 text-[11px] text-muted"
+      data-timeline="notice"
+      data-notice-code={code}
+    >
+      <div className="flex items-start gap-1.5">
+        <RefreshCw className="mt-0.5 size-3 shrink-0 text-zinc-500" />
+        <span className="flex-1">
+          {message || code}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+
 function CompactionNotice({ event }: { event: HarnessEvent }) {
   const [open, setOpen] = useState(false)
   const kind = String(event.data.kind ?? 'unchanged')
