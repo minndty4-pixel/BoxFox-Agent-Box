@@ -230,8 +230,13 @@ docker network inspect boxnet --format '{{range .IPAM.Config}}{{.Gateway}}{{end}
   được mở cầu nối) đọc được toàn bộ trạng thái router, tự tạo/thu hồi khoá và sửa
   kết nối — header `x-boxfox-admin: 1` không phải bí mật.
 - `BOXFOX_ROUTER_BRIDGE_HOST` chỉ nhận **địa chỉ riêng hoặc loopback**
-  (10/8, 172.16/12, 192.168/16, 127/8, fe80::/10, fc00::/7). Địa chỉ LAN/công cộng bị
+  (10/8, 172.16/12, 192.168/16, 127/8, fe80::/10, fc00::/7). Địa chỉ công cộng bị
   từ chối lúc khởi động — cầu nối chỉ dành cho mạng container.
+- Nên truyền **địa chỉ gateway của mạng container** (ví dụ `172.18.0.1`). Hai dải còn
+  hợp lệ nhưng rộng hơn sẽ sinh một dòng cảnh báo `router.bridge_exposure` khi khởi
+  động: `10.x`/`192.168.x` là mạng riêng chung (mọi máy trong mạng đó tới được các
+  đường suy luận), còn `127.0.0.1` thì không bind được vì tai nghe chính đã giữ
+  loopback.
 - Mặc định (`BOX_LLM_BRIDGE` không đặt / `off`) giữ nguyên thế phòng thủ cũ.
 
 ---

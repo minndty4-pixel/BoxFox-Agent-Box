@@ -50,6 +50,21 @@ function isPrivateAddress(value) {
   return false;
 }
 
+/** Advisory text for a legal-but-wider bridge host, or `null` for the container-style ranges the
+ * bridge is meant for. The listener serves inference endpoints only (all key-gated) and never the
+ * admin surface, so a wide range is a caution, not a refusal — but the operator should know that
+ * every host on that network can now reach the router. */
+export function bridgeExposureNote(value) {
+  const host = String(value || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (host === 'localhost' || host === '::1' || host.startsWith('127.')) {
+    return 'Loopback already serves the admin surface: the bridge cannot bind it. Use the container gateway address, for example 172.18.0.1.';
+  }
+  if (host.startsWith('10.') || host.startsWith('192.168.')) {
+    return 'This is a general private network, not a container network: every host on it can reach the inference endpoints. Prefer the container gateway address, for example 172.18.0.1.';
+  }
+  return null;
+}
+
 export function createRouterServer({ service, engine, oauth, frontendDir = null, allowedOrigins = ['http://localhost:3100', 'http://127.0.0.1:3100'], allowedHosts = ['localhost:3100', '127.0.0.1:3100', 'localhost:3101', '127.0.0.1:3101'], bridgeHost = null }) {
   function admin(req) {
     assert(req.headers['x-boxfox-admin'] === '1', 'Local administration header required.', 'FORBIDDEN', 403);

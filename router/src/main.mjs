@@ -3,7 +3,7 @@ import { RouterStore } from './store.mjs';
 import { ProviderService } from './service.mjs';
 import { RouterEngine } from './engine.mjs';
 import { OAuthManager } from './oauth.mjs';
-import { createRouterServer } from './server.mjs';
+import { createRouterServer, bridgeExposureNote } from './server.mjs';
 import { createSafeFetch } from './network.mjs';
 import { createProviders } from './providers/index.mjs';
 import { ModelSyncScheduler } from './model-sync.mjs';
@@ -26,7 +26,11 @@ server.on('error', async error => { logFailure('router.startup_failed', error, {
 server.listen(port, '127.0.0.1', () => {
   logEvent('router.start', { port, pid: process.pid, node: process.version, log: logPath, bridgeHost });
   modelSync.start();
-  if (bridgeHost && server.bridge) server.bridge.listen(port, bridgeHost, () => logEvent('router.bridge_start', { host: bridgeHost, port }));
+  if (bridgeHost && server.bridge) {
+    const note = bridgeExposureNote(bridgeHost);
+    if (note) logEvent('router.bridge_exposure', { level: 'warn', code: 'BRIDGE_EXPOSURE', message: note, host: bridgeHost });
+    server.bridge.listen(port, bridgeHost, () => logEvent('router.bridge_start', { host: bridgeHost, port }));
+  }
   console.log(`BoxFox Router ready: http://localhost:${port}/api/router/health`);
 });
 let closing = false;

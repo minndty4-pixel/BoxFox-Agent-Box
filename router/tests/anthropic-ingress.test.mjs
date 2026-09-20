@@ -8,7 +8,7 @@ import { RouterStore } from '../src/store.mjs';
 import { ProviderService } from '../src/service.mjs';
 import { RouterEngine } from '../src/engine.mjs';
 import { RouterError } from '../src/errors.mjs';
-import { createRouterServer } from '../src/server.mjs';
+import { createRouterServer, bridgeExposureNote } from '../src/server.mjs';
 import { openAIToClaudeRequest } from '../src/vendor/9router/openai-to-claude.mjs';
 import { claudeFinishReason } from '../src/vendor/9router/claude-to-openai.mjs';
 import {
@@ -583,4 +583,16 @@ test('the bridge serves inference only, never the administration surface', async
   const logFile = join(process.env.BOXFOX_SYSTEM_LOG_DIR || join(tmpdir(), 'boxfox-logs'), 'router.jsonl');
   const logged = readFileSync(logFile, 'utf8').trim().split('\n').some(line => line.includes('router.bridge_denied'));
   assert.ok(logged, 'a denied bridge request is recorded in the router log');
+});
+
+test('the bridge exposure note warns only for the ranges the bridge is not meant for', () => {
+  // Container-style ranges: the note stays silent.
+  assert.equal(bridgeExposureNote('172.18.0.1'), null);
+  assert.equal(bridgeExposureNote('172.17.0.1'), null);
+  assert.equal(bridgeExposureNote('fe80::1'), null);
+  // Loopback cannot hold the bridge (the main listener owns it) — say why.
+  assert.match(bridgeExposureNote('127.0.0.1'), /already serves the admin surface/);
+  // A general private network is reachable by every host on it — say so.
+  assert.match(bridgeExposureNote('192.168.1.5'), /general private network/);
+  assert.match(bridgeExposureNote('10.9.8.7'), /general private network/);
 });
