@@ -690,7 +690,17 @@ class HarnessRuntime(RuntimeCommands):
                     streamed = {'content': '', 'thought': ''}
 
                     def _suffix(previous, current):
+                        # `current` is the text accumulated by the provider so far. While it grows by
+                        # appending, only the new tail is emitted. `current` that does NOT start with
+                        # `previous` means the provider restarted its accumulation (a fresh attempt,
+                        # or a rewritten answer): the whole `current` is then new, and the consumer
+                        # must drop what it already showed for this step — hence the reset below and
+                        # the `UPSTREAM_RETRY` notice consumers treat as a reset.
                         return current[len(previous):] if current.startswith(previous) else current
+
+                    def _reset_stream():
+                        streamed['content'] = ''
+                        streamed['thought'] = ''
 
                     def handle_thought(thought_text):
                         new_text = _suffix(streamed['thought'], thought_text)
@@ -710,6 +720,10 @@ class HarnessRuntime(RuntimeCommands):
                     attempts = 0
                     while True:
                         step_started = time.time()
+                        # A retry restarts the answer: without this, the abandoned partial text of
+                        # the previous attempt stays on screen and the new answer is glued to it.
+                        if attempts:
+                            _reset_stream()
                         try:
                             response = await self.client.complete(messages, tools, config['route'], on_thought=handle_thought, on_content=handle_content)
                             break
@@ -725,6 +739,9 @@ class HarnessRuntime(RuntimeCommands):
                             attempts += 1
                             self.store.emit(sid, 'notice', {
                                 'code': 'UPSTREAM_RETRY',
+                                # Consumers use this notice to drop the live text of the attempt
+                                # that just died; the text after it is a complete answer again.
+                                'reset': True,
                                 'message': f'{code}: retrying the model request once ({message})',
                             })
                             await asyncio.sleep(1.5)

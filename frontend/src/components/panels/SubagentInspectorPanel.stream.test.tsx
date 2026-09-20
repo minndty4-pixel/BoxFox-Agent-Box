@@ -120,6 +120,30 @@ describe('SubagentInspectorPanel — văn bản streaming', () => {
     expect(text).toContain('Cần đọc file rồi tóm tắt')
   })
 
+  it('bản ghi chuẩn `assistant` sau các delta không in câu trả lời lần hai', async () => {
+    const host = await renderWith([
+      { seq: 1, type: 'assistant_delta', data: { text: 'Kế hoạch chi' }, created: 1 },
+      { seq: 2, type: 'assistant_delta', data: { text: ' tiết cho agent' }, created: 2 },
+      { seq: 3, type: 'assistant', data: { text: 'Kế hoạch chi tiết cho agent', final: true }, created: 3 },
+    ])
+    const text = host.textContent ?? ''
+    expect(text.split('Kế hoạch chi').length - 1).toBe(1)
+  })
+
+  it('notice thử lại xoá bộ đệm, không dán câu trả lời mới vào phần đã bỏ', async () => {
+    // Harness đứt socket giữa câu trả lời rồi thử lại: phần văn bản của lần thử hỏng bị bỏ.
+    const host = await renderWith([
+      { seq: 1, type: 'assistant_delta', data: { text: 'Kế hoạch chi tiết cho agent ghi hồ sơ' }, created: 1 },
+      { seq: 2, type: 'notice', data: { code: 'UPSTREAM_RETRY', reset: true, message: 'thử lại' }, created: 2 },
+      { seq: 3, type: 'assistant_delta', data: { text: 'Xin chào' }, created: 3 },
+      { seq: 4, type: 'assistant', data: { text: 'Xin chào, đây là kế hoạch mới' }, created: 4 },
+    ])
+    const text = host.textContent ?? ''
+    expect(text).toContain('Xin chào, đây là kế hoạch mới')
+    expect(text).not.toContain('ghi hồ sơXin chào')
+    expect(text).not.toContain('Kế hoạch chi tiết cho agent ghi hồ sơ')
+  })
+
   it('tool_end gắn đúng tool call theo khoá `id` của harness', async () => {
     const host = await renderWith([
       { seq: 1, type: 'tool_start', data: { id: 'call_1', name: 'terminal_exec', args: { command: 'ls' } }, created: 1 },

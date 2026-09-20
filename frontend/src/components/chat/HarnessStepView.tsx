@@ -20,6 +20,7 @@ import {
   Layers,
   Film,
   ShieldAlert,
+  RefreshCw,
 } from 'lucide-react'
 import type { HarnessEvent } from '../../store/harnessChatStore'
 import type { ProviderSnapshot } from '../../types/provider'
@@ -56,6 +57,7 @@ type TurnTimelineItem =
   | { kind: 'plan'; id: string; seq: number; event: HarnessEvent }
   | { kind: 'decision'; id: string; seq: number; event: HarnessEvent; resolution?: HarnessEvent }
   | { kind: 'compression'; id: string; seq: number; event: HarnessEvent }
+  | { kind: 'notice'; id: string; seq: number; event: HarnessEvent }
 
 interface HarnessTurn {
   id: string
@@ -465,6 +467,20 @@ function applyTimelineEvent(turn: HarnessTurn, event: HarnessEvent) {
     }
     case 'compression': {
       turn.items.push({ kind: 'compression', id: `compaction_${event.seq}`, seq: event.seq, event })
+      return
+    }
+    case 'notice': {
+      // Harness báo thử lại yêu cầu model: câu trả lời vừa stream bị bỏ, nên phần văn bản
+      // đang hiện của lượt này phải biến mất — nếu không, câu trả lời mới bị dán vào phần cũ.
+      if (event.data.reset) {
+        while (turn.items.length > 0) {
+          const last = turn.items[turn.items.length - 1]
+          if (last.kind !== 'text' || !last.live) break
+          turn.items.pop()
+        }
+        turn.thought = ''
+      }
+      turn.items.push({ kind: 'notice', id: `notice_${event.seq}`, seq: event.seq, event })
       return
     }
     case 'finish': {
@@ -911,6 +927,9 @@ function TurnBlock({
               />
             )
           }
+          if (item.kind === 'notice') {
+            return <ServicingNotice key={item.id} event={item.event} />
+          }
           return <CompactionNotice key={item.id} event={item.event} />
         })}
 
@@ -1100,6 +1119,28 @@ function ToolMediaBlock({
 }
 
 /** F7: thông báo nén context ở cấp cao nhất của lượt, bấm để xem chi tiết. */
+/** Thông báo ngắn của harness (ví dụ `UPSTREAM_RETRY`). Cùng khung chữ mờ như nhật ký
+ * hệ thống khác trong lượt; không thêm bảng màu mới. */
+function ServicingNotice({ event }: { event: HarnessEvent }) {
+  const code = String(event.data.code ?? 'NOTICE')
+  const message = String(event.data.message ?? '').trim()
+  return (
+    <div
+      className="max-w-2xl rounded-xl border border-line/60 bg-panel/40 px-3 py-2 text-[11px] text-muted"
+      data-timeline="notice"
+      data-notice-code={code}
+    >
+      <div className="flex items-start gap-1.5">
+        <RefreshCw className="mt-0.5 size-3 shrink-0 text-zinc-500" />
+        <span className="flex-1">
+          {message || code}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+
 function CompactionNotice({ event }: { event: HarnessEvent }) {
   const [open, setOpen] = useState(false)
   const kind = String(event.data.kind ?? 'unchanged')

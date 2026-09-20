@@ -37,6 +37,11 @@ const SIGNATURE_LIMIT = 2000;
  * and re-attaches it when that id comes back in a tool_result round trip. This
  * mirrors 9Router's `open-sse/services/thoughtSignatureStore.js` (RAM tier).
  * Signatures are opaque and short-lived: one hour, newest 2000 kept.
+ *
+ * Lifetime is this process only: a router restart between a tool call and its result
+ * forgets the signature, and the replayed call then fails upstream — restart the box
+ * turn, not just the router, if that happens. The tool call id is the only key, so the
+ * id must be unique process-wide (see the fallback id in `vendor/9router/gemini-to-openai.mjs`).
  */
 const thoughtSignatures = new Map();
 
@@ -412,8 +417,16 @@ function anthropicUsage(state) {
   return result;
 }
 
-function toolInput(argumentsText) {
-  try { return JSON.parse(argumentsText || '{}'); } catch { return {}; }
+function toolInput(argumentsText, toolName) {
+  const raw = String(argumentsText || '');
+  try { return JSON.parse(raw || '{}'); } catch {
+    // Never run a tool with silently dropped parameters. An unparsable payload means the
+    // provider truncated the arguments (a length stop) or emitted broken JSON; the client
+    // would otherwise call the tool with `{}` and the user would see an unexplainable tool
+    // failure. The coded error names the tool and shows the start of the payload it got.
+    throw new RouterError('TOOL_ARGUMENTS_INVALID',
+      `Tool ${toolName || 'call'} returned unparsable arguments: ${raw.slice(0, 80)}`, 502);
+  }
 }
 
 /**
@@ -483,7 +496,7 @@ export function anthropicMessageBody(state) {
     if (block.type === 'text' && block.text) content.push({ type: 'text', text: block.text });
     else if (block.type === 'thinking' && block.thinking) content.push({ type: 'thinking', thinking: block.thinking });
     else if (block.type === 'tool_use') {
-      content.push({ type: 'tool_use', id: block.id || `toolu_${block.index}`, name: block.name, input: toolInput(block.arguments) });
+      content.push({ type: 'tool_use', id: block.id || `toolu_${block.index}`, name: block.name, input: toolInput(block.arguments, block.name) });
     }
   }
   return {

@@ -222,6 +222,16 @@ docker network inspect boxnet --format '{{range .IPAM.Config}}{{.Gateway}}{{end}
 - Router đứng sau đường đó là bề mặt HTTP của chính sản phẩm: request vào
   `/v1/messages` vẫn phải qua kiểm khoá BoxFox (`x-api-key` hoặc `Authorization:
   Bearer bf_…`) như luồng 1.
+- **Mặt quản trị KHÔNG đi qua cầu nối.** Tai nghe cầu nối chỉ phục vụ bốn đường suy
+  luận — `/v1/models`, `/v1/chat/completions`, `/v1/messages`,
+  `/v1/messages/count_tokens`; mọi đường `/api/router/*`, `/callback` và
+  `/v1/router/generate` trả `404` và ghi một dòng `router.bridge_denied` vào
+  `~/BoxFox/logs/router.jsonl`. Không có luật này, agent trong box (đúng đối tượng
+  được mở cầu nối) đọc được toàn bộ trạng thái router, tự tạo/thu hồi khoá và sửa
+  kết nối — header `x-boxfox-admin: 1` không phải bí mật.
+- `BOXFOX_ROUTER_BRIDGE_HOST` chỉ nhận **địa chỉ riêng hoặc loopback**
+  (10/8, 172.16/12, 192.168/16, 127/8, fe80::/10, fc00::/7). Địa chỉ LAN/công cộng bị
+  từ chối lúc khởi động — cầu nối chỉ dành cho mạng container.
 - Mặc định (`BOX_LLM_BRIDGE` không đặt / `off`) giữ nguyên thế phòng thủ cũ.
 
 ---

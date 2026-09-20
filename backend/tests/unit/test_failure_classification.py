@@ -92,3 +92,24 @@ def test_transient_classification():
     assert is_transient(ValueError('Upstream did not return any SSE completion content')) is True
     assert is_transient(TimeoutError()) is False
     assert is_transient(PermissionError('nope')) is False
+
+
+def test_httpx_timeout_is_reported_as_a_timeout_not_a_lost_connection():
+    """`httpx.ReadTimeout` KHÔNG phải `TimeoutError` của Python.
+
+    Trước bản sửa nó rơi vào danh sách 'unreachable' nên người dùng đọc được câu
+    'closed the connection' trong khi provider vẫn sống, chỉ chậm.
+    """
+    class ReadTimeout(Exception):
+        """Tên lớp giống httpx; khai báo ở đây để không phụ thuộc httpx."""
+
+    class ReadTimeout(ReadTimeout):  # noqa: F811 - giữ nguyên tên như httpx
+        pass
+
+    exc = ReadTimeout('The read operation timed out')
+    code, message = classify_failure(exc)
+    assert code == 'UPSTREAM_TIMEOUT', (code, message)
+    assert 'did not answer in time' in message
+    assert 'closed the connection' not in message
+    assert is_transient(exc) is False, 'provider chậm thì thử lại ngay không giúp gì'
+    assert describe_failure(exc).startswith('UPSTREAM_TIMEOUT: ')

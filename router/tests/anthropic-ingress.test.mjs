@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import http from 'node:http';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RouterStore } from '../src/store.mjs';
@@ -328,10 +329,22 @@ test('the non-streaming message object carries text, thinking and parsed tool in
   for (const event of [{ type: 'delta', delta: { content: 'done' } }, { type: 'finish', finishReason: 'stop' }]) anthropicApply(textOnly, event);
   assert.equal(anthropicMessageBody(textOnly).stop_reason, 'end_turn');
   assert.deepEqual(anthropicMessageBody(textOnly).usage, { input_tokens: 4, output_tokens: 1 });
-  // An unparseable argument payload becomes an empty input object, never a crash.
+  // An unparseable argument payload must NOT become a silent `{}`: the caller would run the
+  // tool with no parameters and the user would see an unexplainable tool failure.
   const broken = createAnthropicState({ id: 'msg_4', model: 'm' });
   for (const event of [{ type: 'delta', delta: { tool_calls: [{ index: 0, id: 'c', function: { name: 't', arguments: 'not json' } }] } }, { type: 'finish', finishReason: 'tool_calls' }]) anthropicApply(broken, event);
-  assert.deepEqual(anthropicMessageBody(broken).content, [{ type: 'tool_use', id: 'c', name: 't', input: {} }]);
+  assert.throws(() => anthropicMessageBody(broken), error => {
+    assert.equal(error.code, 'TOOL_ARGUMENTS_INVALID');
+    assert.match(error.message, /Tool t returned unparsable arguments: not json/);
+    return true;
+  });
+  // The streamed path still hands the raw buffer to the client as `input_json_delta`, which
+  // is the protocol's own mechanism — the loss is visible there, never hidden.
+  const streamed = createAnthropicState({ id: 'msg_5', model: 'm' });
+  const frames = [];
+  for (const event of [{ type: 'delta', delta: { tool_calls: [{ index: 0, id: 'c', function: { name: 't', arguments: 'not json' } }] } }, { type: 'finish', finishReason: 'tool_calls' }]) frames.push(...anthropicApply(streamed, event));
+  const delta = frames.find(frame => frame.type === 'content_block_delta' && frame.delta?.type === 'input_json_delta');
+  assert.equal(delta.delta.partial_json, 'not json', 'the raw payload reaches the client');
 });
 
 test('router errors become Anthropic error bodies with the vendor error types', () => {
@@ -502,13 +515,72 @@ test('housekeeping traffic is answered locally with a valid Anthropic response',
 });
 
 // The sandbox reaches the router only through the docker bridge gateway. The bridge
-// listener must reuse the same handler, bind one explicit address, and stay off by default.
-test('bridge listener is opt-in and binds one explicit address', async () => {
+// listener must bind one explicit private address, stay off by default, and serve the
+// INFERENCE endpoints only — the agent in the box is exactly the client it is opened for,
+// so the administration surface must never be reachable there.
+test('bridge listener is opt-in and binds one private address', async () => {
   const engine = { generate: async function* () { yield { type: 'delta', text: 'hi' }; yield { type: 'finish', reason: 'stop' }; } };
   const service = { active: new Map(), store: { authenticateKey: () => ({ id: 'k' }) }, snapshot: () => ({}), publicModels: () => [] };
   const off = createRouterServer({ service, engine, oauth: { routes: [] }, allowedHosts: ['127.0.0.1:3101'] });
   assert.equal(off.bridge, undefined, 'no bridge server unless the owner opts in');
   const on = createRouterServer({ service, engine, oauth: { routes: [] }, allowedHosts: ['127.0.0.1:3101', '172.18.0.1:3101'], bridgeHost: '172.18.0.1' });
   assert.ok(on.bridge, 'bridge server exists when configured');
-  assert.throws(() => createRouterServer({ service, engine, oauth: { routes: [] }, bridgeHost: '0.0.0.0' }), /explicit address/);
+  assert.throws(() => createRouterServer({ service, engine, oauth: { routes: [] }, bridgeHost: '0.0.0.0' }), /private or loopback/);
+  // A LAN or public address is refused too: the bridge is for the container network only.
+  assert.throws(() => createRouterServer({ service, engine, oauth: { routes: [] }, bridgeHost: '8.8.8.8' }), /private or loopback/);
+  assert.throws(() => createRouterServer({ service, engine, oauth: { routes: [] }, bridgeHost: '192.0.2.10' }), /private or loopback/);
+  for (const host of ['127.0.0.1', '10.0.0.5', '192.168.1.4', '172.18.0.1', '172.31.255.254']) {
+    const server = createRouterServer({ service, engine, oauth: { routes: [] }, bridgeHost: host });
+    assert.ok(server.bridge, `bridge accepts the private address ${host}`);
+    server.bridge.close();
+    server.close();
+  }
+});
+
+test('the bridge serves inference only, never the administration surface', async t => {
+  const f = await fixture(t);
+  const server = createRouterServer({
+    service: f.service, engine: f.engine, oauth: { routes: [] },
+    allowedHosts: ['127.0.0.1:3101', '172.18.0.1:3101'], bridgeHost: '127.0.0.1',
+  });
+  t.after(() => { server.bridge.close(); server.close(); });
+  await new Promise(resolve => server.bridge.listen(0, '127.0.0.1', resolve));
+  // `fetch` refuses to set the Host header, and the server's host allow-list keys on it,
+  // so the probe uses node:http directly with `host: '127.0.0.1:3101'` (the allowed value).
+  const call = (path, options = {}) => new Promise((resolve, reject) => {
+    const request = http.request({
+      host: '127.0.0.1', port: server.bridge.address().port, path, method: options.method || 'GET',
+      headers: { host: '127.0.0.1:3101', 'x-boxfox-admin': '1', ...(options.headers || {}) },
+    }, response => {
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', chunk => { body += chunk; });
+      response.on('end', () => resolve({ status: response.statusCode, json: async () => JSON.parse(body || '{}') }));
+    });
+    request.on('error', reject);
+    request.end(options.body || '');
+  });
+
+  // Inference endpoint: reachable, exactly as on the main listener.
+  const models = await call('/v1/models', { headers: { authorization: `Bearer ${f.key.key}` } });
+  assert.equal(models.status, 200);
+  assert.ok(Array.isArray((await models.json()).data));
+
+  // Everything else is refused, including every admin path the sandbox must not reach.
+  for (const [path, options] of [
+    ['/api/router/state', {}],
+    ['/api/router/keys', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"name":"from-the-box"}' }],
+    ['/api/router/connections', {}],
+    ['/v1/router/generate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"messages":[{"role":"user","content":"hi"}]}' }],
+    ['/api/router/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"messages":[{"role":"user","content":"hi"}]}' }],
+    ['/callback', {}],
+  ]) {
+    const response = await call(path, options);
+    assert.equal(response.status, 404, `${path} must not be served by the bridge`);
+    assert.equal((await response.json()).error.code, 'NOT_FOUND');
+  }
+  // The bridge refusal is logged, so the owner can see attempts from inside the box.
+  const logFile = join(process.env.BOXFOX_SYSTEM_LOG_DIR || join(tmpdir(), 'boxfox-logs'), 'router.jsonl');
+  const logged = readFileSync(logFile, 'utf8').trim().split('\n').some(line => line.includes('router.bridge_denied'));
+  assert.ok(logged, 'a denied bridge request is recorded in the router log');
 });

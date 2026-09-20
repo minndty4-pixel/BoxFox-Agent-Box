@@ -11,19 +11,39 @@ from ..observability.system_log import system_log
 from ..sandbox.executor import SandboxExecutor
 
 
-# The UI and the Vite proxy use 3102; the override lets a verification run bind an
-# isolated instance without changing the default posture.
-HARNESS_PORT = int(os.environ.get('BOXFOX_HARNESS_PORT', '3102'))
-ALLOWED_HOSTS = {
-    '127.0.0.1:3102', 'localhost:3102', '127.0.0.1:3100', 'localhost:3100',
-    f'127.0.0.1:{HARNESS_PORT}', f'localhost:{HARNESS_PORT}',
-}
+DEFAULT_HARNESS_PORT = 3102
+
+
+def harness_port() -> int:
+    """Port the harness binds. Read per call, not at import: a wrapper or a test that sets
+    `BOXFOX_HARNESS_PORT` after this module is imported must still get a matching allow-list,
+    and a non-numeric value must not kill the process with a bare `ValueError`."""
+    raw = (os.environ.get('BOXFOX_HARNESS_PORT') or '').strip()
+    if not raw:
+        return DEFAULT_HARNESS_PORT
+    try:
+        port = int(raw)
+    except ValueError:
+        raise ValueError(f'BOXFOX_HARNESS_PORT must be a number, got {raw!r}') from None
+    if not 1 <= port <= 65535:
+        raise ValueError(f'BOXFOX_HARNESS_PORT must be 1-65535, got {port}')
+    return port
+
+
+def allowed_hosts() -> set[str]:
+    """The UI and the Vite proxy use 3100/3102; the override adds an isolated instance's
+    own port without dropping the defaults."""
+    port = harness_port()
+    return {
+        '127.0.0.1:3102', 'localhost:3102', '127.0.0.1:3100', 'localhost:3100',
+        f'127.0.0.1:{port}', f'localhost:{port}',
+    }
 
 
 def create_app(runtime):
     @web.middleware
     async def boundary(request, handler):
-        if request.host not in ALLOWED_HOSTS:
+        if request.host not in allowed_hosts():
             return web.json_response({'error': 'Host not allowed'}, status=403)
         if request.path != '/api/agent/health':
             if request.headers.get('X-BoxFox-Admin') != '1' or request.headers.get('Origin', 'http://localhost:3100') not in {'http://localhost:3100', 'http://127.0.0.1:3100'}:
@@ -171,7 +191,7 @@ def create_app(runtime):
 
 def main():
     data = Path(os.environ.get('BOXFOX_AGENT_DATA_DIR', str(Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'BoxFox/harness')))
-    port = HARNESS_PORT
+    port = harness_port()
     runtime = HarnessRuntime(SessionStore(data / 'sessions.sqlite'), SandboxExecutor(
         api_key=os.environ.get('BOXFOX_API_KEY', 'boxfox-local-dev-token')))
     system_log.write('harness.start', dataDir=str(data), port=port, pid=os.getpid(),

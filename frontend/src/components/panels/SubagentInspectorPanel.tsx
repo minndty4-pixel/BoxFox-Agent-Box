@@ -265,7 +265,12 @@ export function SubagentInspectorPanel() {
     const toolStarts = new Map<string, { name: string; args: Record<string, unknown> | null }>()
 
     for (const ev of childEvents) {
-      if (ev.type === 'thought') {
+      if (ev.type === 'notice' && ev.data.reset) {
+        // Harness thử lại yêu cầu model: phần văn bản của lần thử trước bị bỏ, nên bộ đệm
+        // phải xoá trước khi ghép câu trả lời mới (nếu không sẽ dán hai câu vào nhau).
+        thought = ''
+        output = ''
+      } else if (ev.type === 'thought') {
         // `thought` có thể là tích luỹ (harness cũ) hoặc mảnh rời: dùng chung một hàm ghép.
         thought = appendStreamText(thought, String(ev.data.thought ?? ev.data.text ?? ''))
       } else if (ev.type === 'tool_start') {

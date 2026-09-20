@@ -34,6 +34,22 @@ const STREAM_HEADERS = { 'Content-Type': 'text/event-stream; charset=utf-8', 'Ca
 const openAIFrame = value => `data: ${typeof value === 'string' ? value : JSON.stringify(value)}\n\n`;
 // Anthropic dialect: `event: <type>\ndata: {json}\n\n` frames, no terminator.
 const anthropicFraming = value => (typeof value === 'string' ? value : anthropicFrame(value));
+/** Loopback, link-local, or one of the private IPv4/IPv6 ranges — the only addresses the
+ * sandbox bridge may bind. A LAN or public address would put the inference endpoints on
+ * the corporate/office network, which is never what "let the box reach the router" means. */
+function isPrivateAddress(value) {
+  const host = String(value).trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (host === 'localhost' || host === '::1') return true;
+  if (host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd')) return true;
+  const parts = host.split('.');
+  if (parts.length !== 4 || parts.some(part => !/^\d{1,3}$/.test(part) || Number(part) > 255)) return false;
+  const [first, second] = parts.map(Number);
+  if (first === 127 || first === 10) return true;
+  if (first === 192 && second === 168) return true;
+  if (first === 172 && second >= 16 && second <= 31) return true;
+  return false;
+}
+
 export function createRouterServer({ service, engine, oauth, frontendDir = null, allowedOrigins = ['http://localhost:3100', 'http://127.0.0.1:3100'], allowedHosts = ['localhost:3100', '127.0.0.1:3100', 'localhost:3101', '127.0.0.1:3101'], bridgeHost = null }) {
   function admin(req) {
     assert(req.headers['x-boxfox-admin'] === '1', 'Local administration header required.', 'FORBIDDEN', 403);
@@ -281,15 +297,29 @@ export function createRouterServer({ service, engine, oauth, frontendDir = null,
       throw new RouterError('NOT_FOUND', 'Endpoint not found.', 404);
     } catch (e) { if (!res.headersSent && !res.destroyed) json(res, safeError(e).status, errorEnvelope(e)); else res.end(); }
   };
+  // The sandbox can reach the router only through the docker bridge gateway. When the
+  // owner opts in (`BOXFOX_ROUTER_BRIDGE_HOST`, e.g. 172.18.0.1) a second listener serves
+  // the INFERENCE endpoints on that single address — never the administration surface:
+  // the agent inside the box is exactly the client the bridge is opened for, and it must
+  // not be able to read the router state, mint or revoke keys, edit connections or call
+  // the admin generator (`/v1/router/generate`, which bypasses a key's model allow-list).
+  const BRIDGE_PATHS = new Set(['/v1/models', '/v1/chat/completions', '/v1/messages', '/v1/messages/count_tokens']);
+  const bridgeHandler = async (req, res) => {
+    const path = String(req.url || '/').split('?')[0];
+    if (!BRIDGE_PATHS.has(path)) {
+      logEvent('router.bridge_denied', {
+        level: 'warn', code: 'NOT_FOUND', path, method: req.method,
+        message: 'The sandbox bridge serves inference endpoints only.',
+      });
+      return json(res, 404, { error: { code: 'NOT_FOUND', message: 'The sandbox bridge serves inference endpoints only.', retryable: false } });
+    }
+    return handler(req, res);
+  };
   const server = http.createServer(handler);
   server.requestTimeout = 110000; server.headersTimeout = 10000;
-  // The sandbox can reach the router only through the docker bridge gateway. When the
-  // owner opts in (`BOXFOX_ROUTER_BRIDGE_HOST`, e.g. 172.18.0.1) a second listener
-  // serves the exact same handler on that single address. Never bind 0.0.0.0 here:
-  // one address keeps the exposure on the container network only.
   if (bridgeHost) {
-    assert(bridgeHost !== '0.0.0.0' && bridgeHost !== '::', 'Bridge host must be one explicit address.', 'INVALID_REQUEST', 400);
-    server.bridge = http.createServer(handler);
+    assert(isPrivateAddress(bridgeHost), 'Bridge host must be a private or loopback address.', 'INVALID_REQUEST', 400);
+    server.bridge = http.createServer(bridgeHandler);
     server.bridge.requestTimeout = server.requestTimeout; server.bridge.headersTimeout = server.headersTimeout;
     server.bridge.on('error', error => logFailure('router.bridge_failed', error, { host: bridgeHost }));
   }

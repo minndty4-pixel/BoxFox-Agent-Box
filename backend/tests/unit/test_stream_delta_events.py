@@ -20,10 +20,13 @@ from agentbox.memory.session_store import SessionStore
 class StreamingModel:
     """Giả lập router: gọi `on_content`/`on_thought` với văn bản TÍCH LUỸ."""
 
-    def __init__(self, content_sequence=(), thought_sequence=(), fail_first=False):
+    def __init__(self, content_sequence=(), thought_sequence=(), fail_first=False, fail_after=0):
         self.content_sequence = list(content_sequence)
         self.thought_sequence = list(thought_sequence)
+        # `fail_first`: lỗi trước khi stream gì. `fail_after=n`: stream n lần ghép đầu
+        # rồi mới lỗi — đúng ca socket đứt GIỮA câu trả lời trên đoạn chat dài.
         self.fail_first = fail_first
+        self.fail_after = fail_after
         self.calls = 0
 
     async def complete(self, messages, tools, route, max_tokens=4096, on_thought=None, on_content=None):
@@ -31,7 +34,9 @@ class StreamingModel:
         if self.fail_first and self.calls == 1:
             raise ServerDisconnectedError()
         accumulated = ''
-        for piece in self.content_sequence:
+        for index, piece in enumerate(self.content_sequence):
+            if self.fail_after and self.calls == 1 and index == self.fail_after:
+                raise ServerDisconnectedError()
             accumulated += piece
             if on_content:
                 result = on_content(accumulated)
@@ -122,6 +127,52 @@ def test_transient_upstream_failure_is_retried_once(tmp_path, monkeypatch):
         notice = [event for event in events if event['type'] == 'notice']
         assert notice and notice[0]['data']['code'] == 'UPSTREAM_RETRY'
         assert [event for event in events if event['type'] == 'finish']
+        store.close()
+
+    asyncio.run(run())
+
+
+def test_retry_after_a_partial_stream_drops_the_abandoned_text(tmp_path, monkeypatch):
+    """Đứt socket GIỮA câu trả lời (ca thật của đoạn chat dài): phần văn bản đã phát của
+    lần thử hỏng phải bị bỏ, không được dán vào câu trả lời mới.
+
+    Trước bản sửa, `streamed` sống qua cả hai lần thử: lần hai thấy `current` không còn
+    bắt đầu bằng `previous` nên phát lại TOÀN BỘ câu mới, còn consumer thì đã có sẵn phần
+    cũ trong bộ đệm — kết quả là 'Kế hoạch chi tiết cho agent ghi hồ sơXin chào, …'.
+    """
+    async def run():
+        async def fast_sleep(_seconds):
+            return None
+
+        monkeypatch.setattr(asyncio, 'sleep', fast_sleep)
+        client = StreamingModel(content_sequence=['Kế hoạch chi', ' tiết cho', ' agent ghi hồ sơ'], fail_after=2)
+        store, runtime, session = _runtime(tmp_path, client)
+        await runtime.submit(session['id'], 'viết kế hoạch')
+        await runtime.tasks[session['id']]
+        events = store.events(session['id'])
+        assert client.calls == 2
+
+        deltas = [event['data']['text'] for event in events if event['type'] == 'assistant_delta']
+        notices = [event for event in events if event['type'] == 'notice']
+        assert notices and notices[0]['data']['reset'] is True, 'notice thử lại phải nói rõ là reset'
+        reset_at = notices[0]['seq']
+        before = ''.join(
+            event['data']['text'] for event in events
+            if event['type'] == 'assistant_delta' and event['seq'] < reset_at
+        )
+        after = ''.join(
+            event['data']['text'] for event in events
+            if event['type'] == 'assistant_delta' and event['seq'] > reset_at
+        )
+        # Lần thử đầu đã phát hai mảnh đầu của câu, rồi bị bỏ.
+        assert before == 'Kế hoạch chi tiết cho', before
+        # Sau mốc reset, văn bản phát ra là câu trả lời mới, không dính phần cũ.
+        assert after == 'Kế hoạch chi tiết cho agent ghi hồ sơ', after
+        assert 'Xin chào' not in after
+        # Không mảnh nào sau mốc reset lặp lại phần đã phát trước đó.
+        assert not any(piece == 'Kế hoạch chi' for piece in deltas[3:]), deltas
+        final = [event['data']['text'] for event in events if event['type'] == 'assistant'][-1]
+        assert final == after, (final, after)
         store.close()
 
     asyncio.run(run())

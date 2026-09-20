@@ -84,6 +84,26 @@ def _reason(exc: BaseException) -> str:
     return text or repr(exc)
 
 
+def _is_timeout(exc: BaseException) -> bool:
+    """True for the builtin timeouts AND the httpx-family ones.
+
+    ``httpx.ReadTimeout``/``ConnectTimeout``/``WriteTimeout``/``PoolTimeout`` derive from
+    ``TimeoutException``/``TransportError``, NOT from the builtin ``TimeoutError``, so a slow
+    upstream used to be reported as "closed the connection" — the opposite advice.
+    """
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+        return True
+    name = type(exc).__name__
+    return name.endswith('Timeout') or name in {'TimeoutException', 'ReadTimeout', 'ConnectTimeout'}
+
+
+def _readable(reason: str) -> str:
+    """A phrase a person can act on when the exception text is empty or opaque."""
+    if reason.startswith('<') or reason.startswith('(') or len(reason) > 200:
+        return reason[:200]
+    return reason
+
+
 def classify_failure(exc: BaseException) -> tuple[str, str]:
     """Return ``(code, message)`` for a failure that ended a turn or a command."""
     reason = _reason(exc)
@@ -91,6 +111,13 @@ def classify_failure(exc: BaseException) -> tuple[str, str]:
 
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
         return 'DEADLINE', 'DEADLINE: the turn ran out of time before an answer was produced'
+
+    # httpx timeouts: the upstream WAS reachable but too slow. Say that, and keep the code
+    # distinct from a hard deadline so the retry decision stays separate from the wording.
+    if not isinstance(exc, (asyncio.TimeoutError, TimeoutError)) and _is_timeout(exc):
+        return 'UPSTREAM_TIMEOUT', (
+            f'UPSTREAM_TIMEOUT: the model provider did not answer in time ({name}: {_readable(reason)})'
+        )
 
     if isinstance(exc, PermissionError):
         return 'TOOL_NOT_PERMITTED', 'TOOL_NOT_PERMITTED: ' + reason
@@ -144,6 +171,9 @@ def is_transient(exc: BaseException) -> bool:
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
         return False
     name = type(exc).__name__
+    if _is_timeout(exc):
+        # A slow provider that already spent the whole window rarely gets faster on a retry.
+        return False
     if name in _UNREACHABLE_NAMES or isinstance(exc, ConnectionError):
         return True
     # httpx raises its own names; kept separate from aiohttp to avoid importing it here.
