@@ -56,7 +56,7 @@ CLI hiểu. Biến `ANTHROPIC_*` thô **không bao giờ** nằm trong môi trư
 |---|---|---|
 | `BOXFOX_ANTHROPIC_BASE_URL` | `ANTHROPIC_BASE_URL` | ✅ (cùng token) |
 | `BOXFOX_ANTHROPIC_AUTH_TOKEN` | `ANTHROPIC_AUTH_TOKEN` | ✅ (cùng base URL) |
-| `BOXFOX_ANTHROPIC_MODEL` | `ANTHROPIC_MODEL` | — |
+| `BOXFOX_ANTHROPIC_MODEL` | `ANTHROPIC_MODEL` | — (mặc định lấy model sonnet) |
 | `BOXFOX_ANTHROPIC_DEFAULT_OPUS_MODEL` | `ANTHROPIC_DEFAULT_OPUS_MODEL` | — |
 | `BOXFOX_ANTHROPIC_DEFAULT_SONNET_MODEL` | `ANTHROPIC_DEFAULT_SONNET_MODEL` | — |
 | `BOXFOX_ANTHROPIC_DEFAULT_HAIKU_MODEL` | `ANTHROPIC_DEFAULT_HAIKU_MODEL` | — |
@@ -67,6 +67,8 @@ Ví dụ (chạy trên host, trước khi start harness):
 export BOXFOX_ANTHROPIC_BASE_URL="http://172.18.0.1:3101"      # KHÔNG thêm /v1
 export BOXFOX_ANTHROPIC_AUTH_TOKEN="bf_..."                     # khoá BoxFox của router
 export BOXFOX_ANTHROPIC_DEFAULT_SONNET_MODEL="<connectionId>/gemini-3.6-flash-high"
+# Không đặt BOXFOX_ANTHROPIC_MODEL cũng được: worker lấy model sonnet ở trên làm mặc định,
+# vì CLI tự chọn `claude-opus-5[1m]` mà router BoxFox không có model đó.
 export BOXFOX_ANTHROPIC_DEFAULT_HAIKU_MODEL="<connectionId>/gemini-3.6-flash-high"
 exec .venv/bin/python scripts/run-harness.py
 ```

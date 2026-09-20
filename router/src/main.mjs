@@ -7,7 +7,7 @@ import { createRouterServer, bridgeExposureNote } from './server.mjs';
 import { createSafeFetch } from './network.mjs';
 import { createProviders } from './providers/index.mjs';
 import { ModelSyncScheduler } from './model-sync.mjs';
-import { logEvent, logFailure, logPath } from './system-log.mjs';
+import { logEvent, logFailure, logPath, resetOnShutdown } from './system-log.mjs';
 
 const production = process.argv.includes('--production');
 const port = Number(process.env.BOXFOX_ROUTER_PORT || (production ? 3100 : 3101));
@@ -34,5 +34,5 @@ server.listen(port, '127.0.0.1', () => {
   console.log(`BoxFox Router ready: http://localhost:${port}/api/router/health`);
 });
 let closing = false;
-async function shutdown() { if (closing) return; closing = true; logEvent('router.stop', { port, pid: process.pid }); modelSync.stop(); for (const request of service.active.values()) request.controller.abort(); server.closeAllConnections(); await new Promise(r => server.close(r)); if (server.bridge) { server.bridge.closeAllConnections(); await new Promise(r => server.bridge.close(r)); } await oauth.close(); store.close(); }
+async function shutdown() { if (closing) return; closing = true; logEvent('router.stop', { port, pid: process.pid }); modelSync.stop(); for (const request of service.active.values()) request.controller.abort(); server.closeAllConnections(); await new Promise(r => server.close(r)); if (server.bridge) { server.bridge.closeAllConnections(); await new Promise(r => server.bridge.close(r)); } await oauth.close(); store.close(); /* Owner's rule: reset only on a GRACEFUL stop. Last thing we do, so `router.stop` stays in the file it belongs to; a hard kill never reaches this line. */ resetOnShutdown(); }
 process.on('SIGINT', () => shutdown()); process.on('SIGTERM', () => shutdown());

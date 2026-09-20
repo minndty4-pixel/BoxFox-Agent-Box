@@ -34,6 +34,8 @@ export type PanelTabId =
   | 'labels'
   | 'audit'
   | 'files'
+  /** Bảng nhật ký hệ thống — công cụ DEV, chỉ hiện khi `import.meta.env.DEV` (App.tsx). */
+  | 'system_log'
 
 export const ALL_PANEL_TABS: PanelTabId[] = [
   'plan',
@@ -47,6 +49,7 @@ export const ALL_PANEL_TABS: PanelTabId[] = [
   'labels',
   'audit',
   'files',
+  'system_log',
 ]
 
 /**

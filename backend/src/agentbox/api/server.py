@@ -7,11 +7,32 @@ from aiohttp import web
 from ..agent_core.runtime import HarnessRuntime, DecisionError
 from ..agent_core.roles import ROLES
 from ..memory.session_store import SessionStore
-from ..observability.system_log import system_log
+from ..observability.system_log import (DEFAULT_READ_LINES, MAX_READ_LINES, clamp_lines,
+                                        redact_entry, system_log)
 from ..sandbox.executor import SandboxExecutor
 
 
 DEFAULT_HARNESS_PORT = 3102
+HARNESS_VERSION = '0.1.0'
+
+
+def repo_commit() -> str | None:
+    """Commit of this checkout, read from `.git` directly (no subprocess), or None.
+
+    The diagnostics line a dev copies out of the system-log panel has to name the build
+    it came from; when there is no `.git` (a packaged run) the answer is honestly `None`
+    and the panel prints `unknown` instead of inventing a hash.
+    """
+    git = Path(__file__).resolve().parents[4] / '.git'
+    try:
+        head = git / 'HEAD'
+        text = head.read_text(encoding='utf-8').strip()
+        if text.startswith('ref:'):
+            ref = text[4:].strip()
+            return (git / ref).read_text(encoding='utf-8').strip()[:40] or None
+        return text[:40] or None
+    except OSError:
+        return None
 
 
 def harness_port() -> int:
@@ -60,7 +81,7 @@ def create_app(runtime):
     app = web.Application(middlewares=[boundary], client_max_size=1048576)
 
     async def health(request):
-        return web.json_response({'status': 'ok', 'service': 'boxfox-harness', 'version': '0.1.0'})
+        return web.json_response({'status': 'ok', 'service': 'boxfox-harness', 'version': HARNESS_VERSION})
 
     async def catalog(request):
         return web.json_response({'roles': [{'id': r.id, 'name': r.name, 'instructions': r.instructions, 'tools': sorted(r.tools)} for r in ROLES.values()], 'skills': runtime.catalog.list(runtime.commands.settings()['enabled'])})
@@ -160,10 +181,49 @@ def create_app(runtime):
         runtime.store.delete(sid)
         return web.json_response({'status': 'deleted', 'id': sid})
 
+    async def system_log_view(request):
+        """Read-only view of the developer system log (plan §3.1).
+
+        The log lives in `~/BoxFox/logs` on the HOST, so this route is the only way the
+        UI can see it; nothing inside the box reaches it and no box route proxies it
+        (plan §3.2 — proven by `deploy/docker/tests/test_ide_proxy_system_log.py`).
+        A missing file is not an error: it only means the harness has not run yet, and
+        the answer is an explicit empty list. Bad filter values raise ValueError, which
+        the boundary middleware turns into a 400.
+        """
+        query = request.query
+        limit = clamp_lines(query.get('lines'))
+        entries = system_log.read(level=query.get('level'), source=query.get('source'),
+                                  session_id=query.get('sessionId'), event=query.get('event'),
+                                  lines=limit, since=query.get('since'))
+        return web.json_response({
+            # Second pass at the API layer: the writer redacts, but the file is a file,
+            # so a secret value never leaves the harness through this route either.
+            'entries': [redact_entry(entry) for entry in entries],
+            'count': len(entries),
+            'exists': system_log.path.exists(),
+            'file': system_log.path.name,
+            'lines': limit,
+            'cap': MAX_READ_LINES,
+            'runId': system_log.run_id,
+            'version': HARNESS_VERSION,
+            'commit': repo_commit(),
+        })
+
     async def close(app):
         for sid in list(runtime.tasks):
             await runtime.stop(sid)
         runtime.store.close()
+        # Graceful shutdown is the owner's "reset on shutdown": mark the end of the run
+        # in the file it happened in, then reset it to `harness.previous.jsonl` so the
+        # next run opens a fresh, empty active file (plan §3.3). A hard kill never gets
+        # here, so an abrupt death loses nothing — the file simply stays.
+        try:
+            port = harness_port()
+        except ValueError:
+            port = None
+        system_log.write('harness.stop', port=port, pid=os.getpid())
+        system_log.rotate_on_shutdown()
 
     app.router.add_get('/api/agent/health', health)
     app.router.add_get('/api/agent/catalog', catalog)
@@ -184,6 +244,9 @@ def create_app(runtime):
     app.router.add_post('/api/agent/sessions/{sid}/turns', turn)
     app.router.add_post('/api/agent/sessions/{sid}/stop', stop)
     app.router.add_post('/api/agent/sessions/{sid}/decisions', decision)
+    # DEV-only surface: the system log is host-only and read-only. There is deliberately
+    # no write route and no route of the box that reaches it (plan §3.1 + §3.2).
+    app.router.add_get('/api/agent/system-log', system_log_view)
     app.on_cleanup.append(close)
     return app
 
@@ -199,7 +262,10 @@ def main():
     try:
         web.run_app(create_app(runtime), host='127.0.0.1', port=port, print=None)
     finally:
-        system_log.write('harness.stop', port=port, pid=os.getpid())
+        # `close()` is the normal path (`harness.stop` + reset). This call covers a
+        # startup that died before the aiohttp cleanup ran; it is a no-op when the file
+        # was already reset, because then there is no active file left to rename.
+        system_log.rotate_on_shutdown()
 
 
 if __name__ == '__main__':

@@ -475,6 +475,13 @@ def desktop_target() -> tuple[int, int]:
     return int(match.group(1)), int(match.group(2))
 
 
+def _output_text(value) -> str:
+    """Đầu ra của lệnh con, dù là `str` (`text=True`) hay `bytes` (test cũ)."""
+    if isinstance(value, bytes):
+        return value.decode(errors="replace")
+    return str(value or "")
+
+
 def ensure_desktop_size() -> dict | None:
     """Đặt lại framebuffer nếu nó đã bị kéo nhỏ hơn cỡ cấu hình.
 
@@ -495,7 +502,10 @@ def ensure_desktop_size() -> dict | None:
     except (subprocess.SubprocessError, OSError) as exc:
         return {"from": f"{current[0]}x{current[1]}", "warning": f"xrandr failed: {exc}"}
     if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout or b"").decode(errors="replace").strip()[:200]
+        # F6b (đợt 9): `_run_as_agent` chạy `text=True` nên đầu ra là `str`; gọi `.decode()`
+        # lên nó làm cả nhánh "đặt lại thất bại" ném AttributeError → route trả 500 trong khi
+        # hợp đồng là KHÔNG BAO GIỜ ném lỗi. Nhận cả `str` lẫn `bytes`.
+        detail = _output_text(proc.stderr or proc.stdout).strip()[:200]
         return {"from": f"{current[0]}x{current[1]}", "warning": f"xrandr exit {proc.returncode}: {detail}"}
     return {"from": f"{current[0]}x{current[1]}", "to": mode}
 

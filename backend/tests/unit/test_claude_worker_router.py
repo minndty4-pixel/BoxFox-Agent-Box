@@ -232,3 +232,41 @@ def test_readonly_roles_still_require_bubblewrap(sandbox, monkeypatch, capsys):
     events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert [event['type'] for event in events] == ['readiness', 'error']
     assert events[1]['message'].startswith('setup_required: read-only roles require working bubblewrap isolation')
+
+
+def test_the_cli_never_falls_back_to_its_own_default_model(sandbox, monkeypatch):
+    """CLI mặc định gọi `claude-opus-5[1m]` — router BoxFox không có model đó.
+
+    Đo sống 2026-09-20: harness chỉ đặt `BOXFOX_ANTHROPIC_DEFAULT_SONNET_MODEL`, CLI chọn
+    model mặc định của nó và lượt `/claude-code` chết với "There's an issue with the
+    selected model (claude-opus-5[1m])". Nay `ANTHROPIC_MODEL` lấy model sonnet đã cấu hình.
+    """
+    with listening_router() as url:
+        monkeypatch.setenv('BOXFOX_ANTHROPIC_BASE_URL', url)
+        monkeypatch.setenv('BOXFOX_ANTHROPIC_AUTH_TOKEN', TOKEN)
+        monkeypatch.setenv('BOXFOX_ANTHROPIC_DEFAULT_SONNET_MODEL', 'conn-1/gemini-3.6-flash-high')
+        monkeypatch.delenv('BOXFOX_ANTHROPIC_MODEL', raising=False)
+        values = claude_worker.router_config()['values']
+        assert values['ANTHROPIC_MODEL'] == 'conn-1/gemini-3.6-flash-high'
+
+        monkeypatch.setenv('BOXFOX_ANTHROPIC_MODEL', 'conn-1/gemini-3.8-flash-high')
+        assert claude_worker.router_config()['values']['ANTHROPIC_MODEL'] == 'conn-1/gemini-3.8-flash-high'
+
+        monkeypatch.delenv('BOXFOX_ANTHROPIC_MODEL', raising=False)
+        monkeypatch.delenv('BOXFOX_ANTHROPIC_DEFAULT_SONNET_MODEL', raising=False)
+        monkeypatch.setenv('BOXFOX_ANTHROPIC_DEFAULT_HAIKU_MODEL', 'conn-1/gemini-3.6-flash-high')
+        assert claude_worker.router_config()['values']['ANTHROPIC_MODEL'] == 'conn-1/gemini-3.6-flash-high'
+
+        monkeypatch.delenv('BOXFOX_ANTHROPIC_DEFAULT_HAIKU_MODEL', raising=False)
+        assert claude_worker.router_config()['values']['ANTHROPIC_MODEL'] == ''
+
+
+def test_cli_environment_carries_the_resolved_model(sandbox, monkeypatch):
+    with listening_router() as url:
+        monkeypatch.setenv('BOXFOX_ANTHROPIC_BASE_URL', url)
+        monkeypatch.setenv('BOXFOX_ANTHROPIC_AUTH_TOKEN', TOKEN)
+        monkeypatch.setenv('BOXFOX_ANTHROPIC_DEFAULT_SONNET_MODEL', 'conn-1/gemini-3.6-flash-high')
+        monkeypatch.delenv('BOXFOX_ANTHROPIC_MODEL', raising=False)
+        env = claude_worker.cli_environment(claude_worker.router_config())
+    assert env['ANTHROPIC_MODEL'] == 'conn-1/gemini-3.6-flash-high'
+    assert env['ANTHROPIC_BASE_URL'] == url

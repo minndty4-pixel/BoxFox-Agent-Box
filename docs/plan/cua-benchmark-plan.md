@@ -7,6 +7,14 @@
 > [kế hoạch đánh giá Agent Box](agent-box-evaluation.md) §6.
 >
 > Đây là việc 6 của chủ sở hữu: "lập benchmark cụ thể, ước lượng chi phí và thời gian".
+>
+> **Trạng thái 2026-09-20:** giàn chạy đã dựng ở `scripts/eval/` (kế hoạch chi phí theo tầng, cổng
+> chi tiêu hai yếu tố, manifest, bảng điểm tính lại được) nhưng **chưa chạy benchmark nào**: chưa
+> tải dữ liệu BFCL, chưa gọi model, chưa tiêu đồng nào. Hai chỗ trong tài liệu này đã cũ và đã đo
+> lại: (1) số ca ở §3 tầng 0 — đo ngày 2026-09-20 được 89 router / 400 backend (+2 skip, có 10 ca
+> lỗi tạm thời do việc song song đang sửa) / 670 frontend / 353 docker, thay cho 63/287/644;
+> (2) BFCL V4 `simple_python` có **399 mục** chứ không phải ~200, nên chi phí tầng 0 phải tính lại
+> nếu chạy hết (hoặc ghi rõ cách cắt tập con). Chi tiết và checklist: `scripts/eval/benchmarks/tier0.md`.
 
 ## 1. Chọn gì để đo
 
@@ -46,6 +54,7 @@ Con số trên chỉ để chọn hướng; khi chạy phải thay bằng số t
 ### Tầng 0 — hôm nay, gần như miễn phí (0–2 ngày)
 
 1. Chạy bộ test hiện có như "benchmark hồi quy": 63 test router, 287 test backend, 644 test frontend.
+   *(Số này đã lỗi thời — xem ghi chú trạng thái ở đầu tài liệu và `scripts/eval/benchmarks/tier0.md`.)*
 2. Chạy **BFCL nhóm đơn giản** (≈ 200 mục) qua router: chi phí ước **2–10 USD**, thời gian 1–2 giờ.
 3. Ghi số vào `docs/tracking/` theo mẫu manifest.
    **Xong khi:** có bảng điểm BFCL + commit + model + chi phí thật.

@@ -388,6 +388,40 @@ class DesktopFloorTest(unittest.TestCase):
         self.assertEqual(note["from"], "286x311")
         self.assertIn("warning", note)
 
+    def test_failed_restore_with_text_output_still_warns(self) -> None:
+        """F6b: `_run_as_agent` chạy `text=True` nên đầu ra là `str`, không phải `bytes`.
+
+        Bản cũ gọi `.decode()` lên `str` → AttributeError → route /__box/capture trả 500
+        thay vì trả ảnh kèm `desktopWarning` (đúng hợp đồng "không bao giờ ném lỗi").
+        """
+        def run(args, **kwargs):
+            self.calls.append(list(args))
+            if args[:2] == ["xrandr", "--output"]:
+                return subprocess.CompletedProcess(args, 1, "", "xrandr: cannot find mode 1280x800")
+            return subprocess.CompletedProcess(args, 0, CURRENT_SMALL, "")
+        with patch.object(capture, "_run_as_agent", run):
+            note = capture.ensure_desktop_size()
+        self.assertEqual(note["from"], "286x311")
+        self.assertIn("cannot find mode 1280x800", note["warning"])
+        self.assertNotIn("to", note)
+        self.assertEqual(capture._attach_desktop_note({"path": "x"}, note)["desktopWarning"], note)
+
+    def test_failed_restore_without_output_yields_a_clean_warning(self) -> None:
+        for empty in (None, "", b""):
+            with self.subTest(empty=empty):
+                def run(args, **kwargs):
+                    if args[:2] == ["xrandr", "--output"]:
+                        return subprocess.CompletedProcess(args, 1, empty, empty)
+                    return subprocess.CompletedProcess(args, 0, CURRENT_SMALL, "")
+                with patch.object(capture, "_run_as_agent", run):
+                    note = capture.ensure_desktop_size()
+                self.assertTrue(note["warning"].startswith("xrandr exit 1:"), note["warning"])
+
+    def test_output_text_accepts_both_types(self) -> None:
+        self.assertEqual(capture._output_text(b"abc"), "abc")
+        self.assertEqual(capture._output_text("abc"), "abc")
+        self.assertEqual(capture._output_text(None), "")
+
     def test_attach_note_uses_the_right_key(self) -> None:
         self.assertEqual(capture._attach_desktop_note({"path": "x"}, None), {"path": "x"})
         self.assertEqual(capture._attach_desktop_note({"path": "x"}, {"from": "a", "to": "b"}),

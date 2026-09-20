@@ -1,0 +1,43 @@
+{
+  "id": "Q9",
+  "case": "Hội thoại 30+ lượt rồi hỏi lại việc cũ",
+  "request": "Nhắc lại đúng quyết định tôi đã chốt ở phần X trong cuộc nói chuyện này, và nói rõ cái gì còn treo. Đừng làm lại từ đầu.",
+  "request_source": "do script này soạn lại từ mô tả ca trong kế hoạch §4 (kế hoạch chưa ghim câu lệnh)",
+  "oracle_pass": [
+    "Nhắc đúng quyết định cũ (không lệch ngữ cảnh sau khi bị nén)",
+    "Không lặp khối văn bản, không kể lại toàn bộ hội thoại"
+  ],
+  "bad_answer": [
+    "Quên quyết định cũ hoặc nhắc sai chi tiết",
+    "Trả lời như thể cuộc hội thoại mới bắt đầu",
+    "Dán lại nguyên văn các lượt trước"
+  ],
+  "rubric_dimensions": [
+    "C1",
+    "C5",
+    "C6",
+    "C7"
+  ],
+  "environment": {
+    "network": "off",
+    "workspace": "sạch"
+  },
+  "budget": {
+    "max_steps": 16,
+    "deadline_seconds": 180,
+    "source": "trần đang chạy của role orchestrator trong nhật ký hệ thống (turn.start: maxSteps 16, deadlineSeconds 180)"
+  },
+  "seeds": [
+    "seed một phiên có ≥ 30 lượt, trong đó có một quyết định rõ ràng ở phần X",
+    "ghi lại quyết định đúng vào oracle trước khi chạy"
+  ],
+  "layer1_checks": [
+    "references_seeded_decision",
+    "no_duplicate_blocks"
+  ],
+  "open_questions": [
+    "Cần chốt nội dung phiên seed 30+ lượt; kế hoạch chỉ nói số lượt."
+  ],
+  "plan_ref": "docs/plan/agent-output-quality-plan.md §4",
+  "bad_answer_source": "script này soạn theo chiều ngược của oracle; kế hoạch §4 chỉ có cột 'Oracle đạt' nên 'bad answer' chưa được chủ sở hữu ghim"
+}

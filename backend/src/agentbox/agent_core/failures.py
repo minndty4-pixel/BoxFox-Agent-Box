@@ -51,6 +51,7 @@ KNOWN_PREFIXES = (
     'OUTPUT_LIMIT',
     'ROUTER_',
     'WORKSPACE_',
+    'WEB_',
     'CLI_',
 )
 

@@ -175,3 +175,23 @@ def test_executor_and_worker_agree_on_the_environment_contract():
     assert names == set(EXECUTOR_ENV), 'claude_worker.CONFIG_ENV và ClaudeExecutor.CONFIG_ENV đã lệch nhau'
     assert len(EXECUTOR_ENV) == len(set(EXECUTOR_ENV))
 
+
+
+def test_the_provider_reason_survives_an_error_result():
+    """Lỗi hạn mức của nhà cung cấp nằm ở `text` của kết quả — phải giữ lại, không nuốt.
+
+    Đo sống 2026-09-20: lượt `/claude-code` thật trả `{"type": "result", "is_error": true,
+    "text": "API Error: Request rejected (429) …"}`, nhưng người dùng chỉ thấy
+    "Claude Code task failed" vì executor đọc mỗi khoá `message`.
+    """
+    event = {'type': 'result', 'is_error': True,
+             'text': 'API Error: Request rejected (429) · The provider confirmed that a quota or rate limit was reached.'}
+
+    async def run():
+        async def spawn(*args, **kwargs):
+            return Process(stream(event))
+        with pytest.raises(ValueError) as caught:
+            await ClaudeExecutor(spawn=spawn, environment={}).run('abc', 'task', 'build', '', lambda e: None)
+        message = str(caught.value)
+        assert '429' in message and 'rate limit' in message
+    asyncio.run(run())

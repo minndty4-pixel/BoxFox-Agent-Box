@@ -7,6 +7,19 @@
 > Nó khác [kế hoạch đánh giá Agent Box](agent-box-evaluation.md): tài liệu kia đo **an toàn**
 > (ASR, lease, policy), tài liệu này đo **chất lượng công việc** (đúng, đủ, có bằng chứng, có
 > kiểm chứng, không lặp, không bịa). Hai trục bổ sung nhau, không thay nhau.
+>
+> **Trạng thái 2026-09-20:** giàn lớp 1 đã dựng ở `scripts/eval/` (rubric C1–C8 đóng băng, chỉ số vội
+> S1–S10 đọc từ nhật ký hệ thống, 12 fixture Q1–Q12 kèm mục `open_questions`, manifest, bảng điểm
+> tính lại được) nhưng **chưa chạy lượt đánh giá nào, chưa tiêu đồng nào** — mọi chỉ số chất lượng
+> vẫn là "chưa đo". Phần chạy được ngay và miễn phí là chỉ số vội trên nhật ký thật (2026-09-20:
+> chỉ số 1.0 trên cửa sổ 236 dòng / 33 lượt đánh giá được; S2 13 lượt bị gắn cờ, S7 6 lượt, S8 7
+> lượt, S9 9 lượt). Nhật ký xoay vòng theo từng lần chạy (`harness.previous.jsonl`), nên cửa sổ đọc
+> cả lần chạy trước; ngay sau khi reset thì chạy lại có thể ra "NO DATA" — đó cũng là câu trả lời
+> đúng, không suy đoán. Ba tín hiệu **chưa đo được**
+> từ nhật ký hiện tại: S1 (nhật ký chưa có khoá ghi dấu hiệu lặp — việc thêm khoá vào
+> `turn.end`/`tool.end`, không phải việc đo lại), S4 (cần nội dung câu trả lời, nhật ký cố ý không
+> lưu nội dung), S5 (cần danh sách tệp workspace). S3/S6/S7 đo bằng **proxy** vì nhật ký có tên tool
+> và `isError` nhưng không có tham số tool. Hướng dẫn chạy: `scripts/eval/README.md`.
 
 ## 1. Câu hỏi cần trả lời
 
@@ -135,6 +148,9 @@ ngoài. Nếu dùng model rẻ cho giám khảo thì phải đo lại tỷ lệ 
 | **v1** | Script lớp 1 cho S2–S10 + 12 fixture + rubric đóng băng | Chạy được một đợt đầy đủ và ra bảng điểm, dù còn ca hỏng |
 | **v2** | Giám khảo LLM + báo cáo đồng thuận + so A/B | Có ít nhất một so sánh A/B kết luận được |
 | **v3** | Chạy đêm trong CI, lưu xu hướng theo commit, gắn cảnh báo hồi quy | Biểu đồ xu hướng có ≥ 10 điểm dữ liệu |
+
+*Trạng thái 2026-09-20: điều kiện của v1 đã có giàn nhưng chưa chạy (chưa có bảng điểm từ lượt chạy
+thật); v0 vẫn là phần đang chạy được vì nhật ký hệ thống đã có `turn.start`/`turn.end`/`tool.*`.*
 
 ## 9. Luật trung thực
 

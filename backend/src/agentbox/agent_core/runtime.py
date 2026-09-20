@@ -15,6 +15,7 @@ from .failures import classify_failure, failure_detail, is_transient
 from .plan_quality import check_plan_quality
 from .roles import ROLES, allowed_tools
 from .tool_contracts import schemas_for
+from .web import WebTools
 from ..skills.catalog import SkillCatalog, DEFAULT_SKILLS
 from ..skills.commands import CommandRegistry, ROLE_SKILLS, EXTERNAL
 from ..skills.lifecycle import SkillLoader
@@ -503,6 +504,8 @@ class HarnessRuntime(RuntimeCommands):
         self.run_budget = {}
         self.child_slots = asyncio.Semaphore(3)
         self.writer_lock = asyncio.Lock()
+        # web_search / web_fetch run on the HOST: the box has no Internet (only loopback).
+        self.web = WebTools()
 
     def create(self, values, parent_id=None, role='orchestrator', parent_tools=None):
         skills = values.get('skills', sorted(DEFAULT_SKILLS))
@@ -853,6 +856,8 @@ class HarnessRuntime(RuntimeCommands):
             return {'messages': hits[-10:]}
         if name == 'delegate_task':
             return await self.delegate(session, args)
+        if name in {'web_search', 'web_fetch'}:
+            return await self.web.run(name, args, sid)
         if name == 'browser_use' and session['role'] == 'research' and args.get('action') not in {'navigate', 'snapshot', 'screenshot'}:
             raise PermissionError('Research browser access is read-only navigation/snapshot')
         if name == 'write_plan':

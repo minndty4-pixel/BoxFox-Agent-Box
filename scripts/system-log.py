@@ -9,8 +9,18 @@ Usage:
     python scripts/system-log.py errors [--lines 20] [--since-minutes 60]
     python scripts/system-log.py summary [--since-minutes 1440]
     python scripts/system-log.py sessions [--lines 200]
+    python scripts/system-log.py reset [--file harness|router|all]
+    python scripts/system-log.py prune [--days 7] [--max-mib 200] [--dry-run]
 
 Exit code is 0 on success and 2 when the requested log file does not exist yet.
+
+`reset` is the manual twin of what the writers do on a graceful shutdown
+(`SystemLog.rotate_on_shutdown()` in `backend/src/agentbox/observability/system_log.py`):
+the active file becomes `<name>.previous.jsonl`, replacing the older previous file, so
+exactly one finished run is kept and the next run starts empty. `prune` is the retention
+policy of plan §4 item 2: it never touches the active file, only the rotation backups
+(`*.jsonl.0`…`.3`) and previous-run files older than `--days`, and it also enforces the
+`--max-mib` ceiling oldest-first.
 """
 from __future__ import annotations
 
@@ -25,11 +35,32 @@ from pathlib import Path
 # Same override the writers honour, so a verification instance can be read back.
 LOG_DIR = Path(os.environ.get('BOXFOX_SYSTEM_LOG_DIR') or (Path.home() / 'BoxFox' / 'logs'))
 
+PREVIOUS_SUFFIX = '.previous'
+DEFAULT_RETENTION_DAYS = 7
+DEFAULT_MAX_MIB = 200
+
 
 def _files(which: str) -> list[Path]:
     if which == 'all':
+        # `*.jsonl` also matches `<name>.previous.jsonl` — a finished run a dev may still
+        # want to read. Each line carries `runId`, so the runs stay tellable apart.
         return sorted(LOG_DIR.glob('*.jsonl'))
     return [LOG_DIR / f'{which}.jsonl']
+
+
+def _previous_path(path: Path) -> Path:
+    return path.with_name(f'{path.stem}{PREVIOUS_SUFFIX}{path.suffix}')
+
+
+def _recyclable_files(which: str) -> list[Path]:
+    """Rotation backups + previous-run files. The ACTIVE file is never in this list."""
+    found: set[Path] = set()
+    for path in _files(which):
+        found.update(path.parent.glob(f'{path.name}.*'))
+        previous = _previous_path(path)
+        if previous.exists():
+            found.add(previous)
+    return sorted(found)
 
 
 def read(which: str, lines: int, level: str | None, session: str | None) -> list[dict]:
@@ -70,15 +101,85 @@ def _minutes_ago(minutes: float) -> str:
     return time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime(time.time() - minutes * 60))
 
 
+def reset(which: str) -> int:
+    """Owner's rule ("log only while running, reset on shutdown"), applied by hand.
+
+    Same rename as `SystemLog.rotate_on_shutdown()`: active file → `<name>.previous.jsonl`,
+    replacing the older previous file. Nothing is deleted, so a manual reset can never
+    lose the run that just ended.
+    """
+    for path in _files(which):
+        if not path.exists():
+            print(f'{path.name}: no active log file', file=sys.stderr)
+            continue
+        target = _previous_path(path)
+        try:
+            target.unlink(missing_ok=True)
+            path.replace(target)
+        except OSError as error:
+            print(f'{path.name}: {error}', file=sys.stderr)
+            continue
+        print(f'{path.name} -> {target.name}')
+    return 0
+
+
+def prune(which: str, days: float, max_mib: float, dry_run: bool = False) -> int:
+    """Retention policy of plan §4 item 2. The active file is never touched."""
+    try:
+        sized = [(path, path.stat()) for path in _recyclable_files(which)]
+    except OSError as error:
+        print(f'cannot read {LOG_DIR}: {error}', file=sys.stderr)
+        return 2
+
+    cutoff = time.time() - days * 86400 if days else None
+    doomed = {path for path, stat in sized if cutoff is not None and stat.st_mtime < cutoff}
+    kept = [(path, stat) for path, stat in sized if path not in doomed]
+    if max_mib:
+        # Oldest first, and only the recyclable files: the active log always survives.
+        budget = max_mib * 1024 * 1024
+        total = sum(stat.st_size for _, stat in kept)
+        for path, stat in sorted(kept, key=lambda item: item[1].st_mtime):
+            if total <= budget:
+                break
+            doomed.add(path)
+            total -= stat.st_size
+
+    freed = sum(stat.st_size for path, stat in sized if path in doomed)
+    for path in sorted(doomed):
+        if not dry_run:
+            try:
+                path.unlink()
+            except OSError as error:
+                print(f'{path.name}: {error}', file=sys.stderr)
+        print(f'{"would remove" if dry_run else "removed"} {path.name}')
+    remaining = sum(stat.st_size for path, stat in sized if path not in doomed)
+    print(f'{"would keep" if dry_run else "kept"} {len(sized) - len(doomed)} file(s), '
+          f'{remaining / 1024 / 1024:.2f} MiB; freed {freed / 1024 / 1024:.2f} MiB '
+          f'(policy: {days:g} days / {max_mib:g} MiB)')
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description='Read the BoxFox developer system log.')
-    parser.add_argument('command', choices=['tail', 'follow', 'errors', 'summary', 'sessions'])
+    parser.add_argument('command', choices=['tail', 'follow', 'errors', 'summary', 'sessions', 'reset', 'prune'])
     parser.add_argument('--lines', type=int, default=50)
     parser.add_argument('--level', choices=['info', 'warn', 'error'])
     parser.add_argument('--session')
     parser.add_argument('--file', default='harness', choices=['harness', 'router', 'box', 'all'])
     parser.add_argument('--since-minutes', type=float, default=0)
+    parser.add_argument('--days', type=float, default=DEFAULT_RETENTION_DAYS,
+                        help='prune: keep backups/previous runs newer than this many days (0 = no age policy)')
+    parser.add_argument('--max-mib', type=float, default=DEFAULT_MAX_MIB,
+                        help='prune: ceiling for the recyclable files, oldest removed first (0 = no size cap)')
+    parser.add_argument('--dry-run', action='store_true', help='prune: report without deleting')
     args = parser.parse_args(argv)
+
+    # `reset`/`prune` are about files that may not exist yet, so they run BEFORE the
+    # "no log file yet" check below (exit 2 stays the answer for the read commands).
+    if args.command == 'reset':
+        return reset(args.file)
+    if args.command == 'prune':
+        return prune(args.file, args.days, args.max_mib, args.dry_run)
 
     if not any(path.exists() for path in _files(args.file)):
         print(f'No log file yet at {LOG_DIR}/ (expected {{harness,router,box}}.jsonl)', file=sys.stderr)

@@ -82,8 +82,9 @@ def test_delegate_task_schema_states_the_result_shape_and_stays_backward_compati
                                           'simplify', 'testing', 'research']
     assert 'RESULT SHAPE' in properties['expect']['description']
     assert 'RESULT SHAPE' in schema['description'] and 'evidence' in schema['description']
-    # the honest limits of the only web-capable role are stated where the parent chooses it
-    assert 'no web-search tool' in properties['role']['description']
+    # the only web-capable role is named where the parent chooses it, together with its limits
+    assert 'research' in properties['role']['description']
+    assert 'web_search' in properties['role']['description']
     assert 'could not verify' in properties['role']['description']
 
 

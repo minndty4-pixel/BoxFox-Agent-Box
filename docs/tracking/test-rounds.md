@@ -189,3 +189,59 @@ Kéo desktop xuống `286x311` rồi lần lượt gọi ba cửa vào (`/__box/
 Ghi chú vận hành: ba tệp `deploy/docker/{browser_capture,inspect_element,capture}.py`
 đã được chép tay vào container đang chạy để kiểm chứng (rồi khởi động lại `ide-proxy`);
 lần tạo lại container kế tiếp sẽ lấy đúng các tệp trong kho.
+
+## Vòng 12 — đóng nốt hai lỗi của vòng 9, mở công cụ web ở host, chạy `/claude-code` thật — 2026-09-20, 07:1x–07:5x
+
+Bối cảnh: chủ sở hữu chốt bốn quyết định (`#5811` công cụ web ở tầng host, `#5812` được phép build
+lại image, `#5813` setup đánh giá nhưng chưa chạy, `#5814` nhật ký hệ thống v2 trong giao diện).
+Vòng này làm đúng bốn việc đó, cộng hai lỗi mà vòng kiểm chứng độc lập đợt 9 để lại.
+
+### Việc đã làm trong vòng này
+
+| Việc | Nội dung | Bằng chứng |
+|---|---|---|
+| F6b | `deploy/docker/capture.py` gọi `.decode()` lên đầu ra `str` của `_run_as_agent()` ⇒ nhánh đặt lại màn hình thất bại ném `AttributeError`, `/__box/capture` trả HTTP 500 thay vì ảnh kèm `desktopWarning` | `_output_text()` nhận cả `str` lẫn `bytes`; `test_inspect_element.py` +3 ca (`DesktopFloorTest`) |
+| F8 | `xdotool mousemove --sync` treo 15,16 s khi con trỏ đã ở đúng toạ độ ⇒ lần bấm thứ hai cùng chỗ báo hết giờ, đốt 20/20 bước của lượt CUA nặng đợt 7 | `_pointer_move()` bỏ `--sync` và tự thăm dò bằng `getmouselocation`; `test_sandbox_worker_pointer.py` (5 ca) |
+| N-5 | Công cụ tra cứu mạng cho agent, chạy ở **host** (box không có Internet) | `agent_core/web.py` (`web_search`, `web_fetch`), 30 ca trong `test_web_tools.py`, ghi chú đo đạc `docs/research/host-web-tools.md` |
+| Việc 5 v2 | Nhật ký hệ thống: API chỉ-đọc, vòng đời "ghi khi chạy, reset khi tắt", bảng trong giao diện | `test_system_log_v2.py` (16), `router/tests/system-log-lifecycle.test.mjs` (4), `deploy/docker/tests/test_ide_proxy_system_log.py` (6), `frontend/src/components/panels/SystemLogPanel.test.tsx` (12) + `App.tabs.test.tsx` (4) |
+| Việc 3+4 | Bộ khung đánh giá chạy khô, có cổng chặn chi tiêu hai yếu tố | `scripts/eval/` (9 mô-đun) + `backend/tests/unit/test_eval_setup.py` (52 ca) |
+| F9 | Con của lệnh nhận mặc định 180 giây ⇒ phiên 600 giây vẫn `DEADLINE` ở lượt `/claude-code` | `_command_task` truyền ngân sách của phiên; `test_skill_commands.py::test_command_child_inherits_the_session_time_budget` |
+| F10 | CLI tự chọn `claude-opus-5[1m]` khi thiếu `ANTHROPIC_MODEL` ⇒ lượt chết ngay vì router không có model đó | `router_config()` lấy model sonnet/haiku đã cấu hình; 2 ca trong `test_claude_worker_router.py` |
+| Ghi chú | Lỗi nhà cung cấp bị nuốt thành "Claude Code task failed" | executor đọc thêm khoá `text`; `test_claude_executor.py::test_the_provider_reason_survives_an_error_result` |
+
+### Bằng chứng sống
+
+- **Công cụ web**: `SEARCH web -> 3 kết quả` (firecrawl không cần khoá), `SEARCH wikipedia (vi) -> 3`,
+  `SEARCH papers -> 2` (có DOI), `FETCH https://docs.python.org/3/library/asyncio-task.html` →
+  `200`, tiêu đề thật, `chars 43995`, `truncated True`; SSRF chặn cả `http://127.0.0.1:3101/...` lẫn
+  `http://169.254.169.254/latest/meta-data/` bằng `WEB_URL_FORBIDDEN`.
+- **Box không có Internet** (đo lại): `iptables -S OUTPUT` = `DROP` rồi `REJECT`; chỉ loopback và
+  bốn cổng dịch vụ 5900/6080/8080/8081 đi được — đây là lý do công cụ web phải chạy ở host.
+- **Image đã build lại**: ba mô-đun trong `/usr/local/bin` của container trùng byte với repo
+  (`76a64c41…` capture, `13da3416…` browser_capture, `127ec2b1…` inspect_element);
+  `POST /__box/capture` → `200`, 1280×800.
+- **`/claude-code`**: `probe` trả `status: ready`, `auth: router`, `baseUrl: http://172.18.0.1:3101`,
+  `settingsFile: true`; lượt thật chạy CLI trong box, request đi qua cầu nối tới router và **tới
+  nhà cung cấp**, nhưng nhà cung cấp trả **429** (`anthropic.failed RATE_LIMIT` trong
+  `~/BoxFox/logs/router.jsonl`), nên lượt dừng ở `TURN_FAILED_VALUEERROR` với đúng câu lỗi của
+  nhà cung cấp. Đây là hạn mức của tài khoản, không phải lỗi mã.
+- **Nhật ký hệ thống**: `?lines=99999` → `lines=500` (trần cứng), `?level=trace` → 400, thiếu header
+  admin → 403, `commit=58598c1`; tắt êm tạo `~/BoxFox/logs/harness.previous.jsonl` thật.
+- **Đánh giá**: `run_eval.py` chạy khô exit 0 (108 lượt model, 6,44–23,60 USD); `--execute` luôn
+  thoát mã 3/5 và không có đường nào tới model khi chưa bật cổng chi tiêu.
+
+### Tổng số ca kiểm thử sau vòng này
+
+| Bộ | Kết quả |
+|---|---|
+| Backend | **479 passed, 2 failed, 2 skipped** — hai ca đỏ là hai ca cũ có điều kiện môi trường: `test_cua_element_selector.py` cần Internet, `test_terminal_tools.py::test_terminal_exec_echo` dùng builtin PowerShell trên box bash |
+| `deploy/docker` | **359 OK** |
+| Router | **89 pass / 0 fail** |
+| Frontend | **682 passed / 4 failed** — bốn ca cũ (`Sidebar.test.tsx` ×3 dưới jsdom, `lib/workspace/index.test.ts` ×1 vì `frontend/.env.local` cục bộ); `tsc -b --noEmit` thoát 0 |
+
+### Điều vòng này CHƯA làm được
+
+- Chưa có câu trả lời thật từ `/claude-code` vì hạn mức nhà cung cấp (429); cầu nối và CLI đã đúng.
+- Cổng mở cầu nối (luật `iptables` trong box + biến `BOXFOX_ANTHROPIC_*` của harness) vẫn làm bằng
+  tay, `BOX_LLM_BRIDGE` trong `docker-compose.yml` còn `off` — người dùng phải mở/đặt lại sau mỗi
+  lần tạo container.

@@ -1,0 +1,199 @@
+{
+  "source": "docs/plan/cua-benchmark-plan.md §2, §3 (bảng so sánh + lộ trình 4 tầng)",
+  "measured": false,
+  "note": "Mọi con số là ƯỚC LƯỢNG của kế hoạch, chưa phải hoá đơn. Chạy thật thì thay bằng số đo từ nhật ký usage của router (benchmark plan §4.4).",
+  "tiers": [
+    {
+      "id": "0",
+      "label": "Tầng 0 — hôm nay, gần như miễn phí",
+      "window": "0-2 ngày",
+      "costUsd": [
+        2,
+        10
+      ],
+      "modelCalls": 200,
+      "doneWhen": "có bảng điểm BFCL + commit + model + chi phí thật (kế hoạch §3 tầng 0)",
+      "items": [
+        {
+          "id": "regression-suites",
+          "name": "Bộ test hiện có chạy như benchmark hồi quy",
+          "modelCalls": 0,
+          "costUsd": [
+            0,
+            0
+          ],
+          "network": "off",
+          "commands": [
+            ".venv/bin/python -m pytest backend/tests -q",
+            "cd router && node --test tests/*.test.mjs",
+            "cd frontend && npx vitest run",
+            "cd deploy/docker && python3 -m unittest discover -s tests -p \"test_*.py\""
+          ],
+          "note": "Số ca trong kế hoạch §3 tầng 0 (63 router / 287 backend / 644 frontend) đã lỗi thời; xem scripts/eval/benchmarks/tier0.md để lấy số đo ngày 2026-09-20."
+        },
+        {
+          "id": "bfcl-simple-subset",
+          "name": "BFCL nhóm hàm đơn giản (kế hoạch ước ~200 mục; BFCL V4 simple_python có 399 mục)",
+          "modelCalls": 200,
+          "costUsd": [
+            2,
+            10
+          ],
+          "timeHours": [
+            1,
+            2
+          ],
+          "network": "on",
+          "pins": [
+            "commit BoxFox",
+            "phiên bản/split BFCL",
+            "license",
+            "prompt format",
+            "schema công cụ",
+            "model + provider",
+            "seed/temperature"
+          ],
+          "note": "Rẻ nhất, chấm khách quan, ghép thẳng qua router; kế hoạch §2 xếp 'nên làm trước'. Số mục: kế hoạch ước ~200, BFCL V4 simple_python thật là 399 — chạy hết thì chi phí gấp đôi ước lượng, cắt tập con thì phải ghi rõ cách cắt (kế hoạch §4.6). Chi tiết ghim phiên bản/giấy phép: scripts/eval/benchmarks/tier0.md."
+        }
+      ]
+    },
+    {
+      "id": "1",
+      "label": "Tầng 1 — tuần này",
+      "window": "2-3 ngày",
+      "costUsd": [
+        50,
+        150
+      ],
+      "modelCalls": 160,
+      "doneWhen": "bốn bảng điểm, cùng manifest, có ít nhất một so sánh A/B (kế hoạch §3 tầng 1)",
+      "items": [
+        {
+          "id": "mind2web-100",
+          "name": "Mind2Web tập con 100 ca (HTML tĩnh)",
+          "modelCalls": 100,
+          "costUsd": [
+            15,
+            40
+          ],
+          "network": "off",
+          "note": "Không cần trình duyệt; bỏ được phần điều khiển thật."
+        },
+        {
+          "id": "tau-bench-retail-30",
+          "name": "τ-bench nhóm retail 30 ca",
+          "modelCalls": 30,
+          "costUsd": [
+            10,
+            30
+          ],
+          "network": "off",
+          "note": "Đo tuân luật + gọi công cụ + hỏi đúng lúc."
+        },
+        {
+          "id": "webvoyager-30",
+          "name": "WebVoyager 30 ca",
+          "modelCalls": 30,
+          "costUsd": [
+            30,
+            120
+          ],
+          "network": "on",
+          "blocked": "cần mở mạng cho box; chưa mở thì ghi rõ là hoãn (kế hoạch §3 tầng 1, §5)"
+        },
+        {
+          "id": "quality-fixtures",
+          "name": "12 fixture chất lượng Q1-Q12",
+          "modelCalls": 36,
+          "costUsd": [
+            7,
+            28
+          ],
+          "network": "off (trừ Q6)",
+          "note": "5-20 USD cho lượt chạy agent + 2-8 USD cho lớp 2 giám khảo (kế hoạch chất lượng §7) — con số này lấy đúng dải của kế hoạch, không cộng thêm gì."
+        }
+      ]
+    },
+    {
+      "id": "2",
+      "label": "Tầng 2 — 1-2 tuần",
+      "window": "1-2 tuần",
+      "costUsd": [
+        300,
+        1500
+      ],
+      "modelCalls": 80,
+      "doneWhen": "trung bình ± CI từ 3 lần lặp, không chọn lần đẹp nhất (kế hoạch §3 tầng 2)",
+      "items": [
+        {
+          "id": "terminal-bench-50",
+          "name": "Terminal-Bench 50 ca hoặc SWE-bench Verified 50 ca",
+          "modelCalls": 50,
+          "costUsd": [
+            50,
+            200
+          ],
+          "network": "on khi cài",
+          "note": "Cần Docker cho từng tác vụ (kế hoạch §2)."
+        },
+        {
+          "id": "gaia-level1-30",
+          "name": "GAIA mức 1 (30 ca)",
+          "modelCalls": 30,
+          "costUsd": null,
+          "network": "on",
+          "blocked": "BoxFox chưa có công cụ tìm kiếm (kế hoạch §3 tầng 2)"
+        }
+      ]
+    },
+    {
+      "id": "3",
+      "label": "Tầng 3 — 3-6 tuần",
+      "window": "3-6 tuần",
+      "costUsd": [
+        2000,
+        8000
+      ],
+      "modelCalls": null,
+      "doneWhen": "chỉ làm khi tầng 1-2 đã ổn định; dựng hạ tầng trước, chạy số liệu sau (kế hoạch §3 tầng 3)",
+      "items": [
+        {
+          "id": "osworld-50",
+          "name": "OSWorld 50 ca (chấm bằng thực thi)",
+          "modelCalls": 50,
+          "costUsd": null,
+          "network": "off sau khi dựng",
+          "blocked": "hạ tầng rất nặng (máy ảo + ảnh đĩa riêng)"
+        },
+        {
+          "id": "swebench-verified-full",
+          "name": "SWE-bench Verified đầy đủ",
+          "modelCalls": 500,
+          "costUsd": null,
+          "network": "on khi cài",
+          "blocked": "chỉ khi ngân sách cho phép"
+        }
+      ]
+    }
+  ],
+  "qualityFixtures": {
+    "source": "docs/plan/agent-output-quality-plan.md §7",
+    "unitDescription": "12 ca × 3 cấu hình (một lần lặp)",
+    "fixturesInPlanUnit": 12,
+    "configsInPlanUnit": 3,
+    "agentRunCostUsd": [
+      5,
+      20
+    ],
+    "judgeCallCostUsd": [
+      0.02,
+      0.05
+    ],
+    "judgePassesPerOutput": 2,
+    "planJudgeCallsRange": [
+      100,
+      150
+    ],
+    "planNote": "§7 ước ~100-150 lượt chấm cho 12 ca × 3 cấu hình × 3 lần lặp, tức khoảng 1,2 lượt chấm cho mỗi đầu ra. Script này tính 2 lượt chấm cho mỗi đầu ra theo §5 (mỗi đầu ra chấm hai lần), nên khoảng tiền của lớp 2 luôn ≥ khoảng của kế hoạch; đây là chỗ ước lượng khác kế hoạch và phải nói rõ."
+  }
+}

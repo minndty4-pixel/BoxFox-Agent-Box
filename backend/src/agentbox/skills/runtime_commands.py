@@ -124,16 +124,23 @@ class RuntimeCommands:
                     reason = probe.get('reason') or 'Claude Code CLI is not ready inside the sandbox.'
                     raise ValueError('SETUP_REQUIRED: ' + reason)
             roles = ['design', 'build', 'testing'] if resolved.role == 'orchestrator' and 'claude-design' in resolved.skills else [resolved.role]
+            # Ngân sách thời gian của con = ngân sách của phiên. Đo sống 2026-09-20: phiên đặt
+            # 600 giây vẫn chết `DEADLINE` vì con của lệnh nhận mặc định 180 giây, mà một lượt
+            # `/claude-code` thật cần hơn thế — con dài hơn phiên là vô nghĩa, nên lấy đúng số
+            # của phiên thay vì một hằng số thứ hai.
+            budget = session['config'].get('deadlineSeconds', 180)
             context, answer = '', ''
             for role in roles:
                 if role == 'orchestrator':
                     # A generic skill runs in an isolated orchestrator context, with the same role configuration.
                     child = self.create({'skills': resolved.skills, 'subagents': session['config']['subagents'],
-                        'contextWindow': session['config']['contextWindow'], **session['config']['route']}, parent_id=sid)
+                        'contextWindow': session['config']['contextWindow'], 'deadlineSeconds': budget,
+                        **session['config']['route']}, parent_id=sid)
                 else:
                     config = next(r for r in session['config']['subagents'] if r['id'] == role and r.get('enabled', True))
                     from ..agent_core.runtime import route_for
                     child = self.create({'skills': resolved.skills, 'contextWindow': session['config']['contextWindow'],
+                        'deadlineSeconds': budget,
                         **(route_for(config.get('model')) or session['config']['route']),
                         'instructions': config.get('systemPromptAppended', '')}, parent_id=sid, role=role, parent_tools=session['config']['tools'])
                 self.store.emit(sid, 'child', {'sessionId': child['id'], 'role': role, 'executor': resolved.executor, 'status': 'started'})

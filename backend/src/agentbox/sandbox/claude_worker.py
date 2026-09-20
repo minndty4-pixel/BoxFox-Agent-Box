@@ -110,6 +110,13 @@ def router_config(env=None):
     values['ANTHROPIC_BASE_URL'] = normalize_base_url(values['ANTHROPIC_BASE_URL'])
     missing = [box for box, cli in CONFIG_ENV.items()
                if cli in {'ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN'} and not values[cli]]
+    # CLI tự chọn model mặc định của nó (`claude-opus-5[1m]`) khi không có ANTHROPIC_MODEL — model
+    # đó KHÔNG có trên router BoxFox, nên lượt `/claude-code` chết ngay sau khi gọi
+    # ("There's an issue with the selected model"). Lấy model sonnet (hoặc haiku) đã cấu hình làm
+    # mặc định; giá trị người dùng đặt thẳng vẫn thắng, và readiness báo lại qua `models`.
+    if not values.get('ANTHROPIC_MODEL'):
+        values['ANTHROPIC_MODEL'] = (values.get('ANTHROPIC_DEFAULT_SONNET_MODEL')
+                                     or values.get('ANTHROPIC_DEFAULT_HAIKU_MODEL') or '')
     return {'configured': not missing, 'values': values, 'missing': missing,
             'models': {cli: value for cli, value in values.items() if cli.endswith('_MODEL') and value}}
 

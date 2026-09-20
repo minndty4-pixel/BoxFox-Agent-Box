@@ -88,7 +88,11 @@ class ClaudeExecutor:
                     if event['type'] == 'readiness' and event['data']['status'] != 'ready':
                         raise ValueError('setup_required: ' + event['data'].get('reason', 'Claude Code unavailable'))
                     if event['type'] == 'error' or event.get('is_error'):
-                        raise ValueError(event.get('message', 'Claude Code task failed'))
+                        # Câu của nhà cung cấp nằm ở `text` trên đường kết quả (worker chỉ đặt
+                        # `message` cho lỗi của chính nó). Đo sống 2026-09-20: lỗi hạn mức chỉ
+                        # hiện ra thành "Claude Code task failed", còn lý do thật thì bị bỏ.
+                        raise ValueError(event.get('message') or event.get('text')
+                                         or 'Claude Code task failed')
                     if event['type'] == 'result':
                         final = event.get('text')
                 code = await proc.wait()

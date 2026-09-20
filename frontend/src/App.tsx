@@ -4,6 +4,7 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import {
+  Activity,
   FileText,
   Monitor,
   Code2,
@@ -40,6 +41,7 @@ import { DesignCanvasPanel } from './components/panels/DesignCanvasPanel'
 import { AuditPanel } from './components/panels/AuditPanel'
 import { PullRequestsPanel } from './components/panels/PullRequestsPanel'
 import { WorkspaceFilesPanel } from './components/panels/workspace/WorkspaceFilesPanel'
+import { SystemLogPanel } from './components/panels/SystemLogPanel'
 import { BoxControls } from './components/shell/BoxControls'
 import { SettingsModal } from './components/settings/SettingsModal'
 import { CompletionEmailNotice } from './components/CompletionEmailNotice'
@@ -58,6 +60,7 @@ const TAB_LABEL_KEY: Record<PanelTabId, string> = {
   labels: 'tabs.labels',
   audit: 'tabs.audit',
   files: 'tabs.files',
+  system_log: 'tabs.system_log',
 }
 
 const TAB_ICON: Record<PanelTabId, React.ComponentType<{ className?: string }>> = {
@@ -72,6 +75,7 @@ const TAB_ICON: Record<PanelTabId, React.ComponentType<{ className?: string }>> 
   labels: Tag,
   audit: ScrollText,
   files: FolderOpen,
+  system_log: Activity,
 }
 
 const AVAILABLE_PANEL_TABS: { id: PanelTabId; label: string; desc: string; icon: React.ComponentType<{ className?: string }> }[] = [
@@ -86,8 +90,26 @@ const AVAILABLE_PANEL_TABS: { id: PanelTabId; label: string; desc: string; icon:
   { id: 'labels', label: 'Labels & Leases', desc: 'IFC security provenance & active leases', icon: Tag },
   { id: 'audit', label: 'Audit Logs', desc: 'Immutable security action ledger', icon: ScrollText },
   { id: 'files', label: 'Workspace Files', desc: 'Browse, preview & manage workspace files', icon: FolderOpen },
+  { id: 'system_log', label: 'System Log', desc: 'Dev log written on the host, outside the box', icon: Activity },
 ]
 
+/**
+ * Tab CHỈ dành cho chế độ phát triển. Bảng Nhật ký hệ thống là công cụ của dev
+ * (việc 5, bản v2): nó đọc log của harness trên host qua `/api/agent/system-log`,
+ * nên bản dựng sản phẩm không hiện nó ở menu "Open Workspace" và cũng không mở
+ * được tab đó. `import.meta.env.DEV` là chế độ dev có sẵn của ứng dụng — không
+ * thêm cờ mới.
+ */
+const DEV_ONLY_PANEL_TABS: ReadonlySet<PanelTabId> = new Set<PanelTabId>(['system_log'])
+
+export function isPanelTabAvailable(id: PanelTabId, env: ImportMetaEnv = import.meta.env): boolean {
+  return Boolean(env.DEV) || !DEV_ONLY_PANEL_TABS.has(id)
+}
+
+/** Danh sách tab của menu "Open Workspace", đã lọc theo chế độ dev. */
+export function availablePanelTabs(env: ImportMetaEnv = import.meta.env) {
+  return AVAILABLE_PANEL_TABS.filter((tab) => isPanelTabAvailable(tab.id, env))
+}
 
 export default function App() {
   const t = useT()
@@ -113,7 +135,9 @@ export default function App() {
   const sessionTitle = activeSession?.title || 'New Session'
 
   const rawOpenTabs = useUiStore((s) => s.openTabs)
-  const openTabs = rawOpenTabs.filter((tab) => ALL_PANEL_TABS.includes(tab))
+  // Bảng nhật ký hệ thống là tab DEV: ở bản dựng sản phẩm nó không mở được, kể cả
+  // khi trạng thái tab còn sót lại từ trước.
+  const openTabs = rawOpenTabs.filter((tab) => ALL_PANEL_TABS.includes(tab) && isPanelTabAvailable(tab))
   const activeTab = useUiStore((s) => s.activeTab)
   const openTab = useUiStore((s) => s.openTab)
   const closeTab = useUiStore((s) => s.closeTab)
@@ -163,6 +187,10 @@ export default function App() {
         return <AuditPanel />
       case 'files':
         return <WorkspaceFilesPanel />
+      case 'system_log':
+        // Cùng một hàng rào với menu: trạng thái tab sót lại từ trước cũng không mở
+        // được bảng này ở bản dựng sản phẩm.
+        return isPanelTabAvailable('system_log') ? <SystemLogPanel /> : null
       default:
         return null
     }
@@ -308,7 +336,7 @@ export default function App() {
                     </div>
 
                     <div className="grid grid-cols-2 gap-2 pt-2">
-                      {AVAILABLE_PANEL_TABS.map((item) => {
+                      {availablePanelTabs().map((item) => {
                         const Icon = item.icon
                         return (
                           <button
@@ -426,7 +454,7 @@ function TopBar({
                 Open Workspace View
               </div>
               <div className="space-y-0.5 mt-0.5">
-                {AVAILABLE_PANEL_TABS.map((tabItem) => {
+                {availablePanelTabs().map((tabItem) => {
                   const Icon = tabItem.icon
                   const isAlreadyOpen = openTabs.includes(tabItem.id)
                   return (

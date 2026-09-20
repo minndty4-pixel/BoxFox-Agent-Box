@@ -1,0 +1,84 @@
+{
+  "manifestVersion": "eval-manifest-v1",
+  "benchmark": {
+    "name": "tier0-regression",
+    "version": "2026-09-20"
+  },
+  "createdAt": "2026-09-20",
+  "fixtures": [],
+  "pins": {
+    "repo": {
+      "commit": "58598c10f82485e42bd53b9502277be2226f04a0",
+      "commitShort": "58598c1",
+      "dirty": true,
+      "dirtyFileCount": 35,
+      "note": "35 tệp chưa commit trong cây làm việc — số liệu này gắn với cây đang chạy, không chỉ với commit"
+    },
+    "image": {
+      "ref": null,
+      "digest": null,
+      "missing": "chưa đo"
+    },
+    "provider": null,
+    "model": null,
+    "seed": null,
+    "temperature": null,
+    "maxSteps": null,
+    "deadlineSeconds": null,
+    "network": "off",
+    "firewall": "không đổi (không cần mạng cho hạng mục này)",
+    "prompts": {
+      "judge": {
+        "path": null,
+        "version": null,
+        "sha256": null,
+        "missing": "chưa đo"
+      },
+      "agentRoles": {
+        "path": "backend/src/agentbox/skills/roles.py",
+        "sha256": null,
+        "missing": "chưa đo"
+      }
+    },
+    "toolSchema": {
+      "path": "backend/src/agentbox/agent_core/tool_contracts.py",
+      "sha256": "9cbe96de98db3dd1a88ae5657ef6f9cd37bdc2516c8dc71b8e2b8dfc10440adc",
+      "kind": "sha256-của-tệp-nguồn"
+    },
+    "runtime": {
+      "python": "3.12.3",
+      "system": "Linux",
+      "release": "7.0.0-1010-aws"
+    }
+  },
+  "cost": {
+    "tokensIn": null,
+    "tokensOut": null,
+    "wallTimeMs": null,
+    "steps": null,
+    "retries": null,
+    "source": "nhật ký hệ thống (~/BoxFox/logs/harness.jsonl + router.jsonl)",
+    "missing": [
+      "tokensIn",
+      "tokensOut",
+      "wallTimeMs",
+      "steps",
+      "retries"
+    ]
+  },
+  "missingPins": [
+    "provider",
+    "model",
+    "seed",
+    "temperature",
+    "maxSteps"
+  ],
+  "notes": [
+    "Chạy ngày 2026-09-20 trên cây làm việc đang có việc song song sửa; số ca không ổn định, phải đo lại trên commit đã chốt.",
+    "Không có lượt gọi model nào: cost giữ nguyên null/chưa đo.",
+    "Số ca kế hoạch ghi (63 router / 287 backend / 644 frontend) đã lỗi thời — xem scripts/eval/benchmarks/tier0.md."
+  ],
+  "measured": true,
+  "kind": "regression-suites",
+  "source": "docs/plan/cua-benchmark-plan.md §3 tầng 0 hạng mục 1"
+}

@@ -1,0 +1,44 @@
+{
+  "id": "Q12",
+  "case": "CUA nặng: nhiều bước + quay video + báo lại",
+  "request": "Mở trình duyệt trong box, đi qua vài trang nội bộ, quay video lại, rồi báo lại kèm đường dẫn tệp bằng chứng.",
+  "request_source": "do script này soạn lại từ mô tả ca trong kế hoạch §4 (kế hoạch chưa ghim câu lệnh)",
+  "oracle_pass": [
+    "Video đọc được (tệp tồn tại, mở được, không rỗng)",
+    "Câu trả lời cuối có đường dẫn tệp bằng chứng"
+  ],
+  "bad_answer": [
+    "Nhận đã quay video nhưng không có tệp",
+    "Video rỗng hoặc không mở được",
+    "Kể lại các bước mà không có bằng chứng đường dẫn"
+  ],
+  "rubric_dimensions": [
+    "C1",
+    "C2",
+    "C5",
+    "C7",
+    "C8"
+  ],
+  "environment": {
+    "network": "off",
+    "workspace": "sạch"
+  },
+  "budget": {
+    "max_steps": 24,
+    "deadline_seconds": 300,
+    "source": "đề xuất của script này cho ca CUA nhiều bước; kế hoạch chưa chốt trần riêng cho Q11/Q12"
+  },
+  "seeds": [
+    "đảm bảo có trang nội bộ để đi qua (không cần mạng)"
+  ],
+  "layer1_checks": [
+    "video_file_opens",
+    "artifact_paths_exist",
+    "step_budget_respected"
+  ],
+  "open_questions": [
+    "Kế hoạch chưa chốt nội dung các trang nội bộ cho ca này."
+  ],
+  "plan_ref": "docs/plan/agent-output-quality-plan.md §4",
+  "bad_answer_source": "script này soạn theo chiều ngược của oracle; kế hoạch §4 chỉ có cột 'Oracle đạt' nên 'bad answer' chưa được chủ sở hữu ghim"
+}

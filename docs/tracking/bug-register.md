@@ -157,3 +157,23 @@ Hai phát hiện được xử lý bằng ghi chú, không bằng mã:
 
 - **#6 (Thấp)** — `_suffix()` không có ngữ nghĩa đặt lại; nay docstring nói rõ một `current` không phải tiền tố nghĩa là provider đã bắt đầu tích luỹ lại, và nơi đọc có móc đặt lại.
 - **#8 (ghi chú)** — token router nằm trong argv của `docker exec` phía host (`claude_executor.py`): cố ý, đã có ca khẳng định trong `test_claude_executor.py`.
+
+### 6.4 Hai lỗi vòng kiểm chứng độc lập đợt 9 tìm thêm — ĐÃ SỬA (`65039ae` + đợt này)
+
+Nguồn: sub-agent `testing` (`test-round9-verify`), chạy đúng kịch bản CUA nhẹ → nặng và
+delegation trên cây `65039ae`, kết luận `PARTIAL` vì đúng hai lỗi dưới đây.
+
+| Mã | Mức | Nội dung | Trạng thái | Bằng chứng |
+|---|---|---|---|---|
+| F6b | Cao (làm hỏng hợp đồng) | `deploy/docker/capture.py` gọi `.decode()` lên đầu ra của `_run_as_agent()` — mà hàm này chạy `text=True` nên đầu ra là `str`: nhánh "đặt lại thất bại" ném `AttributeError`, `/__box/capture` và `/__box/record/start` trả **HTTP 500** thay vì trả ảnh kèm `desktopWarning`. Đo sống: `BOX_SCREEN=9999x9999` trên cổng tạm :8099 → `500 {"error": "Lỗi nội bộ."}`, log proxy `AttributeError("'str' object has no attribute 'decode'")` | ĐÃ SỬA — thêm `_output_text()` nhận cả `str` lẫn `bytes`; warning vẫn là `xrandr exit <n>: <200 ký tự đầu>` | `DesktopFloorTest` +3 ca: đầu ra `str` vẫn ra `desktopWarning` (không ném), đầu ra rỗng cho warning sạch, `_output_text` nhận cả hai kiểu |
+| F8 | Cao (đốt ngân sách bước) | `worker.py` luôn chạy `xdotool mousemove --sync`; cờ này chỉ trả về khi con trỏ **đổi** vị trí, nên khi con trỏ đã ở đúng toạ độ đích nó chờ hết 15 s (đo trong box: 15.16 s và 15.15 s, so với 0.0 s ở điểm mới), mà lệnh bị cắt ở `timeout=15` ⇒ lần bấm thứ hai vào cùng một chỗ báo lỗi hết giờ. Đây là thứ làm lượt CUA nặng của đợt 7 đốt 20/20 bước rồi `MAX_STEPS` | ĐÃ SỬA — `_pointer_move()` di chuyển **không** `--sync` rồi tự chờ bằng `xdotool getmouselocation` (trần 20 lần × 50 ms); mọi thao tác chuột theo toạ độ đi qua `_pointer_click()` | `test_sandbox_worker_pointer.py` (5 ca): không còn `--sync` ở bất kỳ lệnh nào, bốn thao tác chuột đều di chuyển trước, con trỏ đã đúng chỗ chỉ thăm dò 1 lần, vị trí không khớp dừng sau 20 lần mà vẫn bấm, `type`/`key` không đụng con trỏ |
+
+### 6.5 Hai lỗi lộ ra khi chạy `/claude-code` thật đầu tiên — ĐÃ SỬA (đợt này)
+
+Nguồn: lượt `/claude-code` đầu tiên chạy thật qua cầu nối router (2026-09-20 07:2x–07:4x), sau khi
+image được build lại và `status` của executor đã là `ready`.
+
+| Mã | Mức | Nội dung | Trạng thái | Bằng chứng |
+|---|---|---|---|---|
+| F9 | Cao | Con của lệnh không được truyền `deadlineSeconds`, nên rơi về mặc định **180 giây** của `create_session` — phiên đặt 600 giây vẫn kết thúc `DEADLINE: the turn ran out of time before an answer was produced`, dù ngân sách của phiên còn nguyên | ĐÃ SỬA — `_command_task` truyền ngân sách của **phiên** vào cả hai đường tạo con (`budget = session['config'].get('deadlineSeconds', 180)`), không đẻ thêm hằng số thứ hai | `test_skill_commands.py::test_command_child_inherits_the_session_time_budget` (mới) |
+| F10 | Cao | Không đặt `BOXFOX_ANTHROPIC_MODEL` thì CLI tự chọn model mặc định của nó (`claude-opus-5[1m]`), model **không có** trên router BoxFox, nên lượt chết ngay: `There's an issue with the selected model (claude-opus-5[1m])`. Lần chạy thật đầu tiên chết đúng như vậy dù cấu hình `*_DEFAULT_SONNET_MODEL`/`*_DEFAULT_HAIKU_MODEL` đã đúng | ĐÃ SỬA — `router_config()` lấy model sonnet (hoặc haiku) đã cấu hình làm `ANTHROPIC_MODEL` khi biến này trống; giá trị người dùng đặt thẳng vẫn thắng, readiness báo lại qua `models` | `test_claude_worker_router.py::test_the_cli_never_falls_back_to_its_own_default_model` + `::test_cli_environment_carries_the_resolved_model` (mới) |

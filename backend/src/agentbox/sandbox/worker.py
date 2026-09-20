@@ -116,6 +116,32 @@ def shell(command, timeout=30, session='default'):
             'exit_code': proc.returncode, 'is_error': proc.returncode != 0, 'artifact': artifact}
 
 
+def _pointer_move(x: int, y: int) -> None:
+    """Đưa con trỏ tới (x, y) rồi CHỜ nó tới nơi — không dùng `mousemove --sync`.
+
+    F8 (đợt 9): `xdotool mousemove --sync` treo đúng 15 giây khi con trỏ ĐÃ ở toạ độ
+    đích (đo trong box: 15.16 s và 15.15 s, trong khi điểm mới mất 0.0 s), mà lệnh bị
+    cắt ở `timeout=15` nên lần bấm thứ hai vào cùng một chỗ báo lỗi hết giờ. Đó chính
+    là thứ làm lượt CUA nặng đốt 20/20 bước ở đợt 7. Ở đây di chuyển trước, rồi tự
+    kiểm tra vị trí bằng `getmouselocation` — vẫn đảm bảo bấm đúng chỗ, không treo.
+    """
+    subprocess.run(['xdotool', 'mousemove', str(x), str(y)], env={**os.environ, 'DISPLAY': ':99'},
+                   capture_output=True, timeout=10)
+    for _ in range(20):
+        probe = subprocess.run(['xdotool', 'getmouselocation', '--shell'],
+                               env={**os.environ, 'DISPLAY': ':99'}, capture_output=True, timeout=10)
+        out = probe.stdout.decode(errors='replace') if isinstance(probe.stdout, bytes) else str(probe.stdout or '')
+        if f'X={x}' in out and f'Y={y}' in out:
+            return
+        time.sleep(0.05)
+
+
+def _pointer_click(args, *click_args) -> list:
+    """Lệnh bấm chuột tại (x, y): di chuyển (không `--sync`) rồi bấm."""
+    _pointer_move(int(args['x']), int(args['y']))
+    return ['xdotool', 'click', *click_args]
+
+
 def browser(args, session):
     from playwright.sync_api import sync_playwright
     action = args.get('action', 'snapshot')
@@ -302,10 +328,10 @@ def execute(name, args, session):
     if name == 'computer_use':
         action = args['action']
         commands = {
-            'click': lambda: ['xdotool', 'mousemove', '--sync', str(int(args['x'])), str(int(args['y'])), 'click', '1'],
-            'double_click': lambda: ['xdotool', 'mousemove', '--sync', str(int(args['x'])), str(int(args['y'])), 'click', '--repeat', '2', '--delay', '100', '1'],
-            'right_click': lambda: ['xdotool', 'mousemove', '--sync', str(int(args['x'])), str(int(args['y'])), 'click', '3'],
-            'middle_click': lambda: ['xdotool', 'mousemove', '--sync', str(int(args['x'])), str(int(args['y'])), 'click', '2'],
+            'click': lambda: _pointer_click(args, '1'),
+            'double_click': lambda: _pointer_click(args, '--repeat', '2', '--delay', '100', '1'),
+            'right_click': lambda: _pointer_click(args, '3'),
+            'middle_click': lambda: _pointer_click(args, '2'),
             'type': lambda: ['xdotool', 'type', '--clearmodifiers', '--', args['text']],
             'key': lambda: ['xdotool', 'key', '--clearmodifiers', args['key']],
             'scroll': lambda: ['xdotool', 'click', '--repeat', str(min(20, max(1, int(args.get('steps', 3))))), '5' if args.get('direction') == 'down' else '4'],

@@ -1,0 +1,50 @@
+{
+  "id": "Q1",
+  "case": "Lên plan cho agent tra cứu bệnh án (đúng ca chủ sở hữu nêu)",
+  "request": "Lên plan cho một agent tra cứu bệnh án.",
+  "request_source": "nguyên văn ca của chủ sở hữu theo kế hoạch §4",
+  "oracle_pass": [
+    "Plan có mục nghiệm thu với lệnh kiểm cụ thể và kết quả mong đợi",
+    "Plan có mục rủi ro/giới hạn thật (không phải câu rỗng)",
+    "Mọi khẳng định ngoài hệ thống có nguồn cụ thể, hoặc ghi rõ không lấy được nguồn",
+    "Không lặp khối văn bản; các mục bắt buộc theo mẫu plan đều có mặt"
+  ],
+  "bad_answer": [
+    "Plan chỉ là văn xuôi, không có phần nghiệm thu/kiểm chứng",
+    "Không có mục rủi ro, hoặc mục rủi ro chỉ ghi 'không có rủi ro' mà không lý do",
+    "Trích nguồn không kiểm lại được (URL bịa, tài liệu không tồn tại)",
+    "Cùng một đoạn văn dán lại nhiều lần"
+  ],
+  "rubric_dimensions": [
+    "C1",
+    "C2",
+    "C3",
+    "C4",
+    "C5",
+    "C6",
+    "C7"
+  ],
+  "environment": {
+    "network": "off",
+    "workspace": "sạch"
+  },
+  "budget": {
+    "max_steps": 16,
+    "deadline_seconds": 180,
+    "source": "trần đang chạy của role orchestrator trong nhật ký hệ thống (turn.start: maxSteps 16, deadlineSeconds 180)"
+  },
+  "seeds": [
+    "workspace sạch",
+    "không có tệp plan nào trong .plans/ trước khi chạy"
+  ],
+  "layer1_checks": [
+    "plan_has_required_sections",
+    "plan_has_command_and_expected",
+    "text_not_repeated"
+  ],
+  "open_questions": [
+    "Cổng chất lượng plan hiện từ chối plan thiếu mục (PLAN_QUALITY_REJECTED) nhưng không chấm điểm — cần chốt ngưỡng C5 của lớp 1."
+  ],
+  "plan_ref": "docs/plan/agent-output-quality-plan.md §4",
+  "bad_answer_source": "script này soạn theo chiều ngược của oracle; kế hoạch §4 chỉ có cột 'Oracle đạt' nên 'bad answer' chưa được chủ sở hữu ghim"
+}

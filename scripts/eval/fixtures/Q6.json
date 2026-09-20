@@ -1,0 +1,42 @@
+{
+  "id": "Q6",
+  "case": "Tìm tài liệu ngoài về Y (mạng bật)",
+  "request": "Tìm tài liệu ngoài về cách đánh giá agent nhiều bước (multi-step agent evaluation), dẫn nguồn cụ thể kèm URL.",
+  "request_source": "do script này soạn lại từ mô tả ca trong kế hoạch §4 (kế hoạch chưa ghim câu lệnh)",
+  "oracle_pass": [
+    "Nguồn có URL thật và kiểm lại được (mở lại đúng nội dung đã trích)",
+    "Không dùng lại nguồn bịa khi mạng bật"
+  ],
+  "bad_answer": [
+    "URL không tồn tại hoặc trỏ tới nội dung khác",
+    "Trích số liệu mà không nêu nguồn lấy từ đâu",
+    "Nhận là đã tra cứu nhưng thực ra không gọi công cụ nào"
+  ],
+  "rubric_dimensions": [
+    "C1",
+    "C2",
+    "C4",
+    "C7"
+  ],
+  "environment": {
+    "network": "on",
+    "workspace": "sạch"
+  },
+  "budget": {
+    "max_steps": 16,
+    "deadline_seconds": 180,
+    "source": "trần đang chạy của role orchestrator trong nhật ký hệ thống (turn.start: maxSteps 16, deadlineSeconds 180)"
+  },
+  "seeds": [
+    "mở mạng cho box theo phiên (kế hoạch benchmark §5) và ghi lại trạng thái firewall vào manifest"
+  ],
+  "layer1_checks": [
+    "source_urls_present",
+    "sources_verified_by_fetch"
+  ],
+  "open_questions": [
+    "Đây là fixture duy nhất cần mạng (kế hoạch §4); việc mở mạng là quyết định của chủ sở hữu."
+  ],
+  "plan_ref": "docs/plan/agent-output-quality-plan.md §4",
+  "bad_answer_source": "script này soạn theo chiều ngược của oracle; kế hoạch §4 chỉ có cột 'Oracle đạt' nên 'bad answer' chưa được chủ sở hữu ghim"
+}
