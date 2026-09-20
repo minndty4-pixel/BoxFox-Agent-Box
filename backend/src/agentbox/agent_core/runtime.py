@@ -184,42 +184,115 @@ def bound_inline_media(messages, keep: int = MAX_INLINE_MEDIA,
 
 ROUTER_BODY_BUDGET = 900 * 1024
 
+TRIMMED_TEXT_NOTE = ('\n[Older step trimmed so the request body fits the router; the full entry '
+                     'stays in the transcript.]')
+TRIMMED_ARGUMENTS = '{"note": "[older tool arguments trimmed to fit the router body cap]"}'
+
 
 def request_body_bytes(payload) -> int:
-    """Bytes the router will receive — it counts the serialized body, not tokens."""
-    return len(json.dumps(payload, ensure_ascii=False).encode('utf-8'))
+    """Bytes the router will receive — it counts the serialized body, not tokens.
 
-
-def shrink_request_to_budget(messages, budget: int = ROUTER_BODY_BUDGET) -> tuple[list, int]:
-    """Last-resort byte budget: trim the oldest bulky text until the body fits.
-
-    `ContextCompressor` works in tokens, and the router's cap is in bytes, so on a model with a
-    large context window (1M) a long mission can grow past 1 MiB without ever crossing the token
-    threshold — the body is then refused outright (`UPSTREAM_HTTP_413`) and the turn dies. This
-    walks from the oldest message forward, cuts the text of one bulky message at a time, and
-    stops the moment the body fits. The newest step and the stored transcript are never touched.
+    The same call `httpx` makes for a `json=` body, so this number is the router's own
+    `Content-Length` (it refuses anything over 1 MiB).
     """
-    if request_body_bytes(messages) <= budget:
-        return messages, 0
-    keep_from = 0
+    blob = json.dumps(payload, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
+    return len(blob.encode('utf-8'))
+
+
+def _last_user_index(messages) -> int:
+    """First index of the live step; everything before it is history the model only needs gist of."""
     for index in range(len(messages) - 1, -1, -1):
         if messages[index].get('role') == 'user':
-            keep_from = index
-            break
+            return index
+    return 0
+
+
+def _shrink_old_text(messages, stop):
     out = list(messages)
-    freed = 0
-    for index in range(0, keep_from):
+    for index in range(0, stop):
         text = out[index].get('content')
-        if not isinstance(text, str) or len(text) <= 2000:
+        if isinstance(text, str) and len(text) > 2000:
+            out[index] = {**out[index], 'content': text[:1000] + TRIMMED_TEXT_NOTE}
+    return out
+
+
+def _drop_old_thoughts(messages, stop):
+    """Reasoning traces are not part of any provider protocol — only the signature is."""
+    out = list(messages)
+    for index in range(0, stop):
+        if out[index].get('thought'):
+            out[index] = {**out[index], 'thought': ''}
+    return out
+
+
+def _shrink_old_tool_arguments(messages, stop):
+    """Keep the call id and the tool name — the pairing every provider validates — drop the blob."""
+    out = list(messages)
+    for index in range(0, stop):
+        calls = out[index].get('tool_calls')
+        if not isinstance(calls, list) or not calls:
             continue
-        cut = text[:1000] + '\n[Older step trimmed so the request body fits the router; the full entry stays in the transcript.]'
-        freed += len(text) - len(cut)
-        out[index] = {**out[index], 'content': cut}
-        if request_body_bytes(out) <= budget:
+        replaced = False
+        rewritten = []
+        for call in calls:
+            function = call.get('function') if isinstance(call, dict) else None
+            arguments = function.get('arguments') if isinstance(function, dict) else None
+            if isinstance(arguments, str) and len(arguments) > 400:
+                function = {**function, 'arguments': TRIMMED_ARGUMENTS}
+                call = {**call, 'function': function}
+                replaced = True
+            rewritten.append(call)
+        if replaced:
+            out[index] = {**out[index], 'tool_calls': rewritten}
+    return out
+
+
+def shrink_request_to_budget(body, messages, budget: int = ROUTER_BODY_BUDGET) -> tuple[list, int, str]:
+    """Last-resort byte budget for the **whole** request, least destructive reduction first.
+
+    `ContextCompressor` works in tokens while the router caps the body in bytes, so on a model
+    with a large context window (1M) a long mission grows past 1 MiB without ever crossing the
+    token threshold and every later call is refused (`UPSTREAM_HTTP_413`).
+
+    `body` is the request as it would be sent: the cap counts the role prompt and the tool
+    schemas too, and measuring `messages` alone underestimates it by their size (measured
+    2026-09-20: a body 1 060 902 B large whose `messages` list was 1 043 364 B — 12 326 B over
+    the cap, and the earlier messages-only check never saw it).
+
+    The reductions run over the history *before* the live step only, each one whole-list at a
+    time, in order of what costs the model least: old text, old reasoning traces, old tool
+    arguments, then the older inline captures down to one, then down to none. The moment the
+    body fits it stops. Returns `(messages, freed_bytes, phase)`; `freed_bytes` is 0 (and the
+    input list comes back) when nothing helped, so a request that cannot be reduced still fails
+    honestly. The stored transcript is never mutated — the chat UI keeps every byte.
+    """
+    def size(candidate):
+        return request_body_bytes({**body, 'messages': candidate})
+
+    original = size(messages)
+    if original <= budget:
+        return messages, 0, ''
+    stop = _last_user_index(messages)
+    out = list(messages)
+    freed, phase, current = 0, '', original
+    for name, reduce in (
+        ('text', lambda history: _shrink_old_text(history, stop)),
+        ('thought', lambda history: _drop_old_thoughts(history, stop)),
+        ('arguments', lambda history: _shrink_old_tool_arguments(history, stop)),
+        ('media-1', lambda history: bound_inline_media(history, keep=1)[0]),
+        ('media-0', lambda history: bound_inline_media(history, keep=0)[0]),
+    ):
+        before = current
+        out = reduce(out)
+        current = size(out)
+        if current < before:
+            freed += before - current
+            phase = name
+        if current <= budget:
             break
     if not freed:
-        return messages, 0
-    return out, freed
+        return messages, 0, ''
+    return out, freed, phase
 
 
 def dedupe_thought_signatures(messages) -> tuple[list, int]:
@@ -291,10 +364,12 @@ class RouterClient:
         if signature_chars:
             system_log.write('model.signature_deduped', session_id=route.get('sessionId'),
                              chars=signature_chars)
-        messages, freed = shrink_request_to_budget(messages)
+        messages, freed, phase = shrink_request_to_budget(
+            {**route, 'messages': messages, 'tools': tools, 'stream': True, 'max_tokens': max_tokens},
+            messages)
         if freed:
             system_log.write('model.request_trimmed', level='warn', session_id=route.get('sessionId'),
-                             chars=freed, budgetBytes=ROUTER_BODY_BUDGET)
+                             chars=freed, phase=phase, budgetBytes=ROUTER_BODY_BUDGET)
         async with httpx.AsyncClient(timeout=120, trust_env=False) as client:
             try:
                 async with client.stream(

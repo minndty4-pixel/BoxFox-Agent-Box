@@ -19,7 +19,7 @@ import copy
 import json
 
 from agentbox.agent_core import runtime as runtime_module
-from agentbox.agent_core.runtime import (MAX_INLINE_MEDIA_BYTES, ROUTER_BODY_BUDGET,
+from agentbox.agent_core.runtime import (MAX_INLINE_MEDIA_BYTES, ROUTER_BODY_BUDGET, TRIMMED_ARGUMENTS,
                                          bound_inline_media, dedupe_thought_signatures,
                                          request_body_bytes, shrink_request_to_budget)
 
@@ -142,9 +142,10 @@ def test_a_long_mission_body_fits_after_both_passes():
 # --------------------------------------------------- trần BYTE cuối cùng của thân request
 
 def test_a_body_under_the_budget_is_returned_untouched():
+    body = {'modelId': 'x', 'tools': [], 'max_tokens': 4096}
     messages = [{'role': 'user', 'content': 'xin chào'}, {'role': 'assistant', 'content': 'chào bạn'}]
-    returned, freed = shrink_request_to_budget(messages)
-    assert freed == 0 and returned is messages
+    returned, freed, phase = shrink_request_to_budget(body, messages)
+    assert freed == 0 and phase == '' and returned is messages
 
 
 def test_the_byte_budget_trims_the_oldest_text_first():
@@ -161,9 +162,11 @@ def test_the_byte_budget_trims_the_oldest_text_first():
         {'role': 'user', 'content': 'tiếp tục'},
         {'role': 'assistant', 'content': 'mới nhất, không được đụng'},
     ]
-    assert request_body_bytes(messages) > ROUTER_BODY_BUDGET
-    trimmed, freed = shrink_request_to_budget(messages)
-    assert freed > 0 and request_body_bytes(trimmed) <= ROUTER_BODY_BUDGET
+    body = {'modelId': 'x', 'tools': [], 'max_tokens': 4096}
+    assert request_body_bytes({**body, 'messages': messages}) > ROUTER_BODY_BUDGET
+    trimmed, freed, phase = shrink_request_to_budget(body, messages)
+    assert phase == 'text' and freed > 0
+    assert request_body_bytes({**body, 'messages': trimmed}) <= ROUTER_BODY_BUDGET
     assert trimmed[1]['content'].startswith('A' * 1000) and 'trimmed so the request body fits' in trimmed[1]['content']
     assert trimmed[5]['content'] == 'mới nhất, không được đụng', 'bước mới nhất phải nguyên vẹn'
     assert messages[1]['content'] == 'A' * 600_000, 'bản lưu không được sửa'
@@ -172,5 +175,118 @@ def test_the_byte_budget_trims_the_oldest_text_first():
 def test_a_huge_single_old_message_still_leaves_a_hard_failure_to_the_caller():
     """Không cắt được gì (mọi thứ đều là bước hiện tại) thì trả nguyên trạng, không nuốt lỗi."""
     messages = [{'role': 'user', 'content': 'x' * (2 * 1024 * 1024)}]
-    returned, freed = shrink_request_to_budget(messages)
-    assert freed == 0 and request_body_bytes(returned) > ROUTER_BODY_BUDGET
+    returned, freed, phase = shrink_request_to_budget({'tools': []}, messages)
+    assert freed == 0 and phase == '' and returned is messages
+
+
+def test_the_budget_counts_the_prompt_and_the_tool_schemas():
+    """Trần của router đếm **cả** thân request, không chỉ `messages`.
+
+    Đo trên phiên thật `584d61c8` (25 bước, chết ở bước 25): thân đầy đủ 1 060 902 B trong khi
+    danh sách `messages` chỉ 1 043 364 B — bản sửa đầu tiên chỉ đo `messages` nên không thấy
+    12 326 B vượt trần và lượt gọi vẫn chết với `UPSTREAM_HTTP_413`.
+    """
+    messages = [
+        {'role': 'user', 'content': 'nhiệm vụ'},
+        {'role': 'assistant', 'content': 'A' * (ROUTER_BODY_BUDGET - 20_000)},
+        {'role': 'user', 'content': 'tiếp tục'},
+        {'role': 'assistant', 'content': 'mới nhất'},
+    ]
+    body = {'system': 'S' * 40_000, 'tools': [{'type': 'function'}] * 200, 'max_tokens': 4096}
+    assert request_body_bytes(messages) <= ROUTER_BODY_BUDGET, 'chỉ riêng messages thì vừa'
+    assert request_body_bytes({**body, 'messages': messages}) > ROUTER_BODY_BUDGET
+    trimmed, freed, phase = shrink_request_to_budget(body, messages)
+    assert freed > 0 and phase == 'text'
+    assert request_body_bytes({**body, 'messages': trimmed}) <= ROUTER_BODY_BUDGET
+    assert trimmed[3]['content'] == 'mới nhất', 'bước sống không bị đụng'
+
+
+def test_history_is_reduced_least_destructively_first():
+    """Chữ ký và `thought` của bước cũ là thứ rẻ nhất để bỏ, trước khi cắt chữ."""
+    messages = [
+        {'role': 'user', 'content': 'nhiệm vụ'},
+        {'role': 'assistant', 'content': 'ngắn', 'thought': 'T' * (ROUTER_BODY_BUDGET + 10_000)},
+        {'role': 'user', 'content': 'tiếp tục'},
+        {'role': 'assistant', 'content': 'mới nhất'},
+    ]
+    body = {'tools': [], 'max_tokens': 4096}
+    trimmed, freed, phase = shrink_request_to_budget(body, messages)
+    assert phase == 'thought' and freed > ROUTER_BODY_BUDGET
+    assert trimmed[1]['thought'] == '' and trimmed[1]['content'] == 'ngắn', 'chữ không bị cắt'
+    assert messages[1]['thought'].startswith('T' * 100), 'bản lưu không được sửa'
+
+
+def test_old_tool_arguments_shrink_without_breaking_the_call_pairing():
+    messages = [
+        {'role': 'user', 'content': 'nhiệm vụ'},
+        {'role': 'assistant', 'content': None, 'tool_calls': [
+            {'id': 'call_7', 'type': 'function',
+             'function': {'name': 'computer_use',
+                          'arguments': '{"script": "' + 'x' * (ROUTER_BODY_BUDGET + 10_000) + '"}'},
+             'thought_signature': 'S' * 20},
+        ]},
+        {'role': 'tool', 'tool_call_id': 'call_7', 'name': 'computer_use', 'content': '{"ok": true}'},
+        {'role': 'user', 'content': 'tiếp tục'},
+        {'role': 'assistant', 'content': 'mới nhất'},
+    ]
+    body = {'tools': [], 'max_tokens': 4096}
+    trimmed, freed, phase = shrink_request_to_budget(body, messages)
+    assert phase == 'arguments' and freed > 0
+    call = trimmed[1]['tool_calls'][0]
+    assert call['id'] == 'call_7' and call['function']['name'] == 'computer_use'
+    assert call['function']['arguments'] == TRIMMED_ARGUMENTS
+    assert call['thought_signature'] == 'S' * 20, 'chữ ký vẫn phải đi cùng lượt gọi'
+    assert trimmed[2]['tool_call_id'] == 'call_7', 'cặp gọi/kết quả vẫn khớp id'
+    assert messages[1]['tool_calls'][0]['function']['arguments'].endswith('"}'), 'bản lưu không đổi'
+
+
+def test_the_newest_capture_is_the_last_thing_dropped():
+    """Ảnh là thứ đắt nhất về mặt thông tin, nên chỉ bị bỏ khi mọi cách khác đã hết."""
+    messages = [
+        {'role': 'user', 'content': 'nhiệm vụ'},
+        {'role': 'assistant', 'content': None, 'tool_calls': [
+            {'id': 'c0', 'type': 'function', 'function': {'name': 'computer_screen_capture', 'arguments': '{}'}}]},
+        _capture(0, 300 * 1024),
+        {'role': 'user', 'content': 'tiếp tục'},
+        {'role': 'assistant', 'content': None, 'tool_calls': [
+            {'id': 'c1', 'type': 'function', 'function': {'name': 'computer_screen_capture', 'arguments': '{}'}}]},
+        _capture(1, 300 * 1024),
+    ]
+    body = {'tools': [], 'max_tokens': 4096}
+    # Hai ảnh 300 KB vừa ngân sách ảnh (512 KB) nhưng vượt ngân sách thân request thấp.
+    bounded, _ = bound_inline_media(messages)
+    assert sum(1 for m in bounded if isinstance(m['content'], list)) == 1, 'ngân sách ảnh giữ 1 ảnh'
+    trimmed, freed, phase = shrink_request_to_budget(body, messages, budget=250 * 1024)
+    assert phase == 'media-0' and freed > 0
+    assert all(isinstance(m['content'], str) for m in trimmed if m.get('role') == 'tool')
+    assert messages[5]['content'][1]['type'] == 'image_url', 'bản lưu vẫn còn ảnh'
+
+
+def test_the_measured_cua_body_now_fits_under_the_router_cap():
+    """Hình dạng thật của ca chết vì 413: chữ ký ghi hai lần + ảnh + văn bản trợ lý dài."""
+    messages = [{'role': 'user', 'content': 'nhiệm vụ CUA nặng'}]
+    for index in range(8):
+        messages.append(_assistant_with_signature(index, 60 * 1024))
+        messages.append(_capture(index, 70 * 1024))
+        messages.append({'role': 'assistant', 'content': 'ghi chú ' + 'N' * 30_000})
+    messages.append({'role': 'user', 'content': 'bước sống'})
+    messages.append({'role': 'assistant', 'content': 'kết quả mới nhất'})
+    body = {'system': 'S' * 30_000, 'tools': [{'type': 'function'}] * 100, 'max_tokens': 4096}
+    before = request_body_bytes({**body, 'messages': messages})
+    bounded, _ = bound_inline_media(messages)
+    deduped, _ = dedupe_thought_signatures(bounded)
+    trimmed, freed, phase = shrink_request_to_budget(body, deduped)
+    after = request_body_bytes({**body, 'messages': trimmed})
+    assert before > 1048576, 'kịch bản phải tái hiện được thân quá trần'
+    assert after < 1048576 and after <= ROUTER_BODY_BUDGET, (phase, freed, after)
+    assert trimmed[-1]['content'] == 'kết quả mới nhất', 'bước sống không bị đụng'
+
+
+def test_the_trim_measures_the_body_the_client_really_sends():
+    """`RouterClient.complete` phải đưa **cả thân request** vào phép đo, không chỉ `messages`."""
+    source = runtime_module.__file__
+    with open(source, encoding='utf-8') as handle:
+        text = handle.read()
+    assert "shrink_request_to_budget(\n            {**route, 'messages': messages" in text
+    assert "'model.request_trimmed'" in text
+
