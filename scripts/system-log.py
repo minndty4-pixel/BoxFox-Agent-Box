@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
-LOG_DIR = Path.home() / 'BoxFox' / 'logs'
+# Same override the writers honour, so a verification instance can be read back.
+LOG_DIR = Path(os.environ.get('BOXFOX_SYSTEM_LOG_DIR') or (Path.home() / 'BoxFox' / 'logs'))
 
 
 def _files(which: str) -> list[Path]:
