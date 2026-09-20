@@ -32,7 +32,12 @@
 # được" (quy tắc M1, mục 8.5).
 #   KHÔNG BAKE (stack của dự án người dùng — agent tự cài khi cần, qua công tắc
 #   mạng 7.4.1):
-#     - Node.js, các framework, JDK, Rust... — KHÔNG có sẵn ở đây.
+#     - Các framework, JDK, Rust... — KHÔNG có sẵn ở đây.
+#
+#   MỘT ngoại lệ có lý do (lớp 4.8): Node.js + Claude Code CLI + bubblewrap.
+#   `/claude-code` là MỘT lệnh của chính sản phẩm này (PLAN.md, mục 5 HANDOFF),
+#   nên CLI của nó thuộc "chân tay của agent", đúng nhóm BAKE — không thể để
+#   agent tự cài khi mạng trong box mặc định ĐÓNG. Xem ghi chú đầy đủ ở lớp 4.8.
 #
 # Ghi chú về Python: python3 hệ thống (Ubuntu 24.04) hiện diện CHỈ với vai trò
 # máy chạy driver Playwright (/opt/pw-driver). Đây không phải stack phát triển;
@@ -47,6 +52,11 @@ FROM ubuntu:24.04
 # --- Phiên bản ghim (đổi = hành động có chủ ý + phải chạy lại smoke-test) -----
 ARG PLAYWRIGHT_VERSION=1.49.0
 ARG CODE_SERVER_VERSION=4.97.2
+# Node LTS "Krypton" (tarball chính thức, xem lớp 4.8). >= 22 là BẮT BUỘC:
+# package.json của @anthropic-ai/claude-code khai engines.node >= 22.0.0.
+ARG NODE_VERSION=24.21.0
+# CLI của lệnh `/claude-code`. Ghim đúng bản đã kiểm trong image này.
+ARG CLAUDE_CODE_VERSION=2.1.278
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Ho_Chi_Minh \
@@ -217,9 +227,63 @@ COPY box-services.sh /usr/local/bin/box-services.sh
 COPY box-power /usr/local/sbin/box-power
 RUN chmod +x /usr/local/bin/tty-bridge.py /usr/local/bin/box-services.sh /usr/local/sbin/box-power
 
+# --- Lớp 4.8: Node.js + Claude Code CLI + bubblewrap -------------------------
+# Ba thứ này là hạ tầng của MỘT lệnh của sản phẩm (`/claude-code`), không phải
+# stack của người dùng — xem ngoại lệ ở ghi chú đầu file. Thiếu chúng thì lệnh
+# đó không thể chạy trong bất kỳ cấu hình nào, vì box mặc định KHÔNG ra mạng để
+# agent tự cài.
+#
+#   bubblewrap (`bwrap`)
+#     claude_worker.py bọc các role CHỈ ĐỌC (explore/plan/design/review/research)
+#     trong `bwrap --ro-bind / /` để CLI không sửa được gì trong box. Thiếu bwrap
+#     thì probe báo readOnlyIsolation=false và các role đó từ chối chạy.
+#
+#   Node.js — tarball CHÍNH THỨC, ghim phiên bản (không dùng nodejs của Ubuntu)
+#     Ubuntu 24.04 chỉ có nodejs 18, mà @anthropic-ai/claude-code khai
+#     engines.node >= 22. Tarball chính thức = một URL ghim phiên bản, không
+#     thêm apt key/repo của bên thứ ba, và bản cài là như nhau trên mọi máy.
+#     Kiểm SHA256 bằng chính SHASUMS256.txt của nodejs.org trước khi giải nén.
+#     /opt/node/bin phải nằm trong PATH: `docker exec --user agent` KHÔNG đọc
+#     /etc/profile, nên nếu chỉ sửa profile thì claude_worker.probe() không
+#     `which('claude')` được.
+#
+#   @anthropic-ai/claude-code — ghim phiên bản
+#     Bản npm này kèm binary native cho linux-x64/arm64: postinstall (install.cjs)
+#     chép binary từ optionalDependencies đè lên bin/claude.exe, nên lúc chạy
+#     KHÔNG có tiến trình Node thường trú — chỉ binary. `claude --version` ngay
+#     trong build là khẳng định "CLI thật sự chạy được" (build đỏ nếu không).
+#     HOME trỏ vào /tmp khi kiểm để bản build không rơi rác vào /home/agent.
+#
+# Bản Pin: đổi ARG NODE_VERSION / CLAUDE_CODE_VERSION = hành động có chủ ý, phải
+# chạy lại `docker compose build` + phần verify trong README-claude-code.md.
+RUN apt-get update && apt-get install -y --no-install-recommends bubblewrap \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN ARCH="$(dpkg --print-architecture)"; \
+    case "$ARCH" in amd64) NODE_ARCH=x64 ;; arm64) NODE_ARCH=arm64 ;; *) echo "kien truc khong ho tro: $ARCH" >&2; exit 1 ;; esac; \
+    BASE="https://nodejs.org/dist/v${NODE_VERSION}"; \
+    TARBALL="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz"; \
+    curl -fsSL "${BASE}/${TARBALL}" -o /tmp/node.tar.xz; \
+    curl -fsSL "${BASE}/SHASUMS256.txt" -o /tmp/SHASUMS256.txt; \
+    grep " ${TARBALL}\$" /tmp/SHASUMS256.txt | sha256sum -c -; \
+    tar -xJf /tmp/node.tar.xz -C /opt; \
+    mv "/opt/node-v${NODE_VERSION}-linux-${NODE_ARCH}" /opt/node; \
+    rm -f /tmp/node.tar.xz /tmp/SHASUMS256.txt; \
+    /opt/node/bin/node --version
+ENV PATH="/opt/node/bin:${PATH}"
+
+RUN npm install --global --no-fund --no-audit "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+    && ln -sf /opt/node/bin/claude /usr/local/bin/claude \
+    && HOME=/tmp/claude-build-check claude --version \
+    && rm -rf /tmp/claude-build-check \
+    && npm cache clean --force
+
 # --- Lớp 5: công tắc mạng + proxy bảo vệ + workspace + entrypoint -------------
 COPY box-entrypoint.sh /usr/local/bin/box-entrypoint.sh
 COPY box-firewall /usr/local/sbin/box-firewall
+# Bộ sinh luật egress của công tắc mạng — tách khỏi box-firewall để luật là hàm
+# thuần, kiểm được không cần root (deploy/docker/tests/test_box_firewall_rules.py).
+COPY box-firewall-rules.py /usr/local/bin/box-firewall-rules.py
 COPY ide-proxy.py /usr/local/bin/ide-proxy.py
 COPY plan_files.py /usr/local/bin/plan_files.py
 COPY capture.py /usr/local/bin/capture.py

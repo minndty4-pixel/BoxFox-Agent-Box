@@ -1,8 +1,20 @@
 """CLI protocol simulator; no network, credentials or Docker mutations."""
 import asyncio
 import json
+import re
+from pathlib import Path
 import pytest
-from agentbox.sandbox.claude_executor import ClaudeExecutor
+from agentbox.sandbox import claude_executor
+from agentbox.sandbox.claude_executor import ClaudeExecutor, CONFIG_ENV as EXECUTOR_ENV
+
+ROUTER = {
+    'BOXFOX_ANTHROPIC_BASE_URL': 'http://172.18.0.1:3101',
+    'BOXFOX_ANTHROPIC_AUTH_TOKEN': 'bf_token_value',
+    'BOXFOX_ANTHROPIC_MODEL': 'connection-id/gemini-3.6-flash-high',
+    'BOXFOX_ANTHROPIC_DEFAULT_OPUS_MODEL': 'connection-id/gemini-3.8-flash-high',
+    'BOXFOX_ANTHROPIC_DEFAULT_SONNET_MODEL': 'connection-id/gemini-3.6-flash-high',
+    'BOXFOX_ANTHROPIC_DEFAULT_HAIKU_MODEL': 'connection-id/gemini-3.6-flash-high',
+}
 
 
 class Input:
@@ -44,7 +56,7 @@ def test_json_lines_unicode_and_argv_isolation(split):
             calls.append(args)
             p = Process(stream(READY, {'type': 'text', 'text': 'working'}, RESULT) if not processes else b'', split=split)
             processes.append(p); return p
-        executor = ClaudeExecutor('isolated-test-box', spawn)
+        executor = ClaudeExecutor('isolated-test-box', spawn, {})
         prompt = '$(touch injected); "quoted"\nこんにちは'
         assert await executor.run('abc', prompt, 'build', 'skill body', events.append) == RESULT['text']
         assert json.loads(processes[0].stdin.value)['prompt'] == prompt
@@ -72,7 +84,7 @@ def test_cli_failure_cannot_be_reported_as_success(event):
         async def spawn(*args, **kwargs):
             p = Process(stream(event) if not processes else b''); processes.append(p); return p
         with pytest.raises(ValueError):
-            await ClaudeExecutor(spawn=spawn).run('abc', 'task', 'build', '', lambda e: None)
+            await ClaudeExecutor(spawn=spawn, environment={}).run('abc', 'task', 'build', '', lambda e: None)
         assert len(processes) == 2
         assert json.loads(processes[1].stdin.value)['session'] == 'abc'
     asyncio.run(run())
@@ -84,7 +96,7 @@ def test_stop_reaches_container_process_group(action):
         processes = []
         async def spawn(*args, **kwargs):
             p = Process(hang=not processes); processes.append(p); return p
-        executor = ClaudeExecutor(spawn=spawn)
+        executor = ClaudeExecutor(spawn=spawn, environment={})
         task = asyncio.create_task(executor.run('owned-child', 'task', 'build', '', lambda e: None, deadline=.02 if action == 'timeout' else 10))
         await asyncio.sleep(.01)
         if action == 'cancel': task.cancel()
@@ -99,8 +111,67 @@ def test_probe_never_infers_ready_without_evidence(payload):
     async def run():
         async def spawn(*args, **kwargs): return Process(payload)
         try:
-            result = await ClaudeExecutor(spawn=spawn).probe()
+            result = await ClaudeExecutor(spawn=spawn, environment={}).probe()
             assert result['status'] == 'setup_required'
         except ValueError:
             assert payload == b'{bad json}\n'
     asyncio.run(run())
+
+
+def test_router_config_becomes_docker_exec_env_flags():
+    """Cấu hình router đi vào box bằng `docker exec -e`, không bằng tham số CLI."""
+    async def run():
+        processes, calls = [], []
+        async def spawn(*args, **kwargs):
+            calls.append(args)
+            p = Process(stream(READY, RESULT)); processes.append(p); return p
+        executor = ClaudeExecutor('isolated-test-box', spawn, ROUTER)
+        assert await executor.run('abc', 'task', 'build', '', lambda e: None) == RESULT['text']
+        argv = list(calls[0])
+        flags = [(argv[i + 1]) for i, part in enumerate(argv) if part == '-e']
+        assert flags == [f'{name}={value}' for name, value in ROUTER.items()]
+        # Thứ tự cờ vẫn đúng: docker exec -i -e … --user agent <box> python3 -c <worker>
+        assert argv[:2] == ['docker', 'exec'] and '-i' in argv[:4]
+        assert argv[argv.index('--user') + 1] == 'agent' and argv[argv.index('--user') + 2] == 'isolated-test-box'
+        # Token chỉ có trong argv của `docker exec`, KHÔNG nằm trong payload stdin.
+        assert ROUTER['BOXFOX_ANTHROPIC_AUTH_TOKEN'] not in processes[0].stdin.value.decode()
+        assert json.loads(processes[0].stdin.value)['action'] == 'run'
+    asyncio.run(run())
+
+
+def test_no_configuration_passes_no_environment_at_all():
+    """Chưa cấu hình ⇒ hành vi y như trước: không một cờ -e nào."""
+    async def run():
+        calls = []
+        async def spawn(*args, **kwargs):
+            calls.append(args); return Process(stream(READY, RESULT))
+        await ClaudeExecutor('box', spawn, {}).probe()
+        assert '-e' not in calls[0]
+        # Biến rỗng/toàn khoảng trắng không được coi là cấu hình.
+        await ClaudeExecutor('box', spawn, {name: '  ' for name in ROUTER}).probe()
+        assert '-e' not in calls[1]
+        # Biến ngoài allow-list KHÔNG bao giờ đi vào box, kể cả khi trùng tiền tố.
+        await ClaudeExecutor('box', spawn, {'BOXFOX_ANTHROPIC_EXTRA': 'x', 'ANTHROPIC_API_KEY': 'sk-live'}).probe()
+        assert '-e' not in calls[2]
+    asyncio.run(run())
+
+
+def test_partial_router_configuration_passes_only_what_is_set():
+    async def run():
+        calls = []
+        async def spawn(*args, **kwargs):
+            calls.append(args); return Process(b'')
+        await ClaudeExecutor('box', spawn, {'BOXFOX_ANTHROPIC_AUTH_TOKEN': 'bf_1', 'BOXFOX_ANTHROPIC_MODEL': ''}).probe()
+        argv = list(calls[0])
+        assert [argv[i + 1] for i, part in enumerate(argv) if part == '-e'] == ['BOXFOX_ANTHROPIC_AUTH_TOKEN=bf_1']
+    asyncio.run(run())
+
+
+def test_executor_and_worker_agree_on_the_environment_contract():
+    """Hai đầu của hợp đồng (host truyền / box đọc) phải là CÙNG một danh sách."""
+    worker = Path(claude_executor.__file__).with_name('claude_worker.py')
+    block = worker.read_text(encoding='utf-8').split('CONFIG_ENV = {', 1)[1].split('}', 1)[0]
+    names = set(re.findall(r"'(BOXFOX_[A-Z_]+)':", block))
+    assert names == set(EXECUTOR_ENV), 'claude_worker.CONFIG_ENV và ClaudeExecutor.CONFIG_ENV đã lệch nhau'
+    assert len(EXECUTOR_ENV) == len(set(EXECUTOR_ENV))
+

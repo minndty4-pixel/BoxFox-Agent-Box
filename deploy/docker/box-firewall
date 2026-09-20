@@ -13,37 +13,63 @@
 #
 # Yêu cầu cap NET_ADMIN (khai trong docker-compose.yml). Mọi lần gọi phải ghi
 # sổ audit với actor: user (②c) — Controller làm việc đó ở backend.
+#
+# LUẬT nằm ở box-firewall-rules.py (hàm thuần, có test riêng trong
+# deploy/docker/tests/): chế độ off = loopback + 4 cổng dịch vụ của box + REJECT,
+# và — CHỈ khi người dùng bật rõ ràng — MỘT luật accept cho cầu nối LLM
+# (BOX_LLM_BRIDGE=on, mặc định off; xem README-claude-code.md). Script này chỉ
+# flush, gọi bộ sinh luật, rồi `iptables` từng dòng và đặt policy.
+#
+# GHI CHÚ fail-closed: nếu bộ sinh luật thiếu/hỏng, script rơi về CHÍNH bộ luật
+# mặc định viết ngay dưới đây (y hệt thế hệ trước) — thà giữ luật cũ còn hơn để
+# OUTPUT không có luật nào, vì container không luật = Docker mặc định ACCEPT.
 # ==============================================================================
 set -eu
 
 case "${1:-}" in
-  off)
-    iptables -F OUTPUT
-    # Cho phép loopback (mọi dịch vụ nội bộ nói chuyện với nhau qua lo)
-    iptables -A OUTPUT -o lo -j ACCEPT
-    # CHỈ ACCEPT established/related cho 4 cổng dịch vụ của box. Điều này ngăn
-    # Chrome tái dùng HTTP keep-alive ra internet: kết nối ra ngoài có source
-    # port ngẫu nhiên cao (32768–60999) → không match rule nào → rớt xuống REJECT.
-    iptables -A OUTPUT -p tcp --sport 5900 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT  # VNC
-    iptables -A OUTPUT -p tcp --sport 6080 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT  # websockify
-    iptables -A OUTPUT -p tcp --sport 8080 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT  # code-server
-    iptables -A OUTPUT -p tcp --sport 8081 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT  # ide-proxy
-    # REJECT thay vì DROP âm thầm: trình duyệt báo lỗi NGAY thay vì xoay mãi.
-    iptables -A OUTPUT -j REJECT
-    iptables -P OUTPUT DROP
-    echo off > /run/box-net-state
-    chmod 644 /run/box-net-state
-    echo "[box-firewall] OFF — data plane đã đóng"
-    ;;
-  on)
-    iptables -P OUTPUT ACCEPT
-    iptables -F OUTPUT
-    echo on > /run/box-net-state
-    chmod 644 /run/box-net-state
-    echo "[box-firewall] ON — data plane mở toàn phần"
-    ;;
-  *)
-    echo "dùng: box-firewall on|off" >&2
-    exit 2
-    ;;
+  on|off) MODE="$1" ;;
+  *) echo "dùng: box-firewall on|off" >&2; exit 2 ;;
 esac
+
+RULES_FILE="/run/box-firewall-rules"
+
+# stderr của bộ sinh luật KHÔNG bị đổi hướng: cảnh báo ("cầu nối LLM bị bỏ vì
+# thiếu gateway", "cầu nối đang accept tới …") đi thẳng ra log của container để
+# người vận hành thấy ngay, còn stdout là danh sách luật sạch.
+if python3 /usr/local/bin/box-firewall-rules.py "$MODE" > "$RULES_FILE"; then
+  :
+else
+  echo "[box-firewall] CẢNH BÁO: bộ sinh luật box-firewall-rules.py lỗi — dùng luật mặc định" >&2
+  if [ "$MODE" = "off" ]; then
+    printf '%s\n' \
+      '-A OUTPUT -o lo -j ACCEPT' \
+      '-A OUTPUT -p tcp --sport 5900 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT' \
+      '-A OUTPUT -p tcp --sport 6080 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT' \
+      '-A OUTPUT -p tcp --sport 8080 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT' \
+      '-A OUTPUT -p tcp --sport 8081 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT' \
+      '-A OUTPUT -j REJECT' > "$RULES_FILE"
+  else
+    : > "$RULES_FILE"
+  fi
+fi
+
+iptables -F OUTPUT
+while IFS= read -r rule; do
+  [ -n "$rule" ] || continue
+  # Luật là danh sách tham số do chính image này sinh ra, KHÔNG phải dữ liệu
+  # người dùng nhập — tách từ ở đây là chủ ý (shellcheck SC2086).
+  iptables $rule
+done < "$RULES_FILE"
+rm -f "$RULES_FILE"
+
+if [ "$MODE" = "off" ]; then
+  # policy DROP sau cùng: luật nào không match thì rớt, không có đường mở ngầm.
+  iptables -P OUTPUT DROP
+  echo off > /run/box-net-state
+  echo "[box-firewall] OFF — data plane đã đóng"
+else
+  iptables -P OUTPUT ACCEPT
+  echo on > /run/box-net-state
+  echo "[box-firewall] ON — data plane mở toàn phần"
+fi
+chmod 644 /run/box-net-state
