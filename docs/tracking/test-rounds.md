@@ -280,7 +280,16 @@ gồm ca khẳng định danh sách gốc không bao giờ bị sửa, ca khẳn
 hình dạng thật của phiên chết vì 413, và ca nhiệm vụ 30 bước liên tục chụp màn hình mà thân request
 vẫn luôn dưới trần. Chi tiết ở `docs/tracking/bug-register.md` §6.7.
 
-Tổng số ca sau ba lớp này: backend **507 passed, 2 failed, 2 skipped** — hai ca đỏ vẫn là hai ca cũ
+Một trần nữa lộ ra khi chạy lại ca T21 trên `a78246a`: lượt chết với `CONTEXT_LIMIT: summary failed`
+chứ không còn 413. Nguyên nhân: `estimate_tokens` tính **toàn bộ ảnh base64 như chữ**, nên phiên
+`08f2483c` bị ước lượng **1 051 631** token trong khi router chỉ báo **358 771** token đầu vào cho
+cùng request; `before` vượt `context_window - output_reserve` nên khi lượt tóm tắt gặp 429/90 giây,
+bộ nén đi vào nhánh duy nhất làm chết lượt. Nay mỗi ảnh inline được tính bằng
+`IMAGE_TOKEN_ALLOWANCE = 1600` (đúng cách nhà cung cấp tính token ảnh), nên cùng phiên đó ước lượng
+còn **952 417** — dưới ngưỡng chết, lượt tiếp tục với bản gốc thay vì dừng. Ca kiểm thử mới ở
+`backend/tests/unit/test_context_estimate.py` (4 ca).
+
+Tổng số ca sau ba lớp này: backend **511 passed, 2 failed, 2 skipped** — hai ca đỏ vẫn là hai ca cũ
 có điều kiện môi trường. `deploy/docker` **359 OK**; router **89 pass / 0 fail**; frontend
 **682 passed / 4 failed**; `tsc` thoát 0.
 

@@ -10,9 +10,39 @@ from pathlib import Path
 SUMMARY_PROMPT = (Path(__file__).resolve().parents[1] / 'vendor/opencode/compaction.txt').read_text(encoding='utf-8')
 
 
+# Providers bill an inline capture as a small number of image tokens, never as the length of its
+# base64 payload. Counting the payload as text inflated a 30-capture CUA mission to 1 051 631
+# estimated tokens against a 1M window while the router reported 358 771 input tokens for the same
+# request — and pushed the compressor into the one path that fails the turn outright
+# (`CONTEXT_LIMIT: summary failed`, measured 2026-09-20).
+IMAGE_TOKEN_ALLOWANCE = 1600
+
+
+def _thin_images(messages):
+    """Same shape, but every inline image replaced by a marker, plus how many were taken out."""
+    thinned, images = list(messages), 0
+    for index, message in enumerate(messages):
+        content = message.get('content') if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            continue
+        replaced, found = [], 0
+        for part in content:
+            if isinstance(part, dict) and part.get('type') in ('image_url', 'image'):
+                found += 1
+                replaced.append({'type': 'text', 'text': '[inline image]'})
+            else:
+                replaced.append(part)
+        if found:
+            images += found
+            thinned[index] = {**message, 'content': replaced}
+    return thinned, images
+
+
 def estimate_tokens(messages, tools=()):
     # Conservative UTF-8 estimate, not billable usage. Includes function schemas.
-    return (len(json.dumps([messages, tools], ensure_ascii=False).encode('utf-8')) + 2) // 3
+    thinned, images = _thin_images(messages)
+    chars = len(json.dumps([thinned, tools], ensure_ascii=False).encode('utf-8'))
+    return (chars + 2) // 3 + images * IMAGE_TOKEN_ALLOWANCE
 
 
 class ContextCompressor:
