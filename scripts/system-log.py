@@ -101,7 +101,15 @@ def main(argv: list[str] | None = None) -> int:
         if args.since_minutes:
             cutoff = _minutes_ago(args.since_minutes)
             entries = [entry for entry in entries if entry.get('ts', '') >= cutoff]
-        codes: Counter = Counter(entry.get('code') or entry.get('errorCode') for entry in entries if entry.get('level') == 'error')
+        codes: Counter = Counter(
+            entry.get('code')
+            or entry.get('errorCode')
+            # `turn.tool`/`model` writers put the classified code inside `data`.
+            or (entry.get('data') or {}).get('errorCode')
+            or 'UNCLASSIFIED'
+            for entry in entries
+            if entry.get('level') == 'error'
+        )
         events: Counter = Counter(entry.get('event') for entry in entries)
         durations: dict[str, list[float]] = defaultdict(list)
         for entry in entries:
