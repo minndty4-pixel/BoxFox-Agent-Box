@@ -252,14 +252,18 @@ def test_claude_code_role_is_decoupled_from_executor():
         from agentbox.skills.catalog import SkillCatalog
         with tempfile.TemporaryDirectory() as tmp:
             store = SessionStore(Path(tmp) / 'commands.db')
-            registry = CommandRegistry(store, SkillCatalog())
-            registry.configure({'enabled': list(registry.catalog.items), 'revision': 0})
-            resolved = registry.resolve('/claude-code List the files.')
-            assert resolved.executor == 'claude-code'
-            assert resolved.role == CLI_DEFAULT_ROLES['claude-code']
-            custom = registry.save({'slug': 'delegate', 'template': 'Do $ARGUMENTS', 'role': 'review',
-                                    'executor': 'claude-code', 'skills': []})
-            assert custom['role'] == 'review'
+            try:
+                registry = CommandRegistry(store, SkillCatalog())
+                registry.configure({'enabled': list(registry.catalog.items), 'revision': 0})
+                resolved = registry.resolve('/claude-code List the files.')
+                assert resolved.executor == 'claude-code'
+                assert resolved.role == CLI_DEFAULT_ROLES['claude-code']
+                custom = registry.save({'slug': 'delegate', 'template': 'Do $ARGUMENTS', 'role': 'review',
+                                        'executor': 'claude-code', 'skills': []})
+                assert custom['role'] == 'review'
+            finally:
+                store.close()
+                store = None
     finally:
         if store is not None:
             store.close()
