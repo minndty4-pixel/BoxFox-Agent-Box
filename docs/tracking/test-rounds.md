@@ -153,3 +153,39 @@ Bảy lỗi của vòng soát mã được sửa trong `16eedda`; hai phát hi�
 **Kiểm ngược** (đã chạy, tắt bản sửa thì ca tương ứng đỏ): bỏ nhánh `reset` trong
 `HarnessStepView.tsx`; bỏ cổng `BRIDGE_PATHS` ở cầu nối.
 
+
+## Vòng 11 — đóng hai lỗi CUA còn nợ của đợt 7 (F5, F6) — 2026-09-20, 06:2x–06:5x
+
+Hai lỗi này từng bị hoãn vì "cần chủ dự án quyết"; đợt này chốt phương án **không bỏ**
+tính năng tự khớp cỡ của noVNC (`Xvnc -AcceptSetDesktopSize` là thứ giữ cho noVNC dùng
+được trong cửa sổ nhỏ), thay vào đó đặt **sàn** kích thước và thêm bước chọn tab theo
+trạng thái hiển thị. Cam kết: `65039ae`.
+
+**Bộ test sau khi sửa:**
+
+| Bộ | Lệnh | Kết quả |
+|---|---|---|
+| Backend | `.venv/bin/python -m pytest backend/tests -q` | **373 passed, 2 failed, 2 skipped** — hai lỗi có sẵn như vòng 10 |
+| Docker | `python3 -m unittest discover -s deploy/docker/tests -p "test_*.py"` | **350 OK** |
+
+**Ca mới của vòng này**: `test_sandbox_worker_desktop_floor.py` (7),
+`test_sandbox_executor_desktop_note.py` (5, gồm cả nhánh chuyển tiếp ghi chú trong
+`computer_screen_capture`), `DesktopFloorTest` (6), `VisibleTargetTest` (6),
+`SafeTabListTest` (2) trong `deploy/docker/tests/test_inspect_element.py`.
+
+**Kiểm ngược** (đã chạy, tắt bản sửa thì ca tương ứng đỏ): bỏ bước chọn theo
+`visibilityState` trong `_select_target` (3 ca đỏ); cho `worker.ensure_desktop_size()`
+trả `None` ngay (2 ca đỏ); bỏ vòng chuyển tiếp `desktopRestored`/`desktopWarning`
+trong `executor._execute` (1 ca đỏ).
+
+**Đo sống trong box**: trước khi sửa, `POST /__box/inspect-element` tại `(640,300)`
+trả `reason: ambiguous_target` với **34 tab** cùng tiêu đề `vi.wikipedia.org`; sau khi
+sửa, cùng toạ độ đó trả `{"type":"dom","selector":"#main-content","tag":"div"}`.
+Kéo desktop xuống `286x311` rồi lần lượt gọi ba cửa vào (`/__box/capture`,
+`computer_use click`, `/__box/inspect-element`): cả ba trả `1280x800` và
+`desktopRestored {'from': '286x311', 'to': '1280x800'}`; nhật ký DEV ghi
+`box.desktop_restored` kèm `sessionId` và `tool`.
+
+Ghi chú vận hành: ba tệp `deploy/docker/{browser_capture,inspect_element,capture}.py`
+đã được chép tay vào container đang chạy để kiểm chứng (rồi khởi động lại `ide-proxy`);
+lần tạo lại container kế tiếp sẽ lấy đúng các tệp trong kho.
