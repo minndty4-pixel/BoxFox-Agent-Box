@@ -34,7 +34,7 @@ const STREAM_HEADERS = { 'Content-Type': 'text/event-stream; charset=utf-8', 'Ca
 const openAIFrame = value => `data: ${typeof value === 'string' ? value : JSON.stringify(value)}\n\n`;
 // Anthropic dialect: `event: <type>\ndata: {json}\n\n` frames, no terminator.
 const anthropicFraming = value => (typeof value === 'string' ? value : anthropicFrame(value));
-export function createRouterServer({ service, engine, oauth, frontendDir = null, allowedOrigins = ['http://localhost:3100', 'http://127.0.0.1:3100'], allowedHosts = ['localhost:3100', '127.0.0.1:3100', 'localhost:3101', '127.0.0.1:3101'] }) {
+export function createRouterServer({ service, engine, oauth, frontendDir = null, allowedOrigins = ['http://localhost:3100', 'http://127.0.0.1:3100'], allowedHosts = ['localhost:3100', '127.0.0.1:3100', 'localhost:3101', '127.0.0.1:3101'], bridgeHost = null }) {
   function admin(req) {
     assert(req.headers['x-boxfox-admin'] === '1', 'Local administration header required.', 'FORBIDDEN', 403);
     assert(!req.headers.origin || allowedOrigins.includes(req.headers.origin), 'Origin not allowed.', 'FORBIDDEN', 403);
@@ -201,7 +201,7 @@ export function createRouterServer({ service, engine, oauth, frontendDir = null,
       else res.end();
     }
   }
-  const server = http.createServer(async (req, res) => {
+  const handler = async (req, res) => {
     try {
       assert(allowedHosts.includes(req.headers.host), 'Host not allowed.', 'FORBIDDEN', 403);
       const url = new URL(req.url, 'http://localhost'); const path = url.pathname; const method = req.method;
@@ -280,7 +280,18 @@ export function createRouterServer({ service, engine, oauth, frontendDir = null,
       }
       throw new RouterError('NOT_FOUND', 'Endpoint not found.', 404);
     } catch (e) { if (!res.headersSent && !res.destroyed) json(res, safeError(e).status, errorEnvelope(e)); else res.end(); }
-  });
+  };
+  const server = http.createServer(handler);
   server.requestTimeout = 110000; server.headersTimeout = 10000;
+  // The sandbox can reach the router only through the docker bridge gateway. When the
+  // owner opts in (`BOXFOX_ROUTER_BRIDGE_HOST`, e.g. 172.18.0.1) a second listener
+  // serves the exact same handler on that single address. Never bind 0.0.0.0 here:
+  // one address keeps the exposure on the container network only.
+  if (bridgeHost) {
+    assert(bridgeHost !== '0.0.0.0' && bridgeHost !== '::', 'Bridge host must be one explicit address.', 'INVALID_REQUEST', 400);
+    server.bridge = http.createServer(handler);
+    server.bridge.requestTimeout = server.requestTimeout; server.bridge.headersTimeout = server.headersTimeout;
+    server.bridge.on('error', error => logFailure('router.bridge_failed', error, { host: bridgeHost }));
+  }
   return server;
 }

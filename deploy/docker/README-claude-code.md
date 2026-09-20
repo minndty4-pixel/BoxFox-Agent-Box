@@ -195,17 +195,18 @@ docker exec --user root agentbox-box iptables -S OUTPUT
 docker exec --user agent agentbox-box bash -lc 'timeout 3 bash -c "</dev/tcp/172.18.0.1/3101" && echo REACHABLE'
 ```
 
-### 5.2 Phía router (CÒN THIẾU — thuộc `router/src/**`, không nằm trong thay đổi này)
+### 5.2 Phía router (đã có trong `router/src/**`)
 
-Router hiện `server.listen(port, '127.0.0.1')` (`router/src/main.mjs`) và
-`allowedHosts` chỉ chấp nhận `localhost:3101`/`127.0.0.1:3101`
-(`router/src/server.mjs`). Muốn box tới được thì phải:
+Router vẫn chỉ lắng nghe `127.0.0.1` cho tới khi chủ sở hữu bật cầu nối. Khi bật:
 
-1. **Thêm listener trên gateway của bridge** (ví dụ env `BOXFOX_ROUTER_BRIDGE_HOST=172.18.0.1`,
-   cùng cổng 3101) — đây là địa chỉ mà container nhìn thấy của máy host. Chỉ bind
-   đúng địa chỉ bridge, KHÔNG bind `0.0.0.0`, nếu không router sẽ lộ ra LAN.
-2. **Thêm host đó vào `allowedHosts`** (`172.18.0.1:3101`), vì mọi request của box
-   mang header `Host: 172.18.0.1:3101` và router trả 403 `Host not allowed.` nếu thiếu.
+1. Đặt `BOXFOX_ROUTER_BRIDGE_HOST` (ví dụ `172.18.0.1`) trong môi trường của tiến trình
+   router. Router tạo thêm **một** listener thứ hai trên đúng địa chỉ đó, cùng cổng 3101,
+   dùng chung handler với listener loopback. Giá trị `0.0.0.0`/`::` bị từ chối ngay khi
+   khởi động để router không lộ ra LAN.
+2. Địa chỉ đó được tự thêm vào `allowedHosts` (`172.18.0.1:3101`), vì request của box mang
+   header `Host: 172.18.0.1:3101` và router trả 403 `Host not allowed.` nếu thiếu.
+3. Sự kiện `router.bridge_start` (và `router.bridge_failed` khi lỗi) được ghi vào
+   `router.jsonl` để dev kiểm tra cầu nối có thật sự mở hay không.
 
 Lấy gateway một cách chắc chắn:
 
@@ -288,7 +289,8 @@ Bộ test thật của đường này (không Docker, dùng CLI giả + HOME t�
 
 1. **Container thật chưa được tạo lại** — nó vẫn chạy image trước lớp 4.8, nên
    `/claude-code` chưa thể chạy end-to-end cho tới khi recreate (gián đoạn desktop).
-2. **Router chưa bind địa chỉ bridge** (mục 5.2) — cầu nối ở phía box đã sẵn sàng
-   nhưng chưa có gì lắng nghe ở đầu kia.
+2. **Cầu nối chưa được bật** — cả hai đầu đã sẵn sàng (`BOX_LLM_BRIDGE` ở box,
+   `BOXFOX_ROUTER_BRIDGE_HOST` ở router) nhưng mặc định vẫn tắt; bật là quyết định của
+   chủ sở hữu vì nó mở một đường mạng cho box.
 3. Giao thức Anthropic đầy đủ (tools/tool_use/count_tokens) thuộc luồng ingress
    của router — xem `router/CONTRACT.md`.

@@ -500,3 +500,15 @@ test('housekeeping traffic is answered locally with a valid Anthropic response',
   assert.equal(JSON.parse(`{${body.content[0].text}`).title, 'Summarise the router ingress work');
   assert.equal(f.calls.length, 0, 'housekeeping never reaches a provider');
 });
+
+// The sandbox reaches the router only through the docker bridge gateway. The bridge
+// listener must reuse the same handler, bind one explicit address, and stay off by default.
+test('bridge listener is opt-in and binds one explicit address', async () => {
+  const engine = { generate: async function* () { yield { type: 'delta', text: 'hi' }; yield { type: 'finish', reason: 'stop' }; } };
+  const service = { active: new Map(), store: { authenticateKey: () => ({ id: 'k' }) }, snapshot: () => ({}), publicModels: () => [] };
+  const off = createRouterServer({ service, engine, oauth: { routes: [] }, allowedHosts: ['127.0.0.1:3101'] });
+  assert.equal(off.bridge, undefined, 'no bridge server unless the owner opts in');
+  const on = createRouterServer({ service, engine, oauth: { routes: [] }, allowedHosts: ['127.0.0.1:3101', '172.18.0.1:3101'], bridgeHost: '172.18.0.1' });
+  assert.ok(on.bridge, 'bridge server exists when configured');
+  assert.throws(() => createRouterServer({ service, engine, oauth: { routes: [] }, bridgeHost: '0.0.0.0' }), /explicit address/);
+});
