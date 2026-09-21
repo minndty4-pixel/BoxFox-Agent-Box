@@ -24,9 +24,12 @@ Contract
 from __future__ import annotations
 
 import asyncio
+import re
 import traceback
 
-__all__ = ['classify_failure', 'describe_failure', 'failure_detail']
+__all__ = ['classify_failure', 'describe_failure', 'failure_detail', 'is_transient', 'level_refusal',
+           'retry_advice', 'stop_reason', 'RETRYABLE_STATUS', 'DEFAULT_MAX_RETRIES', 'BACKOFF_SECONDS',
+           'RETRY_BUDGET_SECONDS']
 
 # Codes already produced as a ``ValueError('CODE: text')`` prefix by the runtime,
 # the command layer or the sandbox. Matched by prefix so the original wording
@@ -181,23 +184,180 @@ def failure_detail(exc: BaseException, limit: int = 12) -> str:
     return ''.join(frames)[-4000:] if frames else repr(exc)
 
 
-def is_transient(exc: BaseException) -> bool:
-    """True when a single retry can plausibly succeed (routers restart, sockets drop)."""
-    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
-        return False
-    name = type(exc).__name__
-    if _is_timeout(exc):
-        # A slow provider that already spent the whole window rarely gets faster on a retry.
-        return False
-    if name in _UNREACHABLE_NAMES or isinstance(exc, ConnectionError):
-        return True
-    # httpx raises its own names; kept separate from aiohttp to avoid importing it here.
-    if name in {'ReadError', 'WriteError', 'PoolTimeout', 'NetworkError', 'HTTPError'}:
-        return True
+# --------------------------------------------------------------------------- #
+# Retry policy
+# --------------------------------------------------------------------------- #
+# One place decides whether a failed model request gets another attempt, how long to wait
+# before it, and when to stop. Both the harness step loop and the tests read this, so the
+# policy cannot drift between the two.
+#
+# The rules come from what the failures actually look like in production:
+#
+# * A throttled or overloaded endpoint (429, 5xx, a dropped socket, an empty stream) is worth
+#   another attempt: the same request succeeds a few seconds later. This is the case the old
+#   one-shot retry handled, and it missed 429 entirely — a provider limit failed the turn
+#   immediately while the provider was merely asking us to slow down.
+# * A slow endpoint is NOT worth another attempt: it already spent the turn's window, and a
+#   second call starts from zero. ``DEADLINE``/``UPSTREAM_TIMEOUT`` therefore never retry.
+# * A rejected request (401/403/404, a bad payload, a context-limit refusal) never retries:
+#   the second call fails identically.
+# * Waiting is bounded twice: per attempt (a 429 carries ``Retry-After``/``retryAfterMs`` from
+#   the router, clamped to ``RATE_LIMIT_MAX_SECONDS``) and per turn
+#   (``RETRY_BUDGET_SECONDS`` in total). A retry must also leave ``MIN_RETRY_WINDOW_SECONDS``
+#   of the turn budget to be useful, otherwise the loop stops and reports instead of sleeping
+#   into a deadline.
+RETRYABLE_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
+# Retries AFTER the first call: 4 provider calls at most for one step.
+DEFAULT_MAX_RETRIES = 3
+BACKOFF_SECONDS = (1.0, 4.0, 12.0)
+RATE_LIMIT_MIN_SECONDS = 2.0
+RATE_LIMIT_MAX_SECONDS = 30.0
+RETRY_BUDGET_SECONDS = 60.0
+MIN_RETRY_WINDOW_SECONDS = 5.0
+BACKOFF_JITTER = 0.2
+
+# Rate limits arrive from the router with a machine code as well as a status.
+_RATE_LIMIT_CODES = frozenset({'RATE_LIMIT', 'CAPACITY', 'UPSTREAM_HTTP_429'})
+
+
+def router_status(exc: BaseException) -> int | None:
+    """HTTP status the model router answered with, when the failure came from it."""
+    attached = getattr(exc, 'router_status', None)
+    if isinstance(attached, int):
+        return attached
     reason = _reason(exc)
     if isinstance(exc, RuntimeError) and reason.startswith('Router HTTP '):
-        status = reason.split()[2].rstrip(':') if len(reason.split()) > 2 else ''
-        return status.isdigit() and int(status) >= 500
-    if isinstance(exc, ValueError) and reason.startswith('Upstream did not return any SSE completion content'):
-        return True
-    return False
+        token = reason.split()[2].rstrip(':') if len(reason.split()) > 2 else ''
+        return int(token) if token.isdigit() else None
+    return None
+
+
+def retry_after_seconds(exc: BaseException) -> float | None:
+    """``Retry-After`` the router forwarded from the provider, in seconds."""
+    milliseconds = getattr(exc, 'retry_after_ms', None)
+    if isinstance(milliseconds, (int, float)) and milliseconds > 0:
+        return float(milliseconds) / 1000.0
+    return None
+
+
+def _retry_reason(exc: BaseException, status: int | None) -> str | None:
+    """Why another attempt could succeed: ``rate-limit``, ``upstream``, ``stream`` or nothing."""
+    code = getattr(exc, 'router_code', None)
+    # Phán quyết của router là thẩm quyền cao nhất: nó đã tự thử lại theo `retryable`
+    # của nhà cung cấp và chỉ trả lời khi đã bỏ cuộc. `retryable: false` nghĩa là
+    # nhà cung cấp nói lỗi này không qua được bằng cách gửi lại — bỏ qua phán quyết
+    # đó thì lượt chờ thêm tới 3 lần cho một lỗi đã được xác nhận là vĩnh viễn.
+    if getattr(exc, 'retryable', None) is False and status != 429 and code not in _RATE_LIMIT_CODES:
+        return None
+    if status == 429 or code in _RATE_LIMIT_CODES:
+        return 'rate-limit'
+    name = type(exc).__name__
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)) or _is_timeout(exc):
+        # The window is already spent; see the module comment above.
+        return None
+    if status is not None:
+        return 'upstream' if status in RETRYABLE_STATUS else None
+    if name in _UNREACHABLE_NAMES or isinstance(exc, ConnectionError):
+        return 'stream'
+    if name in {'ReadError', 'WriteError', 'PoolTimeout', 'NetworkError', 'HTTPError'}:
+        return 'stream'
+    if isinstance(exc, ValueError) and _reason(exc).startswith('Upstream did not return any SSE completion content'):
+        return 'stream'
+    return None
+
+
+def _retry_delay(exc: BaseException, reason: str, attempt: int, rng) -> float:
+    """Seconds to wait before attempt ``attempt + 1``."""
+    if reason == 'rate-limit':
+        asked = retry_after_seconds(exc)
+        base = asked if asked is not None else RATE_LIMIT_MIN_SECONDS
+    else:
+        base = BACKOFF_SECONDS[min(attempt, len(BACKOFF_SECONDS) - 1)]
+        spread = rng.uniform(-BACKOFF_JITTER, BACKOFF_JITTER)
+        base = base * (1.0 + spread)
+    low, high = (RATE_LIMIT_MIN_SECONDS, RATE_LIMIT_MAX_SECONDS) if reason == 'rate-limit' else (0.5, RETRY_BUDGET_SECONDS)
+    return min(max(base, low), high)
+
+
+def retry_advice(exc: BaseException, attempt: int, remaining_seconds: float | None = None,
+                 spent_seconds: float = 0.0, max_retries: int = DEFAULT_MAX_RETRIES,
+                 rng=None) -> dict | None:
+    """``None`` when the turn must fail, else how long to wait and why.
+
+    ``attempt`` counts retries already performed (0 on the first failure). ``remaining_seconds``
+    is the turn budget left, ``spent_seconds`` the time already spent waiting for retries.
+    """
+    if attempt >= max_retries:
+        return None
+    status = router_status(exc)
+    reason = _retry_reason(exc, status)
+    if reason is None:
+        return None
+    delay = _retry_delay(exc, reason, attempt, rng or __import__('random'))
+    if spent_seconds + delay > RETRY_BUDGET_SECONDS:
+        return None
+    if remaining_seconds is not None and remaining_seconds < delay + MIN_RETRY_WINDOW_SECONDS:
+        return None
+    code, message = classify_failure(exc)
+    return {'code': code, 'message': message, 'reason': reason, 'status': status,
+            'delay': round(delay, 3), 'attempt': attempt + 1, 'maxRetries': max_retries,
+            'retryAfterSeconds': retry_after_seconds(exc)}
+
+
+def stop_reason(exc: BaseException, attempt: int, remaining_seconds: float | None = None,
+                spent_seconds: float = 0.0, max_retries: int = DEFAULT_MAX_RETRIES) -> str | None:
+    """Why no further attempt can be made, for the message the user reads.
+
+    ``permanent`` (this failure class never succeeds on a resend), ``attempts`` (the retry
+    count ran out), ``budget`` (the per-turn wait budget is spent), ``window`` (too little
+    turn time left for a wait plus a usable attempt). ``None`` when a retry is still possible,
+    in which case :func:`retry_advice` returns the wait.
+    """
+    reason = _retry_reason(exc, router_status(exc))
+    if reason is None:
+        return 'permanent'
+    if attempt >= max_retries:
+        return 'attempts'
+    delay = _retry_delay(exc, reason, attempt, __import__('random'))
+    if spent_seconds + delay > RETRY_BUDGET_SECONDS:
+        return 'budget'
+    if remaining_seconds is not None and remaining_seconds < delay + MIN_RETRY_WINDOW_SECONDS:
+        return 'window'
+    return None
+
+
+def is_transient(exc: BaseException) -> bool:
+    """True when a retry can plausibly succeed (routers restart, sockets drop, providers throttle).
+
+    Kept as the one-argument view of :func:`retry_advice` so callers that only need a yes/no
+    answer cannot drift from the policy that decides the actual wait.
+    """
+    return retry_advice(exc, 0) is not None
+
+
+# Providers that refuse the *thinking level* answer 400 with a message that names it. The
+# router publishes a level list from what a provider payload says about thinking, which is
+# not the same question as "does this model accept `thinkingLevel`": Google's `models.list`
+# marks the whole 2.5 family and Gemma as `thinking: true`, yet those models answer
+# `400 INVALID_ARGUMENT: Thinking level is not supported for this model.` (Gemini 2.5 sets
+# its thinking budget instead, and Gemma has no level at all). Measured against the live
+# Google endpoint on 2026-09-20: gemini-2.5-flash, gemini-2.5-flash-lite, gemma-4-31b-it and
+# gemini-3.5-transcribe reject the level while gemini-flash-lite-latest, gemini-3.1-flash-lite
+# and gemini-3.8-flash accept it.
+_LEVEL_REFUSAL = re.compile(r'thinking level is not supported|thinking is not enabled', re.IGNORECASE)
+_LEVEL_REFUSAL_STATUS = frozenset({400, 422})
+
+
+def level_refusal(exc: BaseException) -> bool:
+    """True when a provider refused the request *because of* the thinking level.
+
+    The caller drops `thinkingLevel` from the route and calls again: the turn must answer,
+    and a level the provider does not accept is a request problem, not a runtime failure.
+    Only 4xx statuses count — a 429/5xx that happens to mention the level is not a refusal
+    to *this* level.
+    """
+    status = router_status(exc)
+    if status is not None and status not in _LEVEL_REFUSAL_STATUS:
+        return False
+    _, message = classify_failure(exc)
+    return bool(_LEVEL_REFUSAL.search(message))

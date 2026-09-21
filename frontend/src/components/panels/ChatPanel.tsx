@@ -49,6 +49,7 @@ import { HarnessStepView } from '../chat/HarnessStepView'
 import { ProviderIcon } from '../providers/ProviderIcon'
 import { useHarnessStore } from '../../store/harnessStore'
 import { useHarnessChatStore } from '../../store/harnessChatStore'
+import { resolveThinkingLevel } from '../../lib/harnessThinking'
 import { routerChatOptions } from './RouterTestChat'
 
 type ChatGroup =
@@ -356,7 +357,7 @@ export function ChatPanel() {
       id: o.value,
       name: o.label,
       provider: o.providerId,
-      thinkingLevels: (o as any).thinkingLevels,
+      thinkingLevels: o.thinkingLevels,
     }))
     return {
       models,
@@ -374,11 +375,15 @@ export function ChatPanel() {
         const thinkingLevel = useHarnessStore.getState().thinkingLevel
         const baseLabel = selected?.label || (selection?.kind === 'model' ? selection.modelId : selection?.kind === 'alias' ? selection.aliasId : 'Gemini 3.7 Flash')
         const activeOption = routerOptions.find(o => o.value === selKey(selection))
+        const publishedLevels = activeOption?.thinkingLevels
+        // Nhãn phải nói đúng mức sẽ gửi: model chỉ công bố một mức (`['high']`) cũng
+        // có mức thật, và store kéo mức toàn cục về đúng nó trước khi gửi.
+        const effectiveLevel = publishedLevels?.length ? resolveThinkingLevel(publishedLevels, thinkingLevel) : thinkingLevel
         const hasThinking = Boolean(
-          ((activeOption as any)?.thinkingLevels?.length > 1) ||
+          (publishedLevels?.length ?? 0) > 0 ||
           (/deepseek|r1|qwq|o1|o3|claude-3[-.]7.*think/i.test(baseLabel) && !/\((?:Low|Medium|High)\)/i.test(baseLabel))
         )
-        const modelLabel = hasThinking ? `${baseLabel} (${thinkingLevel.charAt(0).toUpperCase() + thinkingLevel.slice(1)})` : baseLabel
+        const modelLabel = hasThinking && effectiveLevel ? `${baseLabel} (${effectiveLevel.charAt(0).toUpperCase() + effectiveLevel.slice(1)})` : baseLabel
         if (usesHarnessChat(activeType)) {
           // Phiên đang chạy (kể cả đang chờ người dùng quyết định) không nhận
           // prompt thường: `send` từ chối tại chỗ, nên trả `false` để composer
@@ -390,7 +395,9 @@ export function ChatPanel() {
           // Trả về kết quả để composer biết lần gửi có thất bại không — khi
           // harness trả 400 thì nội dung người dùng vừa gõ phải còn nguyên
           // trong ô nhập, không bị xoá im lặng (BUG-17/F1).
-          return harnessSend(chatId, prompt, selection, image, modelLabel).then(() => {
+          // Mức thinking của model đang chọn đi kèm để store kéo mức toàn cục về
+          // mức model thật sự công bố trước khi gửi lượt.
+          return harnessSend(chatId, prompt, selection, image, modelLabel, activeOption?.thinkingLevels).then(() => {
             captureRunError()
             return !useHarnessChatStore.getState().sessions[chatId]?.error
           })

@@ -182,7 +182,8 @@ export interface HarnessState {
   activeHarnessId: string
   activeType: 'harness' | 'model'
   activeModelId: string
-  thinkingLevel: 'low' | 'medium' | 'high'
+  // Mức thinking nhà cung cấp công bố có thể là 'max'/'xhigh', không chỉ bộ ba cũ.
+  thinkingLevel: string
   searchQuery: string
 
   setSearchQuery: (query: string) => void
@@ -190,7 +191,7 @@ export interface HarnessState {
   setMyDefault: (id: string) => void
   setActiveHarness: (id: string) => void
   setActiveModel: (id: string) => void
-  setThinkingLevel: (thinkingLevel: 'low' | 'medium' | 'high') => void
+  setThinkingLevel: (thinkingLevel: string) => void
   setActiveType: (type: 'harness' | 'model') => void
 
   getHarnessById: (id: string) => Harness | undefined

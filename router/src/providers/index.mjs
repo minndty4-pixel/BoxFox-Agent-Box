@@ -8,6 +8,7 @@ import { createCopilotAdapter } from './copilot.mjs';
 import { createClineAdapter } from './cline.mjs';
 import { createOpenCodeAdapter } from './opencode.mjs';
 import { createOpenRouterAdapter } from './openrouter.mjs';
+import { createDeepSeekAdapter } from './deepseek.mjs';
 import { PROVIDER_CATALOG } from '../catalog.mjs';
 
 export function createProviders({ fetchImpl }) {
@@ -34,6 +35,9 @@ export function createProviders({ fetchImpl }) {
     openai,
     anthropic: createAnthropicAdapter({ fetchImpl }),
     gemini: createGeminiAdapter({ fetchImpl }),
+    // DeepSeek is OpenAI-compatible but documents its own effort set, so it gets
+    // its own adapter instead of the shared OpenAI-compatible fallback below.
+    deepseek: createDeepSeekAdapter({ fetchImpl }),
     custom: createOpenAIAdapter({ fetchImpl }),
   };
   for (const provider of PROVIDER_CATALOG) {

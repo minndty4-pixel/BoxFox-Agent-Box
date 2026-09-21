@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { resolveThinkingLevel } from '../lib/harnessThinking'
 import { agentApi } from '../lib/agentApi'
 import { useHarnessStore } from './harnessStore'
 import { useSkillsStore } from './skillsStore'
@@ -61,7 +62,7 @@ interface State {
   intentSeq: Record<string, number>
   fetchSavedSessions: () => Promise<SavedSessionRow[]>
   deleteSession: (id: string) => Promise<void>
-  send: (chatId: string, prompt: string, selection: RouterChatSelection | null, image?: string | null, modelLabel?: string) => Promise<void>
+  send: (chatId: string, prompt: string, selection: RouterChatSelection | null, image?: string | null, modelLabel?: string, thinkingLevels?: string[]) => Promise<void>
   refresh: (chatId: string) => Promise<void>
   stop: (chatId: string) => Promise<void>
   /** Trả lời một quyết định qua harness; cập nhật ngay tại chỗ khi thành công. */
@@ -252,6 +253,11 @@ const storageKey = (chatId: string) => `boxfox-harness-session:${chatId}`
 const isHexId = (s: string) => /^[0-9a-f]{16,64}$/i.test(s)
 const empty = (): RunView => ({ id: null, status: 'idle', events: [], error: null })
 
+/** True khi harness trả lời rằng id phiên không còn tồn tại (mã `SESSION_NOT_FOUND`). */
+function isStaleSession(error: unknown): boolean {
+  return /SESSION_NOT_FOUND/.test(String(error))
+}
+
 export const useHarnessChatStore = create<State>((set, get) => ({
   sessions: {},
   decisions: {},
@@ -311,7 +317,13 @@ export const useHarnessChatStore = create<State>((set, get) => ({
       })
     } catch (error) {
       const errStr = String(error)
-      if (errStr.includes('404') || errStr.toLowerCase().includes('not found')) {
+      // Mã máy là thứ đáng tin, câu chữ thì không: bản cũ khớp `'404'`/`'not found'`,
+      // mà harness nay trả `SESSION_NOT_FOUND: … is not known to this harness …`,
+      // nên nhánh tự dọn này chết lặng và khung chat đỏ mãi. Khớp theo mã, và bỏ
+      // luôn id đã chết trong localStorage để lần gửi sau mở phiên mới ngay.
+      if (isStaleSession(error) || errStr.includes('404') || errStr.toLowerCase().includes('not found')) {
+        localStorage.removeItem(storageKey(chatId))
+        localStorage.removeItem(storageKey(id))
         // Session was deleted or not found in database: cleanly purge from cache without displaying red error
         set((state) => {
           const next = { ...state.sessions }
@@ -349,7 +361,7 @@ export const useHarnessChatStore = create<State>((set, get) => ({
       throw error
     }
   },
-  send: async (chatId, prompt, selection, image, modelLabel) => {
+  send: async (chatId, prompt, selection, image, modelLabel, thinkingLevels) => {
     const current = get().sessions[chatId] ?? empty()
     const control = /^\/(help|skills|agents|status|context|stop)\s*$/.test(prompt)
     if ((current.status === 'running' || current.status === 'starting' || current.status === 'awaiting_decision') && !control) return
@@ -389,9 +401,9 @@ export const useHarnessChatStore = create<State>((set, get) => ({
         },
       },
     }))
-    try {
-      let id = current.id ?? (isHexId(chatId) ? chatId : localStorage.getItem(storageKey(chatId)))
-      if (!id) {
+    /** Mở phiên mới cho khung chat này; trả id để lượt sau dùng lại. */
+    const openSession = async (): Promise<string> => {
+      {
         const harnessStore = useHarnessStore.getState()
         const isSingleModel = harnessStore.activeType === 'model'
         const harness = harnessStore.getHarnessById(harnessStore.activeHarnessId)
@@ -412,17 +424,53 @@ export const useHarnessChatStore = create<State>((set, get) => ({
           ...(singleModelId ? { singleModel: singleModelId, model: singleModelId }
               : (harness?.mainModel && harness.mainModel !== 'default' ? { model: harness.mainModel } : {}))
         })
-        id = session.id
-        localStorage.setItem(storageKey(chatId), id)
-        localStorage.setItem(storageKey(id), id)
+        localStorage.setItem(storageKey(session.id), session.id)
+        return session.id
       }
-      const thinkingLevel = useHarnessStore.getState().thinkingLevel
+      throw new Error('SESSION_NOT_FOUND: could not open a harness session')
+    }
+
+    const submitTurn = (id: string, route: unknown) => agentApi(`/sessions/${id}/turns`, {
+      prompt: prompt || 'Inspect the attached image.', image, route, invocationId: crypto.randomUUID() })
+
+    try {
+      let id = current.id ?? (isHexId(chatId) ? chatId : localStorage.getItem(storageKey(chatId)))
+      if (!id) {
+        id = await openSession()
+        localStorage.setItem(storageKey(chatId), id)
+      }
+      // Mức thinking chỉ được là mức model đã công bố: `thinkingLevels` của model
+      // đang chọn tới từ đây, để composer không gửi `medium` cho một model chỉ có
+      // `max/high/low` (harness trả THINKING_LEVEL_UNSUPPORTED và lượt chết).
+      // Tuyến alias không mang danh sách mức (nhiều đích, mỗi đích một bộ mức), và
+      // khi không biết model nào sẽ nhận lượt thì gửi kèm một mức là đoán bừa —
+      // bỏ hẳn để router tự chọn mức mặc định của đích nó chọn.
+      const levelKnown = Array.isArray(thinkingLevels) && thinkingLevels.length > 0
+      const thinkingLevel = selection?.kind === 'alias' && !levelKnown
+        ? undefined
+        : resolveThinkingLevel(thinkingLevels, useHarnessStore.getState().thinkingLevel)
       const route = selection?.kind === 'model'
-        ? { connectionId: selection.connectionId, modelId: selection.modelId, thinkingLevel }
+        ? { connectionId: selection.connectionId, modelId: selection.modelId, ...(thinkingLevel ? { thinkingLevel } : {}) }
         : selection?.kind === 'alias'
-        ? { aliasId: selection.aliasId, thinkingLevel }
+        ? { aliasId: selection.aliasId, ...(thinkingLevel ? { thinkingLevel } : {}) }
         : {}
-      await agentApi(`/sessions/${id}/turns`, { prompt: prompt || 'Inspect the attached image.', image, route, invocationId: crypto.randomUUID() })
+      try {
+        await submitTurn(id, route)
+      } catch (error) {
+        // Id phiên mà harness không còn biết (phiên bị xoá, hoặc harness chạy lại với store
+        // mới) trước đây làm mọi lần gửi hỏng mãi với đúng một chữ "Not found". Mở phiên mới
+        // rồi gửi lại lượt **một lần** — đúng lần thử lại mà người dùng mong có.
+        if (!isStaleSession(error)) throw error
+        localStorage.removeItem(storageKey(chatId))
+        localStorage.removeItem(storageKey(id))
+        id = await openSession()
+        localStorage.setItem(storageKey(chatId), id)
+        // Id mới phải vào **store** ngay: vòng poll 1200 ms và lần gửi sau đều đọc
+        // `sessions[chatId].id` trước, nên nếu chỉ ghi localStorage thì cả hai vẫn
+        // nhắm vào id đã chết và khung chat đỏ vĩnh viễn dù lượt đã chạy xong.
+        set(state => ({ sessions: { ...state.sessions, [chatId]: { ...(state.sessions[chatId] ?? current), id, error: null } } }))
+        await submitTurn(id, route)
+      }
       await get().refresh(chatId)
     } catch (error) {
       set((state) => ({ sessions: { ...state.sessions, [chatId]: { ...(state.sessions[chatId] ?? current), status: 'failed', error: String(error) } } }))

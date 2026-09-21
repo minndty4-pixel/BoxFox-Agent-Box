@@ -11,7 +11,8 @@ import time
 import uuid
 import httpx
 from .compression import ContextCompressor, estimate_tokens
-from .failures import classify_failure, failure_detail, is_transient, log_safe_failure
+from .failures import (RETRY_BUDGET_SECONDS, classify_failure, failure_detail, level_refusal,
+                       log_safe_failure, retry_advice, stop_reason)
 from .plan_quality import check_plan_quality
 from .roles import ROLES, allowed_tools
 from .tool_contracts import schemas_for
@@ -375,6 +376,36 @@ def dedupe_thought_signatures(messages) -> tuple[list, int]:
     return out, saved
 
 
+def router_refusal(status, content):
+    """``RuntimeError`` for a router error envelope, carrying the machine metadata.
+
+    The message keeps the ``Router HTTP <status>: <message>`` shape the classifier and the
+    UI already read. The attributes carry what a formatted string cannot: the router's code,
+    whether the router itself called the failure retryable, and the provider's ``Retry-After``
+    (``retryAfterMs``). The retry policy needs all three — without them a 429 looked like a
+    plain 4xx and never got another attempt.
+    """
+    try:
+        payload = json.loads(content)
+    except Exception:
+        payload = {}
+    error = (payload or {}).get('error') if isinstance(payload, dict) else None
+    error = error if isinstance(error, dict) else {}
+    if not error.get('message'):
+        text = content.decode('utf-8', errors='ignore') if isinstance(content, (bytes, bytearray)) else str(content or '')
+        error = {**error, 'message': text.strip() or 'Router request failed'}
+    refusal = RuntimeError(f'Router HTTP {status}: {error["message"]}')
+    refusal.router_status = status
+    if error.get('code'):
+        refusal.router_code = str(error['code'])
+    if isinstance(error.get('retryable'), bool):
+        refusal.retryable = error['retryable']
+    after = error.get('retryAfterMs')
+    if isinstance(after, (int, float)) and after > 0:
+        refusal.retry_after_ms = float(after)
+    return refusal
+
+
 class RouterClient:
     def __init__(self, url='http://127.0.0.1:3101'):
         self.url = url.rstrip('/')
@@ -427,12 +458,7 @@ class RouterClient:
                     json={**route, 'messages': messages, 'tools': tools, 'stream': True, 'max_tokens': max_tokens}
                 ) as response:
                     if response.is_error:
-                        content = await response.aread()
-                        try:
-                            message = json.loads(content).get('error', {}).get('message', 'Router request failed')
-                        except Exception:
-                            message = content.decode('utf-8', errors='ignore') or 'Router request failed'
-                        raise RuntimeError(f'Router HTTP {response.status_code}: {message}')
+                        raise router_refusal(response.status_code, await response.aread())
 
                     content = ''
                     reasoning_content = ''
@@ -514,16 +540,21 @@ class RouterClient:
                         'usage': usage,
                         'boxfox': boxfox_meta
                     }
-            except Exception:
+            except Exception as exc:
+                # The router already gave a verdict (a rate limit, an auth failure, an unknown
+                # model, an unreachable provider): repeating the same call without the stream
+                # only doubles the load on an endpoint that just told us why it refused, and
+                # turns one refusal into two provider calls — which a 429 on a metered key can
+                # bill or block. The non-streaming path stays for a failure the router never
+                # judged, i.e. a broken SSE channel or a dropped socket mid-stream.
+                verdict = getattr(exc, 'router_status', None)
+                if verdict is not None:
+                    raise
                 res = await client.post(self.url + '/api/router/chat',
                     headers={'x-boxfox-admin': '1'}, json={**route, 'messages': messages,
                         'tools': tools, 'stream': False, 'max_tokens': max_tokens})
                 if res.is_error:
-                    try:
-                        message = res.json().get('error', {}).get('message', 'Router request failed')
-                    except ValueError:
-                        message = 'Router request failed'
-                    raise RuntimeError(f'Router HTTP {res.status_code}: {message}')
+                    raise router_refusal(res.status_code, await res.read())
                 return res.json()
 
 
@@ -922,6 +953,23 @@ class HarnessRuntime(RuntimeCommands):
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
 
+    @staticmethod
+    def seconds_left(budget):
+        """Seconds left in this turn's deadline, or ``None`` when it cannot be read.
+
+        The retry policy refuses a wait it cannot afford: sleeping past the deadline turns a
+        recoverable provider limit into a `DEADLINE` failure with no answer at all.
+        """
+        try:
+            return max(0.0, budget.when() - asyncio.get_running_loop().time())
+        except Exception:
+            return None
+
+    @staticmethod
+    def retry_noun(count):
+        """`retry` / `retries` — the message is read by people, not parsed."""
+        return 'retry' if count == 1 else 'retries'
+
     async def _run(self, sid):
         session = self.store.get(sid)
         config, messages = session['config'], session['messages']
@@ -985,37 +1033,98 @@ class HarnessRuntime(RuntimeCommands):
                         if new_text:
                             self.store.emit(sid, 'assistant_delta', {'text': new_text})
                     steps_used = step + 1
-                    # One bounded retry for a dropped socket / restarted router / empty stream,
-                    # inside the same turn budget: this is the main cause of "Agent run failed"
-                    # on long chats where the provider connection blips mid-answer.
+                    # Retry policy (failures.retry_advice owns the rules): a dropped socket, a
+                    # restarted router, an empty stream OR a provider asking us to slow down
+                    # (429 / ``Retry-After``) gets another attempt inside this turn's budget.
+                    # A deadline already spent, or a request the provider rejected, fails at once
+                    # — a second identical call cannot help. Waiting is bounded per attempt and
+                    # per turn, so a retry never eats the deadline it is trying to save.
                     attempts = 0
+                    retry_waited = 0.0
+                    degraded = False
                     while True:
                         step_started = time.time()
                         # A retry restarts the answer: without this, the abandoned partial text of
                         # the previous attempt stays on screen and the new answer is glued to it.
-                        if attempts:
+                        if attempts or degraded:
                             _reset_stream()
                         try:
                             response = await self.client.complete(messages, tools, config['route'], on_thought=handle_thought, on_content=handle_content)
                             break
                         except Exception as exc:
                             code, message = classify_failure(exc)
-                            transient = is_transient(exc)
                             system_log.write('model.error', level='warn', session_id=sid, turn_id=steps_used,
                                              step=step + 1, attempt=attempts + 1, errorCode=code, message=message,
-                                             durationMs=(time.time() - step_started) * 1000,
+                                             durationMs=(time.time() - step_started) * 1000, retries=attempts,
+                                             retryWaitedMs=round(retry_waited * 1000),
+                                             retryBudgetSeconds=RETRY_BUDGET_SECONDS,
                                              detail=failure_detail(exc))
-                            if not transient or attempts >= 1:
+                            # Danh mục của router có thể quảng cáo một mức thinking mà API của
+                            # provider không nhận (Google đánh dấu `thinking: true` cho cả họ
+                            # Gemini 2.5, nhưng các model đó trả `400 Thinking level is not
+                            # supported`). Đây là lỗi của YÊU CẦU, không phải của nhà cung cấp:
+                            # bỏ mức rồi gọi lại, để lượt vẫn có câu trả lời thay vì dựng banner
+                            # đỏ. Không tính vào số lần thử lại (không chờ provider), và chỉ chạy
+                            # một lần vì mức đã bị bỏ khỏi route.
+                            if config['route'].get('thinkingLevel') and level_refusal(exc):
+                                dropped = config['route'].pop('thinkingLevel')
+                                degraded = True
+                                self.store.emit(sid, 'notice', {
+                                    'code': 'THINKING_LEVEL_REFUSED',
+                                    'reset': True,
+                                    'level': dropped,
+                                    'model': config['route'].get('modelId'),
+                                    'message': (f'{code}: the provider does not accept the thinking level '
+                                                f'"{dropped}" for this model — retrying without it '
+                                                f'({message})'),
+                                })
+                                continue
+                            advice = retry_advice(exc, attempts, remaining_seconds=self.seconds_left(budget),
+                                                  spent_seconds=retry_waited)
+                            if advice is None:
+                                if attempts:
+                                    # The chat banner prints the LAST error, which on its own reads
+                                    # like "failed with no retry". The attempt count rides along, and
+                                    # the notice keeps the give-up visible in the transcript. The
+                                    # reason it stopped is named too: "gave up after 3 retries" is
+                                    # wrong when the real cause was the per-turn wait budget or the
+                                    # turn's remaining window.
+                                    exc.retry_attempts = attempts
+                                    exc.retry_waited_seconds = round(retry_waited, 3)
+                                    stop = stop_reason(exc, attempts, remaining_seconds=self.seconds_left(budget),
+                                                       spent_seconds=retry_waited)
+                                    gave_up = {
+                                        'budget': (f'gave up after {attempts} {self.retry_noun(attempts)} in '
+                                                   f'{retry_waited:.1f}s — the per-turn retry budget of '
+                                                   f'{RETRY_BUDGET_SECONDS:.0f}s is spent'),
+                                        'window': (f'gave up after {attempts} {self.retry_noun(attempts)} in '
+                                                   f'{retry_waited:.1f}s — too little turn time left for '
+                                                   f'another attempt'),
+                                    }.get(stop, f'gave up after {attempts} {self.retry_noun(attempts)} in {retry_waited:.1f}s')
+                                    self.store.emit(sid, 'notice', {
+                                        'code': 'UPSTREAM_RETRY_EXHAUSTED',
+                                        'reset': True,
+                                        'attempts': attempts,
+                                        'waitMs': round(retry_waited * 1000),
+                                        'stopReason': stop,
+                                        'message': f'{code}: {gave_up} ({message})',
+                                    })
                                 raise
                             attempts += 1
+                            retry_waited += advice['delay']
                             self.store.emit(sid, 'notice', {
                                 'code': 'UPSTREAM_RETRY',
                                 # Consumers use this notice to drop the live text of the attempt
                                 # that just died; the text after it is a complete answer again.
                                 'reset': True,
-                                'message': f'{code}: retrying the model request once ({message})',
+                                'attempt': advice['attempt'],
+                                'maxRetries': advice['maxRetries'],
+                                'waitMs': round(advice['delay'] * 1000),
+                                'reason': advice['reason'],
+                                'message': (f'{code}: {advice["reason"]} — retrying {advice["attempt"]}/'
+                                            f'{advice["maxRetries"]} in {advice["delay"]:.1f}s ({message})'),
                             })
-                            await asyncio.sleep(1.5)
+                            await asyncio.sleep(advice['delay'])
                     choice = response['choices'][0]
                     message = choice['message']
                     text, calls = message.get('content') or '', message.get('tool_calls') or []
@@ -1096,6 +1205,10 @@ class HarnessRuntime(RuntimeCommands):
             raise
         except Exception as exc:
             code, error = classify_failure(exc)
+            retries = getattr(exc, 'retry_attempts', 0)
+            if retries:
+                error = (f'{error} [after {retries} {self.retry_noun(retries)} in '
+                         f'{getattr(exc, "retry_waited_seconds", 0.0):.1f}s]')
             self.store.save(sid, messages, 'failed')
             self.store.emit(sid, 'error', {'message': error, 'code': code})
             system_log.write('turn.failed', level='error', session_id=sid, turn_id=steps_used, status='failed',

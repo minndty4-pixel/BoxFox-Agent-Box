@@ -1,3 +1,5 @@
+import { RouterError } from '../errors.mjs';
+import { priceFromOpenRouter } from '../pricing.mjs';
 import { jsonOrProviderError, modelRecord, normalizeFinishReason, parseJson, providerError, sseEvents, baseUrl, thinkingFromProviderPayload, EFFORT_LEVELS } from './common.mjs';
 
 function headers(apiKey) {
@@ -22,6 +24,19 @@ function thinkingFromOpenAIModel(item) {
   };
 }
 
+/**
+ * Dòng model kèm giá nếu endpoint nói giá theo khuôn OpenRouter (`pricing` với
+ * USD mỗi token). Không có `pricing`, hoặc `pricing` không đọc được, thì bỏ qua
+ * im lặng: một dòng không giá vẫn dùng được, chỉ là router không biết giá của nó
+ * — và router không bao giờ bịa giá. Giá đến từ payload nên mang nguồn `ping`.
+ */
+function pricedRecord(id, name, item) {
+  const record = modelRecord(id, name, {}, thinkingFromOpenAIModel(item || {}));
+  const price = priceFromOpenRouter(item?.pricing);
+  if (price) record.pricing = { ...price, source: 'ping' };
+  return record;
+}
+
 export function createOpenAIAdapter({ fetchImpl }) {
   return {
     // Stored rows are re-described when the service normalizes a connection:
@@ -34,9 +49,22 @@ export function createOpenAIAdapter({ fetchImpl }) {
       contextWindow: model?.contextWindow ?? null,
     }),
     async discover({ connection, credentials, signal }) {
-      const data = await jsonOrProviderError(await fetchImpl(`${baseUrl(connection.endpoint)}/models`, { headers: headers(credentials.apiKey), signal }));
+      const base = baseUrl(connection.endpoint);
+      const response = await fetchImpl(`${base}/models`, { headers: headers(credentials.apiKey), signal });
+      // Một cổng không có đường dẫn danh sách model là trạng thái onboarding,
+      // không phải sự cố: người dùng gõ tay từng id rồi Test. Vì vậy phản hồi
+      // được phân loại TRƯỚC jsonOrProviderError để lý do thất bại còn nguyên
+      // văn — riêng 401/403 vẫn đi qua jsonOrProviderError như cũ, giữ nguyên
+      // lời của nhà cung cấp (ca TokenHarbor `email_verification_required`), vì
+      // đó chính là câu cho người dùng biết phải xác minh tài khoản.
+      if (response.status === 404) throw new RouterError('NO_MODEL_LIST', `This endpoint does not expose a /models listing (${base}/models). Add each model id by hand and test it.`, 404, true);
+      if (!response.ok) await jsonOrProviderError(response);
+      let data = null;
+      try { data = await response.json(); }
+      catch { throw new RouterError('UNAVAILABLE', 'The endpoint did not return a model list in JSON. Check that the base URL points at the right path (usually ends with /v1).', 502, true); }
       const list = Array.isArray(data?.data) ? data.data : Array.isArray(data?.models) ? data.models : [];
-      return { models: list.map(item => typeof item === 'string' ? modelRecord(item, item, {}, thinkingFromOpenAIModel({ id: item })) : modelRecord(item?.id, item?.name || item?.id, {}, thinkingFromOpenAIModel(item))).filter(m => m.id) };
+      if (!list.length) throw new RouterError('NO_MODELS', 'The endpoint returned an empty model list. Add each model id by hand and test it.', 502, true);
+      return { models: list.map(item => typeof item === 'string' ? pricedRecord(item, item, { id: item }) : pricedRecord(item?.id, item?.name || item?.id, item)).filter(m => m.id) };
     },
     async *generate({ connection, credentials, body, signal }) {
       const stream = body.stream !== false;

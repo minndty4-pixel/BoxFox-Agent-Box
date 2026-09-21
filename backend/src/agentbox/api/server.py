@@ -1,5 +1,6 @@
 """Loopback harness API; UI uses the Vite /api/agent proxy."""
 import asyncio
+import logging
 import os
 import sys
 from pathlib import Path
@@ -12,8 +13,33 @@ from ..observability.system_log import (DEFAULT_READ_LINES, MAX_READ_LINES, clam
 from ..sandbox.executor import SandboxExecutor
 
 
+logger = logging.getLogger('boxfox.harness.api')
+
 DEFAULT_HARNESS_PORT = 3102
 HARNESS_VERSION = '0.1.0'
+
+
+class ApiError(Exception):
+    """HTTP failure the client can act on: a stable code plus a readable message.
+
+    The middleware used to turn any ``KeyError`` into ``{'error': 'Not found'}``. A missing
+    session is exactly that shape, so the chat showed the word "Not found" for a stale id —
+    with no code, no id and nothing for support to search. Codes here are the contract the UI
+    reads (``SESSION_NOT_FOUND`` lets it start a fresh session instead of failing forever).
+    """
+
+    def __init__(self, code, message, status=400):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.status = status
+
+
+def missing_session(sid):
+    """404 for an id this harness does not know (deleted, or a store from another run)."""
+    return ApiError('SESSION_NOT_FOUND',
+                    f'session {sid} is not known to this harness; it was deleted or the harness '
+                    'started with an empty store', 404)
 
 
 def repo_commit() -> str | None:
@@ -71,8 +97,17 @@ def create_app(runtime):
                 return web.json_response({'error': 'Local administration required'}, status=403)
         try:
             return await handler(request)
-        except KeyError:
-            return web.json_response({'error': 'Not found'}, status=404)
+        except ApiError as exc:
+            return web.json_response({'error': f'{exc.code}: {exc.message}', 'code': exc.code}, status=exc.status)
+        except KeyError as exc:
+            # A KeyError inside a handler is an internal defect (a missing key in a payload or a
+            # record) — never "the route does not exist". Reporting it as a bare `Not found` cost
+            # a whole support round: the user sees one opaque word and nothing gets logged.
+            logger.exception('internal error: missing key %r while handling %s %s',
+                             exc.args[0] if exc.args else exc, request.method, request.path)
+            return web.json_response({
+                'error': f'INTERNAL_ERROR: the harness hit a missing key {exc} while handling '
+                         f'{request.method} {request.path}', 'code': 'INTERNAL_ERROR'}, status=500)
         except PermissionError as exc:
             return web.json_response({'error': str(exc)}, status=403)
         except (ValueError, TypeError) as exc:
@@ -113,6 +148,11 @@ def create_app(runtime):
 
     async def readiness(request):
         sid = request.match_info['skill']
+        # `catalog.items[sid]` raises KeyError for an unknown skill; the middleware now reports
+        # that as a 500, which is the right answer for a bug and the wrong one for a typo in a
+        # URL. Validate here so an unknown skill is the 404 the client can act on.
+        if sid not in runtime.catalog.items:
+            raise ApiError('SKILL_NOT_FOUND', f'skill {sid} is not in this harness catalog', 404)
         item = runtime.catalog.items[sid]
         if sid == 'claude-code':
             return await executor_status(request)
@@ -141,21 +181,34 @@ def create_app(runtime):
         limit = min(100, max(1, int(request.query.get('limit', '50'))))
         return web.json_response({'sessions': runtime.store.list(limit)})
 
+    def known_session(sid):
+        """The session record, or an explicit 404 the UI can act on."""
+        try:
+            return runtime.store.get(sid)
+        except KeyError:
+            raise missing_session(sid) from None
+
     async def session(request):
         sid = request.match_info['sid']
-        value = runtime.store.get(sid)
+        value = known_session(sid)
         # Do not resend large multimodal transcripts on every polling request.
         return web.json_response({k: v for k, v in value.items() if k != 'messages'} |
                                  {'events': runtime.store.events(sid, int(request.query.get('after', '0')))})
 
     async def turn(request):
         body = await request.json()
-        result = await runtime.submit(request.match_info['sid'], body.get('prompt'), body.get('image'), body.get('route'), body.get('invocationId'))
+        sid = request.match_info['sid']
+        # Check before submitting: `runtime.submit` would raise the same KeyError and the user
+        # would get `INTERNAL_ERROR` for what is really a stale session id.
+        known_session(sid)
+        result = await runtime.submit(sid, body.get('prompt'), body.get('image'), body.get('route'), body.get('invocationId'))
         return web.json_response(result, status=202 if result['status'] == 'running' else 200)
 
     async def stop(request):
-        await runtime.stop(request.match_info['sid'])
-        return web.json_response({'status': runtime.store.get(request.match_info['sid'])['status']})
+        sid = request.match_info['sid']
+        known_session(sid)
+        await runtime.stop(sid)
+        return web.json_response({'status': known_session(sid)['status']})
 
     async def decision(request):
         """Answer a pending ask_user / request_approval (contract §2: 200/400/404/409)."""

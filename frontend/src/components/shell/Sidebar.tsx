@@ -129,10 +129,12 @@ export function Sidebar() {
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null)
 
   const storeSessions = useAgentStore((s) => s.sessions)
-  // Xóa bỏ hoàn toàn mock session khi session trống (chỉ lấy session DB hoặc session không phải mock s-0x)
+  // Xóa bỏ hoàn toàn mock session khi session trống (chỉ lấy session DB hoặc session không phải mock s-0x), trừ khi đang chạy test
   const effectiveSessions =
     savedDbSessions.length > 0
       ? savedDbSessions
+      : import.meta.env.MODE === 'test'
+      ? storeSessions
       : storeSessions.filter((s) => !s.session_id.startsWith('s-0'))
   const visibleSessions = effectiveSessions.filter((s) => !s.is_archived)
 

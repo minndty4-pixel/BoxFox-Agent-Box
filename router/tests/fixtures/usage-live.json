@@ -1,0 +1,36 @@
+[
+  {
+    "id": "openrouter-reported",
+    "providerId": "openrouter",
+    "modelId": "deepseek/deepseek-pro-latest",
+    "usage": { "input": 10847, "cached": 0, "output": 544, "reasoning": 396, "total": 11391 },
+    "reportedCost": 0.00688541304,
+    "expect": { "basis": "reported", "cost": 0.00688541304 }
+  },
+  {
+    "id": "deepseek-documented-off-peak",
+    "providerId": "deepseek",
+    "modelId": "deepseek-flash",
+    "usage": { "input": 11965, "cached": 11776, "output": 25 },
+    "at": "2026-09-20T03:00:00Z",
+    "expect": { "basis": "documented", "cost": 0.000079 }
+  },
+  {
+    "id": "gemini-no-price",
+    "providerId": "gemini",
+    "modelId": "gemini-3.8-flash-high",
+    "costMode": "metered",
+    "usage": { "input": 1000, "cached": 0, "output": 100 },
+    "price": null,
+    "expect": { "basis": null, "cost": null }
+  },
+  {
+    "id": "antigravity-included",
+    "providerId": "antigravity",
+    "modelId": "gemini-3.8-flash-high",
+    "costMode": "included",
+    "usage": { "input": 1000, "cached": 0, "output": 100 },
+    "price": { "input": 1, "output": 1 },
+    "expect": { "basis": null, "cost": null }
+  }
+]

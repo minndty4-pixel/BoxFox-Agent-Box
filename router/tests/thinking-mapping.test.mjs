@@ -100,6 +100,23 @@ test('Gemini: the level is sent as thinking_level, never as a token budget', asy
   assert.equal('thinkingConfig' in calls[2].generationConfig, false);
 });
 
+test('Gemini 2.5 takes the documented thinkingBudget, Gemma takes no thinking field at all', async () => {
+  const { calls, fetchImpl } = recorder(geminiResponse);
+  const adapter = createProviders({ fetchImpl }).gemini;
+  const send = (model, thinkingLevel) => collect(adapter.generate({ connection: { endpoint: 'https://provider.invalid/v1' }, credentials: { apiKey: 'k' }, body: { model, messages, stream: false, ...(thinkingLevel ? { thinkingLevel } : {}) } }));
+  await send('gemini-2.5-flash', 'low');
+  await send('gemini-2.5-flash', 'medium');
+  await send('gemini-2.5-flash', 'high');
+  await send('gemini-2.5-flash', 'none');
+  await send('gemma-4-31b-it', 'low');
+  assert.deepEqual(calls[0].generationConfig.thinkingConfig, { thinkingBudget: 1024, includeThoughts: true });
+  assert.deepEqual(calls[1].generationConfig.thinkingConfig, { thinkingBudget: 8192, includeThoughts: true });
+  assert.deepEqual(calls[2].generationConfig.thinkingConfig, { thinkingBudget: 24576, includeThoughts: true });
+  assert.equal('thinkingLevel' in calls[0].generationConfig.thinkingConfig, false, 'the two controls are never combined');
+  assert.equal(calls[3].generationConfig?.thinkingConfig ?? null, null, 'none sends no thinking config');
+  assert.equal(calls[4].generationConfig?.thinkingConfig ?? null, null, 'Gemma refuses both controls, so neither is sent');
+});
+
 test('Antigravity: selectable models honour the level, fixed models keep their own', async () => {
   const calls = [];
   const adapter = createAntigravityAdapter({

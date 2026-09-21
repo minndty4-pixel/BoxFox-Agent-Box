@@ -39,4 +39,29 @@ describe('providerStore backend state', () => {
     expect(fetchMock.mock.calls[0]).toEqual(expect.arrayContaining(['/api/router/state', expect.objectContaining({ headers: { 'X-BoxFox-Admin': '1' }, credentials: 'same-origin' })]))
     expect(localStorage.getItem('boxfox-provider-store')).toBeNull()
   })
+
+  it('probes one model without locking the form or painting the global error', async () => {
+    const fetchMock = vi.fn(async (url: string, _init: RequestInit = {}) => (url === '/api/router/state' ? json(snapshot) : json({ status: 'passed' })))
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(useProviderStore.getState().probeModel('conn 1', 'model/two')).resolves.toEqual({ status: 'passed', latencyMs: expect.any(Number) })
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/router/connections/conn%201/models/model%2Ftwo/test')
+    expect(fetchMock.mock.calls[0][1]).toEqual(expect.objectContaining({ method: 'POST', headers: { 'X-BoxFox-Admin': '1' }, credentials: 'same-origin' }))
+    expect(useProviderStore.getState().busy).toBe(false)
+    expect(useProviderStore.getState().error).toBeNull()
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/router/state')
+  })
+
+  it('returns the router envelope for a refused probe and still reloads the snapshot', async () => {
+    const message = 'Provider authentication failed: email_verification_required. Reconnect or replace the credential.'
+    const fetchMock = vi.fn(async (url: string, _init: RequestInit = {}) =>
+      url === '/api/router/state'
+        ? json(snapshot)
+        : new Response(JSON.stringify({ error: { code: 'AUTH', message, retryable: false } }), { status: 403, headers: { 'content-type': 'application/json' } }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(useProviderStore.getState().probeModel('connection-1', 'th-orchestra')).resolves.toEqual({ status: 'failed', httpStatus: 403, code: 'AUTH', message })
+    expect(useProviderStore.getState().error).toBeNull()
+    expect(useProviderStore.getState().busy).toBe(false)
+    expect(useProviderStore.getState().snapshot).toEqual(snapshot)
+  })
 })

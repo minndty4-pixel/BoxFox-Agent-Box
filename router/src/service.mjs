@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { RouterError, assert, safeError } from './errors.mjs';
 import { validateEndpoint } from './network.mjs';
 import { PROVIDER_CATALOG, PROVIDER_ENDPOINTS } from './catalog.mjs';
+import { normalizePrice } from './pricing.mjs';
 import { isAntigravityModelValid } from './providers/antigravity-models.mjs';
 import { modelThinking } from './providers/common.mjs';
 export { PROVIDER_CATALOG };
@@ -24,6 +25,63 @@ function probeHealth(error) {
   if (safe.code === 'TIMEOUT' || safe.code === 'CAPACITY' || safe.status === 504) return 'slow';
   return 'failed';
 }
+/** Id model người dùng gõ tay được lưu nguyên văn: chỉ chặn ký tự điều khiển và độ dài. */
+const MODEL_ID_CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+const MODEL_ID_MAX_LENGTH = 191;
+/**
+ * Cách tính tiền của một connection, suy từ catalog: provider dùng API key thì
+ * tính theo token (`metered`), còn lại là tài khoản bao trọn gói (`included`).
+ * `custom` luôn là `metered` vì đó là endpoint người dùng tự khai. Trường này chỉ
+ * quyết định nhãn chi phí ở giao diện — tài khoản bao trọn gói không bao giờ được
+ * ghi $0.
+ */
+function costModeFor(providerId) {
+  if (providerId === 'custom') return 'metered';
+  const provider = PROVIDER_CATALOG.find(entry => entry.id === providerId);
+  return provider?.authMethod === 'api_key' ? 'metered' : 'included';
+}
+/**
+ * 404 khi probe một id gõ tay là câu trả lời cho "tôi gõ tên có đúng không".
+ * Router gửi id nguyên văn — không thêm, không bớt, không đổi dấu — nên thông báo
+ * nói rõ điều đó, rồi nối thêm phần nhà cung cấp tự nói khi họ có nói gì.
+ */
+function unrecognisedModelId(modelId, message) {
+  const base = `The endpoint did not recognise this model id. The router sends the id exactly as typed: ${modelId}`;
+  const detail = typeof message === 'string' ? message.trim() : '';
+  return detail ? `${base} — ${detail}` : base;
+}
+/**
+ * Mức thinking công bố cho một model khai tay (người dùng tự nhập id). Adapter
+ * nào tài liệu hoá bộ mức riêng của nhà cung cấp thì bộ đó được dùng — DeepSeek
+ * công bố `none|low|high|max`, còn bộ mặc định `auto|low|medium|high` giữ nguyên
+ * cho mọi nhà cung cấp khác. Nhờ vậy hàng khai tay khớp hàng do ping phát hiện và
+ * không đổi giá trị sau khi chuẩn hoá lại.
+ */
+function manualThinkingLevels(provider) {
+  const levels = typeof provider?.manualThinkingLevels === 'function' ? provider.manualThinkingLevels() : null;
+  return Array.isArray(levels) && levels.length > 0 ? [...levels] : ['auto', 'low', 'medium', 'high'];
+}
+/**
+ * Giá của một dòng model sau một lần dò thành công. Thứ tự đã chốt:
+ *
+ *   `manual` (người dùng tự đặt trên chính dòng đó) > `ping` (giá provider vừa
+ *   công bố trong `/models`) > `documented` (bảng của adapter, ví dụ DeepSeek).
+ *
+ * Giá `manual` KHÔNG BAO GIỜ bị lần dò sau ghi đè; `ping` đứng trên `documented`
+ * vì đó là giá provider vừa công bố tại thời điểm gọi. Một dòng đã có giá mà lần
+ * dò này không mang giá nào thì giữ nguyên con số cũ — xoá đi là mất thông tin
+ * người dùng đã có. `at` là thời điểm dò, để adapter tra đúng mùa giá của mình.
+ */
+function modelPrice({ previous, found, provider, at }) {
+  if (previous?.pricing?.source === 'manual') return previous.pricing;
+  if (found?.pricing) return found.pricing;
+  const documented = typeof provider?.documentedPricing === 'function' ? provider.documentedPricing(found, at) : null;
+  return documented ?? previous?.pricing ?? null;
+}
+/** Ngày hôm nay, dạng `YYYY-MM-DD` — mốc `asOf` của giá người dùng tự đặt. */
+function today() {
+  return new Date().toISOString().slice(0, 10);
+}
 
 export class ProviderService {
   constructor({ store, providers }) {
@@ -37,6 +95,12 @@ export class ProviderService {
   sanitizeConnection(c) {
     if (!c) return c;
     let modified = false;
+    // Connection đọc từ store cũ tự lành ở đây: mốc thời gian của lần dò cuối và
+    // cách tính tiền được suy ra một lần rồi lưu lại, để giao diện hiện được
+    // "Last attempt: <giờ>" và không bao giờ trình bày tài khoản bao trọn gói như
+    // một hoá đơn $0.
+    if (c.lastDiscoveryAttemptAt !== null && !Number.isFinite(c.lastDiscoveryAttemptAt)) { c.lastDiscoveryAttemptAt = null; modified = true; }
+    if (c.costMode !== 'metered' && c.costMode !== 'included') { c.costMode = costModeFor(c.providerId); modified = true; }
     if (c.providerId === 'antigravity') {
       if (Array.isArray(c.models)) {
         const originalCount = c.models.length;
@@ -52,6 +116,12 @@ export class ProviderService {
     if (Array.isArray(c.models)) {
       const provider = this.providers[c.providerId];
       for (const m of c.models) {
+        // Giá hỏng/thiếu nguồn trong store cũ bị xoá tại đây thay vì để giao
+        // diện hiện một con số vô nghĩa; router chỉ tin giá đã qua `normalizePrice`.
+        if (m.pricing !== undefined && m.pricing !== null && normalizePrice(m.pricing) === null) {
+          delete m.pricing;
+          modified = true;
+        }
         // BUG-4/R2: every stored model record carries contextWindow,
         // thinkingType and defaultThinking. Nothing is guessed from the model
         // name here: an adapter may re-derive its own metadata from provider
@@ -119,6 +189,7 @@ export class ProviderService {
       projectId: values.projectId ? projectId(values.projectId) : null, revision: 1, enabled: true, credentialPresent: Boolean(credential) || isAnonymous,
       authState: (credential || isAnonymous) ? 'ready' : 'required', projectState: provider.id === 'antigravity' ? 'pending' : 'not_applicable',
       discoveryState: (credential || isAnonymous) ? 'ready' : 'pending', inferenceState: 'unknown',
+      lastDiscoveryAttemptAt: null, costMode: costModeFor(provider.id),
       models: fallback.map(m => ({ ...m, enabled: true, source: 'static' })),
       lastTestedAt: null, lastModelSyncAt: null, nextModelSyncAt: null,
       autoSync: provider.discoveryClass !== 'static-only', error: null, quota: null,
@@ -137,35 +208,90 @@ export class ProviderService {
     if (values.enabled !== undefined) { assert(typeof values.enabled === 'boolean', 'Enabled must be boolean.'); c.enabled = values.enabled; }
     if (values.autoSync !== undefined) { assert(typeof values.autoSync === 'boolean', 'Auto sync must be boolean.'); c.autoSync = values.autoSync; }
     if (values.customModel && typeof values.customModel.id === 'string') {
-      const modelId = values.customModel.id.trim();
-      if (modelId) {
-        const existing = c.models.find(m => m.id === modelId);
-        if (existing) {
-          existing.enabled = true;
-          if (values.customModel.name) existing.name = values.customModel.name.trim();
-        } else {
-          c.models.push({
-            id: modelId,
-            name: values.customModel.name?.trim() || modelId,
-            source: 'custom',
-            stale: false,
-            enabled: true,
-            capabilities: {
-              streaming: 'reported',
-              tools: 'unknown',
-              vision: values.customModel.capabilities?.vision ? 'supported' : 'unknown',
-              reasoning: values.customModel.capabilities?.reasoning ? 'supported' : 'unknown',
-            },
-            thinkingLevels: values.customModel.capabilities?.reasoning ? ['auto', 'low', 'medium', 'high'] : [],
-            thinkingType: values.customModel.capabilities?.reasoning ? 'effort' : 'none',
-            contextWindow: Number.isInteger(values.customModel.contextWindow) && values.customModel.contextWindow > 0 ? values.customModel.contextWindow : null,
-            defaultThinking: null,
-          });
+      // A hand-typed model is the second mechanism beside discovery: the user
+      // states the id and whether the model reasons. The id is kept VERBATIM —
+      // stored, sent upstream and displayed exactly as typed, never normalized or
+      // rewritten — and only the minimum is checked: not blank, no control
+      // characters, short enough to store. When the adapter documents its own
+      // level set (DeepSeek: none/low/high/max), that set is published, so the
+      // manual row matches a discovered one and survives normalization.
+      const modelId = values.customModel.id;
+      assert(modelId.trim().length > 0, 'Model id is required.', 'INVALID_MODEL', 400);
+      assert(!MODEL_ID_CONTROL_CHARS.test(modelId), 'Model id cannot contain control characters.', 'INVALID_MODEL', 400);
+      assert(modelId.length <= MODEL_ID_MAX_LENGTH, `Model id must be ${MODEL_ID_MAX_LENGTH} characters or fewer.`, 'INVALID_MODEL', 400);
+      const existing = c.models.find(m => m.id === modelId);
+      const declared = values.customModel.capabilities && typeof values.customModel.capabilities === 'object' ? values.customModel.capabilities : null;
+      if (existing) {
+        existing.enabled = true;
+        if (values.customModel.name) existing.name = values.customModel.name.trim();
+        // Gõ lại một id đã có là cách SỬA lời khai cũ, không chỉ là bật nó lên.
+        // Hai cờ trong form (vision/reasoning) phải ghi được ở nhánh cập nhật;
+        // nếu không, chọn sai một lần là hết đường sửa, còn `thinkingLevels` thì
+        // mâu thuẫn với chính cờ `reasoning` vừa khai. `streaming`/`tools` không
+        // có trong form nên giữ nguyên bằng chứng đã dò được.
+        if (declared) {
+          // `'reported'` is the shared vocabulary's word for "declared, not yet
+          // verified". A fifth word (`'supported'`) used to live here and no
+          // consumer knew it, so a row the user ticked as vision-capable showed no
+          // vision evidence anywhere in the UI.
+          const vision = declared.vision ? 'reported' : 'unknown';
+          const reasoning = declared.reasoning ? 'reported' : 'unknown';
+          existing.capabilities = { streaming: 'reported', tools: 'unknown', ...existing.capabilities, vision, reasoning };
+          existing.thinkingLevels = declared.reasoning ? manualThinkingLevels(this.providers[c.providerId]) : [];
+          existing.thinkingType = declared.reasoning ? 'effort' : 'none';
+          if (!declared.reasoning) existing.defaultThinking = null;
         }
+      } else {
+        c.models.push({
+          id: modelId,
+          name: values.customModel.name?.trim() || modelId,
+          source: 'custom',
+          stale: false,
+          enabled: true,
+          capabilities: {
+            streaming: 'reported',
+            tools: 'unknown',
+            vision: values.customModel.capabilities?.vision ? 'reported' : 'unknown',
+            reasoning: values.customModel.capabilities?.reasoning ? 'reported' : 'unknown',
+          },
+          thinkingLevels: values.customModel.capabilities?.reasoning ? manualThinkingLevels(this.providers[c.providerId]) : [],
+          thinkingType: values.customModel.capabilities?.reasoning ? 'effort' : 'none',
+          contextWindow: Number.isInteger(values.customModel.contextWindow) && values.customModel.contextWindow > 0 ? values.customModel.contextWindow : null,
+          defaultThinking: null,
+        });
       }
     }
-    if (values.enabledModelIds !== undefined) {
-      assert(Array.isArray(values.enabledModelIds) && values.enabledModelIds.every(id => typeof id === 'string' && c.models.some(m => m.id === id)), 'Select only models discovered for this connection.');
+    // Giá người dùng tự đặt cho một model. Khối `customModel` ở trên đã chạy
+    // trước, nên một PATCH có thể vừa khai id vừa đặt giá cho nó. Model phải có
+    // trên connection — đặt giá cho một id chưa tồn tại là bước thiếu, không phải
+    // lỗi cú pháp, nên câu trả lời nói thẳng bước còn thiếu.
+    if (values.modelPricing && typeof values.modelPricing === 'object') {
+      const requested = values.modelPricing;
+      const modelId = typeof requested.modelId === 'string' ? requested.modelId : '';
+      const model = c.models.find(m => m.id === modelId);
+      assert(model, 'Add the model id first, then set a price.', 'MODEL_NOT_FOUND', 404);
+      if (requested.clear === true) {
+        // Xoá giá tay để giá `ping`/`documented` quay lại: giá của adapter được
+        // tra lại ngay, còn giá provider công bố trở lại ở lần dò kế tiếp.
+        delete model.pricing;
+        const provider = this.providers[c.providerId];
+        const documented = typeof provider?.documentedPricing === 'function' ? provider.documentedPricing(model, new Date()) : null;
+        if (documented) model.pricing = documented;
+      } else {
+        const price = normalizePrice({
+          input: requested.input,
+          output: requested.output,
+          cachedInput: requested.cachedInput,
+          cacheWriteInput: requested.cacheWriteInput,
+          source: 'manual',
+          asOf: today(),
+          updatedAt: Date.now(),
+        });
+        assert(price, 'Enter an input and an output price in USD per million tokens (0–1000).', 'INVALID_PRICE', 400);
+        model.pricing = price;
+      }
+    }
+    if (values.enabledModelIds !== undefined) {      assert(Array.isArray(values.enabledModelIds) && values.enabledModelIds.every(id => typeof id === 'string' && c.models.some(m => m.id === id)), 'Select only models discovered for this connection.');
       c.models = c.models.map(m => ({ ...m, enabled: values.enabledModelIds.includes(m.id) }));
     }
     if (values.apiKey !== undefined || values.accessToken !== undefined || values.token !== undefined) {
@@ -242,6 +368,11 @@ export class ProviderService {
   }
   async #discover(id, signal) {
     const initial = this.connection(id);
+    // Ghi mốc thời gian TRƯỚC khi gọi mạng: một lần dò thất bại là trạng thái
+    // người dùng phải thấy ("Last attempt: <giờ>"), nên mốc thuộc về lúc bắt đầu
+    // chứ không phải lúc kết thúc.
+    initial.lastDiscoveryAttemptAt = Date.now();
+    this.store.put('connection', initial);
     const credentials = await this.credentials(id, signal);
     try {
       const found = await this.providers[initial.providerId].discover({ connection: initial, credentials, signal });
@@ -255,14 +386,27 @@ export class ProviderService {
       const eligibleFound = current.providerId === 'antigravity'
         ? found.models.filter(m => isAntigravityModelValid(m.id))
         : found.models;
-      current.models = eligibleFound.filter(m => typeof m.id === 'string' && m.id && m.id.length <= 200).map(m => ({
-        ...previous.get(m.id), ...m, id: m.id, name: m.name || m.id, enabled: previous.get(m.id)?.enabled ?? m.enabled ?? true,
-        source: m.source || 'live', stale: Boolean(m.stale),
-        // BUG-4/R2: the payload (or the adapter's provider rules) owns the
-        // metadata; a previous row only fills gaps the payload left.
-        ...modelThinking({ ...previous.get(m.id), ...m }),
-        capabilities: { streaming: 'reported', tools: 'unknown', vision: 'unknown', reasoning: 'unknown', ...m.capabilities },
-      }));
+      current.models = eligibleFound.filter(m => typeof m.id === 'string' && m.id && m.id.length <= 200).map(m => {
+        const before = previous.get(m.id);
+        const row = {
+          ...before, ...m, id: m.id, name: m.name || m.id, enabled: before?.enabled ?? m.enabled ?? true,
+          source: m.source || 'live', stale: Boolean(m.stale),
+          // BUG-4/R2: the payload (or the adapter's provider rules) owns the
+          // metadata; a previous row only fills gaps the payload left.
+          ...modelThinking({ ...before, ...m }),
+          capabilities: { streaming: 'reported', tools: 'unknown', vision: 'unknown', reasoning: 'unknown', ...m.capabilities },
+        };
+        // Giá của dòng sau khi dò lại: giá tay người dùng đặt luôn thắng, rồi mới
+        // tới giá provider vừa công bố, rồi tới bảng giá của adapter.
+        const price = modelPrice({ previous: before, found: m, provider: this.providers[current.providerId], at: new Date() });
+        if (price) row.pricing = price; else delete row.pricing;
+        return row;
+      });
+      // Hàng gõ tay là lời khai của người dùng, không phải kết quả dò: một lần dò
+      // thành công không được xoá chúng (id + cờ bật/tắt + kết quả probe giữ
+      // nguyên). Chỉ một lần "thay thế" danh sách tường minh mới được xoá — hiện
+      // chưa có đường đó.
+      current.models.push(...previous.values().filter(model => model.source === 'custom' && model.id && !current.models.some(row => row.id === model.id)));
       if (found.credentials) this.store.saveCredentials(id, { ...credentials, ...found.credentials });
       if (found.email) { current.email = found.email; current.accountLabel = found.email; }
       if (found.projectId) { current.projectId = found.projectId; this.store.saveCredentials(id, { ...this.store.credentials(id), projectId: found.projectId }); }
@@ -288,7 +432,10 @@ export class ProviderService {
           current.models = fallback.map(model => ({ ...model, enabled: false, source: 'static', stale: true, capabilities: { streaming: 'reported', tools: 'unknown', vision: 'unknown', reasoning: 'unknown', ...model.capabilities } }));
           current.discoveryState = 'degraded';
         } else if (current.models.length) {
-          current.models = current.models.map(model => ({ ...model, stale: true }));
+          // Model gõ tay chưa bao giờ đến từ một lần dò, nên không có gì để "cũ":
+          // một lần dò thất bại để nguyên id người dùng đã khai và kết quả probe
+          // của nó. Chỉ các dòng do ping phát hiện mới thành `stale`.
+          current.models = current.models.map(model => (model.source === 'custom' ? model : { ...model, stale: true }));
           current.discoveryState = 'degraded';
         }
         this.store.put('connection', current);
@@ -298,7 +445,10 @@ export class ProviderService {
   }
   async testInference(id, modelId, signal = AbortSignal.timeout(90000)) {
     const connection = this.connection(id);
-    assert(connection.models.some(model => model.id === modelId && model.enabled), 'Choose an enabled discovered model.', 'MODEL_NOT_FOUND', 404);
+    // Phép thử thuộc về một model, không thuộc về cờ bật/tắt của nó: người dùng
+    // phải Test được đúng id họ vừa khai (và cả id họ vừa tắt) trước khi quyết
+    // định bất cứ điều gì về nó.
+    assert(connection.models.some(model => model.id === modelId), 'This model is not on the connection. Add the model id first, then test it.', 'MODEL_NOT_FOUND', 404);
     const startedAt = Date.now();
     try {
       const credentials = await this.credentials(id, signal);
@@ -309,7 +459,11 @@ export class ProviderService {
         if (event.type === 'usage') usage = event.usage;
       }
       assert(meaningful && finished, 'Provider returned no complete response.', 'UNAVAILABLE', 502);
-      const current = this.connection(id); current.inferenceState = 'ready'; current.lastTestedAt = new Date().toISOString(); current.error = null;
+      const current = this.connection(id); current.inferenceState = 'ready'; current.lastTestedAt = new Date().toISOString();
+      // Một phép thử đạt là bằng chứng cho MỘT model, không phải cho đường dò
+      // danh sách: nếu lần dò vẫn hỏng, câu lỗi của nó phải ở lại, để khối "Models
+      // could not be listed" còn nói được lý do và ba lối thoát của nó.
+      if (current.discoveryState === 'ready') current.error = null;
       current.models = current.models.map(model => model.id === modelId ? {
         ...model, health: 'ready', probeStatus: 'passed', lastProbedAt: current.lastTestedAt, lastProbe: { status: 'passed', httpStatus: 200, latencyMs: Date.now() - startedAt, testedAt: current.lastTestedAt, error: null },
       } : model);
@@ -322,8 +476,13 @@ export class ProviderService {
         // A per-model test is a probe: it must not mark a healthy account as
         // broken. OmniRoute follows the same isolation rule for its model
         // probes. Authentication failures remain connection-level evidence.
+        // 404 trên một id gõ tay là câu trả lời cho "tôi gõ tên có đúng không":
+        // router gửi id nguyên văn, nên thông báo nói rõ điều đó rồi để lời của
+        // nhà cung cấp đi kèm khi họ có nói gì.
+        const typedByHand = connection.models.find(model => model.id === modelId)?.source === 'custom';
+        const message = safe.status === 404 && typedByHand ? unrecognisedModelId(modelId, safe.message) : safe.message;
         current.models = current.models.map(model => model.id === modelId ? {
-          ...model, health: probeHealth(safe), lastProbe: { status: 'failed', httpStatus: safe.status, latencyMs: Date.now() - startedAt, testedAt: new Date().toISOString(), error: safe.message },
+          ...model, health: probeHealth(safe), lastProbe: { status: 'failed', httpStatus: safe.status, latencyMs: Date.now() - startedAt, testedAt: new Date().toISOString(), error: message },
         } : model);
         if (safe.code === 'AUTH') { current.authState = 'expired'; current.error = safe.message; }
         this.store.put('connection', current);
@@ -341,9 +500,48 @@ export class ProviderService {
     assert(current.revision === c.revision, 'Connection changed during quota refresh.', 'STALE_RESULT', 409);
     current.quota = result; this.store.put('connection', current); return result;
   }
+  /**
+   * Giá dùng để ước tính chi phí của MỘT lượt gọi, hoặc `null` khi không có giá
+   * nào đáng tin. Ba tầng đã chốt trên dòng model (`manual` người dùng đặt,
+   * `ping` provider công bố trong `/models`, `documented` bảng của adapter) —
+   * riêng tầng `documented` được tra LẠI theo giờ của chính lượt gọi, vì giá
+   * DeepSeek đổi theo giờ cao điểm; adapter không còn tra được thì dùng đúng con
+   * số đã lưu trên dòng. Tài khoản bao trọn gói (`costMode === 'included'`)
+   * không bao giờ được ghi $0.
+   */
+  priceFor(model, connection, at = new Date()) {
+    // Giá hỏng (store cũ, tay sửa file) không bao giờ thành một con số: đúng
+    // phép kiểm `normalizePrice` mà `sanitizeConnection` dùng, để đường tính chi
+    // phí không thể sinh ra `NaN` chỉ vì một trường không đọc được.
+    const price = normalizePrice(model?.pricing);
+    if (!price || connection?.costMode === 'included') return null;
+    if (price.source !== 'documented') return price;
+    const provider = this.providers[connection.providerId];
+    const current = typeof provider?.documentedPricing === 'function' ? provider.documentedPricing(model, at) : null;
+    return current ?? price;
+  }
+  /**
+   * Một model gõ tay là lời khai của người dùng, không phải kết quả dò: khi
+   * endpoint không có đường dẫn `/models` (`discoveryState: 'failed'`, hoặc
+   * `'degraded'` khi lần dò hỏng đó còn để lại danh sách cũ) thì id họ
+   * tự khai vẫn phải định tuyến được — nếu không, cả luồng "gõ tay rồi Test"
+   * dừng lại đúng ở lần Test đầu tiên. Mọi luật còn lại giữ nguyên: connection
+   * phải bật, tài khoản phải `ready` (project của Antigravity phải `ready`),
+   * model phải bật và `health !== 'unavailable'`; dòng do dò phát hiện vẫn cần
+   * một lần dò thành công như trước.
+   */
   validTarget(target) {
     const c = this.store.get('connection', target?.connectionId);
-    return Boolean(c?.enabled && c.authState === 'ready' && c.discoveryState === 'ready' && (c.providerId !== 'antigravity' || c.projectState === 'ready') && c.models.some(m => m.id === target.modelId && m.enabled && m.health !== 'unavailable'));
+    if (!c?.enabled || c.authState !== 'ready') return false;
+    if (c.providerId === 'antigravity' && c.projectState !== 'ready') return false;
+    const model = c.models.find(m => m.id === target.modelId);
+    if (!model?.enabled || model.health === 'unavailable') return false;
+    if (c.discoveryState === 'ready') return true;
+    // `degraded` là hình dạng khác của CÙNG một lần dò hỏng: catch giữ lại danh
+    // sách cũ thay vì để connection trống. Một cú `Refresh models` hỏng lần thứ
+    // hai không được biến id người dùng vừa khai (và vừa Test đạt) từ định tuyến
+    // được thành 503.
+    return model.source === 'custom' && (c.discoveryState === 'failed' || c.discoveryState === 'degraded');
   }
   alias(values, id = randomUUID()) {
     const old = this.store.get('alias', id);

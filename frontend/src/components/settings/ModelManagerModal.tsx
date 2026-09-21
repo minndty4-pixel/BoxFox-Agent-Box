@@ -13,25 +13,39 @@ import {
   RotateCw,
   ChevronRight,
 } from 'lucide-react'
-import { useProviderStore } from '../../store/providerStore'
+import { useProviderStore, type ModelProbeResult } from '../../store/providerStore'
 import { ProviderIcon } from '../providers/ProviderIcon'
-import type { ProviderConnection } from '../../types/provider'
+import { CustomModelForm } from './CustomModelForm'
+import type { ModelPricing, ProviderConnection, ProviderModel } from '../../types/provider'
 
 interface ModelManagerModalProps {
   connection: ProviderConnection
   onClose: () => void
   initialSelectedModelId?: string
+  /** Opens the modal with the hand-typed model form already expanded (`Add model by hand`). */
+  initialShowCustomForm?: boolean
 }
 
 const ITEM_HEIGHT = 50
 const OVERSCAN = 6
 
+/** One free-model rule for the Free tab and for `Enable all free`, matching the
+ *  router's own (`src/providers/openrouter.mjs`): the id says free, or the price the
+ *  provider published does (`pricing.input === 0`). The `pricing.prompt === '0'`
+ *  spelling this replaced read the pre-round raw payload and never matched a
+ *  normalized price, so the tab silently missed free models. */
+function isFreeModel(model: ProviderModel) {
+  return model.id.includes(':free') || model.id === 'openrouter/free' || model.pricing?.input === 0
+}
+
 export function ModelManagerModal({
   connection,
   onClose,
   initialSelectedModelId,
+  initialShowCustomForm = false,
 }: ModelManagerModalProps) {
   const request = useProviderStore((state) => state.request)
+  const probeModel = useProviderStore((state) => state.probeModel)
   const busy = useProviderStore((state) => state.busy)
 
   const [search, setSearch] = useState('')
@@ -57,12 +71,12 @@ export function ModelManagerModal({
   }>({ status: 'idle' })
 
   // Custom model creation state
-  const [showCustomForm, setShowCustomForm] = useState(false)
-  const [customId, setCustomId] = useState('')
-  const [customName, setCustomName] = useState('')
-  const [customVision, setCustomVision] = useState(false)
-  const [customReasoning, setCustomReasoning] = useState(false)
+  const [showCustomForm, setShowCustomForm] = useState(initialShowCustomForm)
   const [copiedId, setCopiedId] = useState<string | null>(null)
+  // Per-row probe results from `probeModel` (the row button no longer uses the
+  // blocking `request()` path, so its result is rendered beside the row).
+  const [probeResults, setProbeResults] = useState<Record<string, ModelProbeResult>>({})
+  const probeControllers = useRef<Set<AbortController>>(new Set())
 
   // Virtual scrolling state
   const containerRef = useRef<HTMLDivElement>(null)
@@ -79,10 +93,7 @@ export function ModelManagerModal({
     return connection.models.filter((m) => {
       // Filter tab
       if (filterTab === 'active' && !m.enabled) return false
-      if (filterTab === 'free') {
-        const isFree = m.id.includes(':free') || m.id === 'openrouter/free' || (m as any).pricing?.prompt === '0'
-        if (!isFree) return false
-      }
+      if (filterTab === 'free' && !isFreeModel(m)) return false
       if (filterTab === 'passed' && m.health !== 'ready') return false
 
       // Search term
@@ -99,6 +110,9 @@ export function ModelManagerModal({
       setScrollTop(0)
     }
   }, [filterTab, deferredSearch])
+
+  // A probe can outlive the modal, so every row probe owns an AbortController.
+  useEffect(() => () => { probeControllers.current.forEach((controller) => controller.abort()); probeControllers.current.clear() }, [])
 
   const selectedModel = useMemo(() => {
     return connection.models.find((m) => m.id === selectedId) || filteredModels[0] || connection.models[0]
@@ -135,7 +149,7 @@ export function ModelManagerModal({
   // Toggle all free models
   const enableAllFree = async () => {
     const freeIds = connection.models
-      .filter((m) => m.id.includes(':free') || m.id === 'openrouter/free')
+      .filter((m) => isFreeModel(m))
       .map((m) => m.id)
     const merged = Array.from(new Set([...Array.from(enabledIds), ...freeIds]))
     await request(`/api/router/connections/${encodeURIComponent(connection.id)}`, 'PATCH', {
@@ -157,7 +171,24 @@ export function ModelManagerModal({
     setTimeout(() => setCopiedId(null), 1500)
   }
 
-  // Test inference probe
+  // Row probe: the shared `probeModel` action instead of the blocking `request()`,
+  // so a 90 s upstream ping leaves every other control on the screen usable and
+  // never paints the global error banner.
+  const probeRow = async (modelId: string) => {
+    const controller = new AbortController()
+    probeControllers.current.add(controller)
+    setTestingId(modelId)
+    try {
+      const result = await probeModel(connection.id, modelId, controller.signal)
+      setProbeResults((current) => ({ ...current, [modelId]: result }))
+    } finally {
+      probeControllers.current.delete(controller)
+      setTestingId(null)
+    }
+  }
+
+  // The test bench keeps its own console (same endpoint, same output), so it keeps
+  // the request path that returns the completion text and usage.
   const runTestModel = async (modelId: string) => {
     setTestingId(modelId)
     setTestOutput({ status: 'running' })
@@ -185,41 +216,9 @@ export function ModelManagerModal({
     }
   }
 
-  // Add custom model
-  const handleAddCustomModel = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!customId.trim()) return
-
-    const newModel = {
-      id: customId.trim(),
-      name: customName.trim() || customId.trim(),
-      enabled: true,
-      source: 'custom' as const,
-      capabilities: {
-        streaming: 'reported' as const,
-        tools: 'reported' as const,
-        vision: customVision ? ('reported' as const) : ('none' as const),
-        reasoning: customReasoning ? ('reported' as const) : ('none' as const),
-      },
-    }
-
-    const updatedModels = [...connection.models, newModel]
-    const updatedEnabledIds = Array.from(new Set([...Array.from(enabledIds), newModel.id]))
-
-    await request(`/api/router/connections/${encodeURIComponent(connection.id)}`, 'PATCH', {
-      models: updatedModels,
-      enabledModelIds: updatedEnabledIds,
-    })
-
-    setCustomId('')
-    setCustomName('')
-    setCustomVision(false)
-    setCustomReasoning(false)
-    setShowCustomForm(false)
-    setSelectedId(newModel.id)
-  }
-
-  // Render status badge helper
+  // Render status badge helper. `ProviderModel['health']` has no `'error'` value
+  // (`probeHealth()` answers `'failed'`), so the failed badge needs that value to
+  // show at all; its tooltip carries the router's own reason.
   const getStatusBadge = (model: any) => {
     if (model.health === 'ready' || model.lastProbe?.status === 'passed') {
       return (
@@ -229,9 +228,12 @@ export function ModelManagerModal({
         </span>
       )
     }
-    if (model.health === 'error' || model.lastProbe?.status === 'failed') {
+    if (model.health === 'failed' || model.lastProbe?.status === 'failed') {
       return (
-        <span className="flex items-center gap-1 rounded-full bg-rose-500/10 px-2 py-0.5 text-[10px] font-medium text-rose-400 border border-rose-500/20">
+        <span
+          title={model.lastProbe?.error ?? undefined}
+          className="flex items-center gap-1 rounded-full bg-rose-500/10 px-2 py-0.5 text-[10px] font-medium text-rose-400 border border-rose-500/20"
+        >
           <span className="size-1.5 rounded-full bg-rose-500" />
           Failed
         </span>
@@ -242,6 +244,21 @@ export function ModelManagerModal({
         <span className="size-1.5 rounded-full bg-muted/60" />
         Untested
       </span>
+    )
+  }
+
+  const probeResultLine = (modelId: string) => {
+    const result = probeResults[modelId]
+    if (!result) return null
+    return (
+      <p
+        role="status"
+        className={`mt-2 rounded border border-line/60 bg-panel2/60 px-2 py-1 font-mono text-[11px] ${result.status === 'passed' ? 'text-emerald-400' : 'text-rose-400'}`}
+      >
+        {result.status === 'passed'
+          ? `Passed · HTTP 200 · ${result.latencyMs} ms`
+          : `Failed · HTTP ${result.httpStatus} — ${result.message}`}
+      </p>
     )
   }
 
@@ -392,78 +409,15 @@ export function ModelManagerModal({
               </div>
             </div>
 
-            {/* Custom Model Inline Creation Drawer */}
+            {/* Hand-typed model form — one shared component with the API connection card */}
             {showCustomForm && (
-              <form
-                onSubmit={handleAddCustomModel}
-                className="p-3.5 border-b border-brand/30 bg-brand/5 space-y-2.5 text-xs animate-slide-down shrink-0"
-              >
-                <div className="flex items-center justify-between">
-                  <span className="font-semibold text-fg">Add Custom Model Identifier</span>
-                  <button
-                    type="button"
-                    onClick={() => setShowCustomForm(false)}
-                    className="text-muted hover:text-fg"
-                  >
-                    <X className="size-3.5" />
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="text-[10px] font-semibold text-muted uppercase">Model ID / Slug</label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="e.g. meta-llama/llama-3.3-70b-instruct"
-                      value={customId}
-                      onChange={(e) => setCustomId(e.target.value)}
-                      className="mt-1 w-full rounded border border-line bg-panel px-2.5 py-1 text-xs text-fg font-mono outline-hidden"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[10px] font-semibold text-muted uppercase">Display Name</label>
-                    <input
-                      type="text"
-                      placeholder="e.g. Llama 3.3 70B"
-                      value={customName}
-                      onChange={(e) => setCustomName(e.target.value)}
-                      className="mt-1 w-full rounded border border-line bg-panel px-2.5 py-1 text-xs text-fg outline-hidden"
-                    />
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-between pt-1">
-                  <div className="flex items-center gap-3 text-muted text-[11px]">
-                    <label className="flex items-center gap-1.5 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={customVision}
-                        onChange={(e) => setCustomVision(e.target.checked)}
-                        className="rounded"
-                      />
-                      Vision
-                    </label>
-                    <label className="flex items-center gap-1.5 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={customReasoning}
-                        onChange={(e) => setCustomReasoning(e.target.checked)}
-                        className="rounded"
-                      />
-                      Reasoning
-                    </label>
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={!customId.trim() || busy}
-                    className="rounded bg-brand px-3 py-1 text-[11px] font-semibold text-brandfg hover:opacity-90 cursor-pointer disabled:opacity-50"
-                  >
-                    Add & Enable
-                  </button>
-                </div>
-              </form>
+              <div className="p-3.5 border-b border-brand/30 bg-brand/5 animate-slide-down shrink-0">
+                <CustomModelForm
+                  connection={connection}
+                  onDeclared={(modelId) => setSelectedId(modelId)}
+                  onCancel={() => setShowCustomForm(false)}
+                />
+              </div>
             )}
 
             {/* Virtualized Compact Rows List (Smooth 60 FPS vertical scrollable container) */}
@@ -499,10 +453,9 @@ export function ModelManagerModal({
                       onToggle={() => void toggleModel(model.id)}
                       onTest={() => {
                         setSelectedId(model.id)
-                        void runTestModel(model.id)
+                        void probeRow(model.id)
                       }}
                       getStatusBadge={getStatusBadge}
-                      busy={busy}
                     />
                   ))}
                 </div>
@@ -557,37 +510,9 @@ export function ModelManagerModal({
                     </div>
                   </div>
 
-                  {/* Pricing Overview */}
-                  <div className="grid grid-cols-3 gap-2 pt-2">
-                    <div className="rounded-lg border border-line bg-[#0d0f13] p-2.5">
-                      <span className="block text-[10px] uppercase font-mono text-muted">Input (Prompt)</span>
-                      <span className="text-xs font-semibold text-fg font-mono">
-                        {(selectedModel as any).pricing?.prompt
-                          ? `$${(Number((selectedModel as any).pricing.prompt) * 1000000).toFixed(2)} / 1M`
-                          : (selectedModel.id.includes(':free') || selectedModel.id === 'openrouter/free')
-                          ? 'FREE'
-                          : 'Standard'}
-                      </span>
-                    </div>
-                    <div className="rounded-lg border border-line bg-[#0d0f13] p-2.5">
-                      <span className="block text-[10px] uppercase font-mono text-muted">Output (Completion)</span>
-                      <span className="text-xs font-semibold text-fg font-mono">
-                        {(selectedModel as any).pricing?.completion
-                          ? `$${(Number((selectedModel as any).pricing.completion) * 1000000).toFixed(2)} / 1M`
-                          : (selectedModel.id.includes(':free') || selectedModel.id === 'openrouter/free')
-                          ? 'FREE'
-                          : 'Standard'}
-                      </span>
-                    </div>
-                    <div className="rounded-lg border border-line bg-[#0d0f13] p-2.5">
-                      <span className="block text-[10px] uppercase font-mono text-muted">Context Window</span>
-                      <span className="text-xs font-semibold text-fg font-mono">
-                        {(selectedModel as any).context_length
-                          ? `${Math.round((selectedModel as any).context_length / 1024)}k tokens`
-                          : '128k tokens'}
-                      </span>
-                    </div>
-                  </div>
+                  {/* Price in use and its provenance — the same number the Usage
+                      cost column labels, editable for this model only. */}
+                  <ModelPriceBlock connection={connection} model={selectedModel} />
 
                   {/* Badges / Features */}
                   <div className="flex flex-wrap items-center gap-1.5 pt-1">
@@ -648,6 +573,9 @@ export function ModelManagerModal({
                       This model has not been probed yet. Click "Run Test" below to verify live upstream inference.
                     </p>
                   )}
+
+                  {/* Result of the row `Test` button, which uses the non-blocking probe */}
+                  {probeResultLine(selectedModel.id)}
                 </div>
 
                 {/* Interactive Test Playground (In-Modal Inference) */}
@@ -777,6 +705,172 @@ export function ModelManagerModal({
   )
 }
 
+const PRICE_MAX_USD = 1000
+
+/** USD per 1M tokens with trailing zeros dropped: `$0.3 / 1M`, `$0.52668 / 1M`. */
+function pricePerMillion(value: number | null) {
+  if (value === null) return 'Not set'
+  return `$${String(Number(value.toFixed(6)))} / 1M`
+}
+
+const PRICE_SOURCE_LABELS: Record<ModelPricing['source'], string> = {
+  manual: 'Set by you',
+  ping: "From the provider's model list",
+  documented: 'Documented DeepSeek price',
+}
+
+/**
+ * Where the price in use came from. A price the user set, one the provider
+ * published in its model list and one from our shipped DeepSeek table are three
+ * different claims, so each says which it is instead of one bare number.
+ */
+function priceSourceLabel(pricing: ModelPricing | null | undefined) {
+  if (!pricing) return 'Not set — cost stays blank'
+  const label = PRICE_SOURCE_LABELS[pricing.source] ?? 'Not set — cost stays blank'
+  return pricing.asOf ? `${label} · as of ${pricing.asOf}` : label
+}
+
+/** `null` means "not a usable USD/1M price": blank, not a number, negative or above 1000. */
+function parsePriceInput(value: string) {
+  const trimmed = value.trim()
+  if (trimmed === '') return null
+  const number = Number(trimmed)
+  if (!Number.isFinite(number) || number < 0 || number > PRICE_MAX_USD) return null
+  return number
+}
+
+function PriceCell({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-line bg-panel p-2">
+      <span className="block text-[10px] uppercase font-mono text-muted">{label}</span>
+      <span className="text-xs font-semibold text-fg font-mono">{value}</span>
+    </div>
+  )
+}
+
+/**
+ * The price the router bills this model at, and who said so. `costMode: 'included'`
+ * replaces the whole block: a subscription account has no per-token price, and a
+ * blank number would read as "free" instead of "not billed per token".
+ */
+function ModelPriceBlock({ connection, model }: { connection: ProviderConnection; model: ProviderModel }) {
+  const request = useProviderStore((state) => state.request)
+  const busy = useProviderStore((state) => state.busy)
+  const [open, setOpen] = useState(false)
+  const [input, setInput] = useState('')
+  const [cachedInput, setCachedInput] = useState('')
+  const [output, setOutput] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const pricing = model.pricing ?? null
+
+  if (connection.costMode === 'included') {
+    return (
+      <div className="rounded-lg border border-line bg-[#0d0f13] p-3">
+        <span className="block text-[10px] uppercase font-mono text-muted">Price</span>
+        <p className="mt-1.5 text-xs text-muted">Included in the plan — this provider does not bill per token.</p>
+      </div>
+    )
+  }
+
+  const patch = async (body: Record<string, unknown>) => {
+    try {
+      await request(`/api/router/connections/${encodeURIComponent(connection.id)}`, 'PATCH', body)
+      setOpen(false)
+      setError(null)
+    } catch (thrown) {
+      setError(thrown instanceof Error ? thrown.message : 'The router rejected the price.')
+    }
+  }
+
+  // Seeded from the price in use each time the editor opens, so a state refresh
+  // cannot wipe what the user is typing.
+  const edit = () => {
+    setInput(pricing ? String(pricing.input) : '')
+    setCachedInput(pricing?.cachedInput === null || pricing?.cachedInput === undefined ? '' : String(pricing.cachedInput))
+    setOutput(pricing ? String(pricing.output) : '')
+    setError(null)
+    setOpen(true)
+  }
+
+  const save = () => {
+    const nextInput = parsePriceInput(input)
+    const nextOutput = parsePriceInput(output)
+    if (nextInput === null || nextOutput === null) {
+      setError('Enter an input and an output price in USD per million tokens (0–1000).')
+      return
+    }
+    const nextCachedInput = parsePriceInput(cachedInput)
+    if (cachedInput.trim() !== '' && nextCachedInput === null) {
+      setError('Cached input must be a number between 0 and 1000, or left blank.')
+      return
+    }
+    void patch({ modelPricing: { modelId: model.id, input: nextInput, output: nextOutput, ...(nextCachedInput === null ? {} : { cachedInput: nextCachedInput }) } })
+  }
+
+  return (
+    <div className="rounded-lg border border-line bg-[#0d0f13] p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-[10px] uppercase font-mono text-muted">Price · USD / 1M tokens</span>
+        {open ? (
+          <div className="flex items-center gap-2">
+            {pricing?.source === 'manual' && (
+              <button
+                type="button"
+                disabled={busy}
+                title="Drop the price you set and go back to the provider's or our documented price."
+                onClick={() => void patch({ modelPricing: { modelId: model.id, clear: true } })}
+                className="rounded border border-line bg-panel px-2 py-0.5 text-[10px] font-medium text-fg transition cursor-pointer hover:text-brand disabled:opacity-50"
+              >
+                Clear override
+              </button>
+            )}
+            <button
+              type="button"
+              disabled={busy}
+              onClick={save}
+              className="rounded border border-line bg-panel px-2 py-0.5 text-[10px] font-semibold text-fg transition cursor-pointer hover:text-brand disabled:opacity-50"
+            >
+              Save price
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={edit}
+            className="rounded border border-line bg-panel px-2 py-0.5 text-[10px] font-medium text-fg transition cursor-pointer hover:text-brand"
+          >
+            Edit price
+          </button>
+        )}
+      </div>
+      {open ? (
+        <div className="mt-2 grid grid-cols-3 gap-2">
+          <label className="block">
+            <span className="block text-[10px] uppercase font-mono text-muted">Input</span>
+            <input aria-label="Input price per million tokens" inputMode="decimal" value={input} onChange={(event) => setInput(event.target.value)} placeholder="0.30" className="mt-1 w-full rounded-md border border-line bg-panel px-2 py-1 text-xs text-fg font-mono outline-hidden focus:border-brand" />
+          </label>
+          <label className="block">
+            <span className="block text-[10px] uppercase font-mono text-muted">Cached input</span>
+            <input aria-label="Cached input price per million tokens" inputMode="decimal" value={cachedInput} onChange={(event) => setCachedInput(event.target.value)} placeholder="optional" className="mt-1 w-full rounded-md border border-line bg-panel px-2 py-1 text-xs text-fg font-mono outline-hidden focus:border-brand" />
+          </label>
+          <label className="block">
+            <span className="block text-[10px] uppercase font-mono text-muted">Output</span>
+            <input aria-label="Output price per million tokens" inputMode="decimal" value={output} onChange={(event) => setOutput(event.target.value)} placeholder="1.20" className="mt-1 w-full rounded-md border border-line bg-panel px-2 py-1 text-xs text-fg font-mono outline-hidden focus:border-brand" />
+          </label>
+        </div>
+      ) : (
+        <div className="mt-2 grid grid-cols-3 gap-2">
+          <PriceCell label="Input" value={pricePerMillion(pricing?.input ?? null)} />
+          <PriceCell label="Cached input" value={pricePerMillion(pricing?.cachedInput ?? null)} />
+          <PriceCell label="Output" value={pricePerMillion(pricing?.output ?? null)} />
+        </div>
+      )}
+      <p className="mt-2 text-[10px] text-muted">{open ? 'Saved prices are USD per 1,000,000 tokens and override the provider price for this model only. Leave cached input blank when no cache-hit price is published.' : priceSourceLabel(pricing)}</p>
+      {error && <p className="mt-1 text-[10px] text-rose-400">{error}</p>}
+    </div>
+  )
+}
+
 // Memoized individual model row item to prevent re-rendering when other models change
 const ModelRowItem = React.memo(function ModelRowItem({
   model,
@@ -787,7 +881,6 @@ const ModelRowItem = React.memo(function ModelRowItem({
   onToggle,
   onTest,
   getStatusBadge,
-  busy,
 }: {
   model: any
   isSelected: boolean
@@ -797,7 +890,6 @@ const ModelRowItem = React.memo(function ModelRowItem({
   onToggle: () => void
   onTest: () => void
   getStatusBadge: (m: any) => React.ReactNode
-  busy: boolean
 }) {
   const isFree = model.id.includes(':free') || model.id === 'openrouter/free'
 
@@ -856,7 +948,7 @@ const ModelRowItem = React.memo(function ModelRowItem({
 
         <button
           type="button"
-          disabled={busy || isTesting}
+          disabled={isTesting}
           onClick={(e) => {
             e.stopPropagation()
             onTest()

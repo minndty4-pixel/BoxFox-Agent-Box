@@ -13,12 +13,43 @@ import { ChatInputBar } from './ChatInputBar'
 
 function selectionKey(s: RouterChatSelection | null) { return !s ? '' : s.kind === 'alias' ? `alias:${s.aliasId}` : `model:${s.connectionId}:${s.modelId}` }
 function eligible(c: ProviderConnection) { return c.enabled && c.authState === 'ready' && c.discoveryState === 'ready' && (c.providerId !== 'antigravity' || c.projectState === 'ready') }
-export function routerChatOptions(snapshot: ProviderSnapshot) {
+
+/** Một dòng trong bảng chọn model của composer. */
+export interface RouterChatOption {
+  value: string
+  label: string
+  providerId: string
+  thinkingLevels?: string[]
+  selection: RouterChatSelection
+}
+
+export function routerChatOptions(snapshot: ProviderSnapshot): RouterChatOption[] {
   // A live inventory alone does not prove inference works. Preserve models
   // pending their first probe, but never offer a model known unavailable.
   const models = snapshot.connections.filter(eligible).flatMap(c => c.models.filter(m => m.enabled && m.health !== 'unavailable').map(m => ({ value: `model:${c.id}:${m.id}`, label: `${c.name} · ${m.name}`, providerId: c.providerId, thinkingLevels: m.thinkingLevels, selection: { kind: 'model', connectionId: c.id, modelId: m.id } as RouterChatSelection })))
-  const aliases = snapshot.aliases.filter(a => a.enabled && a.targets.some(t => models.some(m => m.selection.kind === 'model' && m.selection.connectionId === t.connectionId && m.selection.modelId === t.modelId))).map(a => ({ value: `alias:${a.id}`, label: a.name, providerId: snapshot.connections.find(c => c.id === a.targets[0]?.connectionId)?.providerId ?? 'router', selection: { kind: 'alias', aliasId: a.id } as RouterChatSelection }))
+  const aliases = snapshot.aliases.filter(a => a.enabled && a.targets.some(t => models.some(m => m.selection.kind === 'model' && m.selection.connectionId === t.connectionId && m.selection.modelId === t.modelId))).map(a => ({ value: `alias:${a.id}`, label: a.name, providerId: snapshot.connections.find(c => c.id === a.targets[0]?.connectionId)?.providerId ?? 'router', thinkingLevels: aliasThinkingLevels(a, models), selection: { kind: 'alias', aliasId: a.id } as RouterChatSelection }))
   return [...aliases, ...models]
+}
+
+/**
+ * Mức thinking dùng chung cho mọi đích của một alias: chỉ khi **mọi** đích đều
+ * công bố mức thì giao của chúng mới là mức an toàn; đích nào chưa công bố thì
+ * để trống, và composer sẽ không gửi mức nào (router dùng mức mặc định).
+ */
+function aliasThinkingLevels(
+  alias: ProviderSnapshot['aliases'][number],
+  models: RouterChatOption[],
+): string[] | undefined {
+  const lists: string[][] = []
+  for (const target of alias.targets) {
+    const model = models.find(m => m.selection.kind === 'model' && m.selection.connectionId === target.connectionId && m.selection.modelId === target.modelId)
+    const levels = model?.thinkingLevels
+    if (!levels || levels.length === 0) return undefined
+    lists.push(levels)
+  }
+  if (lists.length === 0) return undefined
+  const shared = lists[0].filter(level => lists.every(list => list.some(l => l.toLowerCase() === level.toLowerCase())))
+  return shared.length > 0 ? shared : undefined
 }
 function tokenLabel(t: RouterChatTurn | undefined) { return !t?.usage || (t.usage.prompt_tokens == null && t.usage.completion_tokens == null) ? 'Usage chưa có dữ liệu' : `${t.usage.prompt_tokens ?? '?'} in · ${t.usage.completion_tokens ?? '?'} out` }
 function RouterTurn({ turn, snapshot, busy, onOpenLightbox }: { turn: RouterChatTurn; snapshot: ProviderSnapshot | null; busy: boolean; onOpenLightbox?: (src: string) => void }) {

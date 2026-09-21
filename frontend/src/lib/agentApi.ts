@@ -6,7 +6,10 @@ export async function agentApi<T>(path: string, body?: unknown, method?: string)
   })
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Harness engine unavailable. Start the BoxFox launcher.' }))
-    throw new Error(error.error ?? `Harness HTTP ${response.status}`)
+    const message = error.error ?? `Harness HTTP ${response.status}`
+    // Giữ mã lỗi trong câu: người dùng thấy `SESSION_NOT_FOUND` thay vì một chữ "Not found"
+    // không tra cứu được, và store nhận ra được phiên cũ để tự mở phiên mới.
+    throw new Error(error.code && !message.startsWith(error.code) ? `${error.code}: ${message}` : message)
   }
   return response.json() as Promise<T>
 }

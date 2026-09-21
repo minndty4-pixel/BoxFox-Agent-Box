@@ -104,3 +104,89 @@ def test_server_delete_session_endpoint(tmp_path):
             store.close()
 
     asyncio.run(run())
+
+
+def test_an_unknown_session_gets_an_actionable_404(tmp_path):
+    """Ảnh chụp của chủ sở hữu: chat báo đúng một chữ "Not found".
+
+    `store.get()` ném `KeyError`, và middleware biến **mọi** `KeyError` thành
+    `{'error': 'Not found'}` — người dùng không có mã lỗi, không có id phiên, không có gì
+    để tra. Nay id lạ trả `SESSION_NOT_FOUND` kèm id, nên UI tự mở phiên mới được.
+    """
+
+    async def run():
+        store = SessionStore(tmp_path / "sessions.db")
+        runtime = HarnessRuntime(store, None)
+        client = TestClient(TestServer(create_app(runtime)))
+        await client.start_server()
+        headers = {"Host": "127.0.0.1:3102", "X-BoxFox-Admin": "1", "Origin": "http://localhost:3100"}
+        try:
+            for method, path, body in (("get", "/api/agent/sessions/deadbeef", None),
+                                       ("post", "/api/agent/sessions/deadbeef/turns", {"prompt": "hỏi"}),
+                                       ("post", "/api/agent/sessions/deadbeef/stop", None)):
+                res = await getattr(client, method)(path, headers=headers, **(body and {"json": body} or {}))
+                assert res.status == 404, (path, res.status)
+                data = await res.json()
+                assert data["code"] == "SESSION_NOT_FOUND", data
+                assert data["error"].startswith("SESSION_NOT_FOUND: session deadbeef"), data
+        finally:
+            await client.close()
+            store.close()
+
+    asyncio.run(run())
+
+
+def test_an_internal_key_error_is_not_reported_as_not_found(tmp_path):
+    """`KeyError` bên trong handler là lỗi nội bộ, không phải "không có route"."""
+
+    async def run():
+        store = SessionStore(tmp_path / "sessions.db")
+        runtime = HarnessRuntime(store, None)
+        app = create_app(runtime)
+
+        async def broken(request):
+            raise KeyError("config['thinkingLevel']")
+
+        app.router.add_get('/api/agent/broken-probe', broken)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            res = await client.get("/api/agent/broken-probe",
+                                   headers={"Host": "127.0.0.1:3102", "X-BoxFox-Admin": "1",
+                                            "Origin": "http://localhost:3100"})
+            assert res.status == 500
+            data = await res.json()
+            assert data["code"] == "INTERNAL_ERROR", data
+            assert "thinkingLevel" in data["error"], 'thông báo phải nói khoá nào thiếu'
+        finally:
+            await client.close()
+            store.close()
+
+    asyncio.run(run())
+
+
+def test_an_unknown_skill_is_a_404_not_an_internal_error(tmp_path):
+    """`catalog.items[sid]` ném `KeyError` cho một kỹ năng không có.
+
+    Middleware nay coi `KeyError` là lỗi nội bộ (500) — đúng cho một lỗi lập trình,
+    sai cho một cái tên gõ nhầm trong URL. Tuyến này phải tự trả 404 có mã, nếu không
+    bản sửa `Not found` lại biến một 404 cũ thành 500.
+    """
+
+    async def run():
+        store = SessionStore(tmp_path / "sessions.db")
+        runtime = HarnessRuntime(store, None)
+        client = TestClient(TestServer(create_app(runtime)))
+        await client.start_server()
+        headers = {"Host": "127.0.0.1:3102", "X-BoxFox-Admin": "1", "Origin": "http://localhost:3100"}
+        try:
+            res = await client.get("/api/agent/skills/khong-co-ky-nang-nay/readiness", headers=headers)
+            assert res.status == 404, res.status
+            data = await res.json()
+            assert data["code"] == "SKILL_NOT_FOUND", data
+            assert "khong-co-ky-nang-nay" in data["error"], data
+        finally:
+            await client.close()
+            store.close()
+
+    asyncio.run(run())

@@ -311,3 +311,344 @@ có điều kiện môi trường. `deploy/docker` **359 OK**; router **89 pass 
 - Cổng mở cầu nối (luật `iptables` trong box + biến `BOXFOX_ANTHROPIC_*` của harness) vẫn làm bằng
   tay, `BOX_LLM_BRIDGE` trong `docker-compose.yml` còn `off` — người dùng phải mở/đặt lại sau mỗi
   lần tạo container.
+
+### Vòng 13 — 2026-09-20 chiều (OpenRouter/DeepSeek Pro, mức thinking, chính sách thử lại)
+
+Chủ sở hữu giao bốn việc lúc 14:28 UTC kèm hai ảnh chụp (`3066.png`, `3067.png`).
+
+**Đã đo được**
+
+- Nhập khoá API OpenRouter **bằng giao diện** (ô API key + `Refresh model`): kết nối
+  `7b469e10-1d00-4358-a854-5c42ef5e93b3` ở `https://openrouter.ai/api/v1`, `discoveryState ready`,
+  **446 model**, `lastModelSyncAt 2026-09-20T14:29:27Z`. Nút `Test` cho
+  `~deepseek/deepseek-pro-latest`: **`Passed` 5 300 ms**, 17 token, `cost 2.28e-05`.
+- Lượt chạy thật đầu tiên trên DeepSeek Pro (trước khi sửa frontend) đã **hoàn tất trong 4,0 s**
+  (phiên `36b3fc5c…`, 19 sự kiện, `assistant {"text":"4"}`, `finish completed`) — tức nhà cung cấp
+  và router đều tốt; lỗi nằm ở mức thinking do giao diện gửi lên.
+- **Lỗi mức thinking tái hiện và đã sửa** (§6.8 T-1): `POST /api/agent/sessions` với
+  `thinkingLevel: 'medium'` trả `THINKING_LEVEL_UNSUPPORTED: model publishes max/high/low`. Sau khi
+  sửa, chạy lại **qua giao diện**: chip `DeepSeek Low`, phiên `c7cb1e8f…` lưu
+  `route.thinkingLevel = "low"`, lượt trả `assistant {"text":"2+2 = 4.","thought":"…"}`,
+  `finish {"status":"completed"}`, `step {"iteration":1,"contextEstimate":6220}`.
+- **Lỗi `Not found` đã sửa** (§6.8 T-2): trên harness mới, `GET`, `POST …/turns`, `POST …/stop` với
+  id `deadbeef…` đều trả **404 `SESSION_NOT_FOUND`** kèm chính id; bản cũ trả `{"error": "Not found"}`.
+- **Chính sách thử lại** (§6.8 R-1): 13 ca mới trong `backend/tests/unit/test_retry_policy.py`,
+  gồm ba ca chạy lượt thật (hai 429 rồi thành công; bỏ cuộc sau 3 lần; 400 hỏng ngay).
+- Khoá API Google nhập lúc 14:50 UTC: kết nối `2b922915-4b9e-430d-a867-cb76e47e6965`
+  (`https://generativelanguage.googleapis.com/v1beta`), `discoveryState ready`, **41 model**, trong đó
+  **có `gemini-3.5-flash-lite`** — nút `Test` trả **`Passed` 600 ms** (12 token). Vậy model này
+  **không thiếu**.
+
+**Bộ kiểm sau khi sửa**
+
+| Bộ | Kết quả |
+|---|---|
+| backend `pytest backend/tests -q` | **532 passed, 2 failed, 2 skipped** (77,30 s) — hai ca đỏ vẫn là hai ca cũ phụ thuộc môi trường: `test_browser_use_navigation_and_dom_inspection` (`ERR_CONNECTION_REFUSED`) và `test_terminal_exec_echo` (`Write-Output: command not found`) |
+| `deploy/docker` unittest discover | **359 OK** |
+| router `npm test` | **89 pass / 0 fail** (3 176 ms) |
+| frontend (hai tệp mới) | `harnessThinking.test.ts` 9 ca + `harnessChatStore.retry.test.ts` 5 ca — **14 passed** |
+| frontend `npx tsc -b --noEmit` | thoát **0** |
+| frontend toàn bộ | 682 passed / 4 failed — bốn ca đỏ có sẵn từ trước (3 × `Sidebar.test.tsx`, 1 × `workspace/index.test.ts`) |
+
+**Còn nợ của vòng này**: thang kiểm CUA (nhẹ → vừa → nặng có kịch bản → nặng tự do) chạy bằng
+`~deepseek/deepseek-pro-latest` và bằng `gemini-3.5-flash-lite`; kết quả bổ sung vào đây khi có.
+
+### Vòng 14 — 2026-09-20 chiều muộn (khoá Google, thang kiểm `gemini-3.5-flash-lite`, tám phát hiện của vòng soát)
+
+**Việc chủ sở hữu giao**: nhập khoá Google, kiểm model `gemini-3.5-flash-lite` có trong danh mục
+không, rồi chạy thang CUA hiện tại bằng model đó; mỗi lỗi phải phân loại **model hay mã** trước khi
+kết luận, lỗi do model thì ghi vào sổ theo dõi, và nếu thang kiểm chết vì hạn mức nhà cung cấp thì
+dừng và báo lại.
+
+**Đo được**
+
+- Khoá Google nhập lúc 14:50 UTC → kết nối `2b922915-4b9e-430d-a867-cb76e47e6965`, `discoveryState ready`,
+  **41 model**, `gemini-3.5-flash-lite` **có mặt** (mức `low/medium/high`, cửa sổ 1 048 576), nút `Test`
+  trả **`Passed` 600 ms**. Lượt gửi thật đầu tiên qua giao diện trên model này **hoàn tất** (`Chào bạn! BoxFox
+  đã sẵn sàng…`, `finish completed`, tuyến `{"connectionId":"2b922915…","modelId":"gemini-3.5-flash-lite","thinkingLevel":"low"}`).
+- Tám phát hiện của vòng soát mã đợt 13 (điểm rủi ro **5/10**) đã sửa hết — chi tiết ở §6.9 bảng R14-1…R14-8.
+  Hai phát hiện đầu được **đo lại sống** trên giao diện đang chạy:
+  - Xoá phiên của một chat rồi gửi ngay trong cùng một nhịp: `DELETE /api/agent/sessions/18358f20…` → 200,
+    `POST /api/agent/sessions/18358f20…/turns` → **404**, `POST /api/agent/sessions` → phiên mới,
+    `POST /api/agent/sessions/e197d82a…/turns` → câu trả lời. Sau khi phiên mới ra đời **không lời gọi nào**
+    trỏ về id chết, khoá `boxfox-harness-session:session-mu9yhydm` mang id mới, màn hình **không còn băng đỏ**
+    (`r14_stale_recovery_after.png`; ảnh trước khi sửa: `r14_stale_before.png`).
+  - Nhánh còn lại (vòng poll nhận ra trước): chat được dọn im lặng rồi lần gửi kế tiếp mở phiên mới
+    (`r14_stale_purge_after.png`).
+- **Lỗi mới T-3 (§6.9)**: lượt gửi thật trên `Google Gemini · Gemini 2.5 Flash` chết với
+  `UPSTREAM_HTTP_400 … Thinking level is not supported for this model.` Đo trực tiếp trên endpoint Google
+  (12 model) để biết model nào nhận `thinkingLevel`: **nhận** — `gemini-flash-lite-latest`, `gemini-3.1-flash-lite`,
+  `gemini-3.5-flash-lite`, `gemini-3.8-flash`; **từ chối** — `gemini-2.5-flash`, `gemini-2.5-flash-lite`,
+  `gemma-4-31b-it`, `gemini-3.5-transcribe`, `antigravity-preview-09-2026`, `deep-research-preview-04-2026`.
+  Sau khi sửa, đo lại trên harness dựng từ nhánh (cổng 3103, phiên `9c2571c3…`, tuyến
+  `gemini-2.5-flash` + `thinkingLevel: "medium"`): `notice THINKING_LEVEL_REFUSED` (`level: "medium"`) rồi
+  `assistant "2+2 bằng 4."`, `finish completed`, **không có sự kiện `error`**
+  (`/code/.generated_artifacts/r14_thinking_level_refused_live.txt`).
+- Đo lại **trên giao diện thật** (cổng 3102, sau khi dựng lại harness lúc 15:46 vì tiến trình cũ nạp mã đợt 13):
+  cùng khung chat `gemini-2.5-flash` + mức `low`, lượt 15:45 chết `UPSTREAM_HTTP_400 … Thinking level is not supported`
+  (không có thông báo bỏ mức), lượt 15:47 phát `notice THINKING_LEVEL_REFUSED {level:"low"}` rồi trả lời
+  `2+2=4. 5+7=12.` với `finish completed` và **không** sự kiện `error`
+  (`/code/.generated_artifacts/images/r14_thinking_refused_ui_after.png` — hai lượt nằm trong cùng một ảnh).
+- Chính sách thử lại chạy thật trong thang kiểm: phiên `51bd6a0b…` gặp hạn mức nhà cung cấp và ghi đúng
+  ba thông báo `UPSTREAM_RETRY` (`attempt 1..3`, `waitMs 2000`, `reason rate-limit`) rồi
+  `UPSTREAM_RETRY_EXHAUSTED` (`attempts 3`, `waitMs 6000`), băng lỗi cuối có `[after 3 retries in 6.0s]`.
+
+**Bộ kiểm sau khi sửa**
+
+| Bộ | Kết quả |
+|---|---|
+| backend `pytest backend/tests -q` | **540 passed, 2 failed, 2 skipped** (77,41 s) — hai ca đỏ vẫn là hai ca cũ phụ thuộc môi trường |
+| frontend trọng tâm (`harnessThinking`, `harnessChatStore.retry`, `routerChatOptions`, `ChatPanel`) | **35 passed** |
+| frontend toàn bộ `npx vitest run` (91 tệp) | **704 passed, 4 failed** — đúng bốn ca cũ phụ thuộc môi trường (3 × `Sidebar.test.tsx`, 1 × `workspace/index.test.ts`); số ca qua tăng từ 682 lên 704 nhờ 22 ca mới |
+| frontend `npx tsc -b --noEmit` | thoát **0** |
+| ESLint trên các tệp đã sửa | không thêm phát hiện nào (một `no-explicit-any` còn lại trong tệp kiểm có từ trước) |
+
+**Chặn của vòng này**: OpenRouter hết credit (`total_credits: 0`) nên thang DeepSeek Pro **không chạy
+được** — lượt 2 chết ở `UPSTREAM_HTTP_402`; chủ sở hữu đã được báo. Các model `gemini-3.8-flash-*` qua
+antigravity cũng đang bị hạn mức (`remainingFraction 0`, mở lại 2026-09-23T10:30:01Z).
+
+**Thang kiểm đợt 14 trên `gemini-3.5-flash-lite`** (mức `medium`, `maxSteps 30`, hạn 600 s, do tác nhân
+kiểm thử chạy trên harness đang chạy mã nhánh):
+
+| Bậc | Phiên | Bước | Công cụ | Kết quả và phán loại |
+|---|---|---|---|---|
+| Rất nhẹ (một lần chụp) | `e37d4d79…` | 2 | `computer_screen_capture` ×1 | **hoàn tất**, trả lời đúng `1280x800` — không lỗi |
+| Nhẹ (chữ, 3 lệnh terminal) | `8ceb062c…` | 2 | `terminal_exec` ×1 | **hoàn tất** |
+| Vừa (kịch bản 4 bước, ảnh sau mỗi bước) | `f7e18f44…` | 5 | `computer_use` ×4 + `computer_screen_capture` ×4 | **hoàn tất**, 0 lỗi công cụ |
+| Nặng (nhiều bước, ảnh sau mỗi hành động) | `51bd6a0b…` | 29/30 | `computer_use` ×13 + `computer_screen_capture` ×13 | **chết ở bước 27 vì hạn mức nhà cung cấp**: `UPSTREAM_HTTP_429` → `UPSTREAM_RETRY` 1/3, 2/3, 3/3 (`waitMs 2000`) → `UPSTREAM_RETRY_EXHAUSTED` (`attempts 3`, `waitMs 6000`) |
+| Nặng không kịch bản | — | — | — | **không chạy**: luật dừng khi thang kiểm chết vì hạn mức nhà cung cấp |
+
+**Phán loại model hay mã**: cả bậc chết đều **do nhà cung cấp**, không do model yếu và không do mã —
+lượt nặng bám đúng kịch bản (`click(15,780)` Application, `click(60,778)` Accessories, ảnh sau mỗi hành
+động, 0 lỗi công cụ) rồi mới bị hạn mức cắt ngang; trong cả lượt **0 lần** `UPSTREAM_HTTP_413`,
+`CONTEXT_LIMIT`, `THINKING_LEVEL_UNSUPPORTED`, không có sự kiện lạc hay kết quả công cụ sai. Chính sách
+thử lại mới hành xử đúng như thiết kế (3 lần rồi dừng, có ghi `attempt`/`waitMs`/`reason`).
+
+**Thang DeepSeek Pro** (chạy trước đó cùng ngày, kết quả để đối chiếu): bậc chụp ảnh **thất bại ngay**
+hai lần với `UPSTREAM_HTTP_404: No endpoints found that support image input` — model record của
+`~deepseek/deepseek-pro-latest` không có endpoint thị giác, nên đây là **hạn chế của model**, đã ghi để
+theo dõi; bậc chữ và bậc vừa **hoàn tất**; bậc nặng lượt 1 chạm `MAX_STEPS` (30 bước, 389,6 s), lượt 2–3
+chết vì `UPSTREAM_HTTP_402` (số dư OpenRouter bằng 0).
+
+**Đo lại bốn lỗi chạy sống của các vòng trước trên mã cuối** (tác nhân kiểm thử, hai bản ghi):
+`/code/.generated_artifacts/recordings/r13_four_checks_live_walkthrough.mp4` (F6b nhánh khôi phục desktop
+lỗi vẫn trả HTTP 200 kèm ảnh thật + `desktopWarning`, F8 hai lần bấm 0,109/0,108 s không `--sync`, F9 con
+`/plan` mang `deadlineSeconds 600`, F10 `ANTHROPIC_MODEL` theo router và `grep -ric opus` = 0) và
+`/code/.generated_artifacts/recordings/r13_f6b_record_route_output.mp4` (chính tuyến ghi hình trả nội dung
+desktop thật trên nhánh lỗi).
+
+### Vòng 15 — 2026-09-20 tối: khoá DeepSeek gốc (API chính chủ)
+
+**Yêu cầu của chủ sở hữu (17:42):** lắp khoá API DeepSeek, **test các model**, **các mức độ response**,
+**tra cứu tài liệu cho đúng**, **ping thử các model**, rồi **dùng model DeepSeek 4 Flash để hoàn thiện nốt
+phần kiểm thử còn lại** (bậc nặng-không-kịch-bản của thang CUA, thứ mà các vòng trước không chạy được vì
+hạn mức Google và vì DeepSeek Pro trên OpenRouter không có endpoint thị giác).
+
+**Lắp đặt:** kết nối `deepseek` id `7ee21256-8675-4ee3-a802-fcedbed8b7ef`, endpoint
+`https://api.deepseek.com/v1`, số dư **2,00 USD**, hai model `deepseek-flash` (DeepSeek-V4.1-Flash) và
+`deepseek-v4-pro` (DeepSeek-V4-Pro-0813). Chi tiết đo, lỗi T-5 (router kế thừa bộ mức của OpenAI) và cách
+sửa nằm ở `bug-register.md` §6.11.
+
+**Số ca sau khi sửa**
+
+| Bộ | Kết quả |
+|---|---|
+| Router | **98 pass / 0 fail** (91 cũ + 7 ca `tests/deepseek.test.mjs`) |
+| Router, riêng tệp mới | 7/7 đạt |
+
+**Phép dò sống (17:52–17:58), tất cả qua router thật**
+
+| Phép đo | Kết quả |
+|---|---|
+| Nút `Test` cho `deepseek-flash` / `deepseek-v4-pro` | `passed` / `passed` |
+| Quét mức qua `/api/router/chat` (đường harness) | `none` → 0 ký tự suy luận; `low`/`high`/`max` → có suy luận, `reasoning_tokens` 10–19; thiếu mức → mặc định nhà cung cấp |
+| `/v1/models` bằng khoá box | hai model DeepSeek hiện diện |
+| `/v1/chat/completions` | `low`, `none`, `max` đều 200; `none` không có `reasoning_content` |
+| Ảnh 16×16 qua router | `deepseek-flash` → "Red" (đúng); `deepseek-v4-pro` → "Brown" (sai, đã ghi `vision: unsupported`) |
+| Giao diện | `Single Models` hiện `DeepSeek · deepseek-flash` và `DeepSeek · deepseek-v4-pro` |
+| Harness, phiên `5803c1a8…` | mức `high` → `reasoning_tokens: 8` và đáp đúng `3293`; mức `none` → không có token suy luận và đáp đúng `2993` |
+
+Ảnh bằng chứng: `/code/.generated_artifacts/images/r15_deepseek_in_picker.png` (bộ chọn model trong giao
+diện với hai model DeepSeek). Bằng chứng thô của phiên harness: `/var/tmp/r15/harness_probe_session.json`.
+
+#### Bậc nặng-không-kịch-bản trên `deepseek-flash` — **PASSED** (18:0x)
+
+Đây là bậc mà các vòng 12–14 không chạy nổi (hạn mức Google, DeepSeek Pro trên OpenRouter không có
+endpoint thị giác). Phiên `63fa894d84af46cca41d7e77616800b4`, tuyến lưu trong config
+`{7ee21256-…, deepseek-flash, high}`, `contextWindow 64000` (bảng tên), `maxSteps 40`,
+`deadlineSeconds 600`.
+
+| Phép kiểm | Kết quả |
+|---|---|
+| T1 cấu hình phiên | PASS — `thinkingLevels none/low/high/max`, `defaultThinking high`, `vision reported` |
+| T2 đi đúng tuyến | PASS — **34/34** dòng usage trỏ đúng kết nối/model DeepSeek; nhật ký router 34 `chat.end`, 0 lỗi |
+| T3 hoàn thành nhiệm vụ | PASS — `finish {"status":"completed"}`, **34 bước**, 5930 sự kiện, **78 s** |
+| T4 ảnh vào được model | PASS — 2 thông điệp công cụ có phần `image_url` (~104,9 KB mỗi ảnh), 27 dòng `model.media_pruned`, **không** 413, không "No endpoints found that support image input" |
+| T5 quét lỗi vận chuyển/ngữ cảnh | PASS — mọi cờ đều false (`UPSTREAM_HTTP_413`, `CONTEXT_LIMIT`, `Request is too large`, `UPSTREAM_HTTP_429`, `UPSTREAM_HTTP_402`, `balance`, `cooling down`, `MAX_STEPS`, `DEADLINE`, `No endpoints…`, `UPSTREAM_HTTP_404`), `errors`/`notices`/`toolErrors` rỗng, chuỗi sự kiện liền mạch 33212→39141 |
+| T6 đọc lại bản ghi trong giao diện | PASS — đầu/cuối bản ghi có nhãn `deepseek-flash · 05:58 PM · done · ↑14,6k ↓1,2k` và dòng `Context compacted: 42276 → 21424 tokens` |
+| T7 đối chứng thực địa | PASS — Thunar mở `/home/agent/workspace/` + Mousepad mở `cua_task_log.txt`, `ls -la` → **401 byte** |
+
+Trộn công cụ: `computer_screen_capture` 15, `computer_use` 16 (click/gõ thật), `inspect_element` 2,
+`terminal_exec` 1. Tổng usage: `prompt 352 591`, `completion 7 506`, `reasoning 3 578`,
+cache hit 306 304 / cache miss 46 287.
+
+Bằng chứng: `/code/.generated_artifacts/r15_ladder_deepseek_flash.json` (5930 sự kiện, 34 dòng usage,
+khối cờ đều false, 15 ảnh chụp trong phiên),
+`/code/.generated_artifacts/recordings/r15_deepseek_flash_cua_mission.mp4` (163,5 s hình desktop),
+`/code/.generated_artifacts/recordings/r15_ui_deepseek_transcript.webm` (37,4 s, 374 khung hình),
+`/code/.generated_artifacts/images/r15_deepseek_flash_transcript_top.png` và
+`…_transcript_footer.png`. Tác nhân kiểm thử không tìm thấy lỗi sản phẩm nào và không sửa tệp nào trong
+kho.
+
+**Ghi chú của bậc này (không phải lỗi):** chỉ **2** ảnh chụp mới nhất còn nằm trong ngữ cảnh
+(`bound_inline_media` keep=2); con số "768 byte" mà model đọc giữa luồng là tệp đang được ghi dở; thước
+ngữ cảnh trong giao diện hiện `21,4k / 200k` trong khi metadata phiên ghi `contextWindow 64000` (lệch
+do thước ước lượng phía giao diện, chỉ là hiển thị).
+
+### Vòng 15b + 16 — 2026-09-20 18:2x: cơ chế nhập tay của DeepSeek, nhà cung cấp bên thứ ba (TokenHarbor), và sự thật về chi phí
+
+**Yêu cầu của chủ sở hữu (18:2x):** (1) DeepSeek phải có **cả hai** cơ chế như các model khác — dò tự động
+và **nhập tay** — và **`max` phải có cho riêng DeepSeek**; (2) sau khi verify email xong thì **dùng nhà cung
+cấp API bên thứ ba (TokenHarbor)** trước, **lỗi nhiều mới quay lại DeepSeek gốc**, còn không thì chạy
+DeepSeek **qua** nhà cung cấp đó; (3) đừng quên việc **đơn giản hoá giao diện khu API**.
+
+**Phần 1 — cơ chế nhập tay (đã sửa, `87bc2d6`).** Hai lỗi độc lập, chi tiết ở `bug-register.md` §6.12:
+router tự bịa danh sách mức chung cho model nhập tay (thiếu `none`/`max`), và biểu mẫu "Custom Model" của
+giao diện **chưa từng tới router** (gửi bản sao mảng `models`, router trả
+`INVALID_REQUEST: Select only models discovered for this connection.`). Sửa: hook `manualThinkingLevels()`
+do adapter của nhà cung cấp công bố, hàm `manualThinkingLevels(provider)` ở `service.mjs`, và biểu mẫu gửi
+`customModel` thay vì `models`. **Bộ router: 100 pass / 0 fail.**
+
+Đo lại sống trên router đã dựng lại (pid 940356):
+
+| Phép đo | Kết quả |
+|---|---|
+| Hàng nhập tay cũ `r15-manual-probe` (tạo trước khi sửa) | tự lành thành `['none','low','high','max']` |
+| Hàng nhập tay mới trên kết nối DeepSeek | `['none','low','high','max']` — **có `max`** |
+| Hàng nhập tay trên kết nối `custom` (TokenHarbor) | `['auto','low','medium','high']` — luật chung giữ nguyên |
+
+**Phần 2 — nhà cung cấp bên thứ ba.** Kết nối `custom` id `6c498e9d-f581-455c-849c-e24c37f25ae5`, tên
+`TokenHarbor`, endpoint `https://tokenharbor.ai/v1`. Trước khi verify email, cả `/v1/models` lẫn
+`/v1/chat/completions` trả **403** `email_verification_required`, và router đã phơi đúng thông điệp của nhà
+cung cấp (`Provider authentication failed: Verify your email address to use the API. …`). Sau khi chủ sở
+hữu verify:
+
+| Phép đo | Kết quả |
+|---|---|
+| `GET /v1/models` | **200, 52 model**; bản ghi có `label`, `blurb`, `tier`, `pricing`, `supports_prompt_cache`, `context_length` |
+| Số dư gói trả tiền | **0 USD** — `deepseek-v4.1-flash` trả **402** `balance_zero` ("Top up at https://tokenharbor.ai/dashboard") |
+| Model miễn phí `deepseek-v4.1-flash:free` | **200**, có `reasoning_content` |
+| Bậc văn bản qua harness (3 lệnh `terminal_exec`) | **`completed` sau 75 s**, 2 lượt gọi model, usage `cached_tokens: 4096` |
+| Mức `reasoning_effort` qua cổng | `absent`/`none`/`low`/`high`/`max` đều 200; **`none` KHÔNG tắt suy luận** qua cổng (khác API gốc); `bogus` cũng 200 (cổng bỏ qua, không 422) |
+| Độ trễ mỗi lượt gọi | **18–64 s** cho một câu hỏi tầm thường (API gốc: ~1–3 s) |
+
+Nghĩa là: TokenHarbor **dùng được** (đường ống đầy đủ đã chạy) nhưng chỉ với các id `:free`, và **điều
+khiển suy luận không đáng tin qua cổng** — đúng loại khác biệt phải ghi vào bản ghi chứ không sửa vào mã.
+
+**Phần 3 — chi phí (đo được, đầu vào cho kế hoạch vòng 16).** `router/src/engine.mjs` chỉ ghi `cost` khi
+nhà cung cấp tự báo (`reportedCost(usage)`). Trên 200 dòng usage đang lưu: OpenRouter **45/50** dòng có
+`cost`, DeepSeek **0/61**, Google **0/79**, nội bộ `router` **0/10**. Vì vậy phần lớn dòng hiện "No data"
+dù request đã tiêu tiền thật. Đây là cơ sở cho kế hoạch ba tầng giá (nhà cung cấp báo > giá công bố trong
+`/models` > bảng giá tài liệu của DeepSeek > bảng người dùng tự đặt).
+
+**Bậc nặng-không-kịch-bản trên cổng bên thứ ba — THẤT BẠI (18:52, phiên `bb0c66e24f68446fb5152b3e7739dcc2`).**
+Cùng nhiệm vụ tự do mà `deepseek-flash` gốc làm xong trong **78 s / 34 bước**, chạy qua
+`deepseek-v4.1-flash:free` của TokenHarbor với `maxSteps 40`: 13–14 bước trong **10 phút**, **4 lần**
+`model.error` `UPSTREAM_HTTP_502` (`Router HTTP 502 — Provider is unavailable or returned an invalid
+response.`), rồi `turn.failed` với **`DEADLINE: the turn ran out of time before an answer was produced`**
+(`durationMs 600011,9` — hạn của **lượt** là 600 s, không phải 1800 s khai lúc tạo phiên). Tổng usage của
+lượt: `prompt 39 635`, `completion 1 577`, cache đọc 28 800 — **7/7 dòng không có `cost`** như dự đoán.
+Theo luật của chủ sở hữu ("lỗi nhiều mới quay lại DeepSeek"), **việc nặng ở lại khoá DeepSeek gốc**; cổng
+bên thứ ba giữ vai trò đường nhẹ/vừa và là ví dụ sống cho luồng "custom API" của kế hoạch vòng 17.
+
+### Vòng 16–17 — 2026-09-20 tối muộn: kế hoạch khu API/Provider được duyệt và thi công
+
+**Kế hoạch.** Ba tác nhân soạn thảo (một thiết kế + hai kế hoạch) rồi gộp thành **một** kế hoạch duy nhất
+`/code/.plans/v1-api-provider-area.md` (867 dòng, kèm `v1-api-provider-area-summary.md`, 14 bản vẽ HTML và
+`designs/design-plan.json` 10 mục — mỗi mục đúng một biến thể được chọn). Chủ sở hữu **đã duyệt**. Ba phần:
+(1) tự nhập endpoint bên thứ ba có nút Test, (2) chi phí ba tầng có nguồn, (3) nén khu Provider.
+
+**Đã thi công (năm nhánh song song/serial, mỗi nhánh tự chạy kiểm thử)**
+
+| Commit | Nội dung | Đo được |
+|---|---|---|
+| `320f5c1` | Phân loại lỗi dò cho endpoint bên thứ ba (`NO_MODEL_LIST` / `NO_MODELS` / `AUTH` / `UNAVAILABLE`, giữ nguyên văn lời nhà cung cấp), `costMode` + `lastDiscoveryAttemptAt`, id gõ tay lưu nguyên văn, test được model chưa bật; module giá thuần `pricing.mjs` | Router **134 / 0** (13 ca `custom-provider`, 21 ca `pricing`) |
+| `574a5aa` | Nối giá vào kết nối/model (ba tầng: manual > ping > documented), ghi `cost` + `costBasis` + `estimated` vào usage, sửa hai lỗi C/D ở §6.13, cập nhật `CONTRACT.md` + `README.md` | Router **152 / 0** (14 ca `cost.test.mjs`, 4 fixture dữ liệu thật) |
+| `2b87163` | Giao diện: rail provider có tìm kiếm + nhóm, thẻ connection nén, hàng model 28 px, probe không chặn form | 28 ca nhóm lõi; frontend **717 / 4** (4 ca đỏ có sẵn) |
+| `8fa0104` | `CustomModelForm` dùng chung có **Add & Test** và nút Test riêng; khối lỗi dò có cấu trúc với `Retry` / `Add model by hand` / `Edit endpoint & key`; sửa huy hiệu `health === 'error'` chết thành `'failed'` | 34 ca nhóm lõi; frontend **726 / 4** |
+| `b998129` | Cột Cost hiện nguồn (`est.`, `No price`, `Included in plan`), KPI đếm nguồn, khối `Price` trong khung chi tiết model có `Edit price` / `Clear override`, rail dùng chung cho tab Router | 21 ca nhóm lõi; frontend **733 / 4**; `tsc` 0 |
+
+**Bằng chứng sống của vòng này** (ảnh trong `/code/.generated_artifacts/images/`): `r17_api_tab_1440x900.png`,
+`r17_api_tab_no_connection_1440x900.png` (tab API khi chưa có connection: **296 px**, trước ≈ 1 220 px),
+`r17_api_tab_900px_mobile_rail.png`, `r17_custom_endpoint_failed_card.png` (đủ ba nút + câu của nhà cung cấp),
+`r17_custom_endpoint_add_and_test.png`, `r17_custom_endpoint_add_and_test_running.png`,
+`r17_usage_cost_column.png` (một dòng `<$0.0001 est.`, các dòng `No price`, hai dòng `Included in plan`),
+`r17_usage_manual_estimate.png`, `r17_model_price_editor.png`, `r17_model_price_saved.png`,
+`r17_public_preview_custom_endpoint.png`. Đo mật độ ở 1440×900: trang **không** dài thêm vì danh sách provider
+(0 px), rail tự cuộn, 47 provider trong **2** cú bấm, thẻ connection 237 px (không kể khối model).
+
+**Hai chỗ kế hoạch tự mâu thuẫn, đã chốt bằng số đo:** chỉ tiêu "12 hàng provider thấy được" không đạt vì tab
+API chỉ có 2 nhóm (nhóm thứ ba thuộc tab Router) — thấy 8 hàng + 2 tiêu đề; và chỉ tiêu "hai thẻ × 8 model
+≤ 716 px" mâu thuẫn với yêu cầu hàng model luôn hiện (điều kiện để có nút Test cạnh mỗi model) — chọn giữ hàng
+luôn hiện, thẻ 237 px không kể khối model. Ngoài ra nhánh giao diện tự sửa hai lỗi đo được: rail cao hơn
+khoảng trống 14 px (`lg:max-h-[calc(100vh-13rem)]` → `-15rem`) và hàng `Show N more` là disclosure một chiều.
+
+### Vòng 17b — kiểm chứng độc lập khu API/Provider, ba lỗi nhập tay và lần sửa
+
+**Lượt kiểm chứng thứ nhất** (tác nhân kiểm thử, `f63f82b`): bốn làn sống A–D trên router `:3101`, harness `:3102`,
+Vite `:3100`, cùng một stub OpenAI-compatible trên `127.0.0.1:3199` (chế độ `ok/404/403/empty/html` cho `/models`,
+`ok/404/403` cho chat) và bộ ghi request `/var/tmp/r17/stub-records.jsonl`.
+
+| Làn | Đo được |
+|---|---|
+| A — vào cổng bên thứ ba | TokenHarbor refresh thật **200**, `ready`, 58 model (52 dò được + 6 dòng gõ tay sống sót); bốn lớp lỗi `NO_MODEL_LIST` / `AUTH` / `NO_MODELS` / `UNAVAILABLE` hiện **nguyên văn**; id gửi lên trùng từng ký tự (`matchesKnownExact: true`); probe chạy được trên dòng đã tắt; biên 400/404 |
+| B — chi phí ba tầng | `reported` thắng và **không** ước lượng nào lọt khung `/v1/*`; giá tay sống qua refresh và thắng giá ping; `clear:true` trả giá documented; lượt sống DeepSeek `0,000683` (kỳ vọng `0,00068325`), lượt giá tay `0,00061` (kỳ vọng `0,0006102`) |
+| C — giao diện Provider | 1440×900: trang **không** cuộn, hàng model **28 px**, rail 240 + pane 1 152; ba lối thoát đủ; lưu/`Clear override` đúng; `est.` / `No price` / `Included in plan` đúng; 1200/1024/900 px không tràn; bản ghi `r17_provider_walkthrough.webm` (317,6 s) |
+| D — hồi quy | Router **152 / 0**; frontend **734 / 4** (bộ đỏ có sẵn); `tsc` 0; `deploy/docker` **359 OK** |
+
+Lượt đó cũng so chín mockup của bản vẽ với ảnh chụp thật và ghi sáu sai lệch có chủ đích (hai tab dùng chung rail;
+hộp tìm kiếm thay bộ lọc hình phễu; pill `ready` thay `custom / 1 endpoint`; `Base URL` chỉ có ở kết nối `custom`;
+nút gửi `Add & Test` thay `Add & Enable`; không có dải kết quả sau refresh). Hạng mục **bị chặn** duy nhất: một dòng
+usage `included` **mới** — Antigravity trả 429 và chỉ đặt lại lúc `2026-09-23T10:30:01Z`; bằng chứng thay thế là
+module giá gọi trực tiếp (`included_returns: null`, `included_documented_returns: null`), tám dòng ledger Antigravity
+có sẵn đều `cost: null`, và câu `Included in the plan — this provider does not bill per token.` trên giao diện.
+
+**Ba lỗi tìm ra (F1/F2/F3) và lần sửa `91647e7`.** Chi tiết cơ chế ở `bug-register.md` §6.14. Tóm tắt số đo:
+gõ lại một id đã có chỉ đổi được `name`; **một** lần `Refresh models` hỏng đưa id vừa Test đạt từ `200 BOXFOX_OK`
+xuống `503 NO_ROUTE`; và một lần Test đạt làm mất khối `Models could not be listed` cùng ba lối thoát.
+Năm ca hồi quy mới: `tests 3 / pass 0 / fail 3` (router) và `2 failed | 8 passed` (giao diện) trên mã **trước** khi
+sửa; router **155 / 0**, frontend **736 / 4**, `tsc` 0 sau khi sửa.
+
+**Lượt kiểm chứng thứ hai** (dựng lại router trên `91647e7`, cùng stub): F1 **ĐẠT** (cờ đảo đúng, một dòng, id mới
+cùng cờ cho cùng bộ trường), F2 **ĐẠT** (`degraded` → `/v1/chat/completions` **200 `BOXFOX_OK`**, 40/5 token, có
+dòng ledger; `GET /v1/models` **63** mục), F3 **ĐẠT** ở cả hai dạng (`failed` + lỗi, và `failed` + `error: null`).
+Các làn đã đạt trước đó không đổi: bốn lớp lỗi vẫn nguyên văn, guardrail probe nguyên, ba tầng chi phí nguyên
+(ping `0,000012`; reported `0,000123` `estimated:false`; manual `0,00005`; `clear` → ping trở lại; lượt sống
+DeepSeek 32/8 → `0,00001`), dòng gõ tay sống qua refresh thành công, thẻ connection ở 1440×900 vẫn
+`doc.scrollH 900 == clientH 900`. Dọn dẹp: năm kết nối tạm xoá, khoá router tạm thu hồi, stub tắt, không còn giá
+tay; còn **7 dòng usage `r17/*` mồ côi** trong ledger (kết nối đã xoá, chỉ là số liệu phân tích).
+
+### Vòng 17c — soát mã độc lập vòng 17 và năm lỗi nó tìm ra (`2a0075c`)
+
+Vòng soát chỉ đọc trên `bff9f3d..91647e7` (bộ router 155/155, `src/components/settings` 38/38 xanh). Bảy phát hiện,
+chi tiết cơ chế ở `bug-register.md` §6.15: token ghi cache bị tính hai lần (`0,01055` so với số thật `0,00785` — chỗ
+**duy nhất** trong bộ thay đổi ghi ra một con số tiền sai), `capabilities` ghi một từ vựng thứ năm (`supported`) mà
+không trình đọc nào biết nên ô Vision tự tích không hiện bằng chứng, khối `Models could not be listed` hiện cho cả
+lỗi không phải lỗi dò danh sách, cảnh báo ngày lễ thiếu ở tooltip và tài liệu, bộ lọc Free đọc hình dạng giá cũ,
+lần Test hỏng chỉ còn báo bằng màu. Câu hỏi sản phẩm còn lại — connection thuê bao có được ghi cost do chính nhà
+cung cấp báo không — chốt theo hướng **ghi và hiển thị**: miễn trừ `included` chỉ áp cho phép ước lượng của ta.
+Sáu ca kiểm thử được viết/thêm và **đều đỏ trên mã trước khi sửa**: dựng hàng Anthropic qua `normalizeUsage()` thật
+(`not ok 107`, `pass 154 / fail 1`), cặp `included` + cost tự báo, từ vựng `capabilities`, hai ca thẻ không được nói
+sai về danh sách model, bộ lọc Free hai chiều, và `title` của ô độ trễ.
+
+**Đo lại trên `2a0075c` sau khi sửa** (tác nhân kiểm thử, tám hạng mục, tất cả ĐẠT): mô-đun trước/sau cho đúng cặp
+`0,01055 → 0,00785`; một lượt chạy qua stub lưu `cost 0,001429` (miss 189) thay vì `0,001564`, và sau `clear:true`
+dòng mới là `cost null / basis null` còn dòng cũ giữ `manual`; khai `{vision:true, reasoning:false}` cho
+`vision 'reported'` và huy hiệu **Vision Supported** hiện được trong trình quản lý (trước đó không đường nào tới);
+connection `ready` + `error` chỉ còn **một dòng đỏ** của router — `Models could not be listed`, `Last attempt:`,
+`Retry`, `Add model by hand` đều vắng (đọc DOM), còn `degraded` (refresh 404, giữ 5 model) và `failed` vẫn đủ khối
+ba lối thoát; tab Free liệt kê đúng dòng giá 0 và `Enable Free` chỉ bật `['r17/stub-free-1']`; bốn ô `est.` của
+DeepSeek mang nguyên văn cảnh báo ngày lễ; `title` của ô độ trễ đọc `Failed · failed · HTTP 403 · 2 ms · …`.
+Bộ kiểm thử: router **156 / 0**, frontend **739 / 4** (đúng bộ đỏ có sẵn), `tsc` mã 0. Dọn dẹp: hai kết nối tạm xoá,
+khoá tạm thu hồi, stub tắt, không còn giá tay; ledger tăng đúng **2 dòng mồ côi** (`r17/cache-money`) → **16 dòng
+`r17/*` mồ côi** tổng cộng (kết nối đã xoá, chỉ là số liệu phân tích).

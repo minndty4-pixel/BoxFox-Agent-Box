@@ -216,3 +216,395 @@ Ghi chú kèm theo (không sửa trong đợt này): `RouterClient` vẫn gắn 
 (không có biến môi trường), và trần 1 MiB của router cũng không cấu hình được — vòng kiểm chứng
 phải dựng một bản router sao 128 MiB ở cổng khác để chứng minh rằng đổi trần **một mình** không
 giải quyết được gì, vì đường gọi không đi qua đó.
+
+### 6.8 Ba việc chủ sở hữu giao tối 2026-09-20 (đợt 13) — ĐÃ SỬA (đợt này)
+
+Nguồn: chủ sở hữu giao bốn việc lúc 14:28 UTC kèm hai ảnh chụp (`3066.png` — chat đỏ
+`Agent request failed / Not found`, chip `DeepSeek Low`; `3067.png` — hàng nhà cung cấp
+`DeepSeek: DeepSeek Pro Latest`, `Passed · 6990 ms`). Ba việc dưới đây là ba lỗi tìm thấy khi làm.
+
+| Mã | Mức | Nội dung | Trạng thái | Bằng chứng |
+|---|---|---|---|---|
+| T-1 | Cao (mọi lượt gọi model mới đều chết) | `frontend/src/store/harnessStore.ts` gắn cứng `thinkingLevels: ['low','medium','high']` cho `AVAILABLE_MODELS` và mức mặc định của bộ chọn là `'medium'`, nên **mọi** lượt gửi đều mang `thinkingLevel: 'medium'`. Model `~deepseek/deepseek-pro-latest` chỉ công bố `['max','high','low']`, và `runtime.resolve_thinking_level()` từ chối đúng như thiết kế: `POST /api/agent/sessions` trả **`THINKING_LEVEL_UNSUPPORTED: model publishes max/high/low; requested medium`**, không có id phiên — đúng ảnh chụp của chủ sở hữu. Cùng hình dạng đó ở tám model khác đã đo (`~deepseek/deepseek-flash-latest`, `deepseek/deepseek-v4.1-flash`, `deepseek/deepseek-v4-flash-vision-exp`, `deepseek/deepseek-v4-pro-0813`, `~deepseek/deepseek-v4-flash-latest`, `deepseek/deepseek-v4-flash-0731`, và `gemini-3.5-flash-lite` sau này) | ĐÃ SỬA — tệp mới `frontend/src/lib/harnessThinking.ts` là nguồn duy nhất quyết định mức: khớp đúng thì giữ nguyên chính tả của nhà cung cấp; mức lạ thì lấy mức công bố đầu tiên; còn lại lấy mức **gần nhất theo hạng**, hoà thì chọn mức **thấp hơn**. `harnessChatStore.send()` nhận thêm tham số `thinkingLevels` thứ sáu và chỉ gắn `thinkingLevel` khi có giá trị; `ChatPanel` truyền `thinkingLevels` công bố của model đang chọn; `HarnessModelPicker` có `useEffect` kéo mức đang chọn về mức công bố khi model đổi; `harnessStore` mở kiểu thành `string` vì nhà cung cấp còn công bố `max`/`xhigh` | `frontend/src/lib/harnessThinking.test.ts` (9 ca), `frontend/src/store/harnessChatStore.retry.test.ts` (2 ca đầu: `medium` → `low` đúng tuyến đường đã lưu; giữ `high` khi model công bố; giữ nguyên khi model không công bố gì). **Xác minh sống qua giao diện**: chip đọc `DeepSeek Low`, phiên `c7cb1e8f` lưu `route.thinkingLevel = "low"`, lượt trả `assistant {"text": "2+2 = 4."}` + `finish {"status":"completed"}` |
+| T-2 | Cao (chat hỏng vĩnh viễn, không tự gỡ) | `backend/src/agentbox/api/server.py:75` có `except KeyError: return {'error': 'Not found'}, 404`, nên **mọi** `KeyError` — id phiên không tồn tại, khoá thiếu trong payload, bất cứ thứ gì — đều thành một chữ `Not found` trần. `frontend/src/lib/agentApi.ts` ném `Error('Not found')` **không mã**, `harnessChatStore` rơi vào `catch → status:'failed', error: String(error)`, và id chết vẫn nằm trong `localStorage` (`boxfox-harness-session:<chatId>`) nên **mọi lần gửi sau đều hỏng lại** — đúng ảnh `3066.png` | ĐÃ SỬA — lớp mới `ApiError(code, message, status)` + `missing_session(sid)` trả `SESSION_NOT_FOUND` kèm chính id và lý do (`session <id> is not known to this harness; it was deleted or the harness started with an empty store`); `except KeyError` nay ghi `logger.exception` và trả **500** `INTERNAL_ERROR` kèm `method`/`path`, không còn giả vờ 404; `known_session()` kiểm id **trước** `runtime.submit` ở cả ba tuyến `session`/`turn`/`stop`; `agentApi` giữ mã máy trong câu lỗi; `send()` gặp `SESSION_NOT_FOUND` thì xoá id hỏng và **mở phiên mới rồi gửi lại đúng một lần** | `backend/tests/unit/test_session_lifecycle.py` +2 ca (id lạ → 404 `SESSION_NOT_FOUND` ở cả ba tuyến; `KeyError` nội bộ → 500 `INTERNAL_ERROR` có tên khoá); `frontend/src/store/harnessChatStore.retry.test.ts` (2 ca: `SESSION_NOT_FOUND` mở phiên mới và gửi lại đúng một lần, `turnCalls == ['/sessions/dead-sid/turns','/sessions/fresh-sid/turns']`, `error` ở lại `null`; `UPSTREAM_HTTP_429` **không** tạo phiên nào và gửi đúng một lần). **Đo lại trên harness mới**: `GET/POST turn/POST stop` trên id `deadbeef…` đều trả 404 `{"error": "SESSION_NOT_FOUND: session deadbeef… is not known to this harness; …", "code": "SESSION_NOT_FOUND"}` (trước khi sửa: `{"error": "Not found"}`) |
+| R-1 | Cao (một lần 429 là mất cả lượt; còn tốn gấp đôi lượt gọi) | Chính sách cũ có **đúng một** lần thử lại, `asyncio.sleep(1.5)`, gated bởi `failures.is_transient()` — mà hàm này chỉ khớp `status >= 500`, nên **429 không bao giờ được thử lại**: một lần chạm hạn mức nhà cung cấp là kết thúc lượt ngay, không backoff, không jitter, không đọc `Retry-After`, không ngân sách chờ, không đếm lần thử nào hiện ra cho người dùng. Ngược lại, `RouterClient.complete()` có `except Exception:` gọi bản không-stream **vô điều kiện**, nên một lần 429 ở đường stream thành **hai** lượt gọi nhà cung cấp liền nhau. Siêu dữ liệu lỗi của router (`error.code`, `error.retryable`, `error.retryAfterMs`) bị bỏ hết khi câu lỗi bị làm phẳng thành `RuntimeError(f'Router HTTP {status}: {message}')` | ĐÃ SỬA — `failures.retry_advice()` là **một** điểm quyết định duy nhất: tối đa 3 lần thử lại, hạng 429 chờ `Retry-After` với sàn 2 s và trần 30 s, hạng 5xx/đứt stream đi 1 s → 4 s → 12 s ± 20 % jitter, ngân sách chờ mỗi lượt 60 s, cửa sổ còn lại tối thiểu 5 s; `is_transient()` nay chính là `retry_advice(...) is not None`. `runtime.router_refusal()` giữ `router_status`/`router_code`/`retryable`/`retry_after_ms` trên ngoại lệ; nhánh không-stream chỉ chạy khi **không** có phán quyết router dưới 500 (nên 429 không còn bị gọi đôi); vòng bước ghi `UPSTREAM_RETRY` (kèm `attempt`, `maxRetries`, `waitMs`, `reason`) và `UPSTREAM_RETRY_EXHAUSTED` (kèm `attempts`, `waitMs`); băng lỗi cuối lượt nay nêu `[after 3 retries in 7.0s]` | `backend/tests/unit/test_retry_policy.py` (**13 ca**): 429 tôn trọng `Retry-After` 9 s và sàn 2 s và trần 30 s; 5xx/stream theo hệ số; 4xx (`400`, `404`, `PermissionError`) không bao giờ thử lại; `TimeoutError`/`UPSTREAM_TIMEOUT` không thử lại; hết số lần / hết ngân sách / hết cửa sổ thì dừng; `is_transient` nay đúng với 429; và ba ca chạy **lượt thật** (hai 429 rồi thành công → 3 lượt gọi, thông báo `attempt == [1,2]`, `finish completed`; bỏ cuộc sau `DEFAULT_MAX_RETRIES` → 4 lượt gọi, `UPSTREAM_RETRY_EXHAUSTED` với `attempts == 3`; 400 hỏng ngay lượt đầu, không thông báo). Thiết kế: `docs/plan/retry-policy.md` |
+
+### 6.9 Vòng soát mã đợt 13 (8 phát hiện) và một lỗi sống mới gặp khi nhập khoá Google — ĐÃ SỬA (đợt này)
+
+Nguồn thứ nhất: sub-agent `review` đọc `git diff main...HEAD` của đợt 13 (`f8eade5`, 16 tệp,
++946/−62). Kết luận **Ship with mitigations**, điểm rủi ro **5/10**. Tám phát hiện, cả tám đã sửa.
+Nguồn thứ hai: lượt gửi thật đầu tiên trên `Google Gemini · Gemini 2.5 Flash` sau khi nhập khoá
+Google (đợt 14) — chat đỏ `UPSTREAM_HTTP_400 … Thinking level is not supported for this model.`
+
+| Mã | Mức | Nội dung | Trạng thái | Bằng chứng |
+|---|---|---|---|---|
+| R14-1 | Cao (bản sửa T-2 không có tác dụng) | `harnessChatStore.send()` khi gặp `SESSION_NOT_FOUND` chỉ ghi id mới vào `localStorage`, còn **mọi** nơi đọc lại ưu tiên `sessions[chatId].id` — nên vòng poll 1200 ms và lượt gửi kế tiếp vẫn nhắm id đã chết: khung chat ở lại `failed`, và mỗi lần gửi lại còn chạy thêm một lượt mồ côi ở nhà cung cấp. Đo sống trước khi sửa: xoá phiên `68f7ed66…` rồi gửi lại → `localStorage` đã đổi sang `2c4b34de…` và phiên mới **đã trả lời**, nhưng giao diện vẫn hiện băng đỏ `Agent request failed / session 68f7ed66… was deleted…` | ĐÃ SỬA — sau `id = await openSession()` ghi luôn vào store (`sessions[chatId] = { …current, id, error: null }`) trước `submitTurn`, nên poll và lượt sau dùng id mới | `frontend/src/store/harnessChatStore.retry.test.ts` ca phiên cũ nay khẳng định `sessions[CHAT].id === 'fresh-sid'`, `error === null`, `turnCalls == ['/sessions/dead-sid/turns','/sessions/fresh-sid/turns']`, và **không lời gọi nào sau lượt gửi lại trỏ vào id chết**. **Xác minh sống sau khi sửa** (xoá phiên và gửi trong cùng một nhịp): `DELETE …/18358f20` → `POST …/18358f20/turns` **404** → `POST /api/agent/sessions` → `POST …/e197d82a/turns`; khoá `boxfox-harness-session:session-mu9yhydm` = `e197d82a…`; 0 lời gọi về id chết sau khi tạo phiên mới; màn hình không còn băng đỏ (`r14_stale_recovery_after.png`, đối chiếu `r14_stale_before.png`) |
+| R14-2 | Trung bình (dọn dẹp không bao giờ chạy) | `refresh()` dọn chat chết theo **câu chữ** `errStr.includes('404') \|\| errStr.includes('not found')`, mà T-2 vừa đổi câu lỗi thành `SESSION_NOT_FOUND: … is not known to this harness …` — nhánh dọn thành mã chết | ĐÃ SỬA — nhánh dọn nay hỏi `isStaleSession(error)` (khớp mã) và vẫn giữ hai phép khớp cũ cho lỗi cũ; đồng thời xoá cả `storageKey(chatId)` lẫn `storageKey(id)` khi dọn | `harnessChatStore.retry.test.ts` hai ca mới: `SESSION_NOT_FOUND` dọn im lặng và xoá khoá `localStorage`; câu chữ cũ `'Not found'` vẫn dọn. **Sống**: sau khi xoá phiên, vòng poll tự dọn và lần gửi kế tiếp mở phiên mới ngay (`r14_stale_purge_after.png`) |
+| R14-3 | Trung bình (lọt đúng lỗi T-1 qua đường alias) | Tuyến alias không mang `thinkingLevels`, nên `resolveThinkingLevel(undefined, 'medium')` trả nguyên `medium` và mức đó đi thẳng tới một model chỉ công bố `max/high/low` — đúng thứ T-1 vừa chặn cho model trực tiếp | ĐÃ SỬA — `RouterTestChat.routerChatOptions()` gắn `thinkingLevels` cho mỗi alias bằng **giao** mức của mọi đích (`aliasThinkingLevels`), trả `undefined` khi có đích không công bố mức nào hoặc giao rỗng; `send()` chỉ gắn mức cho tuyến alias khi biết mức | `frontend/src/components/panels/routerChatOptions.test.ts` (3 ca: giao hai đích; một đích không công bố → trống; hai đích không mức chung → trống); `harnessChatStore.retry.test.ts` +2 ca (alias không biết mức → tuyến không có `thinkingLevel`; alias biết `low/medium/high` → gửi `medium`) |
+| R14-4 | Thấp (đổi 404 thành 500) | `GET /api/agent/skills/<lạ>/readiness` rơi vào `except KeyError` mới của T-2 nên trả **500 `INTERNAL_ERROR`** thay vì 404 như trước | ĐÃ SỬA — tuyến `readiness` kiểm `sid not in runtime.catalog.items` trước và ném `ApiError('SKILL_NOT_FOUND', …, 404)` | `backend/tests/unit/test_session_lifecycle.py` ca mới: tên kỹ năng lạ → 404 `SKILL_NOT_FOUND` kèm tên |
+| R14-5 | Thấp | `retryable: false` do router gửi kèm bị giữ lại nhưng **không** được dùng: một lỗi 425 mà chính router đã thử lại vẫn bị harness thử lại | ĐÃ SỬA — `_retry_reason()` đọc `exc.retryable`: `False` là phán quyết cuối, trừ 429 và họ mã hạn mức (`RATE_LIMIT`/`CAPACITY`/`UPSTREAM_HTTP_429`) vẫn thử lại được | `test_retry_policy.py::test_a_router_verdict_of_retryable_false_stops_the_retry` |
+| R14-6 | Thấp | `UPSTREAM_RETRY_EXHAUSTED` luôn nói "gave up after N retries" kể cả khi lý do là hết ngân sách chờ hoặc hết cửa sổ lượt — câu chữ sai ở đúng chỗ người dùng đọc để hiểu vì sao lượt chết | ĐÃ SỬA — `failures.stop_reason()` trả `permanent/attempts/budget/window`; thông báo chọn câu theo lý do (`the per-turn retry budget of 60s is spent` / `too little turn time left for another attempt`) và mang thêm trường `stopReason` | `test_retry_policy.py::test_stop_reason_names_why_the_loop_gave_up` (5 khẳng định) + ca bỏ cuộc khẳng định `stopReason == 'attempts'` |
+| R14-7 | Thấp | Hai lỗi nhỏ cùng gốc "một lượt gọi lại không miễn phí": (a) một 5xx vẫn đi qua nhánh không-stream nên thành **hai** lượt gọi nhà cung cấp; (b) bộ chọn lọc `thinkingLevels.length > 1` nên model chỉ công bố **một** mức bị coi như không có mức, trong khi `ChatPanel` đọc danh sách thô — chip đọc `Medium` mà tuyến gửi `high` | ĐÃ SỬA — (a) nhánh không-stream chỉ chạy khi router **không** đưa ra phán quyết nào (`verdict is not None → raise`); (b) cả hai chỗ lọc nay dùng `length > 0`, và `ChatPanel` tính `effectiveLevel` từ danh sách mức công bố rồi in đúng mức sẽ gửi | `test_retry_policy.py` (ca 4xx/429 khẳng định số lượt gọi) + `harnessChatStore.retry.test.ts` ca "model chỉ công bố `['high']` thì gửi `high`" |
+| R14-8 | Thấp–Trung bình (chất lượng kiểm) | Ba lỗ hổng của bộ kiểm: ca phiên cũ trả **mọi** GET lành nên không thể bắt R14-1; `test_spent_deadline_never_retries` chỉ khẳng định lại nhánh mặc định; cổng chặn gọi đôi của R14-7a không có ca nào | ĐÃ SỬA — tệp kiểm viết lại: một sổ `deadSessions` để id chết **thật sự** trả 404, khẳng định theo từng tuyến đường (`turnCalls`), thêm ca model một mức, ca alias, hai ca dọn phiên, và ca nhánh không-stream; `test_spent_deadline_never_retries` nay phân biệt `TimeoutError`/`UPSTREAM_TIMEOUT`/`ReadTimeout` (không thử lại) với `ServerDisconnectedError` (thử lại, `reason: 'stream'`) | `harnessChatStore.retry.test.ts` 10 ca; `test_retry_policy.py` 18 ca |
+| T-3 | Cao (mọi lượt trên họ Gemini 2.5 đều chết) | Danh mục của router quảng cáo `thinkingLevels: ['low','medium','high']` cho **cả** họ Gemini 2.5, Gemma và `gemini-3.5-transcribe` (`router/src/providers/gemini.mjs` đọc cờ `thinking: true` của `models.list`), nhưng API Google **từ chối** `generationConfig.thinkingConfig.thinkingLevel` cho các model đó: `400 INVALID_ARGUMENT: Thinking level is not supported for this model.` Lượt gửi thật đầu tiên trên `Google Gemini · Gemini 2.5 Flash` chết đúng như vậy (`UPSTREAM_HTTP_400`, chat đỏ), và T-1 khiến mức luôn được gửi kèm. Đo trực tiếp trên endpoint Google (2026-09-20, 12 model): nhận mức — `gemini-flash-lite-latest`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`, `gemini-3.8-flash`; từ chối — `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemma-4-31b-it`, `gemini-3.5-transcribe`, `antigravity-preview-09-2026`, `deep-research-preview-04-2026`. Đây là lỗi **của mã**, không phải của model (model yếu hay mạnh đều trả cùng 400) | ĐÃ SỬA (phần harness) — `failures.level_refusal()` nhận đúng lớp lỗi này (chỉ 4xx, và câu lỗi phải nói về mức); vòng bước trong `runtime` gặp nó thì **bỏ `thinkingLevel` khỏi route và gọi lại ngay**, phát thông báo `THINKING_LEVEL_REFUSED` (kèm `level`, `model`) và **không** tính vào số lần thử lại vì đây là sửa yêu cầu chứ không phải chờ nhà cung cấp. Danh mục phía router vẫn quảng cáo thừa mức cho họ 2.5 — việc của router, xem ghi chú dưới | `backend/tests/unit/test_retry_policy.py` +3 ca: lượt bị từ chối mức vẫn `completed` sau **2** lượt gọi, lượt thứ hai không kèm `thinkingLevel`, không có sự kiện `error`, đúng một thông báo `THINKING_LEVEL_REFUSED`; một 400 khác (JSON sai) vẫn chết ngay lượt đầu; `level_refusal` bỏ qua 429/5xx nhắc tới chữ "thinking" |
+
+Ghi chú kèm theo (chưa sửa trong đợt này, thuộc phần `router/`): `GEMINI_THINKING_LEVELS` được
+gắn cho mọi model có `thinking: true`, nên họ Gemini 2.5 vẫn hiện nút mức trong bộ chọn và mỗi
+lượt lại tốn thêm **một** lượt gọi bị từ chối trước khi harness bỏ mức. Hợp đồng model record
+(`router/CONTRACT.md` §Model record) cấm suy đoán theo tên model, nên cách sửa đúng là để adapter
+Gemini dịch mức thành `thinkingBudget` cho họ 2.5 hoặc chỉ công bố mức khi có bằng chứng provider —
+cần một vòng riêng cho router.
+
+#### 6.9.1 Đo lại T-3 trên giao diện thật, và một cái bẫy vận hành gặp phải khi đo
+
+Lần đo đầu trên cổng 3102 **vẫn đỏ** dù mã đã sửa: tiến trình harness đang chạy được dựng lúc
+**15:00:45**, còn ba tệp của bản sửa (`failures.py`, `runtime.py`, `server.py`) được ghi lúc **15:23:10**
+— tức là tiến trình cũ nạp mã đợt 13. Đây là bẫy vận hành, không phải lỗi mã: **phải dựng lại harness
+sau mỗi lần sửa backend**, nếu không thì mọi phép đo sống đều đo mã cũ.
+
+Sau khi dựng lại (`kill 828038` → `nohup .venv/bin/python scripts/run-harness.py`, log
+`/var/tmp/r10/harness_r14.log`, pid **858826**, cây làm việc sạch tại `d03dce7`), cùng một khung chat
+`gemini-2.5-flash` + mức `low` (phiên `c7cb1e8fe0244029bae315bd729335bd`) cho chuỗi sự kiện:
+
+| Lượt | Sự kiện | Kết quả |
+|---|---|---|
+| 15:45 (mã cũ) | `step {iteration:1}` → `error {code: UPSTREAM_HTTP_400, "… Thinking level is not supported for this model."}` | chat đỏ, **không** có thông báo bỏ mức — đây là ảnh \"trước\" |
+| 15:47 (mã mới) | `step {iteration:1}` → `notice {code: THINKING_LEVEL_REFUSED, level: \"low\", model: \"gemini-2.5-flash\"}` → `assistant_delta` → `usage` → `assistant \"2+2=4.\\n5+7=12.\"` → `finish {status: completed}` | **không** sự kiện `error`, `status: completed` |
+
+Bằng chứng ảnh `/code/.generated_artifacts/images/r14_thinking_refused_ui_after.png` chứa **cả hai**
+lượt trong một khung: lượt 15:45 là băng đỏ, lượt 15:47 là thông báo `UPSTREAM_HTTP_400: the provider
+does not accept the thinking level "low" for this model — retrying without it (…)` rồi dòng trả lời
+`gemini-2.5-flash  done · 4.3k | 14` — một cặp trước/sau trên đúng giao diện thật.
+
+Ghi nhận thêm (chấp nhận được, chưa cần sửa): việc bỏ mức là **theo từng lượt**, không ghi vào cấu hình
+phiên. Lượt thứ hai (15:48, hỏi `3+3`) lại phát `THINKING_LEVEL_REFUSED` và `route` của phiên vẫn ghi
+`thinkingLevel: \"low\"`. Như vậy mỗi lượt trên họ Gemini 2.5 vẫn tốn **một** lượt gọi bị từ chối —
+đúng chi phí đã ghi ở ghi chú trên, và cách chữa gốc vẫn là sửa danh mục phía `router/`. Chọn giữ
+hành vi này vì phương án còn lại (tự xoá mức đã chọn của người dùng khỏi cấu hình phiên) là **âm thầm
+đổi ý định của người dùng** chỉ vì một lỗi danh mục — khi router được sửa thì mức phải có tác dụng trở lại.
+
+### 6.10 Gán đúng điều khiển thinking theo model ở router — ĐÃ SỬA (đợt này)
+
+Nguồn: chủ sở hữu yêu cầu đo lại mức thinking cho họ flash rồi "tra tài liệu Google AI Studio để kiểm tra
+và gán vào theo model". Gốc là ghi chú cuối §6.9: adapter Gemini gắn **một** danh sách mức cho mọi model
+có cờ `thinking: true` của `models.list`.
+
+**Tài liệu (đọc ngày 2026-09-20)** — `ai.google.dev/gemini-api/docs/openai` (bảng tương thích OpenAI) và
+`ai.google.dev/gemini-api/docs/gemini-3`:
+
+- Gemini **3 trở lên** điều khiển suy luận bằng enum `thinkingLevel`; `reasoning_effort` ánh xạ thẳng vào đó.
+- Gemini **2.5 trở xuống** dùng `thinkingBudget` dạng số; tài liệu ghi `reasoning_effort` low → **1 024**,
+  medium → **8 192**, `none` tắt suy luận (trừ 2.5 Pro); trần ngân sách của họ 2.5 là **24 576**.
+- Hai trường **không được gửi cùng lúc**.
+
+**Đo trực tiếp** trên `generativelanguage.googleapis.com` bằng khoá Google thật (lượt rất nhẹ, 1–32 token ra):
+
+| Model | `thinkingLevel: low` | `thinkingLevel: minimal` | `thinkingBudget: 512` |
+|---|---|---|---|
+| `gemini-3.5-flash-lite` | 200, `medium`/`high` cho ~60 thoughts token | 200 | 200 (59 thoughts token) |
+| `gemini-flash-latest` | 200 | **400** "Thinking level MINIMAL is not supported for this model" | 200 (không báo thoughts) |
+| `gemini-flash-lite-latest` | 200, `reasoning_tokens: 61` | — | — |
+| `gemini-2.5-flash` | **400** "Thinking level is not supported for this model" | — | **200** (10 thoughts token) |
+| `gemma-4-31b-it` | **400** | — | **400** "Unknown name thinkingBudget" |
+
+**Sửa** (`router/src/providers/gemini.mjs`): thêm `geminiThinkingControl(id)` trả `effort` / `budget` /
+`none` theo họ model mà tài liệu phân định (`gemini-2.5|2.0|1.5` → `budget`, `gemma` → `none`, còn lại
+`effort`); record model theo đó (`thinkingType`, và `thinkingLevels` rỗng khi không có điều khiển nào).
+Trên đường gửi, `thinkingLevel` bị **viết lại thành `thinkingBudget`** cho họ `budget`
+(minimal 512 / low 1 024 / medium 8 192 / high–max 24 576) và **bỏ hẳn** cho họ `none`; họ `effort` giữ
+nguyên `thinkingLevel` như cũ. Bản đồ của thư viện vendor (`openai-to-gemini.mjs`) luôn ghi
+`thinkingLevel` khi có mức, nên chỗ sửa nằm **sau** nó.
+
+**Đo lại sống**: dựng lại router (pid 867258) rồi `POST …/models/refresh` cho kết nối `2b922915…`:
+
+- `gemini-2.5-flash` → `thinkingType: budget` + mức `low/medium/high`; `GET /v1/chat/completions` với
+  `reasoning_effort: low` nay trả **200** kèm `reasoning_content` (trước là 400 chết lượt).
+- `gemma-4-31b-it` → `thinkingType: none`, `thinkingLevels: []`; request gửi đi không còn trường thinking nào.
+
+Ghi chú kèm theo, **không sửa vì thuộc model**: `gemma-4-31b-it` trả **500 "Internal error encountered"**
+trên **đường SSE** (`streamGenerateContent?alt=sse`) kể cả khi gọi thẳng Google với thân request trần,
+trong khi `generateContent` cùng thân trả **200** — lỗi phía model/nhà cung cấp, không phải do BoxFox.
+Chủ sở hữu đã bỏ Gemma khỏi phạm vi, nên chỉ ghi lại.
+
+Bộ kiểm router: **91 pass / 0 fail** (89 cũ + 2 ca mới: `thinking-mapping.test.mjs` — mức thành
+`thinkingBudget` theo tài liệu và Gemma không gửi trường nào; `model-metadata.test.mjs` — record chọn
+đúng điều khiển theo họ model).
+
+Ghi chú thêm của cùng cái bẫy vận hành (do tác nhân kiểm thử phát hiện, 2026-09-20 16:05): lần dựng lại
+harness lúc 15:46 **thiếu bốn biến** `BOXFOX_ANTHROPIC_BASE_URL/AUTH_TOKEN/DEFAULT_SONNET_MODEL/DEFAULT_HAIKU_MODEL`,
+nên `GET /api/agent/executors/claude-code` đổi từ `{"auth":"router","settingsFile":true}` sang
+`{"auth":"account","settingsFile":false,"authenticated":true}` — tức bộ thực thi `/claude-code` **im lặng**
+chuyển từ đường router sang tài khoản, dù mã không đổi. Đã dựng lại kèm đủ bốn biến (pid 870296) và
+endpoint trả lại đúng giá trị cũ. Bài học: dựng lại harness phải kèm môi trường cầu nối, và phải kiểm
+`/api/agent/executors/claude-code` ngay sau khi dựng.
+
+### 6.11 Khoá DeepSeek (API gốc) — lắp đặt, và bộ điều khiển suy luận riêng của nhà cung cấp — ĐÃ SỬA (đợt này)
+
+**Lắp đặt (2026-09-20 17:45–17:52):** chủ sở hữu đưa khoá API gốc của DeepSeek. Kết nối mới trong router:
+`providerId deepseek`, id `7ee21256-8675-4ee3-a802-fcedbed8b7ef`, endpoint `https://api.deepseek.com/v1`
+(giá trị mặc định của catalog cho provider `deepseek`), khoá nằm trong kho credential đã mã hoá.
+Số dư đọc từ `GET /user/balance`: **2,00 USD**. `GET /models` trả **đúng hai** model: `deepseek-flash`
+(= DeepSeek-V4.1-Flash) và `deepseek-v4-pro` (= DeepSeek-V4-Pro-0813). Discovery `ready`, cả hai model
+`enabled`, `source: live`.
+
+**Lỗi T-5 — router quảng cáo bộ mức của OpenAI cho một nhà cung cấp có bộ mức riêng.** Adapter
+OpenAI-compatible dùng chung công bố `minimal|low|medium|high` cho **mọi** model trên endpoint, vì payload
+`/models` kiểu OpenAI không mang metadata suy luận. DeepSeek tài liệu hoá bộ khác, nên danh sách kế thừa
+đó: (a) **giấu mức `max`** mà DeepSeek thật sự nhận; (b) quảng cáo `minimal`/`medium` như mức bản địa
+trong khi chúng chỉ là bí danh tương thích; (c) vì adapter chung **bỏ hẳn** trường khi mức là
+`none`/`auto`, lượt xin `none` vẫn chạy ở chế độ suy luận — mà suy luận lại là **mặc định** của DeepSeek.
+
+Tài liệu (`api-docs.deepseek.com/api/create-chat-completion`, đọc 2026-09-20):
+
+- `reasoning_effort`: "Possible values: [none, low, high, max]. Controls the thinking mode toggle and the
+  thinking effort. none disables thinking mode; low/high/max enable thinking mode. **The default effort is
+  high.** For compatibility with existing software, **minimal is accepted and mapped to low**, and
+  **medium/xhigh are accepted and mapped to high**."
+- `thinking`: `{type: enabled|disabled}`, "Default value: **enabled**".
+- `max_tokens`: 1…384K; "When not set, the default is 8K in non-thinking mode, **64K in thinking mode**
+  (128K with `reasoning_effort` set to `max`)".
+- Tool calls: "**required and named tool choices are not supported in thinking mode; the API returns a
+  400 error. Disable thinking mode first to use them.**"
+- Models & Pricing: `deepseek-flash` — context **1M**, trần ra **384K**, **Vision ✓**;
+  `deepseek-v4-pro` — **Vision: Not supported**. Cả hai: Json Output ✓, Tool Calls ✓.
+
+Đo trực tiếp trên khoá thật (lượt rất nhẹ, `max_tokens` 40–60, `Reply with exactly: OK`):
+
+| Mức gửi đi | `deepseek-flash` | `deepseek-v4-pro` |
+|---|---|---|
+| `none` | 200, **không** có `reasoning_content` | 200, không có `reasoning_content` |
+| `minimal` / `low` / `medium` / `high` / `max` / `xhigh` | 200, có `reasoning_content` | 200, có `reasoning_content` |
+| `bogus` (giá trị lạ) | **422** `Failed to deserialize … reasoning_effort: unknown variant` | **422** cùng thông báo |
+| `thinking: {type: disabled}` + `reasoning_effort: high` | 200, **không** suy luận (công tắc thắng) | — |
+| `tool_choice: required` / tên hàm, khi đang suy luận | **400** `Thinking mode does not support this tool_choice` | — |
+| cùng request đó với `reasoning_effort: none` | 200, trả `tool_calls` bình thường | — |
+| ảnh PNG 16×16 xanh (đường gốc) | 200, đáp **"Blue"** (đúng) | 200, đáp **"White"** (sai — không đọc ảnh) |
+| luồng SSE | 33 chunk, `reasoning_content` trong delta, **usage ở chunk cuối** (`reasoning_tokens: 30`) | — |
+
+**Sửa** (`router/src/providers/deepseek.mjs`, đăng ký riêng trong `providers/index.mjs`):
+
+- `DEEPSEEK_THINKING_LEVELS = ['none','low','high','max']`, `defaultThinking: 'high'`,
+  `DEEPSEEK_LEVEL_ALIASES = {minimal: low, medium: high, xhigh: high}` — công bố đúng bộ tài liệu, không
+  bịa mức và không giấu `max`.
+- `deepseekEffort(level)`: `none` → giữ `none` (DeepSeek cần trường này để **tắt** suy luận, khác adapter
+  chung vốn bỏ đi); bí danh → `low`/`high`; `auto`/thiếu → bỏ trường (mặc định nhà cung cấp);
+  giá trị lạ → bỏ trường, **không bao giờ** chuyển tiếp (nhà cung cấp trả 422).
+- `deepseekRestrictsTools(body)`: `tool_choice` bị hạn chế (`required`/`any`/tên hàm) → gửi
+  `reasoning_effort: none`, đúng cách tài liệu chỉ để request được phục vụ.
+- `deepseekCapabilities`: `vision: 'reported'` cho dòng flash, `'unsupported'` cho dòng pro (tài liệu +
+  phép dò ảnh ở trên); `tools: 'reported'`.
+- `thinkingMetadata` để hàng đã lưu tự lành khi kết nối được chuẩn hoá.
+- `CONTRACT.md` ghi rõ ngoại lệ DeepSeek của luật "no thinking field for none".
+
+**Bộ kiểm router: 98 pass / 0 fail** (91 cũ + 7 ca mới trong `router/tests/deepseek.test.mjs`: bộ mức và
+capabilities khi discover, adapter OpenAI dùng chung **không** bị đổi, `reasoning_effort` trên đường gửi,
+`none` thật sự tắt suy luận, bí danh thu gọn + giá trị lạ không được chuyển tiếp, `tool_choice` hạn chế,
+và hàng lưu sẵn tự lành).
+
+**Đo lại sống sau khi dựng lại router (pid 913296, log `/var/tmp/r15/router_r15.log`):**
+
+- Nút `Test` của giao diện cho cả hai model: `status: passed`.
+- Quét mức qua `/api/router/chat` (đúng đường harness dùng) cho **cả hai** model: `none` → 0 ký tự suy
+  luận, `low`/`high`/`max` → có suy luận, và usage trả `reasoning_tokens` (10–19). Mức thiếu → mặc định
+  nhà cung cấp (suy luận bật, `high`). Mức `medium` (bí danh) → 200 kèm suy luận.
+- `GET /v1/models` (khoá box) liệt kê `7ee21256-…/deepseek-flash` và `…/deepseek-v4-pro`;
+  `POST /v1/chat/completions` với `low`, `none`, `max` đều 200, `none` không kèm `reasoning_content`.
+- Ảnh qua router: `deepseek-flash` → **"Red"** (đúng), `deepseek-v4-pro` → "Brown" (sai).
+- Giao diện: bộ chọn model (`Single Models`) hiện `DeepSeek · deepseek-flash` và `DeepSeek · deepseek-v4-pro`.
+
+**Chủ ý KHÔNG công bố `contextWindow: 1000000`** dù tài liệu ghi context 1M: trần thân request của router
+là **1 MiB** (`server.mjs`, mã `INVALID_REQUEST`/413) còn ngưỡng nén của harness là
+`(contextWindow − reserve) × 0,7`; với cửa sổ 1M, ngưỡng đó (≈ 2,8 MB văn bản) **vượt** trần 1 MiB và lượt
+nặng sẽ chết bằng `UPSTREAM_HTTP_413` — đúng lớp lỗi F-1 đã sửa. Bỏ trống `contextWindow` giữ nguyên hành
+vi cũ: bảng tên trong `runtime.resolve_context_window` cho `deepseek` **64 000** (ngưỡng nén ≈ 43k token
+≈ 172 KB, an toàn dưới trần).
+
+**Bẫy vận hành gặp trong đợt này (không phải lỗi mã, ghi để lần sau khỏi mất thời gian):** `POST
+/api/agent/sessions` của harness nhận **các trường route ở cấp cao nhất** (`connectionId`, `modelId`,
+`thinkingLevel`). Gửi lồng `{"route": {…}}` thì khoá lạ bị **bỏ qua im lặng**, phiên lưu route rỗng, và
+lượt đầu chết với `UPSTREAM_HTTP_503: … No enabled, authorized model is available for this route.`
+(hiện rõ trong nhật ký hệ thống là `"model": null, "connectionId": null`). Phiên mẫu đúng:
+`5803c1a842454db2a26ad9482a3c0765`.
+
+**Kiểm chứng qua harness (phiên `5803c1a8…`)** — mức thinking đi tới nhà cung cấp thật:
+
+| Lượt | Mức | Kết quả |
+|---|---|---|
+| "Compute 37*89" | `high` | `completed`, đáp `3293`, usage `reasoning_tokens: 8` |
+| "Compute 41*73" | `none` | `completed`, đáp `2993`, **không** có token suy luận |
+| "Reply with exactly: OK" | `none` | `completed`, `OK` |
+| "Reply with exactly: OK" | `high` | `completed`, `OK`, `reasoning_tokens: 0` (model tự chọn không suy luận cho câu hỏi tầm thường) |
+
+Route lưu trong config phiên: `{"connectionId": "7ee21256-…", "modelId": "deepseek-flash",
+"thinkingLevel": "high"}`, `contextWindow` 64000.
+
+### 6.12 Cơ chế "nhập tay" của DeepSeek chết ở cả hai đầu — ĐÃ SỬA (`87bc2d6`)
+
+**Yêu cầu của chủ sở hữu:** DeepSeek phải có **hai cơ chế** như mọi model khác — (1) ping/dò tự công bố
+model kèm bộ mức suy luận, (2) người dùng **tự nhập** bộ mức đó bằng tay — và **`max` phải được thêm cho
+riêng DeepSeek** (vòng 15 chỉ sửa được cơ chế 1, xem §6.11).
+
+Khi đo lại cơ chế 2, **hai lỗi độc lập** lộ ra; cả hai đều làm mức `max` không thể tới được nhà cung cấp.
+
+**Lỗi A — router tự bịa danh sách chung cho model nhập tay.** Nhánh `customModel` của `service.patch()`
+dùng hằng số `['auto','low','medium','high']` cho **mọi** model nhập tay có `reasoning`, nên model DeepSeek
+nhập tay lại thiếu `none` và `max`, đồng thời công bố `medium` như một mức gốc (DeepSeek không có `medium`
+— đó chỉ là bí danh của `high`). Hệ quả trùng với T-5: hàng nhập tay và hàng dò được nói hai chuyện khác
+nhau về cùng một nhà cung cấp.
+
+**Lỗi B — biểu mẫu "Custom Model" của giao diện chưa từng tới router.** `handleAddCustomModel` trong
+`frontend/src/components/settings/ModelManagerModal.tsx` gửi **một bản sao của toàn bộ mảng `models`** cộng
+id mới trong `enabledModelIds`. Router trả thẳng:
+`INVALID_REQUEST: Select only models discovered for this connection.` (đo sống bằng
+`PATCH /api/router/connections/7ee21256-…` với thân `{"models":[…],"enabledModelIds":[…]}`), và `models`
+cũng không phải trường mà PATCH của kết nối nhận. Nghĩa là **cơ chế nhập tay không hoạt động ở bất kỳ nhà
+cung cấp nào**, không riêng DeepSeek — lỗi này có từ trước vòng 15 và bị §6.11 che khuất.
+
+**Sửa**
+
+- `router/src/providers/deepseek.mjs`: thêm hook `manualThinkingLevels()` trả
+  `[...DEEPSEEK_THINKING_LEVELS]` = `none · low · high · max` — bộ mà adapter của nhà cung cấp tự công bố là
+  nguồn duy nhất của luật, nên **hai cơ chế tự khớp nhau**.
+- `router/src/service.mjs`: thêm hàm mức mô-đun `manualThinkingLevels(provider)`; nhánh `customModel` gọi
+  nó thay cho hằng số. Adapter nào không có hook (mọi nhà cung cấp khác) vẫn nhận danh sách mặc định
+  `['auto','low','medium','high']` — không đổi hành vi cũ.
+- `frontend/src/components/settings/ModelManagerModal.tsx`: biểu mẫu gửi **khai báo** `customModel`
+  (`id`, `name`, `capabilities`) thay vì bản sao danh sách. Không đổi một dòng JSX nào (luật "giao diện
+  không đổi" của chủ sở hữu vẫn giữ); nhãn nút vẫn là "Add & Enable".
+
+**Đo lại sống trên router đã dựng lại (pid 940356, log `/var/tmp/r16/router_r16.log`)**
+
+| Phép đo | Kết quả |
+|---|---|
+| Hàng nhập tay **cũ** (`r15-manual-probe`, tạo trước khi sửa, đang giữ `auto/low/medium/high`) sau khi dựng lại | `['none','low','high','max']`, `thinkingType: effort` — **tự lành** |
+| Hàng nhập tay **mới** trên kết nối DeepSeek | `source: custom`, `thinkingLevels: ['none','low','high','max']`, **có `max`**, không có `medium` |
+| Hàng nhập tay trên kết nối `custom` (TokenHarbor) | `['auto','low','medium','high']` — giữ nguyên luật chung, **không** có `max` |
+
+**Ca kiểm thử thêm:** `router/tests/deepseek.test.mjs` +2 ("model DeepSeek nhập tay công bố đúng bộ tài
+liệu, có `max`", "luật nhập tay vẫn chung cho mọi nhà cung cấp khác, không có `max`"),
+`frontend/src/components/settings/ModelManagerModal.test.tsx` +1 (khẳng định PATCH mang `customModel` và
+**không** mang `models`/`enabledModelIds` — đã chứng minh **đỏ** trên mã trước khi sửa rồi **xanh** sau khi
+sửa). **Bộ router: 100 pass / 0 fail.** `npx tsc -b --noEmit` mã 0; eslint không thêm phát hiện mới.
+
+### 6.13 Hai lỗi trong đường "nhập tay" lộ ra khi thi công kế hoạch vòng 17 — ĐÃ SỬA (`574a5aa`)
+
+Vòng 17 dựng luồng endpoint bên thứ ba (kế hoạch đã duyệt: `/code/.plans/v1-api-provider-area.md`). Khi đo lại
+trên router thật, hai lỗi cũ lộ ra — cả hai đều nằm trên đường mà chủ sở hữu yêu cầu, và cả hai đều bị luồng dò
+tự động che khuất cho tới nay.
+
+**Lỗi C — model nhập tay trên kết nối dò hỏng thì không bao giờ chạy được.** `validTarget()`
+(`router/src/service.mjs`) đòi `discoveryState === 'ready'`. Với endpoint không có `/models` (hoặc bị từ chối
+key), trạng thái dò là `failed`, nên dòng model người dùng gõ tay **không phải đích hợp lệ**: nó bị lọc khỏi
+`GET /v1/models` và lượt gọi trả `No enabled, authorized model is available for this route.` — đúng cái ca mà
+tính năng này sinh ra để phục vụ (ghi chú bảng 14329).
+
+**Lỗi D — một lần dò THÀNH CÔNG xoá im lặng các dòng gõ tay.** Nhánh thành công của `#discover` thay cả danh
+mục bằng kết quả nhà cung cấp trả về; dòng `source: 'custom'` biến mất (đo sống trước khi sửa: `r16-manual-generic`
+biến mất sau một lần `POST /:id/models/refresh` trả 200). Kế hoạch chỉ yêu cầu sống sót qua lần dò **thất bại**,
+nhưng cùng một cơ chế: người dùng gõ tay một model rồi bấm `Refresh models` là mất nó.
+
+**Sửa:** `validTarget()` nhận dòng `source === 'custom'` khi kết nối đang bật, `authState === 'ready'` và
+`discoveryState === 'failed'` (mọi luật khác giữ nguyên, kể cả kiểm tra project của antigravity và
+`health !== 'unavailable'`); `#discover` giữ lại các dòng gõ tay khi dò thành công. Bốn ca kiểm thử mới trong
+`router/tests/custom-provider.test.mjs`. Bộ router: **152 pass / 0 fail**.
+
+### 6.14 Ba lỗi của đường "nhập tay" lộ ra khi KIỂM CHỨNG vòng 17 — ĐÃ SỬA (`91647e7`)
+
+Vòng 17 thi công xong thì tác nhân kiểm thử chạy bốn làn sống trên `f63f82b` (router `:3101`, harness `:3102`,
+Vite `:3100`, và một stub OpenAI-compatible trên `127.0.0.1:3199` có chế độ lỗi + bộ ghi request). Ba lỗi dưới
+đây nằm **cùng một đường** mà chủ sở hữu yêu cầu (nhập id bằng tay rồi Test), nên cả ba được sửa trong một commit
+với năm ca hồi quy **đỏ-trước-xanh-sau** (3 ca router, 2 ca giao diện).
+
+**F1 (vừa) — khai lại một id đã có chỉ sửa được `name`.** Nhánh `customModel` của `service.patch` chỉ ghi
+`name` (và bật dòng lên) khi dòng đã tồn tại; `capabilities`/`thinkingLevels` chỉ được ghi ở nhánh **tạo mới**.
+Kế hoạch (dòng 240) nói rõ gõ lại một id là cách cập nhật `name` **và** `capabilities`, nên hai ô
+Vision/Reasoning trong form là đường **một chiều**: chọn sai lần đầu là không sửa được nữa.
+*Đo trước khi sửa:* PATCH cùng id với cờ đảo ngược → `vision supported / reasoning unknown` giữ nguyên.
+*Sau khi sửa:* cờ đảo đúng, `thinkingType: effort`, `thinkingLevels ['auto','low','medium','high']`, **một** dòng;
+một id mới cùng cờ cho **cùng** bộ trường (cập nhật = tạo mới); PATCH không mang `capabilities` vẫn chỉ đổi tên;
+`streaming`/`tools` — hai trường form không có — giữ nguyên bằng chứng.
+
+**F2 (cao) — một lần `Refresh models` hỏng làm id gõ tay rơi khỏi định tuyến.** Catch của `#discover` giữ lại
+danh sách cũ và đặt `discoveryState: 'degraded'`; `validTarget()` chỉ nhận `failed` (bản sửa ở §6.13), nên
+`degraded` — hình dạng khác của **cùng một lần dò hỏng** — làm dòng gõ tay thành đích không hợp lệ.
+*Đo trước khi sửa:* dò 404 → `failed`, lượt gọi `POST /v1/chat/completions` = **200 `BOXFOX_OK`**; thêm **một**
+lần refresh hỏng → `degraded`, cùng lượt gọi = **503 `NO_ROUTE`**, không có dòng usage nào.
+*Sau khi sửa:* `degraded` được nhận; lượt gọi lại **200 `BOXFOX_OK`** (40/5 token, ghi ledger), `GET /v1/models`
+**63** mục có dòng đó. Mọi luật còn lại giữ nguyên (connection bật, `authState ready`, project Antigravity,
+`health !== 'unavailable'`).
+
+**F3 (vừa) — Test đạt làm mất khối "Models could not be listed".** `testInference` thành công xoá `error`, mà
+khối lỗi dò lại được cổng theo `error`, nên sau một lần Test đạt người dùng mất cả lý do lẫn ba lối thoát
+(`Retry` / `Add model by hand` / `Edit endpoint & key`) dù đường dò danh sách vẫn hỏng.
+*Đo trước khi sửa:* `{discoveryState: 'failed', error: null}` → pill `models failed` nhưng **không** có khối.
+*Sau khi sửa:* giao diện cổng theo `discoveryState === 'failed' || error` (kèm một câu thay thế khi chưa có lời
+nhà cung cấp), và `testInference` chỉ xoá `error` khi `discoveryState === 'ready'` — phép thử đạt là bằng chứng
+cho **một model**, không phải cho đường dò danh sách. Khối hiện đủ ở **cả hai** dạng, `Last attempt` giữ nguyên.
+
+**Ca kiểm thử thêm:** `router/tests/custom-provider.test.mjs` +3 và
+`frontend/src/components/settings/ProviderConnectionCard.test.tsx` +2. Lần đo đỏ trước khi sửa:
+`tests 3 / pass 0 / fail 3` (router) và `2 failed | 8 passed` (tệp giao diện). **Bộ router: 155 pass / 0 fail**;
+frontend **736 pass / 4 fail** (đúng bộ đỏ có sẵn); `tsc -b --noEmit` mã 0. `CONTRACT.md` thêm một câu ghi luật
+mới (khai lại id ghi cả hai cờ; dòng gõ tay định tuyến được khi dò `failed`/`degraded`; probe đạt không xoá lỗi dò).
+
+### 6.15 Vòng soát mã vòng 17 (7 phát hiện) — ĐÃ SỬA (`2a0075c`)
+
+Một tác nhân soát mã độc lập đọc trọn `bff9f3d..91647e7` (chỉ đọc; bộ router 155/155 và
+`src/components/settings` 38/38 đều xanh). Sáu phát hiện là lỗi, một là câu hỏi sản phẩm; năm lỗi
+đã sửa trong `2a0075c`, lỗi còn lại (nhãn `supported`) sửa cùng lượt, và câu hỏi đã có quyết định.
+
+**P1 (vừa) — token ghi cache bị tính tiền hai lần.** `usage.mjs` chuẩn hoá `input` thành **tổng** đầu vào:
+`prompt_tokens = input-only + cache-hit + cache-write` (đúng cho payload Anthropic và cho hàng đã lưu trong store),
+nhưng `costFromUsage` tính `miss = input - hit` — trong đó đã chứa phần ghi cache — rồi cộng thêm
+`cacheWrite * (cacheWriteInput ?? input)` lần nữa. Đây là chỗ **duy nhất** trong bộ thay đổi ghi ra một con số tiền sai.
+*Đo trên mô-đun thật:* payload `{input_tokens:189, cache_read:11776, cache_creation:900, output:25}`, giá
+`{input:0.15, cachedInput:0.003, cacheWriteInput:1.5, output:0.6}` → router **0,01055** so với số thật **0,00785**
+(gấp 1,34 lần; nếu thiếu giá cache-write thì 0,009875 so với 0,007175).
+*Sau khi sửa:* `write = min(cacheWrite, max(0, input - hit))`, `miss = max(0, input - hit - write)`; hàng kiểu
+Anthropic qua `normalizeUsage()` cho **12865 / 11776 / 900 / 25** → **0,00785**; hàng DeepSeek sống (không có ghi cache)
+không đổi. Đính chính kèm theo: câu công thức trong kế hoạch đã được sửa (có ghi chú ngày), và ca kiểm thử
+`costFromUsage reads the router normalized usage names…` được viết lại để dựng hàng từ `normalizeUsage()` thật —
+ca này **đỏ** trên mã trước khi sửa (`not ok 107`, `pass 154 / fail 1`).
+
+**P2 (thấp–vừa) — một từ vựng thứ năm không ai đọc.** Dòng gõ tay được ghi `vision: 'supported'`, nhưng từ vựng
+duy nhất trong mã là `unknown | reported | verified | unsupported` (`frontend/src/types/provider.ts`), và huy hiệu
+`Vision Supported` trong trình quản lý model chỉ hiện với `reported | verified`. Hệ quả: ô Vision người dùng **tự
+tích** không hiện bằng chứng ở đâu cả (Reasoning sống sót nhờ `thinkingLevels` không rỗng).
+*Sau khi sửa:* ghi `reported` ở cả bốn chỗ; `CONTRACT.md` ghi rõ bốn từ và nghĩa "đã khai, chưa xác minh".
+Hai ca router cập nhật theo.
+
+**P3 (thấp–vừa) — khối "Models could not be listed" hiện cho lỗi không phải lỗi dò danh sách.** Cổng cũ là
+`discoveryState === 'failed' || error`, mà `error` còn được đặt bởi đường **làm mới credential** và bởi một lần
+Test trả `AUTH` trên connection `ready`. Hai trường hợp đó danh sách model **đang có**, nhưng thẻ vẫn nói "không
+liệt kê được model" kèm `Last attempt:` của lần dò và ba lối thoát của đường dò.
+*Sau khi sửa:* khối chỉ hiện khi `discoveryState` là `failed` hoặc `degraded`; lỗi khác trên connection `ready`
+hiện thành **một dòng riêng** (không tiêu đề, không `Last attempt`). Ca giao diện mới
+"does not claim a failed model list when the error is not a listing failure" **đỏ** trên mã trước khi sửa.
+
+**P4 (thấp) — cảnh báo ngày lễ chưa tới người đọc.** Kế hoạch yêu cầu cửa sổ cao điểm DeepSeek phải ghi rõ trong
+**tooltip và tài liệu**; cảnh báo mới chỉ nằm ở chú thích mã.
+*Sau khi sửa:* `PEAK_HOLIDAY_CAVEAT` nằm trong cả hai câu tooltip `documented` và trong đoạn "Model price" của
+`CONTRACT.md`; ca giao diện về nguồn giá cập nhật theo (đỏ nếu thiếu).
+
+**P5 (thấp) — `costMode: 'included'` vẫn ghi được cost do nhà cung cấp tự báo.** Miễn trừ chỉ nằm trong
+`priceFor`, nên tầng `reported` bỏ qua `costMode`; một gateway thuê bao trả `cost` trong usage sẽ vẫn được ghi.
+**Quyết định (chọn hướng b — ghi và hiển thị):** con số đó là số **của nhà cung cấp**, không phải số ta bịa, nên
+nó ở lại hàng với `costBasis: 'reported'`; miễn trừ `included` áp cho **phép ước lượng của ta** mà thôi.
+`CONTRACT.md` nói rõ điều này, và một ca mới trong `router/tests/cost.test.mjs` ghim **cả hai** nửa: connection
+`included` + provider báo `cost` → `0,0069` / `reported` / `estimated false`; cùng connection không báo gì → `null`.
+
+**P6 (thấp) — bộ lọc Free đọc hình dạng giá cũ.** `(m as any).pricing?.prompt === '0'` là hình dạng payload thô
+trước vòng 17; dòng model nay mang `pricing` đã chuẩn hoá (`input`/`cachedInput`/`output`), nên nhánh đó chết và
+tab Free bỏ sót đúng những model giá 0.
+*Sau khi sửa:* một hàm `isFreeModel` dùng chung cho tab Free và nút `Enable all free`, bằng đúng luật của router
+(`openrouter.mjs`: id chứa `:free`, hoặc `pricing.input === 0`). Ca giao diện mới ghim cả hai chiều (model giá 0
+hiện, model trả tiền không hiện).
+
+**P7 (thấp) — lần Test hỏng chỉ còn được báo bằng màu.** Hàng model gọn in `{latencyMs} ms` và tô màu theo
+`health`, còn lý do chỉ hiện khi probe vừa chạy trong phiên; sau khi tải lại, một model hỏng chỉ khác ở màu chữ.
+*Sau khi sửa:* `title` của ô đó mang trạng thái + `health` + mã HTTP + lý do
+(`Failed · unavailable · HTTP 403 · 12 ms · Provider rejected the probe.`).
+
+`CONTRACT.md` giữ nguyên lời hứa "cạnh `input` là tổng đầu vào" bằng cách nói thẳng ra, thay vì để người đọc tự
+suy từ công thức. **Sau `2a0075c`:** router **156 pass / 0 fail**; frontend **738 pass / 4 fail** (đúng bộ đỏ có
+sẵn: 3 ca `Sidebar.test.tsx` + 1 ca `workspace/index.test.ts`); `tsc -b --noEmit` mã 0.

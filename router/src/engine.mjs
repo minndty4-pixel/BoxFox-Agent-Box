@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { RouterError, assert, safeError } from './errors.mjs';
 import { normalizeUsage, reportedCost } from './usage.mjs';
+import { costFromUsage } from './pricing.mjs';
 
 export class RouterEngine {
   constructor({ service, deadlineMs = 90000 }) { this.service = service; this.store = service.store; this.rotation = new Map(); this.cooldowns = new Map(); this.rateLimitStrikes = new Map(); this.deadlineMs = deadlineMs; }
@@ -63,7 +64,7 @@ export class RouterEngine {
     const controller = new AbortController();
     const deadline = AbortSignal.timeout(this.deadlineMs);
     const combined = AbortSignal.any([controller.signal, deadline, ...(signal ? [signal] : [])]);
-    const record = { requestId, connectionId: null, modelId: null, aliasId: selection.alias?.id || null, clientKeyId: key?.id || null, status: 'failed', latencyMs: 0, inputTokens: null, cachedTokens: null, cacheCreationTokens: null, reasoningTokens: null, outputTokens: null, totalTokens: null, cost: null, error: null };
+    const record = { requestId, connectionId: null, modelId: null, aliasId: selection.alias?.id || null, clientKeyId: key?.id || null, status: 'failed', latencyMs: 0, inputTokens: null, cachedTokens: null, cacheCreationTokens: null, reasoningTokens: null, outputTokens: null, totalTokens: null, cost: null, costBasis: null, estimated: false, error: null };
     let lastError; let emitted = false; let succeeded = false; let outputBytes = 0; const reactiveRefresh = new Set();
     try {
       for (let targetIndex = 0; targetIndex < selection.targets.length; targetIndex++) {
@@ -76,7 +77,7 @@ export class RouterEngine {
         const model = connection.models.find(m => m.id === target.modelId);
         if (body.tools?.length && model.capabilities.tools === 'unsupported') { lastError = new RouterError('CAPABILITY', 'Selected model does not support tools.'); continue; }
         record.connectionId = connection.id; record.modelId = model.id;
-        record.inputTokens = null; record.cachedTokens = null; record.cacheCreationTokens = null; record.reasoningTokens = null; record.outputTokens = null; record.totalTokens = null; record.cost = null;
+        record.inputTokens = null; record.cachedTokens = null; record.cacheCreationTokens = null; record.reasoningTokens = null; record.outputTokens = null; record.totalTokens = null; record.cost = null; record.costBasis = null; record.estimated = false;
         this.service.active.set(requestId, { connectionId: connection.id, controller });
         try {
           const credentials = await this.service.credentials(connection.id, combined);
@@ -109,7 +110,19 @@ export class RouterEngine {
               record.reasoningTokens = usage.reasoning_tokens;
               record.outputTokens = usage.completion_tokens;
               record.totalTokens = usage.total_tokens;
-              record.cost = reportedCost(usage);
+              // Ba tầng chi phí: số nhà cung cấp tự báo luôn thắng và được ghi
+              // nguyên văn (`reported`); nếu không có, giá đã chốt trên dòng model
+              // (tay / ping / documented) mới dùng để ƯỚC TÍNH, và bản ghi mang
+              // theo nguồn (`costBasis`) + cờ `estimated`. Không có giá, hoặc
+              // usage không có token nào, thì chi phí ở lại `null` — router không
+              // bao giờ bịa ra một con số. Khung usage gửi cho client KHÔNG mang
+              // số ước tính.
+              const reported = reportedCost(usage);
+              const price = reported === null ? this.service.priceFor(model, connection, new Date()) : null;
+              const estimate = price ? costFromUsage({ usage, price }) : null;
+              if (reported !== null) { record.cost = reported; record.costBasis = 'reported'; record.estimated = false; }
+              else if (estimate) { record.cost = estimate.cost; record.costBasis = price.source; record.estimated = true; }
+              else { record.cost = null; record.costBasis = null; record.estimated = false; }
               pendingUsage = { ...event, usage };
               if (started) { yield event; pendingUsage = null; }
             }

@@ -93,6 +93,32 @@ test('Gemini maps inputTokenLimit and the thinking flag from models.list', async
   assert.deepEqual(models[1].thinkingLevels, []);
 });
 
+test('Gemini records the control the model really takes: level, budget or none', async t => {
+  const data = {
+    models: [
+      { name: 'models/gemini-3.5-flash-lite', displayName: 'Gemini 3.5 Flash Lite', inputTokenLimit: 1048576, thinking: true, supportedGenerationMethods: ['generateContent'] },
+      { name: 'models/gemini-flash-latest', displayName: 'Gemini Flash Latest', inputTokenLimit: 1048576, thinking: true, supportedGenerationMethods: ['generateContent'] },
+      { name: 'models/gemini-2.5-flash', displayName: 'Gemini 2.5 Flash', inputTokenLimit: 1048576, thinking: true, supportedGenerationMethods: ['generateContent'] },
+      { name: 'models/gemini-2.5-flash-lite', displayName: 'Gemini 2.5 Flash Lite', inputTokenLimit: 1048576, thinking: true, supportedGenerationMethods: ['generateContent'] },
+      { name: 'models/gemma-4-31b-it', displayName: 'Gemma 4 31B IT', inputTokenLimit: 262144, thinking: true, supportedGenerationMethods: ['generateContent'] },
+    ],
+  };
+  const adapter = providers(async () => json(data)).gemini;
+  const { models } = await adapter.discover({ connection, credentials });
+  assertContract(models);
+  const byId = Object.fromEntries(models.map(model => [model.id, model]));
+  for (const id of ['gemini-3.5-flash-lite', 'gemini-flash-latest']) {
+    assert.equal(byId[id].thinkingType, 'effort', `${id} takes thinkingLevel`);
+    assert.deepEqual(byId[id].thinkingLevels, ['low', 'medium', 'high']);
+  }
+  for (const id of ['gemini-2.5-flash', 'gemini-2.5-flash-lite']) {
+    assert.equal(byId[id].thinkingType, 'budget', `${id} refuses a level and takes thinkingBudget`);
+    assert.deepEqual(byId[id].thinkingLevels, ['low', 'medium', 'high'], 'the documented level to budget translation still lets the UI pick a depth');
+  }
+  assert.equal(byId['gemma-4-31b-it'].thinkingType, 'none', 'Gemma refuses both controls, so no thinking is claimed');
+  assert.deepEqual(byId['gemma-4-31b-it'].thinkingLevels, []);
+});
+
 test('OpenAI-compatible endpoints use reasoning_effort levels and any reported window', async t => {
   const data = [
     { id: 'gpt-5.4' },

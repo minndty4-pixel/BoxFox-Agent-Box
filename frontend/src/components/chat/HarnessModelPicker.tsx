@@ -8,6 +8,7 @@
  */
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { createPortal } from 'react-dom'
+import { resolveThinkingLevel, thinkingLevelIsPublished } from '../../lib/harnessThinking'
 import {
   Bot,
   Cpu,
@@ -74,7 +75,9 @@ export function HarnessModelPicker({ routerModels, activeRouterModelId, onRouter
             id: `model:${c.id}:${m.id}`,
             name: `${c.name} · ${m.name}`,
             provider: c.providerId,
-            thinkingLevels: m.thinkingLevels && m.thinkingLevels.length > 1 ? m.thinkingLevels : undefined,
+            // Một mức công bố vẫn là một mức **thật**: giữ lại để composer kéo mức
+            // đang chọn về đúng nó (model chỉ có `high` không nhận `medium`).
+            thinkingLevels: m.thinkingLevels && m.thinkingLevels.length > 0 ? m.thinkingLevels : undefined,
           }))
       )
   }, [snapshot])
@@ -85,9 +88,20 @@ export function HarnessModelPicker({ routerModels, activeRouterModelId, onRouter
   const effectiveModels = routerModels && routerModels.length > 0
     ? routerModels.map(m => ({
         ...m,
-        thinkingLevels: m.thinkingLevels && m.thinkingLevels.length > 1 ? m.thinkingLevels : undefined,
+        thinkingLevels: m.thinkingLevels && m.thinkingLevels.length > 0 ? m.thinkingLevels : undefined,
       }))
     : liveModels.length > 0 ? liveModels : null
+
+  // Đổi model: nếu mức thinking đang chọn không có trong danh sách model công bố
+  // (ví dụ `medium` trong khi DeepSeek Pro chỉ có `max/high/low`) thì kéo về mức
+  // gần nhất ngay, để nhãn trên composer khớp đúng mức sẽ gửi.
+  useEffect(() => {
+    const target = effectiveModels?.find((model) => model.id === (activeRouterModelId || activeModelId))
+    if (!target?.thinkingLevels?.length) return
+    if (thinkingLevelIsPublished(target.thinkingLevels, thinkingLevel)) return
+    const next = resolveThinkingLevel(target.thinkingLevels, thinkingLevel)
+    if (next && next !== thinkingLevel) setThinkingLevel(next)
+  }, [effectiveModels, activeRouterModelId, activeModelId, thinkingLevel, setThinkingLevel])
 
   // Current active entity
   const currentHarness = useMemo(
@@ -423,7 +437,7 @@ export function HarnessModelPicker({ routerModels, activeRouterModelId, onRouter
                                       type="button"
                                       onClick={(e) => {
                                         e.stopPropagation()
-                                        setThinkingLevel(lvl as 'low' | 'medium' | 'high')
+                                        setThinkingLevel(lvl)
                                       }}
                                       className={`px-2 py-0.5 rounded text-[10px] font-medium transition cursor-pointer capitalize ${
                                         isActive
@@ -512,7 +526,7 @@ export function HarnessModelPicker({ routerModels, activeRouterModelId, onRouter
                                       type="button"
                                       onClick={(e) => {
                                         e.stopPropagation()
-                                        setThinkingLevel(lvl as 'low' | 'medium' | 'high')
+                                        setThinkingLevel(lvl)
                                       }}
                                       className={`px-2 py-0.5 rounded text-[10px] font-medium transition cursor-pointer capitalize ${
                                         isActive

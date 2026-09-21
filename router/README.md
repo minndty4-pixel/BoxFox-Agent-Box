@@ -10,7 +10,7 @@ Credentials and SQLite live in `%LOCALAPPDATA%\BoxFox\router` on Windows, or `~/
 
 The API never returns credentials. Gateway keys are shown once and stored as SHA-256 hashes. Administration requires the local header, allowed Host and allowed Origin; an external client uses a generated Bearer key. Do not expose the engine using a public tunnel. Metadata DNS/IP destinations and redirects are blocked; explicitly configured loopback endpoints are supported.
 
-Provider login is not inference verification. Check authorization, project setup, discovery and inference states independently. No quota, token count or cost is invented when unavailable. Default logs do not include prompts or provider tokens.
+Provider login is not inference verification. Check authorization, project setup, discovery and inference states independently. No quota, token count or cost is invented when unavailable; when the router estimates a cost it carries the source that produced it (`costBasis`) and is never shown as a provider-reported figure. Default logs do not include prompts or provider tokens.
 
 The Router catalog is the union of the reviewed 9Router and OmniRoute account/free-tier entries. A visible card is not a claim of support: `ready` and `experimental` entries have a wired adapter, while `planned` entries expose their intended authentication and discovery settings with Connect disabled. Antigravity supports live discovery, disabled stale fallback inventory, scheduled/manual/reactive model refresh, per-model inference tests and best-effort plan/per-model/weekly quota.
 

@@ -2,6 +2,7 @@
 // Adapted from 9Router MIT-licensed open-sse/providers/registry/openrouter.js and OmniRoute openrouterQuotaFetcher.ts
 
 import { jsonOrProviderError, modelRecord, normalizeFinishReason, parseJson, providerError, sseEvents, thinkingFromProviderPayload } from './common.mjs';
+import { priceFromOpenRouter } from '../pricing.mjs';
 import { RouterError } from '../errors.mjs';
 
 const DEFAULT_OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
@@ -42,6 +43,27 @@ function openRouterHeaders(apiKey) {
   };
 }
 
+/**
+ * Giá OpenRouter công bố cho một dòng model (payload `pricing` tính bằng USD mỗi
+ * token → USD/1M), kèm nguồn `ping` vì con số đến từ chính `/models`. `null` khi
+ * payload không nói giá.
+ */
+function publishedPrice(item) {
+  const price = priceFromOpenRouter(item?.pricing);
+  return price ? { ...price, source: 'ping' } : null;
+}
+
+/**
+ * Model miễn phí: id tự nói (`:free`, `openrouter/free`) hoặc giá công bố bằng 0.
+ * Helper này thay phép so chuỗi `item.pricing?.prompt === '0'` cũ — nó đọc đúng
+ * con số đã được `priceFromOpenRouter` parse, nên không còn phụ thuộc vào việc
+ * nhà cung cấp gửi 0 dưới dạng chuỗi hay số; việc xếp model miễn phí lên đầu và
+ * việc bật/tắt theo hạn mức free tier vẫn giữ nguyên.
+ */
+function isFreeModel(item, price) {
+  return Boolean(item.id?.includes(':free') || item.id === 'openrouter/free' || (price && price.input === 0));
+}
+
 export function createOpenRouterAdapter({ fetchImpl }) {
   return {
     fallbackModels: OPENROUTER_FALLBACK_MODELS.map(model => ({ ...model, source: 'static', stale: true, enabled: false })),
@@ -77,26 +99,24 @@ export function createOpenRouterAdapter({ fetchImpl }) {
           const list = Array.isArray(data?.data) ? data.data : [];
           if (list.length) {
             // Sort: prioritize free models first
-            const sorted = [...list].sort((a, b) => {
-              const aFree = a.id?.includes(':free') || a.id === 'openrouter/free' || a.pricing?.prompt === '0';
-              const bFree = b.id?.includes(':free') || b.id === 'openrouter/free' || b.pricing?.prompt === '0';
-              if (aFree && !bFree) return -1;
-              if (!aFree && bFree) return 1;
-              return 0;
+            const rows = list.map(item => {
+              const price = publishedPrice(item);
+              return { item, price, free: isFreeModel(item, price) };
             });
+            rows.sort((a, b) => (a.free === b.free ? 0 : a.free ? -1 : 1));
 
             return {
-              models: sorted.map(item => {
-                const isFree = item.id?.includes(':free') || item.id === 'openrouter/free' || item.pricing?.prompt === '0';
-                return {
-                  // BUG-4/R2: context window and thinking metadata come from the
-                  // `/models` payload (`context_length`, `reasoning.*`,
-                  // `supported_parameters`), never from a name pattern.
-                  ...modelRecord(item.id, item.name || item.id, {}, thinkingFromProviderPayload(item)),
-                  // If account is free tier, default enable free models and disable paid models to avoid 402/429
-                  ...(isFreeTier ? { enabled: Boolean(isFree) } : {}),
-                };
-              }),
+              models: rows.map(({ item, price, free }) => ({
+                // BUG-4/R2: context window and thinking metadata come from the
+                // `/models` payload (`context_length`, `reasoning.*`,
+                // `supported_parameters`), never from a name pattern.
+                ...modelRecord(item.id, item.name || item.id, {}, thinkingFromProviderPayload(item)),
+                // The published price travels with the row (source `ping`), so a
+                // usage row later on can be priced without another network call.
+                ...(price ? { pricing: price } : {}),
+                // If account is free tier, default enable free models and disable paid models to avoid 402/429
+                ...(isFreeTier ? { enabled: Boolean(free) } : {}),
+              })),
             };
           }
         }

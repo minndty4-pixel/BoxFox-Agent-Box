@@ -18,8 +18,26 @@ export interface ProviderDefinition {
   riskNotice?: string
   capabilities?: { chat: boolean; streaming: boolean; tools: CapabilityEvidence; vision: CapabilityEvidence }
 }
+/**
+ * The price a model is billed at, whatever its provenance. Every component is USD
+ * per 1,000,000 tokens, `null` means the source published nothing for that
+ * component, and `source` travels with the number so the UI can label an estimate
+ * instead of showing it as something the provider reported.
+ */
+export interface ModelPricing {
+  currency: 'USD'
+  unit: 'per_million_tokens'
+  input: number
+  cachedInput: number | null
+  cacheWriteInput?: number | null
+  output: number
+  source: 'manual' | 'ping' | 'documented'
+  asOf?: string | null
+  updatedAt?: number
+}
 export interface ProviderModel {
   id: string; name: string; enabled: boolean; source?: 'live' | 'static' | 'registry' | 'probe' | 'custom'; stale?: boolean; thinkingLevels?: string[];
+  pricing?: ModelPricing | null;
   upstreamModelId?: string; thinkingLevel?: string | null; quotaFamily?: 'gemini' | 'claude_gpt' | null; probeStatus?: 'registry' | 'passed' | 'fallback'; lastProbedAt?: string | null;
   health?: 'unknown' | 'ready' | 'unavailable' | 'rate_limited' | 'slow' | 'failed'
   lastProbe?: { status: 'passed' | 'failed'; httpStatus: number; latencyMs: number; testedAt: string; error: string | null }
@@ -30,7 +48,11 @@ export interface ProviderConnection {
   revision: number; enabled: boolean; credentialPresent: boolean;
   authState: 'required' | 'ready' | 'expired'; projectState: 'not_applicable' | 'pending' | 'ready' | 'required' | 'failed';
   discoveryState: 'pending' | 'ready' | 'degraded' | 'failed'; inferenceState: 'unknown' | 'ready' | 'failed';
-  models: ProviderModel[]; lastTestedAt: string | null; lastModelSyncAt?: string | null; nextModelSyncAt?: string | null; autoSync?: boolean; error: string | null; quota: ProviderQuota | null;
+  models: ProviderModel[]; lastTestedAt: string | null; lastModelSyncAt?: string | null; nextModelSyncAt?: string | null; autoSync?: boolean;
+  /** `included` means a subscription account: usage records no token price, and the cost cell says so. */
+  costMode?: 'metered' | 'included';
+  /** Epoch ms of the last discovery attempt, so a failed listing can say when it was tried. */
+  lastDiscoveryAttemptAt?: number | null; error: string | null; quota: ProviderQuota | null;
 }
 export interface ProviderQuota {
   updatedAt: string; plan?: string | null; models: Array<{ modelId: string; upstreamModelId?: string; quotaFamily?: 'gemini' | 'claude_gpt' | null; remainingFraction: number | null; resetAt: string | null; source?: string }>;
@@ -44,7 +66,10 @@ export interface ProviderDefault { connectionId: string | null; modelId: string 
 export interface RouterClientKey { id: string; name: string; prefix: string; allowedModels: string[]; enabled: boolean; createdAt: string; lastUsedAt: string | null }
 export interface RouterUsage {
   id: string; requestId: string; connectionId: string | null; modelId: string | null; aliasId: string | null; clientKeyId: string | null;
-  status: 'passed' | 'failed' | 'cancelled'; latencyMs: number; inputTokens: number | null; cachedTokens: number | null; cacheCreationTokens: number | null; reasoningTokens: number | null; outputTokens: number | null; totalTokens: number | null; cost: number | null; error: string | null; createdAt: string;
+  status: 'passed' | 'failed' | 'cancelled'; latencyMs: number; inputTokens: number | null; cachedTokens: number | null; cacheCreationTokens: number | null; reasoningTokens: number | null; outputTokens: number | null; totalTokens: number | null; cost: number | null;
+  /** Where the stored `cost` came from; `null` on a row recorded before costs carried a basis. */
+  costBasis?: 'reported' | 'ping' | 'documented' | 'manual' | null; estimated?: boolean;
+  error: string | null; createdAt: string;
 }
 export interface ProviderSnapshot { providers: ProviderDefinition[]; connections: ProviderConnection[]; providerConfigs?: ProviderRoutingConfig[]; aliases: RouterAlias[]; defaultRoute: ProviderDefault; keys: RouterClientKey[]; usage: RouterUsage[]; health: { status: 'ok'; version: string } }
 export interface OAuthAttempt {
