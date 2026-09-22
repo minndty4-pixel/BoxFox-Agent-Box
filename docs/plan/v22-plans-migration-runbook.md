@@ -33,11 +33,16 @@ docker exec agentbox-box python3 /usr/local/bin/migrate_plans.py
 Trên **bản sao** (cách an toàn để thử cơ chế mà không đụng `.plans` sống):
 
 ```bash
-docker exec agentbox-box sh -lc 'rm -rf /var/tmp/plans-copy && cp -a /home/agent/workspace/.plans /var/tmp/plans-copy'
-docker exec agentbox-box python3 /usr/local/bin/migrate_plans.py --root /var/tmp/plans-copy
-docker exec agentbox-box python3 /usr/local/bin/migrate_plans.py --root /var/tmp/plans-copy --apply
+docker exec agentbox-box sh -lc 'rm -rf /var/tmp/plans-copy /var/tmp/plans-backups && cp -a /home/agent/workspace/.plans /var/tmp/plans-copy'
+docker exec agentbox-box python3 /usr/local/bin/migrate_plans.py --root /var/tmp/plans-copy --backup-dir /var/tmp/plans-backups
+docker exec agentbox-box python3 /usr/local/bin/migrate_plans.py --root /var/tmp/plans-copy --backup-dir /var/tmp/plans-backups --apply
 docker exec agentbox-box sh -lc 'ls -l /var/tmp/plans-backups/*/ && python3 -c "import json,glob;print(json.load(open(glob.glob(\"/var/tmp/plans-backups/*/manifest.json\")[0]))[\"wrote\"])"'
 ```
+
+`.plans` sống hôm nay **đã có header cả hai tệp**, nên lần chạy thật để chứng minh cơ chế phải là trên bản
+sao có tệp cũ: gỡ khối `<!-- boxfox-plan … -->` trong **bản sao** (chỉ bản sao!) rồi chạy ba lệnh trên —
+đó đúng là cách đã đo ngày 2026-09-22: dry-run `wrote: 0` (không tạo thư mục sao lưu) → `--apply` `wrote: 2`
+với bản sao `sha256` khớp từng byte **trước** khi ghi → chạy lại `nothingToDo: true`, không thêm thư mục nào.
 
 Bản sao mặc định nằm **cạnh** gốc `.plans` (`<gốc>/../.plans-backups/<UTC>/`), nên bản sao của một bản
 sao dưới `/var/tmp/plans-copy` là `/var/tmp/.plans-backups/<UTC>/`. `--backup-dir DIR` đổi **chỗ** chứ
