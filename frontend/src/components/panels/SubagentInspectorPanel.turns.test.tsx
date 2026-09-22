@@ -377,4 +377,39 @@ describe('SubagentInspectorPanel — đường ống peer (T15)', () => {
     expect(receipt?.textContent ?? '').toContain('đã nhận từ Build')
     expect(receipt?.textContent ?? '').toContain('1200 chars')
   })
+
+  it('`peer_wait` với `targets` dạng VẬT THỂ hiện tên vai, không hiện `[object Object]`', async () => {
+    // Lượt sống 2026-09-22 (`e94f1af0…`): event `peer_wait` thật mang
+    // `targets: [{sessionId, role}]`, và nhãn trên hàng con in ra `[object Object]`
+    // vì bản cũ `String(...)` thẳng vật thể. Ca này khoá đúng hình dạng thật đó.
+    fetchMock.mockImplementation(async (url: unknown) => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        events: String(url).includes('child-W')
+          ? [
+              ev(1, 'peer_wait', {
+                targets: [{ sessionId: 'child-R', role: 'review' }],
+                mode: 'all',
+                waitsUntilDelivery: true,
+                safetySeconds: 300,
+                turn: 1,
+              }),
+            ]
+          : [],
+      }),
+    }))
+    seed([
+      userEvent(1, 'nhờ em soát', 1),
+      childEvent(2, 'child-W', 'testing', { turn: 1 }),
+      childEvent(3, 'child-R', 'review', { turn: 1 }),
+    ])
+
+    const host = await render()
+    const wait = row(host, 'child-W')?.querySelector('[data-testid="child-peer-wait"]')
+    const text = wait?.textContent ?? ''
+
+    expect(text).toContain('đang chờ review giao kết quả')
+    expect(text).not.toContain('[object Object]')
+  })
 })

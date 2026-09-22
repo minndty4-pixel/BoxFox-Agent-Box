@@ -21,8 +21,25 @@ import type { HarnessEvent } from '../../store/harnessChatStore'
 
 const ROLE_PREFIX = 'role:'
 
-/** `role:review` → `review`; `main` giữ nguyên (tên vai trần, không có tiền tố). */
+/**
+ * `role:review` → `review`; `main` giữ nguyên (tên vai trần, không có tiền tố).
+ *
+ * Đích trong event thật có HAI hình dạng: chuỗi (`'role:review'`, `'main'`,
+ * `'peer:<sessionId>'`) và vật thể (`{sessionId, role}` — đúng hình dạng của `targets`
+ * trong event `peer_wait`). Bản trước `String(...)` thẳng vật thể nên nhãn chờ in ra
+ * `[object Object]`; lượt sống 2026-09-22 (`e94f1af0…`) bắt được đúng lỗi đó. Vật thể
+ * không mang vai nào đọc được thì trả chuỗi rỗng — KHÔNG bao giờ trả `[object Object]`,
+ * và người gọi đã có đường lùi (`|| 'peer'`).
+ */
 export function peerLabel(target: unknown): string {
+  if (target !== null && typeof target === 'object') {
+    const item = target as Record<string, unknown>
+    for (const key of ['role', 'roleId', 'sessionId', 'name']) {
+      const value = item[key]
+      if (typeof value === 'string' && value.trim().length > 0) return peerLabel(value)
+    }
+    return ''
+  }
   const text = String(target ?? '').trim()
   return text.startsWith(ROLE_PREFIX) ? text.slice(ROLE_PREFIX.length) : text
 }
