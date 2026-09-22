@@ -256,6 +256,24 @@ def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def free_backup_directory(target: Path) -> Path:
+    """Chỗ sao lưu chưa bị dùng: dấu `<UTC>` chỉ có độ phân giải GIÂY.
+
+    Hai lần `--apply` trong cùng một giây (đo sống 2026-09-22: lần chạy thứ hai ngay sau lần đầu)
+    sẽ `mkdir(exist_ok=True)` lên đúng thư mục cũ rồi **ghi đè** bản sao và `manifest.json` của lần
+    trước — đúng thứ docstring hứa là không bao giờ xảy ra. Thư mục đã có ⇒ lùi sang anh em
+    `<UTC>-2`, `-3`… chứ không dùng chung.
+    """
+    if not target.exists():
+        return target
+    index = 2
+    while True:
+        candidate = target.with_name(f"{target.name}-{index}")
+        if not candidate.exists():
+            return candidate
+        index += 1
+
+
 def write_backup(root: Path, backup_dir, report) -> dict:
     """Sao **từng byte** mọi tệp `vN-*.md` vào `backup_dir` rồi ghi `manifest.json`.
 
@@ -263,7 +281,7 @@ def write_backup(root: Path, backup_dir, report) -> dict:
     **trước** khi một byte nào của `.plans` bị sửa. `report` là báo cáo dry-run của chính lần chạy
     này ("định làm gì") — nhúng vào manifest để đọc lại biết bản sao thuộc lần nào.
     """
-    target = Path(backup_dir)
+    target = free_backup_directory(Path(backup_dir))
     created = not target.exists()
     entries, manifest = [], None
     try:

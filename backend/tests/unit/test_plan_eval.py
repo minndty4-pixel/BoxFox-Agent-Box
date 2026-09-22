@@ -160,6 +160,20 @@ class DimensionP1Test(unittest.TestCase):
         evaluation = evaluate(markdown)
         self.assertEqual((evaluation.levels['P1'], evaluation.rejected), (0, 'header-mismatch'))
 
+    def test_a_malformed_block_is_named_as_syntax_not_as_a_version_mismatch(self):
+        """Đo sống 2026-09-22: khai `Parent: <identity>@v1` (sai cú pháp) mà version KHỚP bị kể
+        thành "lệch version", câu ra "khai vVersion: v2" — model sẽ đi sửa đúng thứ không hỏng.
+        """
+        markdown = ('<!-- boxfox-plan\nVersion: v2\nIdentity: workspace-plan\n'
+                    'Parent: workspace-plan@v1\n-->\n') + plan_body()
+        evaluation = evaluate(markdown, version=2, parent_version=1)
+        message = evaluation.message()
+        self.assertEqual((evaluation.levels['P1'], evaluation.rejected), (0, 'header-mismatch'))
+        self.assertIn('không đúng cú pháp', message)
+        self.assertIn('đọc được: Version: v2, Identity: workspace-plan', message)
+        self.assertNotIn('khai vVersion', message, 'câu cũ ghép `v` vào trước cả mệnh đề')
+        self.assertIn('harness sẽ ghi v2', message, 'con số harness sẽ ghi vẫn phải có')
+
 
 class DimensionP2Test(unittest.TestCase):
     def test_revision_must_trace_back_to_the_previous_version(self):

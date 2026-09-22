@@ -1116,6 +1116,9 @@ khai **1 000 000** trong bảng cửa sổ của router (OpenRouter công bố �
   `Origin` của harness chỉ nhận loopback (`backend/src/agentbox/api/server.py:119-143`).
 - Kết quả: **A, B, C, D xong**; ba bộ test xanh (backend **902 passed / 1 bài đỏ sẵn có**, frontend **958 passed**,
   `deploy/docker` **493 passed**); ba phép kiểm bắt buộc của E3 xanh; **một lỗi mới** (BUG-44) lộ ra trong chính lượt đo.
+  Đợt **kiểm thử độc lập** chạy sau đó (cùng PR, HEAD `f57619d`) tìm thêm **ba** lỗi trong chính mã mới của đợt này
+  (BUG-45…BUG-47, đã sửa) và đo lại cả ba bộ test — backend **1 failed / 916 passed**, `deploy/docker` **496 passed**,
+  frontend **118 tệp / 958 bài**, `tsc -b --noEmit` sạch: xem mục cuối bài.
 
 ### Phần A — tệp đính kèm đi tới box (D-6, BUG-39, BUG-40)
 
@@ -1230,3 +1233,72 @@ Danh sách đầy đủ nằm trong PR của đợt này; các điểm chính: `
 - Tệp đo: `/var/tmp/foundation-e2e.md`, `/var/tmp/foundation-e2e-ui.md`; bản chụp `X:` = 0 hàng nên không có tệp nhật ký kèm theo.
 - Ảnh chụp bằng agent-browser 0.21.2 (phiên `foundation`); lượt API bằng `curl` tới `http://127.0.0.1:3102` với
   `X-BoxFox-Admin: 1` và `Origin: http://localhost:3100`.
+### Đợt kiểm thử độc lập (cùng PR) — ba lỗi nữa trong mã mới, đã sửa và đo lại
+
+Diff `main...vorflux/v22-foundation` (HEAD `f57619d`) được kiểm thử lại độc lập theo hợp đồng tám mục: phân loại thay đổi
+(BROAD / FULL-FEATURE), 15 ca bám đúng phạm vi đợt này, mỗi ca chạy trên hệ thống thật (harness `:3102`, router `:3101`,
+Vite `:3100`, box `agentbox-box`), không ca nào chạy lại tính năng cũ không bị sửa. Kết quả và số đo:
+
+- **Menu `+` (T1)** — hit-test tại tâm **cả bốn** mục trả `true`; `menuRect [283,598,240,245]`; `overflowClipAncestor: null`
+  (vòng 21: `itemRect [290,642,226,45]` rơi vào khung chat); mục Drive `disabled: true` + `aria-disabled: true`, chữ
+  "Chưa kết nối — không đính kèm được tài liệu Drive", bấm **không** có tác dụng (không `onAttach`); ba input ẩn đúng
+  (`accept=image/*` nhiều tệp, tệp, `webkitdirectory`).
+- **Tải tệp (T2)** — 75 B ⇒ `.uploaded_artifacts/8.md`, md5 khớp hai phía; **13** phép thử biên đúng thiết kế (202 cho
+  `absolutePath: /etc/passwd` và tên 500 ký tự; 400 cho `/etc/passwd`, `../../etc/passwd`, `.uploaded_artifacts/../8.md`,
+  NUL, hàng không phải dict, `sizeBytes` −1/`true`/`"75"`, dict thay vì mảng, **26 tệp** trong một lượt); ngữ cảnh gửi model
+  kết bằng khối `[Tệp đính kèm đã lưu trong box]` với đường dẫn tuyệt đối, chuỗi `[Attached Files: …]` của BUG-40 **không còn**;
+  26 MiB kèm `Content-Length` thật ⇒ **413**, đúng 25 MiB ⇒ **200**, `mkdirs=1` ⇒ `.uploaded_artifacts/deep/tree/deep.md`.
+- **Lượt qua giao diện (T3)** — phiên `83bfa5a5d7044cdcaa05448ca62675e4`: chip `attach-ui3.md 1 KB`, bong bóng người dùng
+  mang chip `16.md · .uploaded_artifacts/16.md` (tiêu đề chip có đường dẫn tuyệt đầy đủ), tệp trong box **khớp md5**
+  (`764fb74e475daa1fd69f2f04fe87cf39`), ngữ cảnh model mang `- /home/agent/workspace/.uploaded_artifacts/16.md (16.md, 64 B)`.
+  Lượt model sống (`muse-spark-1.3-contributor-free`, phiên `74630e53…`) gọi `file_read` rồi in **đúng dòng 2** của tệp —
+  chứng minh trực tiếp BUG-40 đã hết; lượt này `turn_end {step 2, stepsUsed 2, deadlineUsedMs 4097}`.
+- **Bốn lượt tải song song (T4)** — số `12, 13, 14, 15`, `uniq -d` rỗng, mọi md5 khớp nguồn, chủ `agent`.
+- **Ngân sách (T5, T5b, T6, T7)** — `runtime-info` ⇒ `{40, 60, 180, 600, 40, 300}`; `maxSteps: 999, deadlineSeconds: 9999`
+  ⇒ áp 60/600 với **đúng một** `STEPS_CLAMPED {requested: 999, applied: 60}` và một `DEADLINE_CLAMPED`; `maxSteps: 4`
+  ⇒ một notice `STEP_BUDGET_EXHAUSTED {diagnosis: true, diagnosisChars: 320, stepsUsed: 2, toolsRun: 1, reservedSteps: 3}`,
+  câu trả lời cuối đủ bốn phần; bốn bước xong rồi mới hết ⇒ hàng `X:94b9a926-2` (`status: blocked`, `maxSteps: 4`);
+  con nhận **`min(con, cha)`** đo ở ba cha (`60/600` ⇒ con `40/300`; `5/120` ⇒ con `5/120`, cha thấy
+  `{status: partial, answerChars: 320, diagnosis: true, is_error: false}`; cha `8/60` gặp lỗi nhà cung cấp ⇒ con
+  `{status: failed, answerChars: 0, last_error: UPSTREAM_HTTP_500 … [after 3 retries in 15.3s]}`).
+- **Trần độ dài câu trả lời (T10)** — 200 000 ký tự ⇒ câu trả lời cuối **150 097** ký tự, **đúng một** hàng
+  `X:845246c5-3`, `turn_end {status: partial}`; 70 002 ký tự ⇒ chỉ `ANSWER_LENGTH_WARN`, `completed`; 12 000 ⇒ không notice.
+- **`TURN_EMPTY_RESPONSE` (T12)** — thử lại **đúng một lần** với `toolChoice: 'required'` (tools 22, `maxTokens 4096`),
+  biến thể `how: 'plain-text'` khi model mức `low` (tools 0), và ca cả hai lần rỗng ⇒ `error {code: TURN_EMPTY_RESPONSE}`;
+  mỗi lượt thử lại một hàng `system_log` `turn.retry {reason: 'empty_response'}`.
+- **Tệp nhị phân, dọn tệp, đường bảo vệ (T11)** — `file_read` trên PNG 154 578 B ⇒ `encoding: 'base64'`,
+  `bytesRead: 22500`, `truncated: true`, tiền tố khớp byte trên đĩa (trước đây `UnicodeDecodeError` giết cả lượt);
+  `uploads_prune` trên fixture 203 tệp ⇒ bỏ 3 tệp / 21 B, giữ đúng mốc `203.md`, **một** hàng `X:` `kind: blocker,
+  status: done, actor: box-retention`; `POST /__box/files/delete` trên `.uploaded_artifacts` và `.plans` ⇒ **409** "mục được
+  bảo vệ", thư mục con thì cho phép (`200`, `.trash/1790085372-deep`).
+- **Kế hoạch (T8, T9)** — trên bản sao: `--apply` sao lưu **từng byte** (`sha256` ba tệp khớp), chạy lại ⇒ `nothingToDo`,
+  `--backup-dir` không ghi được ⇒ **rc 2** và `.plans` không đổi byte nào, `--delete-orphan` từ chối (rc 2) khi còn hàng `P:`,
+  liên kết tượng trưng bị bỏ qua và không bị đi theo. Sống (phiên `629dfc6eced347f995b0da3c603aecb5`): vé mơ hồ dùng
+  **một lần** — lượt 1 từ chối + hàng `F:` với `score 0.6667` (jaccard `{boxfox, upgrades}/{boxfox, 5, upgrades}` = 2/3),
+  lượt 2 **nguyên văn** được nhận và ghim vé vào hàng `P:`, lượt 4 với slug khác sinh vé mới (không rò), lượt 5 ghi `v2`.
+- **Ba bộ test (T14)** — `backend/tests/unit`: **1 failed, 916 passed** (bài đỏ sẵn có `test_terminal_tools.py::test_terminal_exec_echo`,
+  `Exited with code 127`); `-k "partial_budget or child_diagnosis"`: **15 passed**; `-k "plan_eval or plan_registry or write_plan"`:
+  **142 passed**; `deploy/docker`: **496 passed** (493 + ba bài mới của BUG-45/BUG-46); frontend `VITE_BOX_API_URL=http://localhost:8081
+  npx vitest run`: **118 tệp / 958 bài passed**; `npx tsc -b --noEmit`: **sạch**.
+- **Ba lỗi trong chính mã mới** (BUG-45…BUG-47, bảng ở `bug-register.md` § 6.23, đều đã sửa kèm test): `prune` nuốt `OSError`
+  ⇒ nay trả `failedFiles: 3` + `deletionFailures` + hàng `X:f2f01657-1` (đo lại **trên box**); hai lượt `--apply` cùng giây
+  ⇒ nay `2026-09-22T14-04-42Z` và `2026-09-22T14-04-42Z-2`, `manifest.json` của lượt đầu còn nguyên; câu từ chối
+  `header-mismatch` in "khai vv2" ⇒ nay `khai v2; harness sẽ ghi v3`, và khối **sai cú pháp** được gọi đúng tên
+  (`không đúng cú pháp (đọc được: Version: v2, Identity: kettle-lantern)`), đo lại **sống** sau khi khởi động lại harness
+  trên cây đã vá (phiên `a588b1c460944116b8cde73e03319071`, bốn lượt gửi).
+- **Bằng chứng của đợt kiểm thử**: ảnh `images/v22_01_menu.png` (menu `+` sau portal, mục Drive mờ), `images/v22_02_chip.png`
+  (chip trong ô soạn tin), `images/v22_02b_typed.png` (đã gõ, nút gửi bật), `images/v22_03_sent.png` (bong bóng người dùng
+  mang chip + câu trả lời) và **một clip liên tục** `recordings/v22_composer.webm` (50,7 s) phủ cả sáu bước.
+- **Bàn giao, không sửa** (ngoài phạm vi đợt này): (1) tải lên kiểu `Transfer-Encoding: chunked` **không** có `Content-Length`
+  trả **200** với tệp 0 byte — đo được **trên `main` y hệt** (nhánh upload chỉ đọc `size_hint = Content-Length`), nên là lỗi
+  có sẵn chứ không phải hồi quy; (2) `sizeBytes` do client khai được in nguyên vào nhãn kích thước cho model (khai 999 999
+  cho tệp 75 B ⇒ "977 KB") — chỉ là nhãn; (3) `formatAttachmentSize(84)` trả `1 KB` (sàn 1 KB) trong khi khối cho model ghi
+  `84 B`; (4) `maxSteps: 0` bị kẹp im lặng về 1 vì `max(1, …)` chạy trước phép so sánh; (5) hàng `command_invocations`
+  giữ `result.status = 'running'` sau lượt lệnh thành công (`main` y hệt, không nơi nào đọc ngoài phép kiểm idempotency);
+  (6) router chưa chuyển được một luồng nhà cung cấp **rỗng hoàn toàn** (`engine.mjs` đòi `finishReason`) nên nhánh B8 chỉ
+  tới được bằng nội dung chỉ có khoảng trắng.
+- **Dấu vết đo để lại** (đợt kiểm thử, không phải bản ghi sản phẩm): `.plans` **thêm** `v1/v2-boxfox-upgrades-two.md`,
+  `v1/v2-kettle-lantern.md`, `v1-fix4-real-version.md`; hai tệp gốc `v1-agent-box-plan.md` / `v1-boxfox-5-upgrades.md`
+  **không đổi một byte** (sha256 `30e05800…` / `4831506b…`); `.uploaded_artifacts` thêm `8.md`…`16.md`, `11.png`,
+  `big26c.bin` (0 B, phép thử chunked), `exact25.bin` (đúng 25 MiB); `deep/` đã bị đưa vào `.trash/1790085372-deep` bởi
+  chính phép kiểm đường bảo vệ.

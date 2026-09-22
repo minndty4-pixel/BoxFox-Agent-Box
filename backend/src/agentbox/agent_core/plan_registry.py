@@ -107,8 +107,11 @@ REMEDIES = {
         'mở identity khác: hãy sửa tiếp bản đang chờ (relatesTo: "{identity}"), hoặc chọn một chủ '
         'đề thật sự khác.'
     ),
+    # `{declared}` là một MỆNH ĐỀ ("khai v3", "không đúng cú pháp (đọc được: …)"), không phải
+    # con số trần: bản cũ ghép thêm `v` ở đây nên câu từ chối đọc ra "khai vv2", và một khối
+    # sai cú pháp bị kể thành chuyện lệch version dù version có khớp (đo sống 2026-09-22).
     'header-mismatch': (
-        'khối boxfox-plan bạn viết khai v{declared} nhưng harness sẽ ghi v{version}{parent_hint}; '
+        'khối boxfox-plan bạn viết {declared}; harness sẽ ghi v{version}{parent_hint} — '
         'viết lại khối cho khớp, hoặc bỏ hẳn khối để harness tự chèn.'
     ),
     'identity-invalid': (
@@ -632,14 +635,15 @@ def next_version_and_parent(versions, *, declared_version=UNSET, declared_parent
     parent = newest or None
 
     if declared_version is not UNSET and declared_version is not None and declared_version != version:
-        raise PlanRegistrationError('header-mismatch', identity=identity, declared=f'v{declared_version}',
+        raise PlanRegistrationError('header-mismatch', identity=identity, declared=f'khai v{declared_version}',
                                     version=version, parent_hint='')
     if declared_parent is not UNSET and parent is not None:
         if declared_parent is None:
             raise PlanRegistrationError('revision-not-traceable', identity=identity, version=newest)
         if declared_parent != parent:
-            raise PlanRegistrationError('header-mismatch', identity=identity, declared=f'v{declared_parent}',
-                                        version=version, parent_hint=f' với Parent: v{parent}')
+            raise PlanRegistrationError('header-mismatch', identity=identity, declared=f'khai v{declared_parent}',
+                                        version=version,
+                                        parent_hint=f' với Parent: v{parent} (bản sửa phải khai đúng bản trước)')
     return VersionPlan(version=version, parent=parent,
                        declared_version=None if declared_version is UNSET else declared_version,
                        declared_parent=None if declared_parent is UNSET else declared_parent)

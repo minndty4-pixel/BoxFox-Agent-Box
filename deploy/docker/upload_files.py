@@ -189,18 +189,25 @@ def prune(
 
     Đây là **đường duy nhất** trong box được `unlink` tệp tải lên. `dry_run=True` chỉ trả báo
     cáo kế hoạch: không xoá byte nào và không ghim hàng nhật ký nào.
+
+    Một tệp `retention()` đã lập kế hoạch mà `unlink` không xoá được (quyền, tệp đang được giữ)
+    được kê ra ở `deletionFailures`/`failedFiles` và nằm trong hàng `X:`: nuốt lỗi rồi trả
+    `removedFiles: 0` làm người vận hành tưởng trần đã được dọn (lỗi thật đo được 2026-09-22).
     """
     report = retention(root, dry_run=dry_run, protect=protect)
     report["deleted"] = []
     if not dry_run:
         # Xoá đúng danh sách `retention()` đã lập kế hoạch (không quét lại rồi tự đoán tệp nào).
         deleted_bytes = 0
+        failures: list[dict] = []
         for item in report["planned"]:
             try:
                 Path(item["path"]).unlink()
             except FileNotFoundError:
-                continue
-            except OSError:
+                continue  # lượt dọn khác đã xoá trước — vô hại
+            except OSError as exc:
+                failures.append({"name": item["name"], "path": str(item["path"]),
+                                 "error": f"{type(exc).__name__}: {exc}"[:200]})
                 continue
             report["deleted"].append(item["name"])
             deleted_bytes += item["bytes"]
@@ -208,10 +215,14 @@ def prune(
         report["removedFiles"] = len(report["deleted"])
         report["removedBytes"] = deleted_bytes
         report["freedBytes"] = deleted_bytes
+        report["deletionFailures"] = failures
+        report["failedFiles"] = len(failures)
 
     pinned: list[str] = []
     session_text = str(session or "").strip().lower()
-    if report["removedFiles"] and session_text and not dry_run:
+    # Hàng `X:` cũng phải có khi lần dọn KHÔNG xoá được gì: im lặng ở đây là cách để trần 200 tệp
+    # bị vượt mà không ai biết.
+    if (report["removedFiles"] or report.get("failedFiles")) and session_text and not dry_run:
         payload = {
             "session": session_text,
             "root": history_root,
@@ -223,11 +234,15 @@ def prune(
                 "actor": PRUNE_RECORD_ACTOR,
                 "text": (f"{PRUNE_RECORD_MARKER_NOTE}: bỏ {report['removedFiles']} tệp / "
                          f"{report['removedBytes']} B (còn {report['keptFiles']} tệp / "
-                         f"{report['keptBytes']} B)."),
+                         f"{report['keptBytes']} B)"
+                         + (f"; không xoá được {report['failedFiles']} tệp"
+                            if report.get("failedFiles") else "") + "."),
                 "numbers": {"removedFiles": report["removedFiles"],
                             "removedBytes": report["removedBytes"],
-                            "keptFiles": report["keptFiles"], "keptBytes": report["keptBytes"]},
-                "data": {"origin": PRUNE_RECORD_ACTOR, "removed": report["removed"][:50]},
+                            "keptFiles": report["keptFiles"], "keptBytes": report["keptBytes"],
+                            "failedFiles": report.get("failedFiles", 0)},
+                "data": {"origin": PRUNE_RECORD_ACTOR, "removed": report["removed"][:50],
+                         "failures": report.get("deletionFailures", [])[:50]},
             },
         }
         writer = journal or _default_journal

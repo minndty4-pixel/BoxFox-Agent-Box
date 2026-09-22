@@ -119,6 +119,7 @@ byte** mọi tệp `vN-*.md` dưới `.plans` (đệ quy, bỏ tệp tạm) vào
 | Mã | Khuôn | Ai ép | Ghi chú |
 |---|---|---|---|
 | BOX-5 | `<workspace>/.plans-backups/<UTC>/` — `<UTC>` = `%Y-%m-%dT%H-%M-%SZ`, mỗi lần chạy một thư mục | `deploy/docker/migrate_plans.py` | Đổi **chỗ** bằng `--backup-dir DIR` — bản sao vẫn vào `DIR/<UTC>/`, đổi chỗ chứ không đổi luật; không có cờ tắt |
+| BOX-5 | `<workspace>/.plans-backups/<UTC>-<số>/` — `<số>` = `2`, `3`, … khi `<UTC>` đã có chủ | `deploy/docker/migrate_plans.py` (`free_backup_directory`) | `<UTC>` chỉ có độ phân giải **giây**, nên hai lượt `--apply` trong cùng một giây phải nhận hai thư mục anh em; dấu `-<số>` là chỗ trốn duy nhất để "mỗi lần chạy một thư mục" đúng cả trong trường hợp đó (BUG-46) |
 | BOX-5 | `<workspace>/.plans-backups/<UTC>/manifest.json` — `createdAt`, `root`, `fileCount`, `totalBytes`, `reason` (báo cáo dry-run của chính lần chạy đó), `files[]` với `relativePath` + `sizeBytes` + `sha256` | `deploy/docker/migrate_plans.py` | `sha256` để chứng minh bản sao là từng byte của bản gốc, không phải lời hứa |
 | BOX-5 | Bản sao giữ **đúng cây con** của `.plans` (`subplans/v2-x.md` → `<UTC>/subplans/v2-x.md`) | `deploy/docker/migrate_plans.py` | Khôi phục = `cp -a <UTC>/. <workspace>/.plans/` |
 
@@ -130,7 +131,9 @@ Ba hệ quả của luật này:
    xoá được tay; chỉ `--delete-orphan` mới có cổng từ chối, còn bản sao thì `rm -rf` là xong.
 3. **Không đặt lại bộ đếm, không ghi đè:** mỗi lần chạy một thư mục `<UTC>` mới — kể cả khi chỗ đã
    được chỉ bằng `--backup-dir`; ghi hỏng thì cả thư mục vừa tạo bị bỏ đi và `.plans` không đổi một
-   byte (*hoặc có bản sao, hoặc không chạy*).
+   byte (*hoặc có bản sao, hoặc không chạy*). Trùng **giây** thì lấy thư mục anh em kế tiếp
+   (`<UTC>-2`, `<UTC>-3`, …): khuôn `<UTC>` là tên duy nhất theo giây, không phải theo lần chạy, nên
+   luật "mỗi lần một thư mục" phải được giữ bằng hậu tố chứ không thể dựa vào đồng hồ (BUG-46).
 
 ## 8. Vì sao `.session-history` KHÔNG đổi tên (D-5, đợt 22)
 

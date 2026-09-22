@@ -166,6 +166,56 @@ class RetentionTest(unittest.TestCase):
         self.assertEqual(record["numbers"]["removedFiles"], 10)
         self.assertEqual(pinned[0]["session"], "abc12345")
 
+    def test_a_planned_file_that_cannot_be_unlinked_is_reported_not_swallowed(self) -> None:
+        """Tệp không xoá được (quyền/thư mục read-only — đo sống 2026-09-22: tệp root-owned) phải
+        đọc được trong báo cáo và trong hàng `X:`; nuốt lỗi rồi trả `removedFiles: 0` là im lặng
+        để trần 200 tệp bị vượt.
+
+        `Path.unlink` bị chặn thẳng ở đây thay vì `chmod` thư mục: test chạy bằng root (CI/sandbox)
+        thì quyền thư mục không chặn được `unlink`, còn luật cần khoá là "lỗi `OSError` không được
+        biến mất khỏi báo cáo".
+        """
+        for index in range(205):
+            write_file(self.root, f"{index + 1}.md", 10, 1000 + index)
+        pinned: list[dict] = []
+        blocked = {"1.md", "2.md", "3.md"}
+        real_unlink = Path.unlink
+
+        def refusing_unlink(path, *args, **kwargs):
+            if path.name in blocked:
+                raise PermissionError(13, "Operation not permitted", str(path))
+            return real_unlink(path, *args, **kwargs)
+
+        Path.unlink = refusing_unlink
+        try:
+            report = upload_files.prune(self.root, session="abc12345",
+                                        journal=lambda payload: pinned.append(payload) or {"id": "X:abc12345-9"})
+        finally:
+            Path.unlink = real_unlink
+
+        # 205 tệp ⇒ kế hoạch xoá 5 tệp cũ nhất; ba tệp đầu bị chặn, hai tệp sau vẫn đi.
+        self.assertEqual(report["removedFiles"], 2)
+        self.assertEqual(report["failedFiles"], 3)
+        self.assertEqual([item["name"] for item in report["deletionFailures"]], ["1.md", "2.md", "3.md"])
+        self.assertIn("PermissionError", report["deletionFailures"][0]["error"])
+        for name in sorted(blocked):
+            self.assertTrue((self.root / name).exists(), f"tệp bị chặn {name} phải còn nguyên")
+        self.assertEqual(len(self.names()), 203)
+        self.assertEqual(len(pinned), 1, "lần dọn thất bại vẫn phải có ĐÚNG một hàng `X:`")
+        self.assertIn("không xoá được 3 tệp", pinned[0]["record"]["text"])
+        self.assertEqual(pinned[0]["record"]["numbers"]["failedFiles"], 3)
+        self.assertEqual(len(pinned[0]["record"]["data"]["failures"]), 3)
+
+    def test_a_clean_prune_reports_no_failures(self) -> None:
+        """Đường thành công không được mọc thêm khoá lạ làm người đọc tưởng có lỗi."""
+        for index in range(205):
+            write_file(self.root, f"{index + 1}.md", 10, 1000 + index)
+
+        report = upload_files.prune(self.root)
+
+        self.assertEqual((report["failedFiles"], report["deletionFailures"]), (0, []))
+        self.assertEqual(report["removedFiles"], 5)
+
     def test_prune_without_session_writes_no_marker(self) -> None:
         for index in range(205):
             write_file(self.root, f"{index + 1}.md", 10, 1000 + index)

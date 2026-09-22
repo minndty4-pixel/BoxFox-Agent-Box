@@ -197,7 +197,10 @@ Giá trị nhận cho hai cờ: `1`, `true`, `yes`, `on` (`_flag_on` trong `ide-
   giữ 200 tệp / 500 MiB, xoá mtime cũ nhất trước và **không bao giờ** xoá tệp neo số cao nhất của
   mỗi thư mục (xoá nó là làm bộ đếm tụt và box cấp lại số đã dùng). `unlink` chỉ nằm trong
   `prune()`, nên `retention(dry_run=True)` không xoá byte nào; `prune()` ghim **một** hàng `X:` cho
-  cả lượt (op `uploads_prune` trong `session_ops.OPS`).
+  cả lượt (op `uploads_prune` trong `session_ops.OPS`) và **nói thật khi không xoá được**: tệp bị
+  `OSError` (thường là `PermissionError` vì tệp thuộc `root`) vào `deletionFailures` + `failedFiles`,
+  hàng `X:` thêm vế "không xoá được N tệp", chứ không im lặng trả `removedFiles: 0` như đã dọn sạch
+  (BUG-45). `FileNotFoundError` là ngoại lệ duy nhất — lượt dọn khác đã xoá trước thì vô hại.
 - **Tài liệu Drive**: mục "Google Drive" trong menu `+` **chưa kết nối** nên bị vô hiệu hoá
   (`disabled`, chữ nói thẳng "Chưa kết nối — không đính kèm được tài liệu Drive"). Bản cũ bịa ra tệp
   `Architecture_Blueprint_2026.gdoc` và gọi `onAttach`, khiến người dùng tin là đã đính kèm một tài

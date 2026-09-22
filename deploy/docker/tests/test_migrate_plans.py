@@ -299,6 +299,32 @@ class BackupBeforeApplyTest(_TempPlansRoot):
         self.assertEqual([item["path"] for item in manifest["reason"]["headers"]],
                          ["v3-clinical-record.md", "v5-itsdangerous-helper.md"])
 
+    def test_two_runs_in_the_same_second_do_not_share_a_backup_directory(self) -> None:
+        """Dấu `<UTC>` chỉ có độ phân giải giây: lần chạy thứ hai không được ghi đè bản sao của lần
+        đầu (đo sống 2026-09-22: `manifest.json` của lần trước bị thay bằng của lần sau).
+        """
+        self.write("v1-first-plan.md")
+        first = migrate.run(self.root, apply=True, backup_dir=self.backups)
+        stamp = Path(first["backupDirectory"])
+        manifest_before = (stamp / "manifest.json").read_bytes()
+        backup_before = (stamp / "v1-first-plan.md").read_bytes()
+        # Lần hai cần một tệp để ghi (nếu không thì `nothingToDo` và không có bản sao nào).
+        self.write("v2-second-plan.md")
+
+        second = migrate.run(self.root, apply=True, backup_dir=self.backups)
+
+        sibling = Path(second["backupDirectory"])
+        self.assertNotEqual(sibling, stamp, "cùng một giây vẫn phải là hai thư mục khác nhau")
+        self.assertEqual(sibling.parent, stamp.parent)
+        self.assertTrue(sibling.name.startswith(stamp.name + "-"), sibling.name)
+        self.assertEqual((stamp / "manifest.json").read_bytes(), manifest_before,
+                         "bản sao của lần chạy trước còn nguyên")
+        self.assertEqual((stamp / "v1-first-plan.md").read_bytes(), backup_before)
+        self.assertEqual(json.loads((stamp / "manifest.json").read_text(encoding="utf-8"))["reason"]["root"],
+                         str(self.root))
+        self.assertEqual(sorted(path.name for path in sibling.iterdir()),
+                         ["manifest.json", "v1-first-plan.md", "v2-second-plan.md"])
+
     def test_dry_run_never_creates_a_backup_directory(self) -> None:
         self.write("v2-something.md")
 

@@ -231,6 +231,9 @@ class NextVersionTest(unittest.TestCase):
             next_version_and_parent([1, 2, 3], declared_version=3, identity=CLINICAL)
         self.assertEqual(caught.exception.code, 'header-mismatch')
         self.assertIn('v4', str(caught.exception))
+        # Câu từ chối đọc được: bản cũ ghép `v` hai lần nên in ra "khai vv3" (đo sống 2026-09-22).
+        self.assertIn('khai v3', str(caught.exception))
+        self.assertNotIn('vv3', str(caught.exception))
 
     def test_absent_declaration_is_not_none(self):
         """`UNSET` (không có khối) khác `None` (khai `Parent: none`) — ca thứ hai mới bị từ chối."""

@@ -1007,10 +1007,12 @@ báo cáo + đọc lại xong ở **bước 8** (phiên `dddebffb…`). (2) `mus
 (3) Địa chỉ xem trước công khai chỉ để **xem**: harness chỉ nhận `Origin` loopback
 (`backend/src/agentbox/api/server.py:119-139`), nên mọi lượt chạy phải đi qua `localhost:3100` — đúng thiết kế, không phải lỗi.
 
-### 6.23 Vòng 22 (đợt 1 — foundation) — bốn lỗi vòng 21 đã sửa và đo lại, một lỗi mới (BUG-44)
+### 6.23 Vòng 22 (đợt 1 — foundation) — bốn lỗi vòng 21 đã sửa và đo lại, một lỗi mới (BUG-44), ba lỗi nữa do đợt kiểm thử tìm và sửa (BUG-45…BUG-47)
 
 Đợt 1 của `docs/plan/v22-boxfox-plan.md` sửa bốn lỗi đo sống ở vòng 21, đo lại bằng ba bộ test và một lượt thử sống đầu-cuối qua
-`localhost:3100`; chính lượt đo đó lộ thêm **một** lỗi (BUG-44) thuộc đợt bằng chứng sống. Nhật ký đầy đủ (số đo, lệnh, phiên):
+`localhost:3100`; chính lượt đo đó lộ thêm **một** lỗi (BUG-44) thuộc đợt bằng chứng sống. Đợt **kiểm thử độc lập** chạy sau đó trên cùng cây (HEAD `f57619d`
+cộng bốn bản vá của đợt kiểm thử) tìm thêm **ba** lỗi nằm trong chính mã mới của đợt này — BUG-45…BUG-47, đều đã sửa kèm test
+và đo lại sống. Nhật ký đầy đủ (số đo, lệnh, phiên):
 `docs/tracking/test-rounds.md` § *Vòng 22*.
 
 | Mã | Mức | Nội dung | Nơi sửa | Trạng thái |
@@ -1021,6 +1023,9 @@ báo cáo + đọc lại xong ở **bước 8** (phiên `dddebffb…`). (2) `mus
 | BUG-42 | Cao | Con (và lượt chính) chạm trần bước/hạn chót thì mất trắng phần đã làm | `backend/src/agentbox/agent_core/{limits,failures,runtime}.py` | ĐÃ SỬA |
 | BUG-43 | TB | Bảng Sub-agents không theo turn | — | HOÃN — thuộc đợt peer-mesh của vòng 22 (D-9) |
 | BUG-44 | TB | Câu trả lời về tệp đính kèm có thể in **nội dung cũ trong ngữ cảnh** mà không mở tệp; không cổng nào bắt | — | MỚI — thuộc đợt bằng chứng sống (D-8) của vòng 22 |
+| BUG-45 | TB | Dọn `.uploaded_artifacts` (`uploads_prune`) nuốt `OSError` khi `unlink` ⇒ báo `removedFiles: 0` như đã dọn sạch trong khi tệp vẫn nằm trên đĩa, không ghim hàng `X:` nào | `deploy/docker/upload_files.py` (`prune`), `deploy/docker/tests/test_upload_files.py` | ĐÃ SỬA |
+| BUG-46 | TB | Hai lượt `migrate_plans.py --apply` trong cùng một giây dùng chung một thư mục sao lưu ⇒ ghi đè `manifest.json` và bản sao byte của lượt trước | `deploy/docker/migrate_plans.py` (`write_backup`), `deploy/docker/tests/test_migrate_plans.py` | ĐÃ SỬA |
+| BUG-47 | Thấp | Câu từ chối `header-mismatch` in "khai vv2" (lặp chữ `v`) và gọi khối **sai cú pháp** là "khai vVersion: v2" ⇒ model đi sửa phiên bản trong khi lỗi thật là cú pháp | `backend/src/agentbox/agent_core/{plan_registry,plan_eval}.py` + `test_plan_registry.py`, `test_plan_eval.py` | ĐÃ SỬA |
 
 **BUG-39 — đã sửa, đo lại sống.** Popover nay render qua **portal** nên không còn bị tổ tiên `overflow-hidden`
 (`frontend/src/components/panels/ChatInputBar.tsx`) cắt. Số đo sau sửa, cùng phép thử vòng 21: `document.elementFromPoint` tại tâm
@@ -1066,6 +1071,36 @@ Nội dung cũ **trông đúng** (đúng đường dẫn, đúng khuôn) nên ng
 **có** gọi `file_read` (phiên `92f76c90467d4dfaaa3bbb3d40278069`) thì câu trả lời đúng từng ký tự, nên lỗi nằm ở đường "không đọc"
 chứ không ở đường truyền tệp. Hướng sửa: **cổng bằng chứng** của D-8 (`docs/plan/v22-evidence-proof.md`); đợt này ghi nhận,
 không sửa — đúng phạm vi đã chốt.
+
+**BUG-45 — mức Trung bình — dọn `.uploaded_artifacts` báo "đã xong" khi tệp không xoá được.** `prune()` bắt `OSError` rồi
+`continue` mà không ghi lại gì, nên một lượt dọn vượt trần 200 tệp trả `{"removed": [], "removedFiles": 0, "ok": true}` và
+**không** ghim hàng `X:` — người vận hành tin là trần đã được dọn. Đo sống trên chính box: fixture 203 tệp, 3 tệp **thuộc root**
+nên `unlink` của agent ném `PermissionError: [Errno 13]`. Sau khi sửa, cùng lượt đó trả `removedFiles: 0`,
+`failedFiles: 3`, `deletionFailures` gồm `1.md` / `10.md` / `11.md` với đúng chuỗi `PermissionError: [Errno 13] Permission denied: '<đường dẫn>'`,
+và ghim **đúng một** hàng `X:f2f01657-1` (`kind: blocker, status: done, actor: box-retention`) với
+`text: "dọn tệp tải lên theo trần 200 tệp / 500 MiB: bỏ 0 tệp / 0 B (còn 200 tệp / 400 B); không xoá được 3 tệp."` và
+`numbers.failedFiles: 3`. `FileNotFoundError` vẫn được coi là vô hại ("lượt dọn khác đã xoá trước"). Sửa: thêm danh sách
+`deletionFailures`, đếm `failedFiles`, đổi điều kiện ghim và câu chữ của hàng `X:`. Test:
+`test_upload_files.py::test_a_planned_file_that_cannot_be_unlinked_is_reported_not_swallowed` và
+`::test_a_clean_prune_reports_no_failures`.
+
+**BUG-46 — mức Trung bình — hai lượt `--apply` trong cùng một giây ghi đè bản sao của nhau.** `utc_stamp()` chỉ có độ phân giải
+**giây** (`%Y-%m-%dT%H-%M-%SZ`) và `write_backup` dùng `mkdir(parents=True, exist_ok=True)`, nên lượt thứ hai trong cùng giây
+**dùng lại** thư mục cũ: `manifest.json` bị ghi đè và bản sao `vN-*.md` của lượt trước bị thay bằng bản mới — trái với chính
+docstring của module ("hai lượt không bao giờ đè nhau"), tức là mất đúng thứ mà C1/C2 vừa dựng lên để bảo vệ. Đo sống trong box:
+hai lượt `--apply` liên tiếp trên cùng `--backup-dir`; trước khi sửa cả hai vào cùng thư mục `2026-09-22T14-04-42Z`; sau khi sửa
+thành `2026-09-22T14-04-42Z` và `2026-09-22T14-04-42Z-2`, `manifest.json` của lượt đầu còn nguyên và bản sao trong đó vẫn là các
+byte **trước** khi lượt hai ghi (không chứa `boxfox-plan`). Sửa: helper thuần `free_backup_directory(target)` trả thư mục trống kế
+tiếp (`-2`, `-3`, …). Test: `test_migrate_plans.py::test_two_runs_in_the_same_second_do_not_share_a_backup_directory`.
+
+**BUG-47 — mức Thấp — câu từ chối `header-mismatch` chỉ sai chỗ cần sửa.** Hai lỗi chữ: (1) `REMEDIES['header-mismatch']` in
+`khai v{declared}` trong khi nơi gọi đã thêm `v` ⇒ người dùng đọc **"khai vv2"**; (2) `plan_eval` P1 coi khối **sai cú pháp**
+(`status != 'ok'`) là lệch phiên bản kể cả khi số phiên bản khớp, nên câu từ chối thành "khai vVersion: v2" và hướng dẫn model đi
+sửa phiên bản trong khi lỗi thật là cú pháp. Cả hai đo sống trong phiên `629dfc6eced347f995b0da3c603aecb5` (lượt gửi 6,
+`Parent: boxfox-upgrades-two@v1`). Sửa: `plan_registry` nhận sẵn chuỗi khai (`declared='khai v{n}'`) và bỏ `v` khỏi khuôn câu;
+`plan_eval` phân biệt cú pháp với số (`không đúng cú pháp (đọc được: Version: v2, Identity: x)` so với `khai Version: v5, …`).
+Test: `test_plan_registry.py` (bỏ `vv3`, còn `khai v3`) và
+`test_plan_eval.py::test_a_malformed_block_is_named_as_syntax_not_as_a_version_mismatch`.
 
 **Ghi nhận, không phải lỗi.** (1) `test_terminal_tools.py::test_terminal_exec_echo` **đỏ sẵn có** vì `bash` của sandbox không có
 lệnh `Write-Output` (`Exited with code 127`) — không liên quan đợt này; bộ backend còn lại **902 passed**. (2) Không dựng lại ảnh box:
