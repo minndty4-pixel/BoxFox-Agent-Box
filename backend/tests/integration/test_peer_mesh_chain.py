@@ -353,8 +353,9 @@ def test_chuoi_tren_harness_song(capsys):
 
     Không dựng lại runtime trong tiến trình kiểm thử: cái được đo là đường HTTP thật + mô hình thật
     + SQLite thật của harness. Khẳng định ở đây cố ý thô (số con, có cặp chờ, có biên nhận, không
-    lượt nào `failed`) vì mô hình sống có quyền chọn cách làm khác; phần in ra là bằng chứng để T17
-    chép vào nhật ký vòng.
+    lượt nào `failed`, không con nào bị cắt) vì mô hình sống có quyền chọn cách làm khác; phần in ra
+    là bằng chứng để T17 chép vào nhật ký vòng. Cơn chờ đọc ở **luồng của cha** — `peer_wait` là
+    chuyện của người chờ, không phải của con.
     """
     assert LIVE_DB.exists(), f'không thấy sổ sống: {LIVE_DB}'
     created = live_call('POST', '/api/agent/sessions',
@@ -381,21 +382,37 @@ def test_chuoi_tren_harness_song(capsys):
                          f'({",".join("?" for _ in children)})',
                          tuple(row['session_id'] for row in children)) if children else []
 
+    parent_waits = [item for item in events[sid] if item.get('waitsUntilDelivery')]
+    parent_ends = [item for item in events[sid] if 'extensionExhausted' in item]
+    finish = [item for item in events[sid] if item.get('childCount') is not None]
+
     with capsys.disabled():
         print(f'\n[SỐNG] phiên {sid} — {status}, {len(children)} con, {len(receipts)} biên nhận')
         for row in children:
-            waits = [item for item in events[row['session_id']] if item.get('waitsUntilDelivery')]
-            ends = [item.get('status') for item in events[row['session_id']] if 'pending' in item]
             print(f'  con {row["role"]:9s} lượt {row["parent_turn"]} bước {row["spawn_step"]} '
-                  f'→ {row["status"]:9s} steps={row["steps_used"]} '
-                  f'chờ={len(waits)} kết-chờ={ends}')
+                  f'→ {row["status"]:9s} steps={row["steps_used"]} tokens={row["output_tokens"]}')
         for row in receipts:
             print(f'  biên nhận {row["kind"]:4s} → {row["recipient"][:8]} {row["state"]}')
+        for item in parent_waits:
+            print(f'  cha chờ: {item.get("targets")} mode={item.get("mode")} '
+                  f'hạn-an-toàn={item.get("safetySeconds")}s')
+        for item in parent_ends:
+            print(f'  hết chờ: {item.get("status")} chờ={item.get("waitedMs")}ms '
+                  f'còn-lại={[t.get("role") for t in item.get("pending") or []]}')
+        for item in finish:
+            print('  chốt lượt: ' + json.dumps({k: item[k] for k in
+                  ('status', 'turn', 'steps', 'waitedMs', 'childCount', 'childSteps',
+                   'childTokens', 'childDeliveries') if k in item}, ensure_ascii=False))
 
     assert children, 'lượt sống phải sinh ít nhất một con'
     assert all(row['parent_turn'] == 1 for row in children), children
-    assert any(item.get('waitsUntilDelivery') for row in children
-               for item in events[row['session_id']]), 'phải có một cơn chờ bạn thật'
-    assert any(row['state'] == 'injected' for row in receipts), 'phải có biên nhận đã khép'
+    assert parent_waits, 'cha phải thật sự chờ bạn (peer_wait có waitsUntilDelivery)'
+    assert [item for item in parent_ends if item.get('status') == 'done'], \
+        f'cơn chờ phải khép bằng `done`: {parent_ends}'
+    assert any(row['state'] == 'injected' for row in receipts), \
+        f'phải có ít nhất một biên nhận đã bơm: {[dict(row) for row in receipts]}'
     assert not [item for item in events[sid] if item.get('status') == 'failed'], \
-        'không lượt nào được `failed` trong chuỗi sống'
+        'lượt sống không được có mục nào `failed`'
+    assert not [item for item in events[sid] if item.get('reaped')], \
+        'lượt sống không được cắt con giữa đường (PARENT_TURN_ENDED)'
+
