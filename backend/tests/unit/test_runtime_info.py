@@ -198,6 +198,22 @@ def test_the_limits_are_the_numbers_the_runtime_applies(tmp_path):
         'deadlineMaxSeconds': limits.DEADLINE_MAX_SECONDS,
         'childMaxSteps': limits.CHILD_MAX_STEPS,
         'childDeadlineSeconds': limits.CHILD_DEADLINE_SECONDS,
+        # T13 — khối peer: cùng luật "số báo cho giao diện là số engine đang áp", đọc từ `limits`
+        # và từ chính runtime (hai giá trị `*Now` đọc env ở thời điểm gọi).
+        'peer': {
+            'enabled': limits.peer_mesh_enabled(),
+            'fanoutPerParentDefault': limits.FANOUT_PER_PARENT_DEFAULT,
+            'fanoutPerParentMax': limits.FANOUT_PER_PARENT_MAX,
+            'fanoutPerParentNow': HarnessRuntime.fanout_limit({}),
+            'fanoutGlobalCeiling': limits.FANOUT_GLOBAL_CEILING,
+            'deliverMax': limits.PEER_DELIVER_MAX,
+            'waitSafetySeconds': limits.PEER_WAIT_SAFETY_SECONDS,
+            'waitMaxSeconds': limits.PEER_WAIT_MAX_SECONDS,
+            'waitMaxNow': limits.peer_wait_max(),
+            'parallelReadTools': limits.parallel_read_tools_enabled(),
+            'watchdogTickSeconds': limits.WATCHDOG_TICK_SECONDS,
+            'childWallMaxSeconds': limits.CHILD_WALL_MAX_SECONDS,
+        },
     }
     assert info['limits']['instructionsChars'] == limits.INSTRUCTIONS_MAX_CHARS
 

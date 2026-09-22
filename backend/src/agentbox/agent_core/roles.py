@@ -4,6 +4,8 @@ Adapted from Hermes delegate_tool_toolsets.py; prompts tailored to BoxFox.
 """
 from dataclasses import dataclass
 
+from .limits import peer_mesh_enabled
+
 DECISION = frozenset({'ask_user', 'request_approval'})
 # T8/T9 (vòng 22) — nói chuyện với các phiên bạn: đọc luồng việc của bạn cùng cha, và chờ bạn
 # giao kết quả. Mọi vai trò đều có (READ là gốc của cả chín vai con), vì một con không đọc được
@@ -166,5 +168,15 @@ ORCHESTRATOR_TOOLS = WRITE | VISUAL | {'delegate_task', 'session_search', 'write
 
 
 def allowed_tools(role, parent=None):
+    """Bộ công cụ của một vai trò, giao với bộ của CHA khi đây là phiên con.
+
+    T13 — công tắc giết `BOXFOX_PEER_MESH=off` bỏ hai công cụ mesh khỏi MỌI vai trò, nên không có
+    chỗ nào quảng cáo thứ engine sẽ từ chối, và hành vi trở về đúng bản trước đợt 2. Bộ RỖNG cũng
+    đi qua đường này (một phiên không có công cụ nào là chuyện hợp lệ).
+    """
     names = ORCHESTRATOR_TOOLS if role == 'orchestrator' else ROLES[role].tools
-    return frozenset(names if parent is None else names & set(parent))
+    if parent is not None:
+        names = names & set(parent)
+    if not peer_mesh_enabled():
+        names = set(names) - PEER
+    return frozenset(names)

@@ -1,5 +1,11 @@
 """Only tools with an executable v0 adapter are advertised."""
 
+from .limits import peer_mesh_enabled
+
+# Hai công cụ PEER nằm ở đây chứ không nhập từ `roles`: `roles` nhập `limits`, và một vòng nhập
+# `roles` → `tool_contracts` → `roles` sẽ làm hỏng lúc nạp mô-đun. Tên là hợp đồng, không phải bản sao.
+PEER_TOOLS = frozenset({'peer_read', 'await_children'})
+
 
 def tool(name, description, properties, required=()):
     return {'type': 'function', 'function': {'name': name, 'description': description,
@@ -150,4 +156,12 @@ SCHEMAS = [
 
 
 def schemas_for(names):
+    """Lược đồ của đúng những công cụ được yêu cầu.
+
+    T13 — `BOXFOX_PEER_MESH=off` là công tắc GIẾT của cả mesh, nên nó chặn ở đây nữa: một phiên
+    được tạo lúc mesh còn bật rồi công tắc tắt giữa chừng cũng không được nhận lược đồ của hai
+    công cụ peer. Kiểm ở tầng thấp nhất là kiểm không thể quên.
+    """
+    if not peer_mesh_enabled():
+        names = set(names) - PEER_TOOLS
     return [s for s in SCHEMAS if s['function']['name'] in names]

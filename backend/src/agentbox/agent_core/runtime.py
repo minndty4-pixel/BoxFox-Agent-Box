@@ -20,12 +20,13 @@ from .limits import (ANSWER_LENGTH_HINT, ANSWER_LENGTH_WARN_CODE, ANSWER_MAX_CHA
                      ANSWER_WARN_CHARS, CHILD_DEADLINE_SECONDS, CHILD_MAX_STEPS, CHILDREN_PER_TURN_CODE,
                      CHILDREN_PER_TURN_MAX, DEADLINE_CLAMP_NOTICE_CODE, PEER_DELIVER_MAX,
                      PEER_TARGET_GRACE_SECONDS,
-                     PEER_TARGET_POLL_SECONDS, PEER_WAIT_CLAMPED_CODE, PEER_WAIT_MAX_SECONDS,
+                     PEER_MESH_NOTICE_CODE, PEER_TARGET_POLL_SECONDS, PEER_WAIT_CLAMPED_CODE,
                      PEER_WAIT_RESULT_CHARS, PEER_WAIT_SAFETY_SECONDS, PEER_WAIT_TOTAL_MAX_SECONDS,
                      DEADLINE_DEFAULT_SECONDS, DEADLINE_MAX_SECONDS, DEADLINE_MIN_SECONDS, DEADLINE_NOTICE_CODE,
                      DIAGNOSIS_MIN_CHARS, FANOUT_BUSY_CODE, FANOUT_GLOBAL_CEILING, FANOUT_PER_PARENT_DEFAULT,
                      FANOUT_PER_PARENT_MAX, FANOUT_QUEUE_WAIT_SECONDS, INSTRUCTIONS_MAX_CHARS,
-                     peer_fanout_enabled,
+                     peer_fanout_enabled, peer_fanout_limit, peer_mesh_enabled, peer_wait_max,
+                     parallel_read_tools_enabled,
                      MAX_STEPS_DEFAULT, MAX_STEPS_MAX,
                      ROUTER_BODY_BUDGET, STEP_BUDGET_NOTICE_CODE, STEPS_CLAMP_NOTICE_CODE,
                      TRUNCATED_OUTPUT_MAX_TOKENS, TRUNCATED_OUTPUT_NOTICE_CODE, WRAP_UP_MAX_TOKENS,
@@ -1262,6 +1263,22 @@ class HarnessRuntime(RuntimeCommands):
         if (isinstance(requested_fanout, int) and not isinstance(requested_fanout, bool)
                 and 1 <= requested_fanout <= FANOUT_PER_PARENT_MAX):
             config['fanoutPerParent'] = requested_fanout
+        # T13 — bốn khoá mesh mà một phiên có thể khai lúc tạo. Cùng luật với `deadlineSeconds`/
+        # `maxSteps`: kẹp vẫn giữ, nhưng phải NÓI RA (notice ngay sau khi phiên có id), và cờ kẹp nằm
+        # trong config để payload phiên trả được nó. `peerWaitMax` chỉ HẠ được trần `timeoutSeconds`
+        # của phiên này; `parallelReadTools` được NHẬN và GHI LẠI nhưng vòng 22 không đổi hành vi tool
+        # (Q3 — việc đó là T14), nên nó đi kèm một notice nói đúng như vậy.
+        requested_peer_wait = values.get('peerWaitMax')
+        if isinstance(requested_peer_wait, int) and not isinstance(requested_peer_wait, bool) \
+                and requested_peer_wait > 0:
+            applied_peer_wait = min(peer_wait_max(), requested_peer_wait)
+            config['peerWaitMax'] = applied_peer_wait
+            if applied_peer_wait != requested_peer_wait:
+                config['peerWaitClamped'] = True
+        if values.get('peerMesh') is False:
+            config['peerMeshOff'] = True
+        if values.get('parallelReadTools') is True:
+            config['parallelReadTools'] = True
         if engine_clamped_deadline:
             config['deadlineClamped'] = True
         if engine_clamped_steps:
@@ -1287,6 +1304,24 @@ class HarnessRuntime(RuntimeCommands):
                 'applied': max_steps,
                 'message': (f'{STEPS_CLAMP_NOTICE_CODE}: maxSteps {requested_steps} is outside the engine '
                             f'range 1-{MAX_STEPS_MAX} — this session runs with {max_steps} steps'),
+            })
+        if config.get('peerWaitClamped'):
+            self.store.emit(session['id'], 'notice', {
+                'code': PEER_WAIT_CLAMPED_CODE,
+                'requested': requested_peer_wait, 'applied': config['peerWaitMax'],
+                'message': (f'{PEER_WAIT_CLAMPED_CODE}: peerWaitMax {requested_peer_wait} is above the '
+                            f'engine ceiling {peer_wait_max()} s — this session waits at most '
+                            f"{config['peerWaitMax']} s for a peer to deliver"),
+            })
+        if config.get('peerMeshOff') or config.get('parallelReadTools'):
+            self.store.emit(session['id'], 'notice', {
+                'code': PEER_MESH_NOTICE_CODE,
+                'peerMesh': bool(peer_mesh_enabled()) and not config.get('peerMeshOff'),
+                'parallelReadTools': bool(config.get('parallelReadTools')),
+                'message': (f'{PEER_MESH_NOTICE_CODE}: peerMesh={bool(peer_mesh_enabled())} '
+                            f'parallelReadTools={bool(config.get("parallelReadTools"))} — '
+                            'parallel tool execution inside one step is not part of this round '
+                            '(T14), so this flag changes no behaviour yet'),
             })
         role_instructions = ROLES[role].instructions if role in ROLES else ORCHESTRATOR_SOP_GUIDANCE
         prompt = (
@@ -1555,12 +1590,16 @@ class HarnessRuntime(RuntimeCommands):
         """Trần con cùng lúc của MỘT cha: 3 mặc định, nới tới 6.
 
         `config['fanoutPerParent']` là đường của một phiên (kẹp `[1, FANOUT_PER_PARENT_MAX]`);
-        công tắc `BOXFOX_PEER_FANOUT` nới trần cho cả máy khi vận hành cần nhiều nhánh hơn.
+        công tắc `BOXFOX_PEER_FANOUT` áp một trần cho CẢ MÁY và thắng đường của phiên (T13): một
+        công tắc vận hành để hạ tải phải hạ được mọi phiên, kể cả phiên đã khai trần riêng.
         """
+        override = peer_fanout_limit()
+        if override is not None:
+            return override
         raw = (config or {}).get('fanoutPerParent')
         if isinstance(raw, int) and not isinstance(raw, bool):
             return max(1, min(FANOUT_PER_PARENT_MAX, raw))
-        return FANOUT_PER_PARENT_MAX if peer_fanout_enabled() else FANOUT_PER_PARENT_DEFAULT
+        return FANOUT_PER_PARENT_DEFAULT
 
     async def acquire_child_slot(self, parent_sid):
         """Mua slot sinh con của một cha, hoặc từ chối bằng `FANOUT_BUSY`.
@@ -1704,6 +1743,26 @@ class HarnessRuntime(RuntimeCommands):
             record['diffPath'] = diff_path
         return record
 
+    def peer_turn_cost(self, sid, turn):
+        """Chi phí mesh của MỘT lượt (T13) — mỗi số đọc từ ĐÚNG MỘT nguồn.
+
+        - `childCount`/`childSteps`/`childTokens` đọc từ SỔ CON (`children_summary`, một truy vấn):
+          sổ con là nguồn chân lý cho "lượt này sinh con nào", nên không cộng lại từ event.
+        Bản trả về KHÔNG có khoá `turn`: chỗ gọi đã có số lượt của chính nó, và `system_log.write`
+        nhận `turn=` như một tham số riêng nên một khoá trùng tên sẽ làm nó ném `TypeError`.
+
+        - `waitedMs` là số giây lượt này đã ngồi chờ bạn GIAO kết quả; `extensionMs` là số giây hạn
+          chót của lượt đã được hoãn. Hôm nay hai số bằng nhau — chờ bạn là đường DUY NHẤT hoãn hạn
+          chót theo cách này — nhưng chúng tách ra để khi có đường hoãn thứ hai thì hợp đồng không
+          phải đổi, và để người đọc biết hai câu hỏi khác nhau đang được trả lời.
+        """
+        numbers = self.store.children_summary(sid)
+        waited_ms = int(self.wait_extension.get(sid, 0.0) * 1000)
+        del turn  # hợp đồng: người gọi tự nói lượt nào (`system_log.write(..., turn=...)` đã có sẵn)
+        return {'waitedMs': waited_ms, 'extensionMs': waited_ms,
+                'childCount': numbers['spawned'], 'childSteps': numbers['childSteps'],
+                'childTokens': numbers['childTokens'], 'childDeliveries': numbers['deliveries']}
+
     def session_metrics(self, sid):
         """Ba số đo độ dài của một phiên + cờ kẹp hạn chót (N10 + C1).
 
@@ -1729,11 +1788,18 @@ class HarnessRuntime(RuntimeCommands):
         row = self.store.db.execute(
             "SELECT COUNT(*) AS total FROM events WHERE session_id=? AND kind='compression'",
             (sid,)).fetchone()
+        # T13 — khối `peers`: cùng một truy vấn cho mọi con của phiên (xem `children_summary`), cộng
+        # số giây phiên đã chờ bạn GIAO kết quả trong lượt đang chạy. Không có khối này thì câu hỏi
+        # "mesh tốn thêm bao nhiêu" chỉ trả lời được bằng cách mở SQLite bằng tay.
+        peers = self.store.children_summary(sid)
+        peers['waitedMs'] = int(self.wait_extension.get(sid, 0.0) * 1000)
         return {'messageCount': len(messages),
                 'contextEstimate': estimate_tokens(messages, tools),
                 'compressionCount': int(row['total']) if row is not None else 0,
                 'deadlineClamped': bool(config.get('deadlineClamped')),
-                'stepsClamped': bool(config.get('stepsClamped'))}
+                'stepsClamped': bool(config.get('stepsClamped')),
+                'peerMesh': bool(peer_mesh_enabled()),
+                'peers': peers}
 
     async def write_journal_checkpoint(self, sid, saved, compacted, event, config):
         """A4 — bản đọc được của transcript trước nén ra `.session-history/<sid8>/`.
@@ -2036,6 +2102,11 @@ class HarnessRuntime(RuntimeCommands):
         if not isinstance(turn_no, int) or isinstance(turn_no, bool) or turn_no < 1:
             turn_no = self.store.begin_turn(sid)
             self.active_turn[sid] = turn_no
+        # T13 — số đo thời gian chờ là số của RIÊNG lượt. Trần `PEER_WAIT_TOTAL_MAX_SECONDS` là "của
+        # cả lượt", nên bộ đếm phải về 0 ở đây, ở ĐÚNG MỘT chỗ mà mọi lượt đều đi qua: không có dòng
+        # này thì lượt thứ hai của một phiên từng chờ đủ 300 s sẽ không còn ngân sách chờ nào (đo
+        # được khi viết T13 — bộ đếm chỉ được cộng, chưa bao giờ được đặt lại).
+        self.wait_extension[sid] = 0.0
 
         def close_turn(status, finish_reason=None, tool_calls=0, usage=None, extra=None):
             """Đóng cặp `turn_start`/`turn_end` của bước đang mở, nếu có.
@@ -2084,7 +2155,9 @@ class HarnessRuntime(RuntimeCommands):
             self.store.save(sid, messages, 'completed')
             self.store.emit(sid, 'assistant', {'text': text, 'thought': '', 'final': True})
             close_turn('partial', 'stop', 0, None, extra={'partial': True, 'diagnosis': True})
-            self.store.emit(sid, 'finish', {'status': 'completed', 'turn': turn_no})
+            self.store.emit(sid, 'finish', {'status': 'completed', 'turn': turn_no,
+                                            'steps': steps_used,
+                                            **self.peer_turn_cost(sid, turn_no)})
             elapsed_ms = round((time.time() - started) * 1000)
             notice = {'code': reason_code, 'partial': True, 'diagnosis': True,
                       'diagnosisChars': len(text), 'stepsUsed': steps_used, 'toolsRun': tools_run,
@@ -2098,7 +2171,8 @@ class HarnessRuntime(RuntimeCommands):
             system_log.write('turn.end', level='warn', session_id=sid, turn=turn_no, turn_id=steps_used,
                              status='completed', partial=True, diagnosis=True, reason=reason_code,
                              steps=steps_used,
-                             toolsRun=tools_run, textChars=len(text), deadlineUsedMs=elapsed_ms)
+                             toolsRun=tools_run, textChars=len(text), deadlineUsedMs=elapsed_ms,
+                             **self.peer_turn_cost(sid, turn_no))
             return text
         # B3 — cửa sổ giữ chỗ: ba bước cuối của trần bước là của việc CHẨN ĐOÁN, không phải
         # của việc mới. Đo sống vòng 21: lượt chạm trần bước (phiên `ea948649…`) chạy đủ 10/10
@@ -2435,14 +2509,17 @@ class HarnessRuntime(RuntimeCommands):
                         close_turn('partial' if partial else 'completed', choice.get('finish_reason'), 0,
                                    response.get('usage'), extra={'partial': True} if partial else None)
                         self.store.save(sid, messages, 'completed')
-                        self.store.emit(sid, 'finish', {'status': 'completed', 'turn': turn_no})
+                        self.store.emit(sid, 'finish', {'status': 'completed', 'turn': turn_no,
+                                                        'steps': steps_used,
+                                                        **self.peer_turn_cost(sid, turn_no)})
                         elapsed_ms = (time.time() - started) * 1000
                         system_log.write('turn.end', session_id=sid, turn=turn_no, turn_id=steps_used,
                                          status='completed', steps=steps_used,
                                          textChars=len(text or ''), partial=partial,
                                          stepsUsed=steps_used, toolsRun=tools_run,
                                          deadlineUsedMs=elapsed_ms,
-                                         durationMs=elapsed_ms)
+                                         durationMs=elapsed_ms,
+                                         **self.peer_turn_cost(sid, turn_no))
                         return text
                     if len(calls) > 16:
                         raise ValueError('Tool-call batch exceeds limit')
@@ -2520,12 +2597,14 @@ class HarnessRuntime(RuntimeCommands):
         except asyncio.CancelledError:
             close_turn('cancelled')
             self.store.save(sid, messages, 'cancelled')
-            self.store.emit(sid, 'finish', {'status': 'cancelled', 'turn': turn_no})
+            self.store.emit(sid, 'finish', {'status': 'cancelled', 'turn': turn_no,
+                                            'steps': steps_used,
+                                            **self.peer_turn_cost(sid, turn_no)})
             elapsed_ms = (time.time() - started) * 1000
             system_log.write('turn.end', session_id=sid, turn=turn_no, turn_id=steps_used,
                              status='cancelled', steps=steps_used,
                              stepsUsed=steps_used, toolsRun=tools_run, deadlineUsedMs=elapsed_ms,
-                             durationMs=elapsed_ms)
+                             durationMs=elapsed_ms, **self.peer_turn_cost(sid, turn_no))
             raise
         except Exception as exc:
             code, error = classify_failure(exc)
@@ -2552,7 +2631,8 @@ class HarnessRuntime(RuntimeCommands):
                              turn=turn_no, step=steps_used, status='failed',
                              errorCode=code, message=error, steps=steps_used,
                              stepsUsed=steps_used, toolsRun=tools_run, deadlineUsedMs=elapsed_ms,
-                             durationMs=elapsed_ms, detail=failure_detail(exc))
+                             durationMs=elapsed_ms, detail=failure_detail(exc),
+                             **self.peer_turn_cost(sid, turn_no))
             return None
         finally:
             self.run_budget.pop(sid, None)
@@ -2585,6 +2665,11 @@ class HarnessRuntime(RuntimeCommands):
             return self.skill_loader.read(session, args['id'], args.get('file_path', 'SKILL.md'), self.active_messages.get(sid))
         if name == 'session_search':
             return self.session_search(sid, args)
+        if name in {'peer_read', 'await_children'} and not peer_mesh_enabled():
+            # T13 — công tắc giết có hiệu lực NGAY, kể cả với một phiên đã được tạo lúc mesh còn bật:
+            # `config['tools']` của phiên đó vẫn còn tên hai công cụ này, nên hàng rào duy nhất còn
+            # lại là ở đây. Từ chối chứ không "chạy tạm": mesh tắt là mesh tắt.
+            raise PermissionError(f'PEER_MESH_OFF: {name} is unavailable while BOXFOX_PEER_MESH=off')
         if name == 'peer_read':
             return self.peer_read(session, args)
         if name == 'await_children':
@@ -2877,16 +2962,26 @@ class HarnessRuntime(RuntimeCommands):
         """
         sid = session['id']
         mode = str((args or {}).get('mode') or 'all')
+        # T13 — trần `timeoutSeconds` đọc Ở THỜI ĐIỂM GỌI: `BOXFOX_PEER_WAIT_MAX` hạ được lưới an
+        # toàn của cả máy mà không phải khởi động lại tiến trình harness.
+        env_wait_max = peer_wait_max()
+        # `session['config']` không phải lúc nào cũng có (phiên dựng bằng tay trong kiểm thử, hàng cũ
+        # chưa có cấu hình): đọc phòng thủ, thiếu thì dùng trần của máy.
+        own_wait_max = (session.get('config') or {}).get('peerWaitMax') \
+            if isinstance(session.get('config'), dict) else None
+        wait_max = (min(env_wait_max, own_wait_max)
+                    if isinstance(own_wait_max, int) and not isinstance(own_wait_max, bool)
+                    and own_wait_max > 0 else env_wait_max)
         if mode not in ('all', 'any'):
             raise ValueError('PEER_WAIT_MODE: mode must be "all" or "any"')
         requested = (args or {}).get('timeoutSeconds')
-        timeout = PEER_WAIT_SAFETY_SECONDS
+        timeout = min(PEER_WAIT_SAFETY_SECONDS, wait_max)
         if requested is not None:
-            timeout = max(1, min(PEER_WAIT_MAX_SECONDS, int(requested)))
+            timeout = max(1, min(wait_max, int(requested)))
             if timeout != int(requested):
                 self.store.emit(sid, 'notice', {'code': PEER_WAIT_CLAMPED_CODE,
                                                'message': (f'{PEER_WAIT_CLAMPED_CODE}: timeoutSeconds '
-                                                           f'{requested} is outside [1, {PEER_WAIT_MAX_SECONDS}]; '
+                                                           f'{requested} is outside [1, {wait_max}]; '
                                                            f'waiting at most {timeout} s'),
                                                'requested': requested, 'applied': timeout})
         found, missing = self.resolve_peer_addresses(sid, (args or {}).get('targets'))
@@ -3774,6 +3869,11 @@ class HarnessRuntime(RuntimeCommands):
         deliver_to = ([str(item)[:64] for item in raw_targets]
                       if isinstance(raw_targets, list) else [])
         wait = bool(args.get('wait', True))
+        if not peer_mesh_enabled():
+            # T13 — `BOXFOX_PEER_MESH=off` là công tắc giết: hành vi uỷ thác trở về đúng bản trước
+            # đợt 2 (chặn, không giao hàng). Không có đường nào giao cho peer vì `deliver_to` rỗng,
+            # và `wait=false` không có nghĩa gì khi không có `await_children` để đọc kết quả sau.
+            deliver_to, wait = [], True
         self.store.child_start(child['id'], parent_id, turn, step, role, echo_goal)
         self.store.emit(parent_id, 'child', {
             'sessionId': child['id'],

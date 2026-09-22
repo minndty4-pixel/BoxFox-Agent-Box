@@ -18,6 +18,9 @@ from agentbox.memory.session_store import SessionStore
 # B7 (vòng 22) thêm `stepsClamped` — đối xứng với `deadlineClamped` của C1: một `maxSteps`
 # bị kẹp cũng phải nói ra, không im lặng như trước.
 METRIC_KEYS = {'messageCount', 'contextEstimate', 'compressionCount', 'deadlineClamped', 'stepsClamped'}
+# T13 (vòng 22) thêm khối `peers` + cờ `peerMesh` vào CÙNG payload: đó là chỗ duy nhất trả lời
+# được "mesh tốn thêm bao nhiêu" mà không phải mở SQLite bằng tay.
+PEER_METRIC_KEYS = {'peerMesh', 'peers'}
 
 
 def answer(text='done', calls=None, finish='stop'):
@@ -66,7 +69,7 @@ def test_session_metrics_match_the_stored_transcript(tmp_path):
     sid = session['id']
     metrics = runtime.session_metrics(sid)
 
-    assert set(metrics) == METRIC_KEYS
+    assert set(metrics) == METRIC_KEYS | PEER_METRIC_KEYS
     stored = store.get(sid)
     # Đủ mặt: system + user + assistant(xin tool) + kết quả tool + assistant(câu trả lời).
     assert metrics['messageCount'] == len(stored['messages']) == 5
@@ -154,6 +157,10 @@ def test_the_route_serves_the_metrics_and_never_the_transcript(tmp_path):
     payload = asyncio.run(run())
     assert METRIC_KEYS <= set(payload['sessionMetrics'])
     assert payload['sessionMetrics'] == {'messageCount': 5, 'contextEstimate': payload['sessionMetrics']['contextEstimate'],
-                                         'compressionCount': 0, 'deadlineClamped': False, 'stepsClamped': False}
+                                         'compressionCount': 0, 'deadlineClamped': False, 'stepsClamped': False,
+                                         'peerMesh': True,
+                                         'peers': {'spawned': 0, 'running': 0, 'completed': 0, 'partial': 0,
+                                                   'failed': 0, 'childSteps': 0, 'childTokens': 0,
+                                                   'childAnswerChars': 0, 'deliveries': 0, 'waitedMs': 0}}
     assert 'messages' not in payload, 'transcript vẫn không được gửi kèm mỗi lần hỏi'
     assert payload['id'] == sid and payload['events'], 'events vẫn là bản ghi đầy đủ như trước'

@@ -15,7 +15,11 @@ from ..agent_core.failures import (BACKOFF_JITTER, BACKOFF_SECONDS, DEFAULT_MAX_
 from ..agent_core.limits import (CHILD_DEADLINE_SECONDS, CHILD_MAX_STEPS, DEADLINE_DEFAULT_SECONDS,
                                  DEADLINE_MAX_SECONDS, INSTRUCTIONS_MAX_CHARS, MAX_STEPS_DEFAULT,
                                  MAX_STEPS_MAX)
+from ..agent_core.limits import parallel_read_tools_enabled, peer_mesh_enabled, peer_wait_max
 from ..agent_core.roles import ORCHESTRATOR_TOOLS, ROLES
+from ..agent_core.limits import (CHILD_WALL_MAX_SECONDS, FANOUT_GLOBAL_CEILING, FANOUT_PER_PARENT_DEFAULT,
+                                 FANOUT_PER_PARENT_MAX, PEER_DELIVER_MAX, PEER_WAIT_MAX_SECONDS,
+                                 PEER_WAIT_SAFETY_SECONDS, WATCHDOG_TICK_SECONDS)
 from ..agent_core.tool_groups import tool_groups
 from ..memory.session_store import SessionStore
 from ..observability.system_log import (DEFAULT_READ_LINES, MAX_READ_LINES, clamp_lines,
@@ -206,7 +210,22 @@ def create_app(runtime):
                        'deadlineDefaultSeconds': DEADLINE_DEFAULT_SECONDS,
                        'deadlineMaxSeconds': DEADLINE_MAX_SECONDS,
                        'childMaxSteps': CHILD_MAX_STEPS,
-                       'childDeadlineSeconds': CHILD_DEADLINE_SECONDS},
+                       'childDeadlineSeconds': CHILD_DEADLINE_SECONDS,
+                       # T13 — khối `peer`: giao diện đọc trần từ ĐÂY, không chép tay con số. Bốn giá
+                       # trị `*Now` là giá trị ĐANG có hiệu lực (env đọc ở thời điểm gọi), khác với
+                       # hằng số mặc định: một máy đang chạy `BOXFOX_PEER_FANOUT=1` phải thấy 1.
+                       'peer': {'enabled': peer_mesh_enabled(),
+                                'fanoutPerParentDefault': FANOUT_PER_PARENT_DEFAULT,
+                                'fanoutPerParentMax': FANOUT_PER_PARENT_MAX,
+                                'fanoutPerParentNow': runtime.fanout_limit({}),
+                                'fanoutGlobalCeiling': FANOUT_GLOBAL_CEILING,
+                                'deliverMax': PEER_DELIVER_MAX,
+                                'waitSafetySeconds': PEER_WAIT_SAFETY_SECONDS,
+                                'waitMaxSeconds': PEER_WAIT_MAX_SECONDS,
+                                'waitMaxNow': peer_wait_max(),
+                                'parallelReadTools': parallel_read_tools_enabled(),
+                                'watchdogTickSeconds': WATCHDOG_TICK_SECONDS,
+                                'childWallMaxSeconds': CHILD_WALL_MAX_SECONDS}},
         })
 
     async def skill_settings(request):

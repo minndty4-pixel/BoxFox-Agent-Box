@@ -121,6 +121,10 @@ PEER_WAIT_TOTAL_MAX_SECONDS = 300
 PEER_TARGET_GRACE_SECONDS = 20
 PEER_TARGET_POLL_SECONDS = 1.0
 PEER_WAIT_CLAMPED_CODE = 'PEER_WAIT_CLAMPED'
+# Phiên khai một khoá mesh mà vòng 22 KHÔNG đổi hành vi vì nó (`parallelReadTools` — Q3/T14), hoặc
+# khai tắt mesh cho riêng mình: im lặng nhận một cờ rồi không làm gì là đúng lớp lỗi mà cả vòng này
+# đang sửa, nên cờ nào cũng đi kèm một notice nói thẳng nó có hiệu lực hay không.
+PEER_MESH_NOTICE_CODE = 'PEER_MESH_NOTICE'
 # Tổng ngân sách chữ cho phần `summary` của MỘT kết quả `await_children`: mười hai mục tiêu ×
 # 8 000 ký tự là 96 000 ký tự, vượt xa trần 20 000 của một tool result. Mục sau khi hết ngân
 # sách vẫn có mặt trong `done` (kèm `truncated: True`), chỉ phần chữ là không còn.
@@ -152,6 +156,7 @@ PEER_WAIT_FORCE_GRACE_SECONDS = 30
 PEER_MESH_ENV = 'BOXFOX_PEER_MESH'
 PEER_FANOUT_ENV = 'BOXFOX_PEER_FANOUT'
 PARALLEL_READ_ENV = 'BOXFOX_PARALLEL_READ_TOOLS'
+PEER_WAIT_MAX_ENV = 'BOXFOX_PEER_WAIT_MAX'
 SWITCH_ON = {'1', 'on', 'true', 'yes'}
 
 
@@ -170,7 +175,44 @@ def peer_mesh_enabled():
 
 def peer_fanout_enabled():
     """Nới trần fan-out theo cha lên `FANOUT_PER_PARENT_MAX` cho cả máy (mặc định `off`)."""
-    return switch_enabled(PEER_FANOUT_ENV, False)
+    return peer_fanout_limit() == FANOUT_PER_PARENT_MAX
+
+
+def peer_fanout_limit():
+    """Trần con mỗi cha do `BOXFOX_PEER_FANOUT` đặt, hoặc `None` khi biến trống.
+
+    Nhận hai cách viết, vì cả hai đều đã có trong tài liệu: một SỐ (kẹp `[1, FANOUT_PER_PARENT_MAX]`)
+    và các chữ nới trần (`on`/`true`/`yes`). Một con số được ưu tiên đọc là con số, nên `=1` là MỘT
+    con mỗi cha — cách viết mà kế hoạch T13 chốt cho công tắc giết — chứ không phải "bật".
+    """
+    raw = (os.environ.get(PEER_FANOUT_ENV) or '').strip().lower()
+    if not raw:
+        return None
+    if raw.isdigit():
+        return max(1, min(FANOUT_PER_PARENT_MAX, int(raw)))
+    return FANOUT_PER_PARENT_MAX if raw in SWITCH_ON else None
+
+
+def peer_wait_max():
+    """Trần `timeoutSeconds` của MỘT lần chờ bạn (T13): `BOXFOX_PEER_WAIT_MAX=<giây>` hạ nó xuống.
+
+    Chỉ HẠ được, không nâng: trần 300 s là lưới an toàn của lượt, còn biến môi trường là để vận
+    hành chạy chặt hơn. Giá trị không phải số nguyên dương thì bị bỏ qua (giữ trần).
+    """
+    raw = (os.environ.get(PEER_WAIT_MAX_ENV) or '').strip()
+    if not raw.isdigit():
+        return PEER_WAIT_MAX_SECONDS
+    return max(1, min(PEER_WAIT_MAX_SECONDS, int(raw)))
+
+
+def parallel_read_tools_enabled():
+    """`BOXFOX_PARALLEL_READ_TOOLS` (mặc định `off`). Vòng 22 CHỈ KHAI BÁO cờ này.
+
+    Q3 chốt: chạy song song tool ĐỌC trong một bước không nằm trong vòng này (nó là T14, vòng sau).
+    Hàm này tồn tại để `runtime_info` nói được trạng thái cờ, và để T14 chỉ việc dùng — mã vòng 22
+    KHÔNG đổi hành vi tool trong bước vì nó.
+    """
+    return switch_enabled(PARALLEL_READ_ENV, False)
 
 ANSWER_WARN_CHARS = 60_000
 ANSWER_MAX_CHARS = 150_000
