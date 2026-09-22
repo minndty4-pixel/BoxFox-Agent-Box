@@ -464,6 +464,19 @@ export interface EvidenceMissing {
 }
 
 /**
+ * Vòng kiểm độc lập (L14) — một khẳng định cổng đã ĐỌC RA từ câu trả lời, kèm bản ghi `backed`.
+ *
+ * `missing[]` chỉ nói ĐƯỜNG DẪN hay LỆNH nào bị ghim, không nói câu nào của câu trả lời bị ghim.
+ * Bản ghi `claims[]` mới có câu đó (`text` là dòng nguyên văn, backend đã cắt trần), nên khối bằng
+ * chứng phải đọc cả hai thì người đọc mới thấy mình đang bị ghim vì CÂU NÀO — đúng mặt mock `dv23`.
+ */
+export interface EvidenceClaim {
+  text: string
+  path: string | null
+  command: string | null
+}
+
+/**
  * Một mảnh bằng chứng cổng đã chấm, đọc từ `evidence.artifacts[]`. Đây là dữ liệu THÔ của backend
  * (`{kind, path, command, exitCode, changed, tool, step, bytes, …}`) — không suy diễn thêm gì.
  */
@@ -492,6 +505,8 @@ export interface AnswerEvidence {
   mode: string | null
   turn: number | null
   missing: EvidenceMissing[]
+  /** Khẳng định cổng đã đọc ra từ câu trả lời (`claims[]` của event) — nguồn của câu bị ghim. */
+  claims: EvidenceClaim[]
   /** Mảnh bằng chứng cổng đã ghim cho lượt (`artifacts[]` của event). */
   artifacts: EvidenceFragment[]
   /** Tệp trong workspace mà cổng nói đã đổi ở lượt này. */
@@ -576,6 +591,38 @@ function parseEvidenceFragments(value: unknown): EvidenceFragment[] {
   return items
 }
 
+/** `claims[]` của event: những câu cổng đã đọc ra. Bản ghi không có câu thì bỏ — không có gì để in. */
+function parseEvidenceClaims(value: unknown): EvidenceClaim[] {
+  if (!Array.isArray(value)) return []
+  const items: EvidenceClaim[] = []
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object') continue
+    const item = raw as Record<string, unknown>
+    const text = typeof item.text === 'string' ? item.text.trim() : ''
+    if (!text) continue
+    items.push({
+      text,
+      path: typeof item.path === 'string' && item.path ? item.path : null,
+      command: typeof item.command === 'string' && item.command ? item.command : null,
+    })
+  }
+  return items
+}
+
+/**
+ * Câu của câu trả lời đã bị cổng ghim cho một mục `missing[]`.
+ *
+ * `missing[].detail` CHÍNH LÀ đường dẫn hoặc lệnh mà `claims[]` ghi lại (xem `assess` của backend),
+ * nên tra thẳng theo khoá đó — không đoán theo thứ tự. Không có bản ghi (phiên cũ, hoặc lý do thuộc
+ * phép đo hỏng) ⇒ `null`, và mục ấy giữ nguyên lối vẽ cũ.
+ */
+export function chargedClaimText(claims: EvidenceClaim[], item: EvidenceMissing): string | null {
+  const key = item.detail.trim()
+  if (!key) return null
+  const found = claims.find((claim) => claim.path === key || claim.command === key)
+  return found ? found.text : null
+}
+
 /** `changedFiles[]`: backend ghi chuỗi đường dẫn, bản cũ hơn có thể ghi `{path}` — nhận cả hai. */
 function parseChangedFiles(value: unknown): string[] {
   if (!Array.isArray(value)) return []
@@ -609,6 +656,7 @@ export function readAnswerEvidence(event: HarnessEvent | null | undefined): Answ
     mode: typeof block.mode === 'string' ? block.mode : null,
     turn: typeof block.turn === 'number' ? Math.trunc(block.turn) : null,
     missing: parseEvidenceMissing(block.missing),
+    claims: parseEvidenceClaims(block.claims),
     artifacts: parseEvidenceFragments(block.artifacts),
     changedFiles: parseChangedFiles(block.changedFiles),
   }
@@ -2445,18 +2493,30 @@ function EvidenceBlock({
                 {t('chat.evidenceMissingEmpty')}
               </div>
             ) : (
-              missing.map((item) => (
-                <div
-                  key={`${item.reason}:${item.detail}`}
-                  data-evidence-missing={item.reason}
-                  className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-2 py-1"
-                >
-                  <div className="text-[11px] text-amber-100/90">{evidenceReasonText(t, item.reason)}</div>
-                  {item.detail && <div className="mt-0.5 text-[10px] text-zinc-400">{item.detail}</div>}
-                  {/* Mã máy in nguyên văn: người đọc đối chiếu được với log, và test có hook để bám. */}
-                  <div className="mt-0.5 font-mono text-[10px] text-zinc-500">{item.reason}</div>
-                </div>
-              ))
+              missing.map((item) => {
+                // L14: câu của câu trả lời bị ghim vì mục này — đọc từ `claims[]`, không suy diễn.
+                const claimText = chargedClaimText(evidence.claims, item)
+                return (
+                  <div
+                    key={`${item.reason}:${item.detail}`}
+                    data-evidence-missing={item.reason}
+                    className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-2 py-1"
+                  >
+                    {/* Câu bị ghim in NGUYÊN VĂN trong ngoặc kép và đi trước lý do: người đọc phải
+                        thấy mình bị ghim vì câu nào, chứ không chỉ vì đường dẫn nào (mock `dv23`,
+                        nhóm `Khẳng định chưa có bằng chứng`). */}
+                    {claimText && (
+                      <div className="text-[11px] text-amber-100" data-evidence-claim="true">
+                        {`“${claimText}”`}
+                      </div>
+                    )}
+                    <div className="text-[11px] text-amber-100/70">{evidenceReasonText(t, item.reason)}</div>
+                    {item.detail && <div className="mt-0.5 text-[10px] text-zinc-400">{item.detail}</div>}
+                    {/* Mã máy in nguyên văn: người đọc đối chiếu được với log, và test có hook để bám. */}
+                    <div className="mt-0.5 font-mono text-[10px] text-zinc-500">{item.reason}</div>
+                  </div>
+                )
+              })
             )}
           </div>
         </div>
