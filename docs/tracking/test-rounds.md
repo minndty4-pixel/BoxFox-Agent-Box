@@ -1608,8 +1608,12 @@ lượt 2  notice EVIDENCE_INSUFFICIENT {verdict: insufficient,
   media của lượt, `result.artifact`, hàng `E:` trong nhật ký, `assistant.evidence.artifacts[]`. Mục con:
   `Lệnh đã chạy` (kèm `exit` và thời lượng), `Tệp và ảnh của lượt`, `Khẳng định chưa có bằng chứng` — nhóm rỗng
   **vẫn hiện** kèm câu giải thích, để người đọc biết lượt đã được chấm.
-- **Dòng receipt** giữ nguyên các số cũ và thêm hai số mới: `N bằng chứng`, `M khẳng định chưa kiểm`. Lượt cũ
-  (không mang trường `evidence`) **không** được thêm số nào — vẫn `3 commands  1 failed` như ảnh vòng trước.
+- **Dòng receipt** giữ nguyên các số cũ và thêm hai số của cổng: `N bằng chứng` (đếm ĐÚNG số mục mà khối Bằng
+  chứng liệt kê) và `M khẳng định chưa kiểm`. Ô thứ hai rơi khi `M = 0` (phép đếm cũ bỏ số 0), nên lượt xanh đọc ra
+  `3 commands  4 bằng chứng` còn hàng đầu khối vẫn in `0 khẳng định chưa kiểm` — hai mặt của cùng một lượt, không
+  phải hai số mâu thuẫn. Lượt cũ (không mang trường `evidence`) **không** được thêm số nào — vẫn
+  `3 commands  1 failed` như ảnh vòng trước. (Hậu kiểm đợt 3: `M` chỉ đếm lý do LÀ khẳng định; lượt
+  `not_measurable` in `chưa đo được` ở ô đó, tiêu đề nhóm đổi thành `Chưa đo được lượt này`.)
 - **Bấm mở được**: ảnh/ghi hình mở lightbox như cũ; tệp bằng chứng gọi `showTab('files', { path })` nên mở thẳng
   trong panel Files — **kể cả** đường dẫn ẩn dưới `.generated_artifacts/`.
 - Đo bằng DOM trên xem trước đã đăng ký (`localhost:3100`, phiên `b9b47d6f…`): hai huy hiệu
@@ -1628,13 +1632,15 @@ lượt 2  notice EVIDENCE_INSUFFICIENT {verdict: insufficient,
 
 ### Phần E — Số đo kiểm thử của đợt
 
-- Backend, cả bộ unit trên cây làm việc cuối: `.venv/bin/python -m pytest backend/tests/unit -q` ⇒
-  **1 failed, 1073 passed in 173,87 s** — ca đỏ duy nhất là `test_terminal_tools.py::test_terminal_exec_echo`, đỏ vì
-  môi trường (`bash: Write-Output: command not found`, box không có PowerShell), không liên quan mã đợt này. Hai ca
-  từng đỏ vì hàng `E:` (Phần B) nay xanh. Nhóm cổng: `test_evidence_gate.py` **28 passed**, `test_evidence_gate_runtime.py`
-  **13 passed**; nhóm bị đụng bởi hàng `E:`: `test_session_journal.py` **7 passed**,
-  `test_harness_runtime.py` **17 passed**, `test_write_plan.py` **19 passed**, `test_eval_setup.py` **56 passed**;
-  `-k "prune or retention"` **1 passed / 1073 deselected**.
+- Backend, cả bộ unit: `.venv/bin/python -m pytest backend/tests/unit -q` ⇒ **1 failed, 1073 passed in 173,87 s**
+  lúc viết mục này, và **1 failed, 1078 passed in 182,40 s** sau hậu kiểm (xem mục cuối sổ này). Ca đỏ duy nhất là
+  `test_terminal_tools.py::test_terminal_exec_echo`, đỏ vì môi trường (`bash: Write-Output: command not found`, box
+  không có PowerShell), không liên quan mã đợt này. Hai ca từng đỏ vì hàng `E:` (Phần B) nay xanh. Nhóm cổng: lúc
+  viết mục này `test_evidence_gate.py` **28 passed**, `test_evidence_gate_runtime.py` **13 passed** (con số 13 sai:
+  tệp có **14** hàm test mức module — sửa ở hậu kiểm, xem mục cuối); sau hậu kiểm **31** và **15 passed**. Nhóm bị
+  đụng bởi hàng `E:`: `test_session_journal.py` **7 passed**, `test_harness_runtime.py` **17 passed**,
+  `test_write_plan.py` **19 passed**, `test_eval_setup.py` **56 passed**; `-k "prune or retention"`
+  **1 passed / 1073 deselected**.
 - Giao diện: `npx vitest run src/components/chat/HarnessStepView.evidence.test.tsx
   src/store/harnessChatStore.journal.test.ts src/components/chat/HarnessStepView.test.tsx` ⇒ **3 tệp, 41 ca đạt**;
   cả bộ giao diện (do phiên build P4 chạy hai lần) ⇒ **122 tệp / 1012 ca đạt, 0 đỏ**; `tsc -b --noEmit` ⇒ **exit 0**.
@@ -1654,7 +1660,8 @@ lượt 2  notice EVIDENCE_INSUFFICIENT {verdict: insufficient,
   hai hàng tệp), `/code/.generated_artifacts/images/p35_06_narrow.png` (900 px: mọi khối xuống dòng gọn, chip lý
   do `tệp đã đổi nhưng không có lệnh nào kiểm lại` + mã `change_without_verification`),
   `/code/.generated_artifacts/images/p35_05_legacy_turn.png` (lượt **cũ**: `chưa kiểm chứng` +
-  `lượt trước vòng 23 — không có số đo bằng chứng`, giữ nguyên receipt `3 commands  1 failed`, không có khối
+  `lượt này không mang số đo bằng chứng (phiên cũ, hoặc công tắc đo đang tắt)`, giữ nguyên receipt
+  `3 commands  1 failed`, không có khối
   bằng chứng), `/code/.generated_artifacts/images/p35_03_open_in_files.png` (bấm mở tệp bằng chứng trong panel
   Files) và `/code/.generated_artifacts/images/p35_04_open_hidden_diff.png` (mở được cả diff ẩn dưới
   `.generated_artifacts/…`). Cùng chuỗi này ở phiên P4: `/code/.generated_artifacts/images/p4_02_session_open.png`,
@@ -1663,7 +1670,7 @@ lượt 2  notice EVIDENCE_INSUFFICIENT {verdict: insufficient,
 - **Các khẳng định cũ bị đổi (đọc ảnh vòng 21/22 phải hiểu đúng, kẻo thành "hồi quy giả")**:
   1. Chỗ nhãn `done` viết tay cạnh tên model giờ là **huy hiệu ba trạng thái**. Ảnh cũ (`images/t17ui_*.png`,
      `foundation_e2e_04_answer.png`…) vẫn đúng với thời điểm chụp; lượt cũ **không** thành `đã kiểm chứng` mà
-     mang `chưa kiểm chứng` kèm câu "lượt trước vòng 23 — không có số đo bằng chứng".
+     mang `chưa kiểm chứng` kèm câu "lượt này không mang số đo bằng chứng (phiên cũ, hoặc công tắc đo đang tắt)".
   2. Dòng receipt lượt cũ giữ nguyên số cũ (`3 commands  1 failed`); hai số `N bằng chứng` / `M khẳng định chưa
      kiểm` chỉ xuất hiện ở lượt có trường `evidence`.
   3. Văn của model **không bị sửa** khi thiếu bằng chứng ở chế độ `warn` — cổng chỉ ghim nhãn và hàng `E:`;
@@ -1698,3 +1705,51 @@ lỗi trong mã mesh của đợt 2 — tất cả đã sửa và đo lại, chi
 - Ghi nhận: **BUG-51** vẫn `CHƯA SỬA` (nợ có ý thức, đã thành phát hiện riêng
   `bb865553-5358-4f06-9f40-7ed37c249cf8`), và **BUG-44** — lỗi mở đầu của đợt này — nay `ĐÃ SỬA`, kèm món nợ
   "khẳng định thuần văn vẫn ngoài tầm cổng".
+
+### Hậu kiểm đợt 3 — hai vòng soát song song tìm ra sáu lỗi thật trong chính mã mới (BUG-60…BUG-65), bốn phát hiện để lại sổ
+
+**Ai soát, soát cái gì.** Ba việc chạy song song trên `3dadeb3`: một vòng soát **backend** (cổng, worker, harness), một
+vòng soát **giao diện + eval + tài liệu**, một việc **tinh gọn mã**. Kết luận của cả hai vòng: *Ship with mitigations* —
+hướng đúng, nhưng ba lỗi hợp đồng khoá làm cổng chấm SAI trên máy thật dù mọi bài kiểm đều xanh. Đây là loại lỗi
+"test xanh, máy đỏ": bài kiểm dựng **hình dạng giả** của kết quả worker nên không ai bắt được.
+
+**Ba lỗi hợp đồng khoá (đều mức Cao, đã sửa cùng phiên).**
+1. **BUG-60** — `dispatch` không truyền `turn`/`step`/`toolCallId`. Ba tham số có từ `c82d9d2` (BUG-59) nhưng **chỗ gọi
+   thật** không truyền, nên `step` luôn `None`: mọi mảnh bằng chứng và mọi ảnh chụp rơi về bước `000` — đúng khoảng
+   trống mà P1.4 dựng ra để bịt. Sửa: `dispatch` dựng `identity` từ `active_turn`/`active_step`/`call_id` và truyền cho
+   **mọi** lời gọi tool; tám đôi thực thi giả trong bài kiểm nhận `**_identity`.
+2. **BUG-61** — cổng đọc `stdout`/`exitCode`, worker trả `content`/`exit_code`. Hệ quả: **mọi phép dò trả "không đổi
+   gì"** (nhánh R1 "lệnh + mã thoát + phép dò xác nhận" không bao giờ chạy, và một lượt đáng bị ghim có thể được chấm
+   `sufficient`), còn mọi mảnh lệnh mang `exit None` — đúng thứ ảnh `p35_02_verified_turn.png` cho thấy.
+3. **BUG-62** — `changed` lấy từ `numbers['path']`, khoá mà worker CỐ Ý bỏ (`test_worker_evidence.py` khoá đúng điều
+   đó). Nên mảnh diff không khớp tệp đã đổi ⇒ **mọi lượt ghi có đủ diff vẫn bị ghim `change_without_verification`** ở
+   `warn`, và ở `enforce` là một vòng sửa vô ích mỗi lượt ghi. Đường dẫn nay lấy từ `args['path']` của chính lời gọi ghi.
+
+**Ba lỗi nhất quán/độ bền (đã sửa).** **BUG-63**: cổng tự hỏng SAU khi phán thì hai mặt đọc nói hai kết luận (hàng `X:`
+nói "chưa đo được", event `assistant` giữ phán thật) — nay nhánh `except` ghim đúng `not_measurable` + `gate_error`.
+**BUG-64**: bộ đếm lượt đếm cả hàng `user` của lệnh điều khiển (`/status` phát một hàng mà không qua `begin_turn`) ⇒ từ
+đó mọi lượt vừa lệch số vừa ghi `turn.index_drift` mãi; nay hàng đó mang `control: true` và phép đếm bỏ qua. **BUG-65**:
+vòng dò ghi tệp bằng chứng không có trần thời gian (một box treo ở đó ăn hạn chót của lượt và xoá câu trả lời) — nay
+bọc cùng `_clamp_timeout(...)` như phép dò.
+
+**Bốn phát hiện của vòng soát giao diện, ba sửa.** (F1) lượt `not_measurable` vẫn bị đếm và gọi tên như "khẳng định
+chưa kiểm chứng": nay số khẳng định chỉ đếm năm mã lý do LÀ khẳng định, ô thứ ba của dòng biên nhận in `chưa đo được`,
+và tiêu đề nhóm đổi thành `Chưa đo được lượt này` (lý do vẫn hiện nguyên vẹn — đổi cách đếm không được phép giấu lý do).
+(F2) câu dự phòng dịch mã lý do không bao giờ chạy (`t()` trả chính khoá khi cả hai từ điển trượt) nên người đọc thấy
+`chat.evidenceReason.<mã>`; nay trả mã máy, và từ điển có thêm `no_change` ở **cả** `vi.ts` và `en.ts`. (F4) câu giải
+thích huy hiệu xanh in số mảnh CỔNG chấm trong khi hàng đầu khối in số mục khối liệt kê (đo sống: `checked=3` mà giao
+diện hiện `4 bằng chứng`) — nay bỏ số khỏi câu đó. (F3) câu ghi chú cho lượt không mang trường `evidence` từng đổ cho
+"phiên cũ" trong khi công tắc `off` cũng không sinh trường đó: câu mới nói cả hai nguyên nhân.
+
+**Hai chỗ chữ nghĩa trong chính tài liệu này (F5, F6) đã sửa:** câu "thêm hai số mới" ở Phần C, và con số
+`test_evidence_gate_runtime.py` ở Phần E (13 → đúng **14** ca lúc đó, **15** sau hậu kiểm).
+
+**Bốn phát hiện ghi sổ, CHƯA SỬA** (xem §6.26 sổ lỗi): R3 phạt oan văn xuôi trung thực khi lượt không đọc lại tệp đã
+dẫn chứng; `_COMMAND_RE` nuốt dấu phân cách nên lệnh trong dấu backtick không bao giờ khớp; lượt giao việc con được
+`sufficient` khi con còn đang chạy; và `en.ts` của khối bằng chứng vẫn là tiếng Việt (theo nếp có sẵn của tệp).
+
+**Số đo sau hậu kiểm.** Backend: cả bộ unit ⇒ **1 failed, 1078 passed in 182,40 s** (ca đỏ duy nhất vẫn là
+`test_terminal_tools.py::test_terminal_exec_echo`, đỏ vì box không có PowerShell); nhóm cổng ⇒ `test_evidence_gate.py`
+**31 passed**, `test_evidence_gate_runtime.py` **15 passed**, `test_turn_counter.py` **5 passed** (thêm ca "lệnh điều
+khiển không phải một lượt"). Giao diện: ba tệp liên quan ⇒ **50 ca đạt** (tệp bằng chứng từ 7 lên **10 ca**: thêm ba ca
+— biên nhận `not_measurable`, lý do là khẳng định vẫn đếm, mã lý do lạ in nguyên mã), `tsc -b --noEmit` ⇒ **exit 0**.

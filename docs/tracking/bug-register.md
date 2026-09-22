@@ -1258,3 +1258,70 @@ chính cú `file_write` của model cũng lọt. (3) **Đỏ môi trường, kh�
 được Internet). (4) **Luật §4.5 vẫn giữ:** `turn.end` chỉ mang **số** (`evidenceVerdict`, `evidenceMissing`, `evidenceChecked`,
 `changedFiles` là số đếm, `artifacts` là số đếm) — danh sách đường dẫn nằm ở event `assistant` và hàng `E:`, tức ở chỗ người đọc được,
 không phải ở nhật ký hệ thống. (5) `BUG-51` (§6.24) vẫn **CHƯA SỬA** — vòng sau, kèm test khoá thứ tự reap/finish.
+
+### 6.26 Vòng 22 (đợt 3, hậu kiểm song song) — ba lỗi hợp đồng khoá giữa worker trong box và cổng, hai lỗi nhất quán, một trần thời gian: BUG-60…BUG-65 (ĐÃ SỬA); BUG-66…BUG-69 (ghi nhận)
+
+Hai vòng soát độc lập (một backend, một giao diện + eval + tài liệu) chạy song song trên `3dadeb3` cùng một việc tinh gọn
+mã, và cả hai kết luận *Ship with mitigations*. Sáu lỗi thật lộ ra, năm trong chúng thuộc **cùng một họ**: hợp đồng khoá
+giữa kết quả worker trong box và bộ phán — bài kiểm dựng **hình dạng giả** nên tất cả đều xanh, còn máy thật thì chấm sai
+âm thầm. Đây là loại lỗi mà "có test" không cứu được: test phải dựng **đúng** hình dạng worker trả.
+
+**BUG-60 — mức Cao — `dispatch` không truyền `turn`/`step`/`toolCallId`, nên mọi mảnh bằng chứng và ảnh chụp rơi về bước
+`000`.** Ba tham số có từ `c82d9d2` (BUG-59) nhưng **không chỗ gọi thật nào** truyền chúng: `runtime.dispatch` gọi ba tham
+số vị trí ở cả hai nhánh, nên worker nhận `step=None` ⇒ `evidence_step()` ra `000` và hai route capture/ghi hình vẫn
+không biết ảnh thuộc bước nào — đúng khoảng trống mà P1.4 dựng ra để bịt. Sửa: `dispatch` dựng
+`identity = {turn, step, tool_call_id}` từ `active_turn`/`active_step`/`call_id` rồi truyền cho **mọi** lời gọi tool; tám
+đôi thực thi giả trong `backend/tests/unit` nhận `**_identity` để đôi bên nói cùng một hợp đồng.
+
+**BUG-61 — mức Cao — cổng đọc `stdout`/`exitCode`, worker trả `content`/`exit_code`.** `worker.py` trả
+`{'content', 'exit_code', 'is_error', 'artifact'}` cho lệnh, còn `evidence_gate.artifacts_from_calls` đọc
+`result.get('exitCode')`/`result.get('stdout')` và `runtime.probe_workspace` đọc `answer.get('stdout')`. Hai hệ quả sống:
+(1) **mọi phép dò trả "không đổi gì"** — `probe_paths` luôn rỗng, `probe_found` luôn `False`, nhánh R1 "lệnh + mã thoát +
+phép dò xác nhận" không bao giờ chạy, và một lượt chỉ có bằng chứng qua phép dò được chấm `sufficient`; (2) mọi mảnh
+`command` mang `exit None` (đúng như hàng `E:` sống cho thấy). Sửa: hai hàm đọc khoá thật (`box_exit_code`,
+`box_output_tail`), vẫn đọc được khoá cũ để không phá dữ liệu cũ; bài kiểm dựng lại đúng hình dạng worker.
+
+**BUG-62 — mức Cao — `changed` lấy từ `numbers['path']`, khoá mà worker CỐ Ý bỏ.** `worker.py:437` trả `numbers` đã lọc
+bỏ `path` (đường dẫn ở lại trong tệp bằng chứng — `test_worker_evidence.py` khoá đúng điều đó), nên `changed` luôn `None`
+và mảnh diff không bao giờ khớp tệp đã đổi: lượt ghi có đủ diff vẫn bị ghim `change_without_verification` — báo động sai
+đúng ở mặt mà mốc nâng `enforce` (§6 của kế hoạch) đếm. Sửa: đường dẫn workspace lấy từ `args['path']` của chính lời gọi
+ghi (harness biết chắc, không phải văn của model), `numbers['path']` giữ làm đường dự phòng.
+
+**BUG-63 — mức Thấp — cổng tự hỏng SAU khi phán: hai mặt đọc nói hai kết luận.** `info` được gán phán thật trước khi
+ghim hàng `E:`; nếu chỗ ghim ném thì hàng `X:` + notice nói "chưa đo được" còn `assistant.evidence` và `turn.end` vẫn
+mang phán thật. Sửa: nhánh `except` gán lại `info` thành `not_measurable` + `missing=[{reason: 'gate_error'}]`. Test:
+`test_cong_hong_sau_khi_phan_thi_moi_mat_doc_noi_chua_do_duoc`.
+
+**BUG-64 — mức Thấp — bộ đếm lượt đếm cả hàng `user` của lệnh điều khiển.** `_turn_index` đếm mọi hàng `user`, nhưng
+`/status`, `/compact`… phát một hàng `user` mà **không** đi qua `begin_turn` ⇒ bộ đếm của bảng vượt `turn_count` một lần
+cho mỗi lệnh điều khiển, và từ đó mọi lượt vừa lệch số vừa ghi `turn.index_drift` mãi. Sửa: hàng `user` của lệnh điều
+khiển mang `control: true` (`skills/runtime_commands.py`) và phép đếm bỏ qua đúng những hàng đó (`json_extract`); hàng cũ
+không có khoá thì vẫn đếm như trước. Test: `test_lenh_dieu_khien_khong_phai_la_mot_luot`.
+
+**BUG-65 — mức Vừa — vòng dò ghi tệp bằng chứng không có trần thời gian.** `probe_workspace` bọc lệnh `find` trong
+`asyncio.wait_for` nhưng cú `file_write` ngay sau đó thì không, dù chính chú thích cạnh nó gọi tệp đó là "quà, không phải
+điều kiện": một box treo ở chỗ ghi ấy ăn hạn chót của lượt và xoá luôn câu trả lời đang được chấm. Sửa: cùng trần
+`_clamp_timeout(...)` như phép dò.
+
+**BUG-66…BUG-69 — ghi nhận, CHƯA SỬA (vòng sau).** (66) **R3 phạt oan văn xuôi trung thực:** `known_paths` chỉ là phạm vi
+*lượt này*, nên câu trả lời nhắc tới tệp có thật trong box mà lượt không đọc (ví dụ dẫn chứng `docs/plan/…`) vẫn bị
+`claim_path_not_in_turn`; §2.3 của kế hoạch đòi thêm điều kiện "**và** không tồn tại trong box", nhưng chưa có manifest
+nào để kiểm — ba hình dạng đã đo: câu dẫn chứng, đích của `sed -i`, đích của `pytest`. (67) **`_COMMAND_RE` nuốt dấu phân
+cách**: dấu phân cách nằm trong chính `group(0)` mà `claim_paths` lưu lại, nên lệnh viết trong dấu backtick bị
+cắt mất một ký tự và **không bao giờ** khớp,
+còn lệnh không backtick chỉ khớp phần thân — một đích bịa vẫn qua. (68) **Lượt giao việc con được ghim `sufficient` khi
+con còn đang chạy** (`delegate_task` trả `status='started'` là một mảnh `child` hợp lệ). (69) **Cổng chỉ chấm được hình
+dạng câu trả lời, không chấm được khẳng định thuần văn** — món nợ đã ghi ở §6.25 vẫn nguyên.
+
+**Sửa theo vòng soát giao diện (cùng phiên).** (70) lượt `not_measurable` bị đếm và gọi tên như "khẳng định chưa kiểm
+chứng": nay số khẳng định chỉ đếm năm mã lý do LÀ khẳng định (`CLAIM_REASON_CODES`), ô thứ ba của dòng biên nhận in
+`chưa đo được`, tiêu đề nhóm đổi thành `Chưa đo được lượt này`, và lý do của phép đo vẫn hiện nguyên vẹn. (71) câu dự
+phòng dịch mã lý do không bao giờ chạy (`t()` trả chính khoá khi cả hai từ điển trượt) nên người đọc thấy
+`chat.evidenceReason.<mã>`; nay trả mã máy, và từ điển có thêm `no_change` ở cả `vi.ts` và `en.ts`. (72) câu giải thích
+huy hiệu xanh in số mảnh CỔNG chấm trong khi hàng đầu khối in số mục khối liệt kê (đo sống: `checked=3`, giao diện hiện
+`4 bằng chứng`) — nay bỏ số khỏi câu đó. Ba việc này đều có ca kiểm mới trong
+`frontend/src/components/chat/HarnessStepView.evidence.test.tsx`.
+
+**Hai chỗ chữ nghĩa trong sổ vòng (`docs/tracking/test-rounds.md`) đã sửa:** câu nói dòng biên nhận "thêm hai số mới"
+(ô `0 khẳng định chưa kiểm` rơi khi rỗng), và con số `test_evidence_gate_runtime.py` **13** (đúng ra **14** ca lúc đó,
+**15** sau hậu kiểm).

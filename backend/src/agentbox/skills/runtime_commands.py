@@ -45,7 +45,9 @@ class RuntimeCommands:
             self.store.db.execute('INSERT INTO command_invocations VALUES(?,?,?,?)', (sid, invocation_id, request, json.dumps(result)))
         self.store.emit(sid, 'command_resolved', asdict(resolved) | {'invocationId': invocation_id})
         if resolved.kind == 'control':
-            self.store.emit(sid, 'user', {'text': prompt})
+            # `control: True` — hàng `user` của một LỆNH ĐIỀU KHIỂN không phải một lượt: bộ đếm
+            # lượt dựng lại từ bảng (`HarnessRuntime._turn_index`) bỏ qua đúng những hàng này.
+            self.store.emit(sid, 'user', {'text': prompt, 'control': True})
             if resolved.command == 'stop':
                 await self.stop(sid)
                 result['output'] = 'Stopped current turn and its children.'

@@ -192,7 +192,7 @@ describe('HarnessStepView — cổng bằng chứng (P4)', () => {
     expect(badge?.className).not.toContain('text-emerald-400')
     // Vắng khối là THẬT: không bịa một mục bằng chứng rỗng cho đủ hình.
     expect(host.querySelector('[data-evidence-artifacts="true"]')).toBeNull()
-    expect(host.querySelector('[data-evidence-note="true"]')?.textContent).toContain('lượt trước vòng 23')
+    expect(host.querySelector('[data-evidence-note="true"]')?.textContent).toContain('phiên cũ, hoặc công tắc đo đang tắt')
   })
 
   it('bấm mục tệp ⇒ `showTab("files", {path})` đúng tham số', () => {
@@ -295,5 +295,70 @@ describe('HarnessStepView — cổng bằng chứng (P4)', () => {
     expect(rendered?.textContent).toContain('exit 0')
     expect(rendered?.textContent).toContain('2.9s')
     expect(rendered?.textContent).not.toContain('None')
+  })
+
+  it('not_measurable ⇒ biên nhận nói `chưa đo được`, không đếm lý do đo hỏng thành khẳng định', () => {
+    const host = render([
+      userTurn,
+      finalAssistant({
+        verdict: 'not_measurable',
+        turn: 1,
+        mode: 'warn',
+        checked: 0,
+        missing: [{ reason: 'box_probe_failed', detail: 'timeout sau 20s' }],
+        changedFiles: [],
+        artifacts: [],
+      }),
+    ])
+
+    const receipt = host.querySelector('[data-evidence-toggle="true"]')?.textContent ?? ''
+    expect(receipt).toContain('chưa đo được')
+    expect(receipt).not.toContain('khẳng định chưa kiểm')
+    expect(host.querySelector('[data-evidence-missing-title="true"]')?.textContent).toBe('Chưa đo được lượt này')
+    // Lý do của phép đo vẫn hiện nguyên vẹn: đổi cách đếm không được phép giấu lý do.
+    const item = host.querySelector('[data-evidence-missing="box_probe_failed"]')
+    expect(item?.textContent).toContain('phép dò bằng chứng trong box bị lỗi')
+    expect(item?.textContent).toContain('box_probe_failed')
+  })
+
+  it('lý do là khẳng định vẫn đếm và vẫn mang tiêu đề khẳng định', () => {
+    const host = render([
+      userTurn,
+      finalAssistant({
+        verdict: 'insufficient',
+        turn: 1,
+        mode: 'warn',
+        checked: 0,
+        missing: [
+          { reason: 'change_without_verification', detail: 'src/app.py' },
+          { reason: 'box_probe_failed', detail: 'timeout' },
+        ],
+        changedFiles: ['src/app.py'],
+        artifacts: [],
+      }),
+    ])
+
+    const receipt = host.querySelector('[data-evidence-toggle="true"]')?.textContent ?? ''
+    expect(receipt).toContain('1 khẳng định chưa kiểm')
+    expect(host.querySelector('[data-evidence-missing-title="true"]')?.textContent).toBe('Khẳng định chưa có bằng chứng')
+  })
+
+  it('mã lý do chưa có câu dịch ⇒ in nguyên mã máy, không in khoá i18n', () => {
+    const host = render([
+      userTurn,
+      finalAssistant({
+        verdict: 'insufficient',
+        turn: 1,
+        mode: 'warn',
+        checked: 0,
+        missing: [{ reason: 'verdict_from_the_future', detail: '' }],
+        changedFiles: [],
+        artifacts: [],
+      }),
+    ])
+
+    const item = host.querySelector('[data-evidence-missing="verdict_from_the_future"]')
+    expect(item?.textContent).toContain('verdict_from_the_future')
+    expect(item?.textContent).not.toContain('chat.evidenceReason')
   })
 })

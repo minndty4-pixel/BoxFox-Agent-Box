@@ -65,7 +65,7 @@ class FixtureExecutor:
         self.seconds = seconds
         self.calls = []
 
-    async def execute(self, name, args, sid):
+    async def execute(self, name, args, sid, **_identity):
         self.calls.append((sid, name))
         if name in self.slow:
             await asyncio.sleep(self.seconds)

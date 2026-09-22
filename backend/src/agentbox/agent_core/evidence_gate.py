@@ -58,6 +58,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from .limits import ANSWER_MAX_CHARS, ANSWER_WARN_CHARS
+
 __all__ = ['WRITE_TOOLS', 'PLAN_TOOLS', 'UI_TOOLS', 'READ_TOOLS', 'DELEGATE_TOOLS',
            'WRITE_CMD_RE', 'VERIFY_CMD_RE', 'READ_CMD_RE',
            'EVIDENCE_ROOT_REL', 'EVIDENCE_PROBE_COMMAND', 'EVIDENCE_KIND', 'EVIDENCE_ARTIFACT_RE',
@@ -196,7 +198,6 @@ class TurnProfile:
     uncertain: bool = False
     needs_probe: bool = False
     plan: bool = False
-    tools: int = 0
     kind: str = 'none'
     notes: tuple = field(default=())
 
@@ -254,11 +255,9 @@ def classify_turn(calls):
     uncertain = False
     failed_writes = False
     plan = False
-    tools = 0
     for call in calls or ():
         if not isinstance(call, dict):
             continue
-        tools += 1
         name = str(call.get('name') or '').strip()
         args = _args_of(call)
         failed = _call_failed(call)
@@ -337,7 +336,7 @@ def classify_turn(calls):
                        read_commands=tuple(profile['read_commands']), ui_tools=ui_tools,
                        ui_paths=ui_paths, delegated=delegated, failed=tuple(profile['failed']),
                        read_only=read_only, uncertain=uncertain, needs_probe=needs_probe,
-                       plan=plan, tools=tools, kind=kind, notes=tuple(notes))
+                       plan=plan, kind=kind, notes=tuple(notes))
 
 
 def _artifact_kind(path, name, result):
@@ -354,6 +353,31 @@ def _artifact_kind(path, name, result):
     if path and EVIDENCE_ARTIFACT_RE.search(str(path)):
         return 'file'
     return None
+
+
+def box_exit_code(result):
+    """Mã thoát của một lệnh trong box: worker trả ``exit_code`` (``sandbox/worker.py``).
+
+    ``exitCode`` chỉ còn trong bài kiểm cũ. Đọc sai khoá thì mọi mảnh `command` mang `exit None`,
+    và nhánh "lệnh + exit code + phép dò xác nhận" của R1 không bao giờ chạy được trên máy thật.
+    """
+    for key in ('exit_code', 'exitCode'):
+        value = result.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return None
+
+
+def box_output_tail(result, limit=200):
+    """Văn đầu ra của một lệnh trong box: worker trả văn ở ``content`` (``stdout`` là tên cũ).
+
+    ``limit=None`` trả nguyên văn — phép dò box đọc TỪNG DÒNG nên không được cắt đuôi.
+    """
+    for key in ('content', 'stdout'):
+        value = result.get(key)
+        if isinstance(value, str):
+            return value if limit is None else value[-limit:]
+    return ''
 
 
 def artifacts_from_calls(calls):
@@ -381,17 +405,22 @@ def artifacts_from_calls(calls):
             command = str(args.get('command') or '').strip()
             if command:
                 fragments.append(dict(base, kind='command', command=command,
-                                      exitCode=result.get('exitCode'),
+                                      exitCode=box_exit_code(result),
                                       artifact=_clean_path(artifact),
-                                      stdoutTail=result.get('stdout', '')[-200:]))
+                                      stdoutTail=box_output_tail(result)))
             continue
         kind = _artifact_kind(artifact, name, result)
         if kind:
             # `path` is the evidence FILE the reader opens; `changed` is the workspace file the
             # evidence speaks about. Keeping both is what lets R1 ask "is there proof for THIS
             # change" without matching a diff file against a source file by name.
+            # `numbers` KHÔNG mang `path` (worker giữ nó trong tệp bằng chứng, xem
+            # `test_worker_evidence.py`), nên đường dẫn workspace phải lấy từ chính lời gọi ghi —
+            # thiếu nó thì mảnh diff không bao giờ khớp tệp đã đổi, và R1 phạt oan mọi lượt ghi.
+            written = _clean_path(args.get('path')) if name in WRITE_TOOLS else None
             fragment = dict(base, kind=kind, path=_clean_path(artifact),
-                            changed=_clean_path(numbers.get('path')) if numbers.get('path') else None,
+                            changed=written or (_clean_path(numbers.get('path'))
+                                                if numbers.get('path') else None),
                             sha256=numbers.get('sha256After') or numbers.get('sha256'),
                             bytes=numbers.get('bytes'))
             target = args.get('url') or args.get('selector')
@@ -466,11 +495,12 @@ def claim_paths(text):
     return claims
 
 
-def _path_backed(path, known, probe_paths):
+def _path_backed(path, known):
+    """Does ``known`` hold the same file as ``path``?"""
     candidate = _clean_path(path)
     if not candidate:
         return True
-    for value in list(known) + list(probe_paths):
+    for value in known:
         other = _clean_path(value)
         if not other:
             continue
@@ -513,7 +543,7 @@ def _has_change_evidence(fragments, changed_paths, profile, probe_found=False):
     for fragment in evidence:
         if fragment.get('kind') in ('diff', 'patch', 'file'):
             for target in _fragment_targets(fragment):
-                if not changed_paths or _path_backed(target, changed_paths, ()):
+                if not changed_paths or _path_backed(target, changed_paths):
                     return True
         if fragment.get('kind') == 'command':
             command = str(fragment.get('command') or '')
@@ -546,10 +576,10 @@ def _fragment(value):
     return fragment
 
 
-def _verdict_dict(verdict, missing, fragments, changed_paths, claims, notes, checked=None):
+def _verdict_dict(verdict, missing, fragments, changed_paths, claims, notes):
     return {
         'verdict': verdict,
-        'checked': len(fragments) if checked is None else checked,
+        'checked': len(fragments),
         'missing': missing,
         'artifacts': fragments,
         'changedFiles': [{'path': path} if isinstance(path, str) else path
@@ -621,25 +651,29 @@ def assess(answer_text, profile, probe, artifacts, *, mode='warn'):
         else:
             notes.append('read_only')
     # ---- R3: claims the turn cannot back -------------------------------------------------------
+    # R5 thắng R3 (§2.3): luật bắt bịa cần BIẾT đường dẫn có nằm trong box hay không, mà một phép
+    # dò hỏng thì harness không còn dữ liệu nào về box — kết tội câu trả lời lúc đó đúng là thứ
+    # R5 cấm, nên lượt chỉ được ghim `not_measurable`.
+    claims_chargeable = probe_ok or not profile.needs_probe
     known_paths = list(profile.writes) + list(profile.reads) \
         + [value for f in fragments for value in _fragment_targets(f)] + list(probe_paths)
     claims = []
     for claim in claim_list:
         if claim.get('path'):
-            backed = _path_backed(claim['path'], known_paths, probe_paths)
+            backed = _path_backed(claim['path'], known_paths)
         else:
             backed = _command_backed(claim.get('command'), profile, fragments)
         claims.append(dict(claim, backed=backed))
-        if backed or not claim.get('assertive'):
+        if backed or not claim.get('assertive') or not claims_chargeable:
             continue
         missing.append({'reason': 'claim_path_not_in_turn' if claim.get('path')
                         else 'answer_references_unknown_command',
                         'detail': claim.get('path') or claim.get('command')})
     # ---- R4: the D-4 ceiling ------------------------------------------------------------------
-    long_answer = len(text) > 60_000
+    long_answer = len(text) > ANSWER_WARN_CHARS
     if long_answer:
         notes.append('answer_long')
-    if len(text) > 150_000:
+    if len(text) > ANSWER_MAX_CHARS:
         missing.append({'reason': 'answer_too_long', 'detail': '%d chars' % len(text)})
     blocking = [item for item in missing if item['reason'] not in UNMEASURED_REASONS]
     if blocking:

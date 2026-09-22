@@ -159,3 +159,23 @@ def test_so_luot_lay_tu_bang_events_khi_bo_dem_cua_phien_lech(tmp_path, monkeypa
     # Số dư nằm trong khối `data` (kỷ luật của system log: trường lạ đi vào `data`).
     assert (drift[0]['turn'], drift[0]['data']['index'], drift[0]['code']) == (1, 2, 'TURN_INDEX_DRIFT')
     store.close()
+
+
+def test_lenh_dieu_khien_khong_phai_la_mot_luot(tmp_path):
+    """P1.1 — hàng `user` của một LỆNH ĐIỀU KHIỂN không được tính là lượt.
+
+    `/status` phát một hàng `user` mà không đi qua `begin_turn`, nên đếm thô mọi hàng `user` sẽ làm
+    bộ đếm của bảng vượt `turn_count` một lần cho mỗi lệnh điều khiển — và mọi lượt sau đó vừa lệch
+    số vừa ghi `turn.index_drift` mãi.
+    """
+    client = FixtureModel([answer('một')])
+    store, runtime, session = run_turns(tmp_path, client, ('lượt một',))
+    sid = session['id']
+    assert runtime._turn_index(sid) == 1
+
+    store.emit(sid, 'user', {'text': '/status', 'control': True})
+    assert runtime._turn_index(sid) == 1, 'lệnh điều khiển không phải một lượt'
+
+    store.emit(sid, 'user', {'text': 'lượt hai', 'turn': 2})
+    assert runtime._turn_index(sid) == 2
+    store.close()

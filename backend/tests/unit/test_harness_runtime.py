@@ -38,7 +38,7 @@ class FixtureExecutor:
         self.calls = []
         self.cleaned = []
 
-    async def execute(self, name, args, sid):
+    async def execute(self, name, args, sid, **_identity):
         self.calls.append((name, args, sid))
         return {'content': 'observed fixture result'}
 
@@ -158,7 +158,7 @@ def test_stop_busy_and_resume_no_replayed_tool(tmp_path):
     async def run():
         entered = asyncio.Event()
         class Waiting(FixtureExecutor):
-            async def execute(self, name, args, sid):
+            async def execute(self, name, args, sid, **_identity):
                 # A1: `session_ensure` chạy ở đầu lượt và phải trả NGAY — nếu nó cũng treo thì lượt
                 # không bao giờ tới được công cụ đang chờ, và phép kiểm này không còn nói về ca
                 # "công cụ đang chạy thì bị stop".

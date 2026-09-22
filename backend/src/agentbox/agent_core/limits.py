@@ -249,11 +249,8 @@ ANSWER_WARN_CHARS = 60_000
 ANSWER_MAX_CHARS = 150_000
 ANSWER_LENGTH_WARN_CODE = 'ANSWER_LENGTH_WARN'
 ANSWER_TOO_LONG_CODE = 'ANSWER_TOO_LONG'
-# Tên gọi của hai mã trên trong kế hoạch đợt 3 (`ANSWER_LONG` / `ANSWER_TRUNCATED`). Đợt 1 đã
-# ship chúng dưới tên `ANSWER_LENGTH_WARN`/`ANSWER_TOO_LONG` và giao diện đang đọc hai mã đó, nên
-# ở đây chỉ có BÍ DANH — đổi tên mã đang chạy sẽ làm nhãn cũ mất nghĩa mà không thêm gì.
-ANSWER_LONG_CODE = ANSWER_LENGTH_WARN_CODE
-ANSWER_TRUNCATED_CODE = ANSWER_TOO_LONG_CODE
+# Kế hoạch đợt 3 gọi hai mã này là `ANSWER_LONG` / `ANSWER_TRUNCATED`; đợt 1 đã ship chúng dưới tên
+# trên và giao diện đang đọc hai tên đó, nên tên trong kế hoạch chỉ là cách gọi, không phải hằng số.
 # Dòng chỉ dẫn này sống ở ĐÂY, không chép tay vào từng prompt vai: `runtime.start()` là nơi
 # duy nhất dựng prompt hệ thống cho mọi vai, nên mọi prompt đều mang câu này.
 ANSWER_LENGTH_HINT = (

@@ -63,7 +63,7 @@ class FixtureExecutor:
         self.slow = set(slow)
         self.seconds = seconds
 
-    async def execute(self, name, args, sid):
+    async def execute(self, name, args, sid, **_identity):
         if name in self.slow:
             await asyncio.sleep(self.seconds)
         return {'content': 'observed fixture result'}

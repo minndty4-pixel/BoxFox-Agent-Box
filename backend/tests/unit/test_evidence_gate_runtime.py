@@ -84,7 +84,7 @@ class FixtureExecutor:
         return self.root / 'workspace' / str(path)
 
     # --- hợp đồng executor -------------------------------------------------
-    async def execute(self, name, args, sid):
+    async def execute(self, name, args, sid, **_identity):
         self.calls.append({'name': name, 'args': copy.deepcopy(args)})
         if name == 'file_write':
             relative = str(args.get('path') or '')
@@ -92,7 +92,11 @@ class FixtureExecutor:
             target.parent.mkdir(parents=True, exist_ok=True)
             content = str(args.get('content') or '')
             target.write_text(content, encoding='utf-8')
-            result = {'content': f'Written {relative}', 'numbers': {'path': relative, 'bytes': len(content)}}
+            # Hình dạng THẬT của worker sau P1.4: `numbers` KHÔNG mang `path` — đường dẫn
+            # workspace chỉ còn trong `args` của lời gọi ghi (và trong tệp bằng chứng).
+            result = {'content': f'Written {relative}'}
+            if self.with_evidence:
+                result['numbers'] = {'bytes': len(content)}
             if self.with_evidence and EVIDENCE_DIR not in relative:
                 result.update({'diff': f'--- a/{relative}\n+++ b/{relative}\n@@ -1 +1 @@\n+x\n',
                                'artifact': ARTIFACT})
@@ -100,7 +104,8 @@ class FixtureExecutor:
         if name == 'terminal_exec':
             if self.probe_raises:
                 raise RuntimeError('box down')
-            return {'stdout': self.probe_stdout, 'exitCode': 0, 'content': 'ok'}
+            # Khoá thật của worker: `content` (văn đầu ra) + `exit_code`.
+            return {'content': self.probe_stdout, 'exit_code': 0}
         if name == 'captures_prune':
             if not self.prune_ok:
                 return {'ok': False, 'error': 'SESSION_OPS_UNAVAILABLE'}
@@ -213,6 +218,30 @@ def test_cong_tu_hong_thi_cau_tra_loi_di_nguyen_van(tmp_path, monkeypatch):
     store.close()
 
 
+def test_cong_hong_sau_khi_phan_thi_moi_mat_doc_noi_chua_do_duoc(tmp_path, monkeypatch):
+    """§3.7 — ghim hàng `E:` hỏng SAU khi đã phán: mọi mặt đọc phải nói "chưa đo được".
+
+    Trước đây `info` giữ phán thật trong khi hàng `X:` và notice nói "cổng tự hỏng" — cùng một
+    lượt, hai kết luận (event `assistant` nói `sufficient`, sổ nói chưa đo được).
+    """
+    def boom(self, *_args, **_kwargs):
+        raise RuntimeError('journal pin exploded')
+
+    monkeypatch.setattr(HarnessRuntime, 'pin_evidence', boom)
+    client = FixtureModel([answer('', calls=[call('file_write', {'path': 'src/app.py', 'content': 'x'})]),
+                           answer('Đã sửa `src/app.py`.')])
+    store, _runtime, session = run_turns(tmp_path, client, ('sửa app',))
+    sid = session['id']
+
+    info = events_of(store, sid, 'assistant')[-1]['evidence']
+    assert info['verdict'] == 'not_measurable', 'mặt đọc không được giữ phán thật khi cổng tự hỏng'
+    assert [item['reason'] for item in info['missing']] == ['gate_error']
+    assert events_of(store, sid, 'turn_end')[-1]['evidenceVerdict'] == 'not_measurable'
+    failed = [row for row in notices(store, sid) if row.get('code') == EVIDENCE_GATE_FAILED_CODE]
+    assert len(failed) == 1, 'cổng tự hỏng vẫn phải để lại một notice'
+    store.close()
+
+
 def test_cong_tat_off_thi_khong_do_gi_va_khong_co_truong_evidence(tmp_path, monkeypatch):
     """P3.5 — `off` là "không đo", không phải "đo ra rỗng": event `assistant` không có `evidence`."""
     monkeypatch.setenv(EVIDENCE_GATE_ENV, 'off')
@@ -299,7 +328,7 @@ def _insufficient_turn_calls():
             answer('Đã sửa `src/app.py`.')]
 
 
-def test_vong_va_chay_khi_con_ngan_sach_va_chi_nhan_ban_ngan_hon(tmp_path, monkeypatch):
+def test_vong_va_chay_dung_mot_lan_khi_con_ngan_sach(tmp_path, monkeypatch):
     """P3.3 (a) — `enforce` + `insufficient` + còn ngân sách ⇒ ĐÚNG MỘT vòng model, không tool schema."""
     monkeypatch.setenv(EVIDENCE_GATE_ENV, 'enforce')
     executor = FixtureExecutor(tmp_path, with_evidence=False)

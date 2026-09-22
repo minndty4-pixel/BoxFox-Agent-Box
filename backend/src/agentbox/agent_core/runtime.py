@@ -666,6 +666,18 @@ def context_window_locked(environ=None):
     return str(raw or '').strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
+def _log_turn_drift(sid, turn, index):
+    """P1.1 — bộ đếm lượt của phiên và bảng `events` không còn nói cùng một chuyện.
+
+    Số của BẢNG thắng (mọi bề mặt khác đọc nó), và chuyện lệch phải được GHI LẠI: im lặng
+    sửa số là thứ đã làm BUG-43 khó tìm. Một chỗ dựng dòng log, hai chỗ gọi (`start`/`_run`).
+    """
+    system_log.write('turn.index_drift', level='warn', code=TURN_INDEX_DRIFT_CODE,
+                     session_id=sid, turn=turn, index=index,
+                     message=('the session turn counter and the transcript disagree; '
+                              'using the counted index for this turn'))
+
+
 def _journal_row(store, session_id, text, numbers, data=None):
     """Ghim MỘT hàng nhật ký kiểu `X:` (trần bước, câu trả lời bị cắt) — trả số thứ tự, hoặc `None`.
 
@@ -756,11 +768,10 @@ def _journal_answer_truncated(store, session_id, chars, kept, path=None):
     phiên (`X:<sid8>-<seq>`) để khối ký ức đọc được nó. Trả `None` khi không ghi được — chỗ
     gọi không được coi im lặng là thành công.
     """
-    return _journal_row(store, session_id,
-                        f'{ANSWER_TOO_LONG_CODE}: the final answer was {chars} chars and was cut at '
-                        f'{kept} — the full content is at {path}' if path else
-                        f'{ANSWER_TOO_LONG_CODE}: the final answer was {chars} chars and was cut at '
-                        f'{kept} — the full content must be written to a file in the workspace',
+    head = (f'{ANSWER_TOO_LONG_CODE}: the final answer was {chars} chars and was cut at {kept} — '
+            'the full content ')
+    tail = f'is at {path}' if path else 'must be written to a file in the workspace'
+    return _journal_row(store, session_id, head + tail,
                         {'chars': chars, 'keptChars': kept}, {'path': path})
 
 
@@ -1066,6 +1077,17 @@ def decision_deadline(args, kind, now=None):
     except (TypeError, ValueError):
         pass
     return round(now + min(DECISION_MAX_SECONDS, max(1.0, seconds)), 3)
+
+
+def _clamp_timeout(limit, remaining, margin):
+    """Trần thời gian của một VIỆC PHỤ trong lượt: không dài hơn phần đời còn lại của lượt.
+
+    `remaining` là `None` khi lượt không có ngân sách thời gian (đường chẩn đoán sau hạn
+    chót) — lúc đó giữ trần gốc. `margin` là phần phải chừa lại cho việc chính của lượt.
+    """
+    if remaining is None:
+        return limit
+    return max(1.0, min(limit, remaining - margin))
 
 
 class HarnessRuntime(RuntimeCommands):
@@ -1450,10 +1472,7 @@ class HarnessRuntime(RuntimeCommands):
         # này thì một phiên đang ở lượt thứ N bỗng nhận số 1, và mọi thứ buộc theo lượt lệch hết.
         counted = self._turn_index(sid) + 1
         if counted != turn:
-            system_log.write('turn.index_drift', level='warn', code=TURN_INDEX_DRIFT_CODE,
-                             session_id=sid, turn=turn, index=counted,
-                             message=('the session turn counter and the transcript disagree; '
-                                      'using the counted index for this turn'))
+            _log_turn_drift(sid, turn, counted)
             turn = counted
         self.active_turn[sid] = turn
         event = {'text': prompt, 'turn': turn}
@@ -1997,9 +2016,7 @@ class HarnessRuntime(RuntimeCommands):
         remaining = self.seconds_left(self.run_budget.get(sid))
         if remaining is not None and remaining <= 2:
             return None
-        limit = EVIDENCE_PROBE_TIMEOUT_SECONDS
-        if remaining is not None:
-            limit = max(1.0, min(limit, remaining - 1))
+        limit = _clamp_timeout(EVIDENCE_PROBE_TIMEOUT_SECONDS, remaining, 1)
         try:
             answer = await asyncio.wait_for(
                 self.executor.execute('file_write', {'path': path, 'content': text}, sid), limit)
@@ -2231,11 +2248,9 @@ class HarnessRuntime(RuntimeCommands):
         # Trần của phép dò không được dài hơn phần đời còn lại của lượt: một phép dò vượt hạn chót
         # sẽ xoá luôn câu trả lời mà nó đang định kiểm chứng.
         remaining = self.seconds_left(budget) if budget is not None else None
-        limit = EVIDENCE_PROBE_TIMEOUT_SECONDS
-        if remaining is not None:
-            if remaining <= 2:
-                return {'ok': False, 'error': 'no time to probe', 'files': []}
-            limit = max(1.0, min(limit, remaining - 1))
+        if remaining is not None and remaining <= 2:
+            return {'ok': False, 'error': 'no time to probe', 'files': []}
+        limit = _clamp_timeout(EVIDENCE_PROBE_TIMEOUT_SECONDS, remaining, 1)
         try:
             answer = await asyncio.wait_for(
                 self.executor.execute('terminal_exec', {'command': command}, sid), limit)
@@ -2245,18 +2260,25 @@ class HarnessRuntime(RuntimeCommands):
             return {'ok': False, 'error': f'unreachable: {type(exc).__name__}', 'files': []}
         if not isinstance(answer, dict) or answer.get('is_error'):
             return {'ok': False, 'error': 'unreachable: probe failed', 'files': []}
-        output = answer.get('stdout') if isinstance(answer.get('stdout'), str) else ''
+        # Khoá của worker là `content` (`stdout` chỉ có trong bài kiểm cũ): đọc sai khoá thì phép dò
+        # LUÔN thấy "không đổi gì" — nó im lặng đúng ở lượt cần bị bắt nhất, và mọi mặt đọc khác
+        # (`changedFiles`, `probe_found`, nhánh R1 "lệnh + exit code + phép dò") mất dữ liệu theo.
+        output = evidence_gate.box_output_tail(answer, None)
         files = self.parse_probe_output(output)
         artifact = f'{evidence_gate.EVIDENCE_ROOT_REL}/{scope}/{scope}_{step_no or 0}_changes.txt'
         try:
-            await self.executor.execute('file_write', {'path': artifact, 'content': output}, sid)
-        except Exception:  # bản đọc được là quà, không phải điều kiện: tệp không ghi được thì thôi
+            # Bản đọc được là quà, không phải điều kiện — nhưng nó cũng không được treo lượt: một box
+            # treo ở chính chỗ ghi này sẽ ăn hạn chót và xoá câu trả lời đang được chấm.
+            await asyncio.wait_for(
+                self.executor.execute('file_write', {'path': artifact, 'content': output}, sid),
+                _clamp_timeout(EVIDENCE_PROBE_TIMEOUT_SECONDS, remaining, 1))
+        except Exception:  # tệp không ghi được thì thôi
             artifact = None
         return {'ok': True, 'error': None, 'files': files, 'artifact': artifact,
                 'turn': turn_no, 'epoch': int(started),
                 'truncated': len(files) >= EVIDENCE_PROBE_MAX_FILES, 'stdoutChars': len(output)}
 
-    async def repair_answer(self, sid, config, messages, verdict, profile, probe, budget, original):
+    async def repair_answer(self, sid, config, messages, verdict, profile, probe, budget):
         """P3.3 — ĐÚNG MỘT vòng vá, và nó không bao giờ được ăn hết hạn chót của lượt.
 
         Ba lớp chặn, tất cả đều bắt buộc: (1) còn ít hơn `EVIDENCE_REPAIR_MIN_REMAINING_SECONDS`
@@ -2264,7 +2286,7 @@ class HarnessRuntime(RuntimeCommands):
         lỗi/timeout/bản rỗng nuốt tại đây và giữ văn cũ. Rủi ro lớn nhất của cả đợt 3 là vòng vá
         biến lượt thành `DEADLINE` không có câu trả lời nào.
 
-        KHÔNG so độ dài với bản gốc: việc của vòng vá là THÊM con trỏ bằng chứng ("diff ở đâu,
+        KHÔNG so độ dài với câu trả lời cũ: việc của vòng vá là THÊM con trỏ bằng chứng ("diff ở đâu,
         lệnh nào, exit code nào"), nên bản vá hợp lệ thường DÀI hơn câu trả lời cũ. Trần của nó là
         `EVIDENCE_REPAIR_MAX_TOKENS`, và văn sau vá còn bị chấm lại lần nữa — bản vá nói dối thì
         nhãn vẫn là `insufficient` (không giả vờ).
@@ -2272,9 +2294,7 @@ class HarnessRuntime(RuntimeCommands):
         remaining = self.seconds_left(budget)
         if remaining is not None and remaining < EVIDENCE_REPAIR_MIN_REMAINING_SECONDS:
             return None
-        limit = EVIDENCE_REPAIR_TIMEOUT_SECONDS
-        if remaining is not None:
-            limit = max(1.0, min(limit, remaining - 10))
+        limit = _clamp_timeout(EVIDENCE_REPAIR_TIMEOUT_SECONDS, remaining, 10)
         prompt = evidence_gate.repair_message(verdict, profile, probe)
         try:
             async with asyncio.timeout(limit):
@@ -2369,9 +2389,15 @@ class HarnessRuntime(RuntimeCommands):
         T2, nhưng phiên cũ nhận cột mới với mặc định 0, nên lượt kế tiếp của một phiên đã có N
         lượt trong transcript sẽ mang số 1. Đếm bằng SQL trên bảng thì luôn dựng lại được, và
         `_run` so hai nguồn ở mỗi lượt: khớp thì im lặng, lệch thì nói ra rồi lấy số của bảng.
+
+        Lệnh điều khiển (`/status`, `/compact`…) cũng phát một hàng `user` nhưng KHÔNG đi qua
+        `begin_turn`: nó không phải một lượt, và hàng đó mang `control: true` để phép đếm bỏ qua.
+        Thiếu dấu đó thì mỗi lệnh điều khiển làm bộ đếm vượt `turn_count` một lần, và mọi lượt sau
+        vừa lệch số vừa ghi `turn.index_drift` mãi.
         """
         row = self.store.db.execute(
-            "SELECT COUNT(*) AS total FROM events WHERE session_id=? AND kind='user'",
+            "SELECT COUNT(*) AS total FROM events WHERE session_id=? AND kind='user' "
+            "AND COALESCE(json_extract(payload, '$.control'), 0) = 0",
             (sid,)).fetchone()
         return int(row['total'] or 0) if row is not None else 0
 
@@ -2418,10 +2444,7 @@ class HarnessRuntime(RuntimeCommands):
         # được ghi lại — im lặng sửa số là thứ đã làm BUG-43 khó tìm.
         index = self._turn_index(sid)
         if index and index != turn_no:
-            system_log.write('turn.index_drift', level='warn', code=TURN_INDEX_DRIFT_CODE,
-                             session_id=sid, turn=turn_no, index=index,
-                             message=('the session turn counter and the transcript disagree; '
-                                      'using the counted index for this turn'))
+            _log_turn_drift(sid, turn_no, index)
             turn_no = index
             self.active_turn[sid] = turn_no
         # T13 — số đo thời gian chờ là số của RIÊNG lượt. Trần `PEER_WAIT_TOTAL_MAX_SECONDS` là "của
@@ -2505,7 +2528,7 @@ class HarnessRuntime(RuntimeCommands):
                 repaired = False
                 if mode == 'enforce' and verdict['verdict'] == 'insufficient':
                     better = await self.repair_answer(sid, config, messages, verdict, profile, probe,
-                                                      budget, text)
+                                                      budget)
                     if better:
                         text, repaired = better, True
                         verdict = evidence_gate.assess(text, profile, probe, fragments, mode=mode)
@@ -2528,6 +2551,14 @@ class HarnessRuntime(RuntimeCommands):
                 system_log.write('evidence.gate_failed', level='warn', session_id=sid,
                                  turn=turn_no, code=EVIDENCE_GATE_FAILED_CODE,
                                  message=f'{type(exc).__name__}: {str(exc)[:200]}')
+                # §3.7 — cổng tự hỏng thì MỌI mặt đọc phải nói cùng một câu: hàng `X:`, notice và số
+                # trong `turn.end`/`assistant.evidence` đều là "chưa đo được". Trước đây `info` giữ
+                # phán thật trong khi nhật ký nói chưa đo — hai mặt, hai kết luận.
+                info = {'verdict': 'not_measurable', 'turn': turn_no, 'mode': mode, 'repair': False,
+                        'checked': 0, 'claims': [],
+                        'missing': [{'reason': 'gate_error',
+                                     'detail': f'{type(exc).__name__}: {str(exc)[:200]}'}],
+                        'artifacts': [], 'changedFiles': []}
                 try:
                     self.pin_gate_failed(sid, turn_no, step_no, exc)
                 except Exception:  # pragma: no cover - ngay chỗ ghim hỏng thì chỉ còn dòng log
@@ -3117,10 +3148,15 @@ class HarnessRuntime(RuntimeCommands):
             return await self.journal_write(sid, args)
         if name == 'journal_brief':
             return self.journal_brief(sid, args)
+        # P1.4/BUG-60: danh tính THẬT của lượt/bước/`toolCallId` đi cùng mọi yêu cầu tool — hai
+        # route capture/ghi hình của box và tên mảnh bằng chứng đều đọc ba khoá này, nên thiếu
+        # chúng thì mọi ảnh chụp và mảnh bằng chứng rơi về bước `000` dù box đã đọc từ lâu.
+        identity = {'turn': self.active_turn.get(sid), 'step': self.active_step.get(sid),
+                    'tool_call_id': call_id}
         if name in {'file_write', 'file_edit_block', 'terminal_exec'}:
             async with self.writer_lock:
-                return await self.executor.execute(name, args, sid)
-        return await self.executor.execute(name, args, sid)
+                return await self.executor.execute(name, args, sid, **identity)
+        return await self.executor.execute(name, args, sid, **identity)
 
     JOURNAL_ROUTE_LIMIT = 200
 

@@ -15,7 +15,9 @@ from agentbox.agent_core import evidence_gate as gate
 
 
 def write_call(path, ok=True, step=None, artifact=None, numbers=None):
-    result = {'ok': True} if ok else {'is_error': True, 'error': 'permission denied'}
+    # Hình dạng THẬT của `sandbox/worker.py`: văn ở `content`, `numbers` KHÔNG mang `path` (đường
+    # dẫn ở lại trong tệp bằng chứng). Bài kiểm dựng sai hình dạng thì khoá sai vẫn xanh.
+    result = {'content': f'Written {path}'} if ok else {'is_error': True, 'error': 'permission denied'}
     if artifact:
         result['artifact'] = artifact
     if numbers:
@@ -27,14 +29,18 @@ def write_call(path, ok=True, step=None, artifact=None, numbers=None):
 
 
 def diff_call(path='frontend/src/App.tsx', step=2):
-    """Một lần ghi có sinh tệp diff — đúng hình dạng P1.4 hứa (worker trả `artifact` + `numbers`)."""
+    """Một lần ghi có sinh tệp diff — đúng hình dạng worker trả trên máy thật.
+
+    `numbers` KHÔNG có `path`; đường dẫn workspace đến từ `args['path']` của chính lời gọi ghi.
+    """
     return write_call(path, step=step,
                       artifact=f'.generated_artifacts/captures/evidence/abc/abc_{step}_x.diff',
-                      numbers={'path': path, 'bytes': 812, 'sha256After': 'b' * 64})
+                      numbers={'bytes': 812, 'sha256After': 'b' * 64})
 
 
 def command_call(command, stdout='ok', exit_code=0, step=None, artifact=None):
-    result = {'stdout': stdout, 'exitCode': exit_code}
+    # Khoá thật của worker: `content` + `exit_code`.
+    result = {'content': stdout, 'exit_code': exit_code}
     if artifact:
         result['artifact'] = artifact
     call = {'name': 'terminal_exec', 'args': {'command': command}, 'result': result}
@@ -141,6 +147,28 @@ def test_manh_bang_chung_giu_ca_tep_bang_chung_lan_tep_da_doi():
     assert fragments[1]['artifact'] == '.generated_artifacts/tools/u1.txt'
 
 
+def test_khoa_cua_worker_duoc_doc_dung_ten():
+    """Hợp đồng khoá với `sandbox/worker.py`: `content`/`exit_code`, không phải `stdout`/`exitCode`.
+
+    Đọc sai tên khoá là lỗi im lặng: mọi mảnh `command` mang `exit None`, phép dò không thấy tệp nào.
+    """
+    assert gate.box_exit_code({'exit_code': 3, 'exitCode': 7}) == 3, 'khoá thật thắng'
+    assert gate.box_exit_code({'exitCode': 7}) == 7, 'khoá cũ vẫn đọc được'
+    assert gate.box_exit_code({'content': 'x'}) is None
+    assert gate.box_exit_code({'exit_code': 'x'}) is None, 'mã thoát phải là số nguyên'
+    assert gate.box_output_tail({'content': 'hello'}) == 'hello'
+    assert gate.box_output_tail({'stdout': 'hello'}) == 'hello'
+    assert gate.box_output_tail({'content': 'abcdef'}, 3) == 'def'
+    assert gate.box_output_tail({'content': 'abcdef'}, None) == 'abcdef'
+    assert gate.box_output_tail({}) == ''
+
+
+def test_manh_lenh_mang_ma_thoat_va_duoi_van_that():
+    fragment = gate.artifacts_from_calls(
+        [command_call('npx vitest run', stdout='12 passed', exit_code=0)])[0]
+    assert fragment['exitCode'] == 0 and fragment['stdoutTail'] == '12 passed'
+
+
 def test_ghi_hong_thi_khong_co_manh_bang_chung_nao():
     assert evidence(write_call('backend/src/x.py', ok=False, step=1)) == [], \
         'không có bằng chứng nào để đưa ra cho một lần ghi hỏng'
@@ -202,10 +230,31 @@ def test_r1_phat_hien_qua_phep_do_box():
     assert accepted['verdict'] == 'sufficient', 'lệnh + exit code + phép dò xác nhận là đủ'
 
 
+def test_r5_thang_r3_khi_phep_do_box_hong():
+    """§2.3 — phép dò hỏng thì harness không còn dữ liệu về box: không được kết tội câu trả lời.
+
+    Cùng một câu trả lời, cùng một hồ sơ: phép dò chết ⇒ `not_measurable`; phép dò sống ⇒ khẳng
+    định về đường dẫn không có trong lượt bị ghim đúng mã.
+    """
+    profile = gate.classify_turn([command_call('python3 scripts/migrate.py')])
+    assert profile.needs_probe and not profile.writes
+    text = 'Đã chạy migrate, số liệu nằm ở `db/out.json`.'
+
+    dead = gate.assess(text, profile, {'ok': False, 'error': 'unreachable', 'files': []}, [])
+    assert dead['verdict'] == 'not_measurable'
+    assert [item['reason'] for item in dead['missing']] == ['box_probe_failed']
+
+    alive = gate.assess(text, profile, {'ok': True, 'files': []}, [])
+    assert alive['verdict'] == 'insufficient'
+    assert [item['reason'] for item in alive['missing']] == ['claim_path_not_in_turn']
+
+
 def test_r3_cau_tra_loi_neu_tep_khong_co_trong_luot():
     profile = gate.classify_turn([write_call('backend/src/x.py', step=1)])
+    # R3 chỉ kết tội khi harness CÓ dữ liệu box (R5 thắng R3 khi phép dò hỏng — xem ca riêng).
     verdict = gate.assess('Đã sửa `backend/src/x.py` và cả `docs/khong-he-ton-tai.md`.',
-                          profile, None, evidence(diff_call('backend/src/x.py', step=1)))
+                          profile, {'ok': True, 'files': []},
+                          evidence(diff_call('backend/src/x.py', step=1)))
 
     assert verdict['verdict'] == 'insufficient'
     assert [item['reason'] for item in verdict['missing']] == ['claim_path_not_in_turn']

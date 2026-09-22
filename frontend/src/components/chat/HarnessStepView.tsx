@@ -501,6 +501,28 @@ export const EVIDENCE_BADGE_CLASS: Record<EvidenceBadgeState, string> = {
   not_measurable: 'text-zinc-400',
 }
 
+/**
+ * Năm mã `missing[].reason` là lời của CÂU TRẢ LỜI (khẳng định mà lượt này không đỡ được); sáu mã
+ * còn lại là chuyện của CÁI CÂN (`box_unreachable`, `box_probe_failed`, `gate_error`,
+ * `answer_too_long`, `no_evidence_for_tools`, `no_change`).
+ *
+ * Vòng soát đợt 3 bắt được chỗ này: huy hiệu xám "chưa đo được" mà dòng biên nhận vẫn khẳng định
+ * "1 khẳng định chưa kiểm" là nói sai về lượt — số khẳng định chỉ đếm từ năm mã đầu, còn lý do của
+ * phép đo hỏng đã có huy hiệu và tên riêng ở khối bằng chứng.
+ */
+export const CLAIM_REASON_CODES = new Set([
+  'change_without_verification',
+  'claim_path_not_in_turn',
+  'claim_path_missing',
+  'ui_change_without_capture',
+  'answer_references_unknown_command',
+])
+
+/** Lọc `missing[]` xuống đúng những lý do là khẳng định của câu trả lời. */
+export function claimMissing(missing: EvidenceMissing[]): EvidenceMissing[] {
+  return missing.filter((item) => CLAIM_REASON_CODES.has(item.reason))
+}
+
 function parseEvidenceMissing(value: unknown): EvidenceMissing[] {
   if (!Array.isArray(value)) return []
   const items: EvidenceMissing[] = []
@@ -583,7 +605,10 @@ export function readAnswerEvidence(event: HarnessEvent | null | undefined): Answ
 export function evidenceReasonText(t: Translate, reason: string): string {
   const key = `chat.evidenceReason.${reason}` as TKey
   const text = t(key)
-  return text || reason
+  // `t()` trả CHÍNH khoá khi cả hai từ điển đều trượt, nên `text || reason` không bao giờ chạy và
+  // người đọc thấy `chat.evidenceReason.<mã>` (vòng soát đợt 3, F2). Mã máy là thứ đối chiếu được
+  // với log, nên nó là câu dự phòng đúng.
+  return text === key ? reason : text
 }
 
 /** Đuôi tệp được coi là mảnh bằng chứng của lượt (P1.4 sinh ra chúng). */
@@ -783,36 +808,33 @@ export function collectTurnArtifacts(
     if (!path || !EVIDENCE_FILE_EXTENSIONS.includes(extensionOf(path))) continue
     push({ path, media: mediaOf(path), note: null, source: 'tool' })
   }
-  // (c) mảnh cổng ghim trong hàng `E:`.
+  // (c) mảnh cổng ghim trong hàng `E:` — và (d) mảnh trong chính event, chỗ duy nhất có
+  // `sha256`/`bytes`, nên mỗi đường dẫn tra một lần ngay tại nguồn của nó.
   const row = opts?.evidenceRow
-  const journalPaths: Array<{ path: string; note: string | null }> = []
-  for (const fragment of row?.evidence ?? []) {
-    if (fragment.path) journalPaths.push({ path: fragment.path, note: fragment.note })
-  }
-  const dataArtifacts = row?.data?.artifacts
-  if (Array.isArray(dataArtifacts)) {
-    for (const raw of dataArtifacts) {
-      if (!raw || typeof raw !== 'object') continue
-      const item = raw as Record<string, unknown>
-      if (typeof item.path === 'string' && item.path) journalPaths.push({ path: item.path, note: null })
-      if (typeof item.changed === 'string' && item.changed) journalPaths.push({ path: item.changed, note: null })
-    }
-  }
-  // (d) mảnh cổng ghim trong chính event — kèm `sha256`/`bytes` mà chỉ đường này có.
-  for (const fragment of opts?.evidence?.artifacts ?? []) {
-    if (fragment.path) journalPaths.push({ path: fragment.path, note: fragment.note })
-  }
-  for (const found of journalPaths) {
-    const fragment = (opts?.evidence?.artifacts ?? []).find((item) => item.path === found.path)
+  const fragments = opts?.evidence?.artifacts ?? []
+  const pushJournal = (path: string | null | undefined, note: string | null) => {
+    if (!path) return
+    const fragment = fragments.find((item) => item.path === path)
     push({
-      path: found.path,
-      media: mediaOf(found.path),
-      note: found.note,
+      path,
+      media: mediaOf(path),
+      note,
       source: 'journal',
       sha256: fragment?.sha256 ?? null,
       bytes: fragment?.bytes ?? null,
     })
   }
+  for (const fragment of row?.evidence ?? []) pushJournal(fragment.path, fragment.note)
+  const dataArtifacts = row?.data?.artifacts
+  if (Array.isArray(dataArtifacts)) {
+    for (const raw of dataArtifacts) {
+      if (!raw || typeof raw !== 'object') continue
+      const item = raw as Record<string, unknown>
+      if (typeof item.path === 'string') pushJournal(item.path, null)
+      if (typeof item.changed === 'string') pushJournal(item.changed, null)
+    }
+  }
+  for (const fragment of fragments) pushJournal(fragment.path, fragment.note)
   return items
 }
 
@@ -1483,6 +1505,10 @@ function TurnBlock({
     return parseEvidenceMissing(evidenceRow?.data?.missing)
   }, [answerEvidence, evidenceRow])
 
+  // F1 (vòng soát đợt 3): số "khẳng định chưa kiểm" chỉ đếm lý do là khẳng định — lý do của phép
+  // đo hỏng không phải một khẳng định của câu trả lời.
+  const unverifiedClaims = useMemo(() => claimMissing(missingEvidence), [missingEvidence])
+
   // R2 (yêu cầu 5): số liệu của dòng biên nhận đếm từ chính dữ liệu lượt — không có con số nào
   // được viết tay ở đây. `captures` dùng danh sách media đã khử trùng của lượt.
   const counts = useMemo<ActivityCounts>(() => {
@@ -1505,9 +1531,9 @@ function TurnBlock({
       // P4.4: hai số của cổng chỉ có khi cổng đã chấm lượt này (`answerEvidence` khác null), và
       // `evidence` đếm ĐÚNG số mục khối Bằng chứng liệt kê — biên nhận phải đọc ra được từ khối.
       evidence: answerEvidence ? turnArtifacts.length + turnCommands.length : undefined,
-      unverified: answerEvidence ? missingEvidence.length : undefined,
+      unverified: answerEvidence ? unverifiedClaims.length : undefined,
     }
-  }, [turn.items, turn.isCompleted, thoughtText, turnMedia, answerEvidence, turnArtifacts, turnCommands, missingEvidence])
+  }, [turn.items, turn.isCompleted, thoughtText, turnMedia, answerEvidence, turnArtifacts, turnCommands, unverifiedClaims])
 
   const receipt = useMemo(
     () =>
@@ -2174,13 +2200,41 @@ function CompactionNotice({ event }: { event: HarnessEvent }) {
 
 /** P4.2: câu giải thích của huy hiệu, dịch từ chính `missing[]` của cổng. */
 function evidenceTitleText(t: Translate, evidence: AnswerEvidence, missing: EvidenceMissing[]): string {
-  if (evidence.state === 'verified') return t('chat.evidenceBadgeTitleVerified', { count: evidence.checked ?? 0 })
+  // F4 (vòng soát đợt 3): câu này từng in `evidence.checked` (số mảnh CỔNG chấm) trong khi hàng đầu
+  // khối in số mục khối liệt kê — hai con số khác nhau cho cùng một lượt. Bỏ số đi, giữ sự thật.
+  if (evidence.state === 'verified') return t('chat.evidenceBadgeTitleVerified')
   if (evidence.state === 'not_measurable') return t('chat.evidenceBadgeTitleUnmeasured')
-  if (!missing.length) return t('chat.evidenceBadgeTitleNothing')
-  return t('chat.evidenceBadgeTitleMissing', {
-    count: missing.length,
-    reasons: missing.map((item) => evidenceReasonText(t, item.reason)).join('; '),
-  })
+  const claims = claimMissing(missing)
+  if (claims.length) {
+    return t('chat.evidenceBadgeTitleMissing', {
+      count: claims.length,
+      reasons: claims.map((item) => evidenceReasonText(t, item.reason)).join('; '),
+    })
+  }
+  // Không có khẳng định nào bị ghim mà lượt vẫn chưa xanh: nói thẳng thứ đã cản phép chấm.
+  if (missing.length) {
+    return t('chat.evidenceBadgeTitleUnscored', {
+      reasons: missing.map((item) => evidenceReasonText(t, item.reason)).join('; '),
+    })
+  }
+  return t('chat.evidenceBadgeTitleNothing')
+}
+
+/**
+ * Ô thứ ba của dòng biên nhận: số khẳng định thiếu bằng chứng, hoặc — khi lượt chưa xanh mà không
+ * khẳng định nào bị ghim — tên của thứ đã cản phép đo (F1). Luôn có chữ: người đọc phải đọc ra
+ * được vì sao lượt không xanh.
+ */
+function receiptChargeText(
+  t: Translate,
+  state: EvidenceBadgeState,
+  claims: EvidenceMissing[],
+  missing: EvidenceMissing[],
+): string {
+  if (claims.length) return t('chat.evidenceReceiptUnverified', { count: claims.length })
+  if (!missing.length) return t('chat.evidenceReceiptUnverified', { count: 0 })
+  if (state === 'not_measurable') return t('chat.evidenceBadge.not_measurable')
+  return evidenceReasonText(t, missing[0].reason)
 }
 
 /**
@@ -2208,6 +2262,8 @@ function EvidenceBlock({
   const [open, setOpen] = useState(true)
   const stateClass = EVIDENCE_BADGE_CLASS[evidence.state]
   const total = artifacts.length + commands.length
+  // F1: cùng một phép lọc với dòng biên nhận gọn ở đầu lượt — hai chỗ đếm phải nói cùng một số.
+  const claims = useMemo(() => claimMissing(missing), [missing])
 
   // P4.3: tệp thì mở bằng tab Files (đúng đường `tabIntentTargets.files` mà `useWorkspaceFiles` đọc,
   // và là thao tác người dùng nên không bị công tắc `autoOpenTabs` chặn); ảnh/ghi hình thì mở khung
@@ -2227,8 +2283,8 @@ function EvidenceBlock({
         <span className="flex flex-wrap items-center">
           <span className="font-medium text-zinc-300">{t('chat.evidenceReceiptCount', { count: total })}</span>
           <span className="text-zinc-600">{' · '}</span>
-          <span className={missing.length > 0 ? 'text-amber-400' : undefined}>
-            {t('chat.evidenceReceiptUnverified', { count: missing.length })}
+          <span className={missing.length > 0 ? stateClass : undefined}>
+            {receiptChargeText(t, evidence.state, claims, missing)}
           </span>
           {/* Công tắc cổng lúc chấm lượt — nguyên văn giá trị backend trả, không suy diễn. */}
           {evidence.mode && (
@@ -2357,7 +2413,13 @@ function EvidenceBlock({
           <div className="space-y-1">
             <div className="flex items-center gap-1 text-[11px] font-medium text-zinc-300">
               <AlertCircle className={`size-3 ${missing.length > 0 ? 'text-amber-400' : 'text-zinc-500'}`} />
-              <span>{t('chat.evidenceMissingTitle')}</span>
+              {/* Nhóm này mang HAI loại lý do: khẳng định của câu trả lời, và lỗi của phép đo. Lượt
+                  `not_measurable` chỉ có loại thứ hai, nên tiêu đề phải đổi theo (F1). */}
+              <span data-evidence-missing-title="true">
+                {evidence.state === 'not_measurable'
+                  ? t('chat.evidenceUnmeasuredTitle')
+                  : t('chat.evidenceMissingTitle')}
+              </span>
               <span className="ml-auto font-mono text-[10px] text-zinc-500">{missing.length}</span>
             </div>
             {missing.length === 0 ? (
