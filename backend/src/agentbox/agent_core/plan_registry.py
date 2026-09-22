@@ -15,6 +15,10 @@ File này là chỗ harness quyết hai việc đó, bằng dữ liệu:
 * `resolve_identity(...)` chọn nhóm theo luật §3.2: khai báo tường minh thắng; không khai báo thì
   so độ giống Jaccard giữa slug đề nghị và mọi identity cùng thư mục — `j ≥ 0.75` gộp,
   `0.5 ≤ j < 0.75` mơ hồ (từ chối, chỉ đúng câu cần gọi), `j < 0.5` nhóm mới.
+* Dải mơ hồ (`0.5 ≤ j < 0.75`) từ chối lần **đầu** — gộp nhầm là mất dữ liệu không hoàn tác được —
+  nhưng lời từ chối để lại một **vé** (`ambiguity_ticket`): gửi lại **nguyên văn** thêm đúng một
+  lần nữa thì bản đó được nhận là nhóm mới. `ticket_from_rows(...)` đọc vé từ hàng `F:` của phiên,
+  `ambiguity_ticket_usable(...)` đòi "chưa có nhóm nào cho slug này" — nhờ đó vé tiêu đúng một lần.
 * `next_version_and_parent(...)` theo luật §3.4/§4.3: bản kế tiếp của một nhóm luôn là `v(N+1)`
   với `Parent: vN`; model khai `Parent: none` khi N ≥ 1 thì bị từ chối.
 * `group_state(...)` là máy trạng thái §4.2, đọc **sổ duyệt SQLite** (nguồn chân lý) chứ không đọc
@@ -36,6 +40,7 @@ Tất cả hàm ở đây đều thuần (trừ `read_plan_index`) và **không 
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 
@@ -49,6 +54,8 @@ __all__ = [
     'slug_tokens', 'jaccard', 'split_identity', 'parse_relates_to',
     'PlanIndexEntry', 'PlanGroup', 'PlanIndex', 'parse_plan_index', 'read_plan_index',
     'IdentityDecision', 'resolve_identity', 'VersionPlan', 'next_version_and_parent',
+    'AMBIGUITY_TICKET_KEY', 'AMBIGUITY_MATCHED_BY', 'ambiguity_marker', 'build_ambiguity_ticket',
+    'ticket_from_rows', 'ambiguity_ticket_usable',
     'GroupState', 'group_state', 'review_stale', 'pending_submissions',
     'RegistrationPlan', 'plan_registration',
 ]
@@ -88,7 +95,8 @@ REMEDIES = {
     'identity-ambiguous': (
         'slug bạn đề nghị giống {score:.0%} cả nhóm «{identity}» lẫn nhóm «{other}», nên harness '
         'không tự đoán: gọi lại write_plan với identity: "{identity}" nếu muốn nối vào nhóm cũ, '
-        'hoặc relatesTo: "none" nếu đây là chủ đề mới.'
+        'hoặc relatesTo: "none" nếu đây là chủ đề mới — hoặc gửi lại NGUYÊN VĂN bản này để được '
+        'nhận là kế hoạch mới (vé mơ hồ dùng được đúng một lần).'
     ),
     'revision-not-traceable': (
         'nhóm «{identity}» đang ở v{version} nên bản sửa phải khai Parent: v{version}; bạn khai '
@@ -409,7 +417,7 @@ def _identity_is_valid(identity: str) -> bool:
 
 
 def resolve_identity(proposed_slug, *, index=None, declared_identity=None, relates_to=None,
-                     directory='') -> IdentityDecision:
+                     directory='', ambiguity_ticket=None) -> IdentityDecision:
     """Chọn identity cho một lần ghi (§3.2). Thuần: chỉ đọc `index`, không ghi gì.
 
     1. Có `declared_identity` (hoặc `relatesTo: "<identity>"`) hợp lệ → theo khai báo.
@@ -417,6 +425,9 @@ def resolve_identity(proposed_slug, *, index=None, declared_identity=None, relat
        slug đề nghị giống `j ≥ 0.75` một nhóm cùng thư mục, để người gọi ghi mã
        `PLAN_IDENTITY_FORCED_NEW` (§3.3).
     3. Không khai báo → so Jaccard với mọi identity cùng thư mục: gộp / mơ hồ / nhóm mới.
+    4. Rơi vào dải mơ hồ mà có `ambiguity_ticket` hợp lệ (vé của chính slug này, và slug chưa có nhóm
+       nào) → nhóm mới, `matchedBy='ambiguity-ticket'`, nhưng **giữ** `score`/`matched_identity`/
+       `candidates` để nhật ký vẫn nói được "bản này từng nằm trong dải mơ hồ" (D-3).
 
     `index=None` (chỉ mục hỏng) → `action='degraded'`: người gọi quay về hành vi cũ, không đoán bừa.
     Khai báo một identity sai grammar → raise `PlanRegistrationError('identity-invalid')`: viết một
@@ -466,6 +477,15 @@ def resolve_identity(proposed_slug, *, index=None, declared_identity=None, relat
                                     matched_by='similarity', score=score,
                                     matched_identity=group.identity, candidates=ranked)
         if score >= AMBIGUOUS_THRESHOLD:
+            if ambiguity_ticket_usable(ambiguity_ticket, slug=slug, directory=directory, index=index):
+                # Gửi lại nguyên văn sau một lần bị từ chối vì mơ hồ: nhận là nhóm mới, nhưng giữ
+                # `score`/`matched_identity`/`candidates` (khác `relatesTo: "none"` — ở đó khai báo
+                # tường minh thắng và ta không có bản chấm nào để kể lại).
+                fresh = _decision_for_new(slug, str(directory or '').strip('/'), forced_new=False)
+                return IdentityDecision(fresh.action, identity=fresh.identity,
+                                        directory=fresh.directory, slug=fresh.slug,
+                                        matched_by=AMBIGUITY_MATCHED_BY, score=score,
+                                        matched_identity=group.identity, candidates=ranked)
             return IdentityDecision('ambiguous', identity=group.identity, directory=group.directory,
                                     slug=group.slug, matched_by='similarity', score=score,
                                     matched_identity=group.identity, candidates=ranked)
@@ -476,6 +496,108 @@ def resolve_identity(proposed_slug, *, index=None, declared_identity=None, relat
     return IdentityDecision(decision.action, identity=decision.identity, directory=decision.directory,
                             slug=decision.slug, matched_by=decision.matched_by,
                             forced_new=decision.forced_new, candidates=ranked)
+
+
+# --------------------------------------------------------------------------- vé mơ hồ (D-3)
+# Dải `0.5 ≤ j < 0.75` là ca sống của vòng 21: cùng một kế hoạch bị từ chối ở lượt 4 rồi được nhận ở
+# lượt 5 vì model tự đổi slug. Lần ĐẦU vẫn phải từ chối (gộp nhầm là mất dữ liệu không hoàn tác
+# được), nhưng lời từ chối để lại một VÉ, để lần gửi lại **nguyên văn** được nhận là kế hoạch mới.
+# Khoá dữ liệu nằm trên hàng `F:` (`kind='fact'`) — cố ý **không** phải `P:`: một bản bị từ chối thì
+# không có tệp nào để giữ, nên vé không được đóng vai "người giữ" một kế hoạch không tồn tại (cổng xoá
+# của `migrate_plans.py --delete-orphan` đọc đúng những hàng `P:` có `data.relativePath`).
+
+AMBIGUITY_TICKET_KEY = 'identityAmbiguityTicket'
+AMBIGUITY_MATCHED_BY = 'ambiguity-ticket'
+
+
+def ambiguity_marker(decision) -> dict:
+    """Dấu ghi vào hàng `P:` đã nhận: bản này từng nằm trong dải mơ hồ (D-3).
+
+    `nearestIdentity` là nhóm gần nhất lúc đó, `score` là độ giống — đọc lại được về sau mà không phải
+    suy từ bộ đếm chung. Dùng luôn cho `data.identityAmbiguity` của `pin_plan`.
+    """
+    return {'score': None if decision.score is None else round(decision.score, 4),
+            'nearestIdentity': getattr(decision, 'matched_identity', None)}
+
+
+def build_ambiguity_ticket(decision, *, slug, directory='') -> dict:
+    """Vé cho một lần từ chối vì mơ hồ: dữ liệu của hàng `F:` (`data[AMBIGUITY_TICKET_KEY]`).
+
+    Vé **không** mang `relativePath` (xem ghi chú đầu mục): nó không giữ kế hoạch nào.
+    """
+    return {
+        'slug': str(slug or '').strip(),
+        'directory': str(directory or '').strip('/'),
+        'matchedIdentity': getattr(decision, 'matched_identity', None),
+        'score': None if getattr(decision, 'score', None) is None else round(decision.score, 4),
+        'candidates': [{'identity': name, 'score': score}
+                       for name, score in getattr(decision, 'candidates', ()) or ()],
+    }
+
+
+def _row_data(row) -> dict:
+    """`data` của một hàng nhật ký, đọc được cả ba khuôn: `payload.record.data`, payload phẳng, và
+    hàng phẳng (`session_store.journal_tail` trả `payload` đã parse; hàng cũ có thể thiếu)."""
+    if not isinstance(row, dict):
+        return {}
+    payload = row.get('payload')
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except ValueError:
+            payload = None
+    if not isinstance(payload, dict):
+        payload = row
+    record = payload.get('record')
+    record = record if isinstance(record, dict) else payload
+    data = record.get('data')
+    return data if isinstance(data, dict) else {}
+
+
+def ticket_from_rows(rows, *, slug, directory='') -> dict | None:
+    """Vé còn nằm trong nhật ký phiên: dò `journal_tail(sid, kinds=['fact'])` rồi khớp `(slug, directory)`.
+
+    Trả vé **mới nhất** khớp; `None` khi phiên chưa từng bị từ chối vì mơ hồ (hoặc mọi vé đã bị
+    khoá bởi lần gửi lại trước đó). Hàm thuần: hàng vào, vé ra — người gọi tự quyết định đọc hàng nào.
+    """
+    wanted_slug = str(slug or '').strip()
+    wanted_directory = str(directory or '').strip('/')
+    found = None
+    for row in rows or ():
+        ticket = _row_data(row).get(AMBIGUITY_TICKET_KEY)
+        if not isinstance(ticket, dict):
+            continue
+        if str(ticket.get('slug') or '').strip() != wanted_slug:
+            continue
+        if str(ticket.get('directory') or '').strip('/') != wanted_directory:
+            continue
+        found = ticket  # hàng xếp cũ → mới, nên vé cuối cùng là vé mới nhất
+    return found
+
+
+def ambiguity_ticket_usable(ticket, *, slug, directory='', index=None) -> bool:
+    """Vé dùng được: khớp đúng `(slug, directory)` **và** chưa có nhóm nào cho slug đó.
+
+    Điều kiện thứ hai là chỗ vé **tiêu đúng một lần**: lần gửi lại được nhận sẽ ghim hàng `P:` (và
+    sandbox ghi tệp, nên slug có mặt trong chỉ mục); từ đó mọi lần gửi lại đi theo chỉ mục — gộp với
+    chính nó (`j = 1.0 ≥ 0.75`), hoặc bị từ chối vì truy vết — chứ không "ép chủ đề mới" lần thứ hai.
+    Không cần thêm bảng, thêm cột, thêm trạng thái nào.
+
+    `index=None` (không đọc được chỉ mục) → `False`: không kiểm được "đã có `P:` chưa" thì vé không
+    dùng, và nhánh suy giảm vốn đã quay về hành vi cũ.
+    """
+    if not isinstance(ticket, dict):
+        return False
+    if str(ticket.get('slug') or '').strip() != str(slug or '').strip():
+        return False
+    if str(ticket.get('directory') or '').strip('/') != str(directory or '').strip('/'):
+        return False
+    if index is None:
+        return False
+    directory_text = str(directory or '').strip('/')
+    slug_text = str(slug or '').strip()
+    identity = f'{directory_text}/{slug_text}' if directory_text else slug_text
+    return index.group(identity) is None
 
 
 # --------------------------------------------------------------------------- số version
@@ -669,6 +791,7 @@ class RegistrationPlan:
     state: str = 'draft'
     state_version: int | None = None
     notes: tuple[str, ...] = field(default=())
+    ambiguity: dict | None = None
 
     def to_payload(self) -> dict:
         return {
@@ -678,6 +801,7 @@ class RegistrationPlan:
             'identityScore': None if self.score is None else round(self.score, 4),
             'identityForcedNew': self.forced_new, 'degraded': self.degraded,
             'state': self.state, 'stateVersion': self.state_version,
+            'identityAmbiguity': self.ambiguity,
         }
 
 
@@ -693,13 +817,15 @@ def _review_note(reviews, identity) -> str:
 
 def plan_registration(proposed_slug, *, index, reviews_by_identity=None, directory='',
                       declared_identity=None, relates_to=None, declared_version=UNSET,
-                      declared_parent=UNSET, submitted_by_identity=None) -> RegistrationPlan:
+                      declared_parent=UNSET, submitted_by_identity=None,
+                      ambiguity_ticket=None) -> RegistrationPlan:
     """Toàn bộ luật §3.2–§4.3 gói trong một lời gọi, cho `runtime.write_plan`.
 
     Trả `RegistrationPlan` (kể cả nhánh suy giảm khi `index is None`, lúc đó `degraded=True` và
     người gọi quay về hành vi cũ) hoặc raise `PlanRegistrationError` với một trong các mã:
 
-    * `identity-ambiguous` — dải `0.5 ≤ j < 0.75`, phải khai `identity`/`relatesTo`;
+    * `identity-ambiguous` — dải `0.5 ≤ j < 0.75`, phải khai `identity`/`relatesTo` (hoặc gửi lại
+      nguyên văn khi đã có `ambiguity_ticket` của chính slug đó);
     * `identity-pending-review` — R3: nhóm đang `changes_requested` nên không được trỏ sang identity
       khác cùng chủ đề (`relatesTo: "none"` cũng không vượt được);
     * `revision-not-traceable` — R1: khai `Parent: none` khi nhóm đã có bản cũ;
@@ -708,7 +834,8 @@ def plan_registration(proposed_slug, *, index, reviews_by_identity=None, directo
     reviews_by_identity = reviews_by_identity or {}
     submitted_by_identity = submitted_by_identity or {}
     decision = resolve_identity(proposed_slug, index=index, declared_identity=declared_identity,
-                                relates_to=relates_to, directory=directory)
+                                relates_to=relates_to, directory=directory,
+                                ambiguity_ticket=ambiguity_ticket)
     if decision.action == 'degraded':
         return RegistrationPlan(identity='', directory=str(directory or '').strip('/'),
                                 slug=str(proposed_slug or '').strip(), version=0, parent=None,
@@ -716,9 +843,14 @@ def plan_registration(proposed_slug, *, index, reviews_by_identity=None, directo
 
     if decision.action == 'ambiguous':
         others = [name for name, score in decision.candidates if name != decision.matched_identity]
+        # D-3: lời từ chối mang theo VÉ dựng sẵn (`ambiguity_ticket`), vì chỉ ở đây mới còn biết
+        # `proposed_slug` (trường `slug` của lỗi là slug của NHÓM, để câu khắc phục đọc được). Chỗ gọi
+        # (`runtime.write_plan`) ghi nguyên khối này xuống hàng `F:` và gửi lại nguyên văn thì nhận.
         raise PlanRegistrationError('identity-ambiguous', identity=decision.matched_identity or '',
                                     other=others[0] if others else decision.matched_identity or '',
-                                    score=decision.score or 0.0, slug=decision.slug)
+                                    score=decision.score or 0.0, slug=decision.slug,
+                                    ambiguity_ticket=build_ambiguity_ticket(
+                                        decision, slug=proposed_slug, directory=directory))
 
     group = index.group(decision.identity) if index is not None else None
     reviews = reviews_by_identity.get(decision.identity) or ()
@@ -750,6 +882,9 @@ def plan_registration(proposed_slug, *, index, reviews_by_identity=None, directo
     version_plan = next_version_and_parent(group.numbers if group else (), identity=decision.identity,
                                            declared_version=declared_version,
                                            declared_parent=declared_parent)
+    # Dấu D-3: bản được nhận nhờ vé mơ hồ vẫn kể lại được "đã từng mơ hồ" — người gọi ghi nguyên
+    # khối này vào `data` của hàng `P:` (`identityAmbiguity`), nên nhật ký không mất dấu vết.
+    ambiguity = ambiguity_marker(decision) if decision.matched_by == AMBIGUITY_MATCHED_BY else None
     notes = ()
     if decision.forced_new:
         notes = (f'{IDENTITY_FORCED_NEW_CODE}: slug «{decision.slug}» giống nhóm «'
@@ -759,4 +894,5 @@ def plan_registration(proposed_slug, *, index, reviews_by_identity=None, directo
         identity=decision.identity, directory=decision.directory, slug=decision.slug,
         version=version_plan.version, parent=version_plan.parent, declared_slug=decision.declared_slug,
         matched_by=decision.matched_by, score=decision.score, forced_new=decision.forced_new,
-        degraded=False, state=state.state, state_version=state.state_version, notes=notes)
+        degraded=False, state=state.state, state_version=state.state_version, notes=notes,
+        ambiguity=ambiguity)
