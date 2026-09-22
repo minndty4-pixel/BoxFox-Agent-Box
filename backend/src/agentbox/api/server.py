@@ -169,7 +169,7 @@ def create_app(runtime):
     async def runtime_info(request):
         """Nút vặn của runtime, chỉ đọc và không tham số — cho tab Harness của Settings.
 
-        Bảng này là nguồn duy nhất cho mọi con số giao diện hiển thị (bảy nhóm công cụ,
+        Bảng này là nguồn duy nhất cho mọi con số giao diện hiển thị (tám nhóm công cụ,
         bộ của từng vai trò, chính sách retry, trần bước/thời gian/ký tự): không chỗ nào
         ở phía UI được chép tay lại một con số, nếu không hai bên sẽ lệch nhau và khối
         "Tool access" sẽ hứa điều engine từ chối.

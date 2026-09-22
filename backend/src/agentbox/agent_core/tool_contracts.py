@@ -45,6 +45,28 @@ SCHEMAS = [
     tool('skills_list', 'List enabled skills metadata; then load relevant full instructions with skill_view.', {}),
     tool('skill_view', 'Read a complete enabled skill or a linked UTF-8 file in its package. Scripts are not auto-executed.', {'id': STRING, 'file_path': STRING}, ['id']),
     tool('session_search', 'Search this session durable checkpoint history for a literal term.', {'query': STRING}, ['query']),
+    tool('await_children',
+         'Wait until your peers DELIVER their results to you — this is not a sleep. Hand a task to a child '
+         'with `delegate_task(wait=false, deliverTo=[...])`, then call this: the wait ends the moment the '
+         'receipt is written, and you get the delivered answers back in `done`. `targets` accepts '
+         '`peer:<sessionId>`, `role:<role>` or a bare role name; leave it empty to wait for the peers of your '
+         'own turn. Delivered summaries are bounded and `truncated` says when. There is a 300 s safety net '
+         '(`timeoutSeconds` can only shorten it): on `timeout` you still get `pending` and must continue with '
+         'the data you have instead of retrying blindly.',
+         {'targets': {'type': 'array', 'items': STRING},
+          'mode': {'type': 'string', 'enum': ['all', 'any']},
+          'timeoutSeconds': {'type': 'integer'}},
+         ()),
+    tool('peer_read',
+         'Read the WORK stream of a peer session: a sibling child (same parent) or, when you are the '
+         'orchestrator, one of your own children. You get that session events — which tools it ran, what it '
+         'answered, which codes it failed with — never its system prompt or the parent transcript. Use it to '
+         'avoid repeating a peer\'s work and to wait for the right thing. Long strings are cut; `truncated` says '
+         'so. Read the newest rows by passing the `seq` of the last event you already saw as `afterSeq`.',
+         {'sessionId': STRING,
+          'afterSeq': {'type': 'integer'},
+          'limit': {'type': 'integer'}},
+         ['sessionId']),
     tool('journal_write',
          'Write ONE durable line into this session journal (task, step, decision, evidence, fact, blocker). '
          'Use it for the few facts a later turn must not lose: what you are doing (kind="task", status in '

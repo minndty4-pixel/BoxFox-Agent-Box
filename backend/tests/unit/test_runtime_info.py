@@ -1,7 +1,7 @@
 """`GET /api/agent/runtime-info` (số thật cho giao diện) và luật chỉ-được-thu-hẹp.
 
 Hai việc nằm chung một tệp vì chúng trả lời cùng một câu hỏi: giao diện được phép
-hứa gì. Bảy nhóm công cụ ở đây phải hợp đúng bằng bộ của orchestrator, mỗi vai trò
+hứa gì. Tám nhóm công cụ ở đây phải hợp đúng bằng bộ của orchestrator, mỗi vai trò
 đúng bằng `roles.ROLES[...]`, các con số retry/trần đúng bằng hằng trong `failures.py`
 và `limits.py` — và một harness gửi lên bộ công cụ chỉ có thể THU HẸP bộ của vai trò.
 Không đường nào nới ra: nếu nới được thì khối "Tool access" trên giao diện sẽ hứa
@@ -138,18 +138,19 @@ def test_the_turn_offers_the_model_exactly_the_narrowed_set(tmp_path):
     narrowed = asyncio.run(run('narrow.db', {'tools': ['file_read', 'sudo_rm_rf']}))
     assert narrowed == ['file_read']
     full = asyncio.run(run('full.db', {}))
-    assert sorted(full) == sorted(ORCHESTRATOR_TOOLS), 'thiếu trường thì lượt vẫn thấy đủ 22 công cụ'
+    assert sorted(full) == sorted(ORCHESTRATOR_TOOLS), 'thiếu trường thì lượt vẫn thấy đủ 24 công cụ'
 
 
-def test_the_seven_groups_cover_the_orchestrator_exactly():
+def test_the_eight_groups_cover_the_orchestrator_exactly():
     groups = tool_groups_module.TOOL_GROUPS
     assert [g['key'] for g in groups] == ['repositoryReading', 'skills', 'filesTerminal',
                                           'screenBrowser', 'webResearch', 'delegationPlans',
-                                          'questionsApprovals'], 'đúng thứ tự bảng Nút vặn của runtime'
+                                          'peerMesh', 'questionsApprovals'], \
+        'đúng thứ tự bảng Nút vặn của runtime (T8 thêm nhóm thứ tám: mesh agent con)'
     assert all(set(g) == {'key', 'tools', 'alwaysOn'} for g in groups)
     assert all(g['tools'] for g in groups)
     union = [tool for g in groups for tool in g['tools']]
-    assert len(union) == len(set(union)) == 22, 'bảy nhóm không chồng nhau, tổng 22 công cụ'
+    assert len(union) == len(set(union)) == 24, 'tám nhóm không chồng nhau, tổng 24 công cụ'
     assert set(union) == set(ORCHESTRATOR_TOOLS)
 
     assert [g['key'] for g in groups if g['alwaysOn']] == ['questionsApprovals']
@@ -157,11 +158,11 @@ def test_the_seven_groups_cover_the_orchestrator_exactly():
     assert set(questions['tools']) == {'ask_user', 'request_approval'}
 
 
-def test_the_route_answers_the_same_seven_groups(tmp_path):
+def test_the_route_answers_the_same_eight_groups(tmp_path):
     info = runtime_info(tmp_path)
     assert info['toolGroups'] == tool_groups_module.tool_groups()
     assert info['tools'] == sorted(ORCHESTRATOR_TOOLS)
-    assert len(info['tools']) == 22
+    assert len(info['tools']) == 24
 
 
 def test_every_role_row_equals_the_roles_definition(tmp_path):

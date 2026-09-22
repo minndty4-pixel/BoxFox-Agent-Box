@@ -389,6 +389,13 @@ def group_rows(rows) -> dict[str, list[dict]]:
     `C:` (nén) xếp vào **đã xong**: một lần nén đã hoàn tất và chính là dấu vết cho biết
     transcript trước đó đã được cất thành file. Không thêm nhóm thứ bảy — sáu nhóm là trần
     để khối ký ức còn đọc được trong một lần liếc.
+
+    Một ngoại lệ có tên (C4 vòng 22): hàng **vé mơ hồ** (`kind='fact'` mang
+    `data.identityAmbiguityTicket`) xếp vào **đang tắc**. Vé là dấu vết của một lần đăng ký
+    kế hoạch BỊ TỪ CHỐI: việc chỉ chạy tiếp khi model gửi lại nguyên văn, nên nó không phải
+    "đã xong", cũng không phải một mục tiêu mới — nó là một việc đang dừng. Các hàng `fact`
+    khác vẫn **không** vào nhóm nào: một dữ kiện thường không thuộc sáu nhóm, còn vé thì phải
+    tới được model, nếu không hàng `F:` chỉ nằm trong file mà không ai đọc.
     """
     groups: dict[str, list[dict]] = {key: [] for _, key in BRIEF_GROUPS}
     for item in reversed(list(rows or [])):  # JSONL là cũ → mới; khối ký ức muốn mới trước
@@ -409,6 +416,8 @@ def group_rows(rows) -> dict[str, list[dict]]:
             groups["doing"].append(item)
         if kind == "blocker" and status in ("blocked", "failed"):
             groups["blocked"].append(item)
+        if kind == "fact" and str((item.get("data") or {}).get("identityAmbiguityTicket") or "").strip():
+            groups["blocked"].append(item)  # C4 vòng 22 — vé mơ hồ là việc ĐANG TẮC
         if isinstance(item.get("data"), dict) and str(item["data"].get("next") or "").strip():
             groups["next"].append(item)
     return groups

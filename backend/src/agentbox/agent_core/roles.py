@@ -5,7 +5,12 @@ Adapted from Hermes delegate_tool_toolsets.py; prompts tailored to BoxFox.
 from dataclasses import dataclass
 
 DECISION = frozenset({'ask_user', 'request_approval'})
-READ = frozenset({'file_read', 'codebase_glob', 'codebase_grep', 'skills_list', 'skill_view'}) | DECISION
+# T8/T9 (vòng 22) — nói chuyện với các phiên bạn: đọc luồng việc của bạn cùng cha, và chờ bạn
+# giao kết quả. Mọi vai trò đều có (READ là gốc của cả chín vai con), vì một con không đọc được
+# bạn thì mesh chỉ là nhiều phiên chạy cạnh nhau.
+PEER = frozenset({'peer_read', 'await_children'})
+READ = frozenset({'file_read', 'codebase_glob', 'codebase_grep', 'skills_list', 'skill_view'}) | DECISION \
+    | PEER
 WRITE = READ | {'file_write', 'file_edit_block', 'terminal_exec'}
 VISUAL = frozenset({'computer_screen_capture', 'computer_screen_record', 'computer_use', 'browser_use', 'inspect_element'}) | DECISION
 RESEARCH = READ | {'browser_use', 'web_search', 'web_fetch'}
@@ -157,7 +162,7 @@ ROLES = {r.id: r for r in [
     Role('research', 'Research', RESEARCH_INSTRUCTIONS, RESEARCH, ('grounded-citations',)),
 ]}
 ORCHESTRATOR_TOOLS = WRITE | VISUAL | {'delegate_task', 'session_search', 'write_plan',
-                                       'web_search', 'web_fetch', 'journal_write', 'journal_brief'}
+                                       'web_search', 'web_fetch', 'journal_write', 'journal_brief'} | PEER
 
 
 def allowed_tools(role, parent=None):

@@ -1328,7 +1328,9 @@ Vite `:3100`, box `agentbox-box`), không ca nào chạy lại tính năng cũ k
   Thứ tới model là **câu từ chối** đã đổi ở mục 6 ("khai báo `identity` mới rõ ràng, **hoặc** gửi lại nguyên văn"), và đường
   gửi lại nguyên văn chạy đúng như kế hoạch (T9: vé tiêu đúng một lần, `score 0.6667`). Hành vi đạt yêu cầu, một câu trong
   kế hoạch thì không; chủ nhà quyết có sửa cho đúng nguyên văn hay không (giữ sáu nhóm hay gộp hàng `fact` vào nhóm có sẵn —
-  `group_rows` đang ghi rõ "không thêm nhóm thứ bảy").
+  `group_rows` đang ghi rõ "không thêm nhóm thứ bảy"). **Đã sửa ở đợt 2 (T8+T9)**: `journal.group_rows` xếp hàng vé
+  (`kind='fact'` mang `data.identityAmbiguityTicket`) vào nhóm **đang tắc** — vẫn đúng sáu nhóm, hàng `fact` thường vẫn không
+  vào nhóm nào; ca kiểm `test_hang_ve_mo_ho_roi_vao_nhom_dang_tac_con_fact_thuong_thi_khong` ghim cả hai nửa.
 - **Dấu vết đo để lại** (đợt kiểm thử, không phải bản ghi sản phẩm): `.plans` **thêm** `v1/v2-boxfox-upgrades-two.md`,
   `v1/v2-kettle-lantern.md`, `v1-fix4-real-version.md`; hai tệp gốc `v1-agent-box-plan.md` / `v1-boxfox-5-upgrades.md`
   **không đổi một byte** (sha256 `30e05800…` / `4831506b…`); `.uploaded_artifacts` thêm `8.md`…`16.md`, `11.png`,

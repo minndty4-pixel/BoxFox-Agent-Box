@@ -108,6 +108,24 @@ CHILDREN_PER_TURN_MAX = 12
 FANOUT_BUSY_CODE = 'FANOUT_BUSY'
 CHILDREN_PER_TURN_CODE = 'CHILDREN_PER_TURN_EXHAUSTED'
 
+# --- Vòng 22 đợt 2 (T9): chờ bạn GIAO kết quả -------------------------------------------
+# Chủ nhà chốt (Q2): `await_children` chờ **tới lúc bạn giao xong kết quả**, không chờ một
+# khoảng thời gian cố định — hàm tỉnh dậy bằng SỰ KIỆN (biên nhận giao hàng được ghi ⇒ đánh
+# thức hàng chờ trong cùng một nhịp), nên không polling và không trễ nhịp. Ba con số 300 s
+# dưới đây là LƯỚI AN TOÀN để một lượt không bao giờ treo vì đã chờ: một lần chờ, tổng thời
+# gian hoãn hạn chót của cả lượt, và trần của `timeoutSeconds` mà người gọi tự đặt.
+PEER_WAIT_SAFETY_SECONDS = 300
+PEER_WAIT_MAX_SECONDS = 300
+PEER_WAIT_TOTAL_MAX_SECONDS = 300
+# Cửa sổ DÒ một địa chỉ vai chưa tồn tại (anh em có thể được sinh ngay sau bạn), dò mỗi 1 s.
+PEER_TARGET_GRACE_SECONDS = 20
+PEER_TARGET_POLL_SECONDS = 1.0
+PEER_WAIT_CLAMPED_CODE = 'PEER_WAIT_CLAMPED'
+# Tổng ngân sách chữ cho phần `summary` của MỘT kết quả `await_children`: mười hai mục tiêu ×
+# 8 000 ký tự là 96 000 ký tự, vượt xa trần 20 000 của một tool result. Mục sau khi hết ngân
+# sách vẫn có mặt trong `done` (kèm `truncated: True`), chỉ phần chữ là không còn.
+PEER_WAIT_RESULT_CHARS = 16_000
+
 # --- Công tắc vận hành của mesh (T5/T10/T13) -----------------------------------------------
 # Đọc env mỗi lần hỏi, không đọc một lần lúc nạp: một tiến trình harness sống lâu, nên đổi
 # công tắc phải có tác dụng ngay mà không cần khởi động lại. `off` (hoặc rỗng) ⇒ hành vi y

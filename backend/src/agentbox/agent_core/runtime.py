@@ -18,7 +18,9 @@ from .failures import (RETRY_BUDGET_SECONDS, classify_failure, failure_detail, l
                        log_safe_failure, retry_advice, stop_reason)
 from .limits import (ANSWER_LENGTH_HINT, ANSWER_LENGTH_WARN_CODE, ANSWER_MAX_CHARS, ANSWER_TOO_LONG_CODE,
                      ANSWER_WARN_CHARS, CHILD_DEADLINE_SECONDS, CHILD_MAX_STEPS, CHILDREN_PER_TURN_CODE,
-                     CHILDREN_PER_TURN_MAX, DEADLINE_CLAMP_NOTICE_CODE,
+                     CHILDREN_PER_TURN_MAX, DEADLINE_CLAMP_NOTICE_CODE, PEER_TARGET_GRACE_SECONDS,
+                     PEER_TARGET_POLL_SECONDS, PEER_WAIT_CLAMPED_CODE, PEER_WAIT_MAX_SECONDS,
+                     PEER_WAIT_RESULT_CHARS, PEER_WAIT_SAFETY_SECONDS, PEER_WAIT_TOTAL_MAX_SECONDS,
                      DEADLINE_DEFAULT_SECONDS, DEADLINE_MAX_SECONDS, DEADLINE_MIN_SECONDS, DEADLINE_NOTICE_CODE,
                      DIAGNOSIS_MIN_CHARS, FANOUT_BUSY_CODE, FANOUT_GLOBAL_CEILING, FANOUT_PER_PARENT_DEFAULT,
                      FANOUT_PER_PARENT_MAX, FANOUT_QUEUE_WAIT_SECONDS, INSTRUCTIONS_MAX_CHARS,
@@ -935,6 +937,34 @@ TURN_ENDED_REASON = 'PARENT_TURN_ENDED'
 # KHÔNG có kết quả nào. Ghi thẳng chữ `cancelled` vào hàng sổ con là sai — đó là trạng thái
 # phiên, không phải lý do.
 CHILD_CANCELLED_REASON = 'TURN_CANCELLED'
+# T8 — cửa sổ đọc một phiên bạn: mặc định 40 hàng, trần 120, mỗi chuỗi cắt 2 000 ký tự (cùng luật
+# `session_search`). Bốn khoá dưới đây KHÔNG bao giờ ra khỏi `peer_read`: ảnh/base64 (cùng luật
+# `runtime.py` khi trả tool result) và hai bản echo `prompt`/`context` của event `child` — chúng
+# chứa chỉ thị mà CHA viết cho phiên bạn, không phải việc của phiên bạn.
+PEER_READ_DEFAULT_ROWS = 40
+PEER_READ_MAX_ROWS = 120
+PEER_READ_CHAR_LIMIT = 2000
+PEER_READ_HIDDEN_KEYS = frozenset({'image', 'base64', 'prompt', 'context'})
+
+
+def peer_safe_data(value, limit=PEER_READ_CHAR_LIMIT, depth=0):
+    """Bản sao của payload event để đưa cho phiên BẠN đọc: mọi chuỗi bị cắt, không ảnh.
+
+    Cắt ở mọi độ sâu (một trường `result` lồng nhau cũng có thể dài), nhưng giữ nguyên hình dạng
+    để chỗ đọc vẫn phân tích được JSON. Độ sâu có trần: dữ liệu lạ không được biến việc đọc một
+    hàng event thành đệ quy vô hạn. Khoá bị ẩn (`PEER_READ_HIDDEN_KEYS`) bị bỏ ở MỌI độ sâu —
+    một tấm ảnh nằm trong `result` lồng nhau vẫn là một tấm ảnh, không được lọt sang phiên bạn.
+    """
+    if isinstance(value, str):
+        return value[:limit]
+    if depth >= 6:
+        return str(value)[:limit]
+    if isinstance(value, dict):
+        return {key: peer_safe_data(item, limit, depth + 1) for key, item in value.items()
+                if key not in PEER_READ_HIDDEN_KEYS}
+    if isinstance(value, list):
+        return [peer_safe_data(item, limit, depth + 1) for item in value]
+    return value
 # Appended to every child prompt (<= 1200 chars, asserted by tests). Free-form prose from a child is what
 # made the first round of plans unusable: no evidence, no verification, no honest limits.
 CHILD_RESULT_CONTRACT = f"""
@@ -1065,6 +1095,14 @@ class HarnessRuntime(RuntimeCommands):
         # huỷ bất kỳ task nào: callback của con chỉ đóng hàng khi hàng còn `started`, mà trong
         # lúc chờ gather thì hàng vẫn `started` — không chặn thì callback ghi trạng thái
         # `running` (con chưa chạy bước nào) thành "kết quả".
+        # T9 — hàng chờ của mỗi phiên: `sid` đang chờ ⇒ tập `asyncio.Event` được `set()` ngay khi
+        # biên nhận giao hàng của phiên đó được ghi. `wait_extension` cộng dồn số giây đã hoãn hạn
+        # chót của lượt (trần `PEER_WAIT_TOTAL_MAX_SECONDS`), `peer_target_grace`/`peer_wait_tick`
+        # là thuộc tính (không phải hằng số đọc thẳng) để test không phải chờ 20 s thật.
+        self.peer_waiters = {}
+        self.wait_extension = {}
+        self.peer_target_grace = PEER_TARGET_GRACE_SECONDS
+        self.peer_wait_tick = PEER_TARGET_POLL_SECONDS
         self.reaping = set()
         self.parent_slots = {}
         self.parent_running = {}
@@ -2529,6 +2567,10 @@ class HarnessRuntime(RuntimeCommands):
             return self.skill_loader.read(session, args['id'], args.get('file_path', 'SKILL.md'), self.active_messages.get(sid))
         if name == 'session_search':
             return self.session_search(sid, args)
+        if name == 'peer_read':
+            return self.peer_read(session, args)
+        if name == 'await_children':
+            return await self.await_children(session, args)
         if name == 'delegate_task':
             return await self.delegate(session, args)
         if name in {'web_search', 'web_fetch'}:
@@ -2613,6 +2655,263 @@ class HarnessRuntime(RuntimeCommands):
             if len(tasks) >= size:
                 break
         return {'tasks': tasks}
+
+    def peer_scope(self, sid):
+        """Tập phiên mà `sid` được PHÉP đọc — hàng rào quyền của `peer_read` (T8).
+
+        Con đọc được anh em CÙNG CHA (không đọc chính nó: bản thân nó đã nằm trong context của nó),
+        orchestrator đọc được con của chính nó. Cháu, chắt và phiên của người khác đều ngoài tập —
+        nếu chỉ kiểm tra "có phải phiên con không" thì mọi phiên con đọc được mọi phiên con của cả
+        máy. Tập rỗng cũng là câu trả lời: phiên gốc không có ai để đọc.
+        """
+        session = self.store.get(sid)
+        parent_id = session.get('parent_id')
+        if parent_id:
+            return {row['session_id'] for row in self.store.children_of(parent_id)} - {sid}
+        return {row['session_id'] for row in self.store.children_of(sid)}
+
+    def peer_read(self, session, args):
+        """T8 — đọc luồng event của một phiên bạn, cửa sổ có trần.
+
+        Trả `events` (không trả `messages`): người đọc thấy VIỆC của bạn — tool nào đã chạy, câu trả
+        lời nào đã ra, mã lỗi nào — chứ không thấy chỉ thị hệ thống hay transcript của cha. Mọi chuỗi
+        bị cắt ở `PEER_READ_CHAR_LIMIT`; `truncated` nói thật khi cửa sổ bị cắt (quá `limit` hoặc kho
+        event đã chạm trần 500 hàng).
+        """
+        sid = session['id']
+        target = str((args or {}).get('sessionId') or '').strip()
+        scope = self.peer_scope(sid)
+        if not target or target not in scope:
+            raise PermissionError(
+                'PEER_SCOPE: you may read only sessions spawned beside you (same parent) or, as an '
+                'orchestrator, your own children')
+        limit = int((args or {}).get('limit') or PEER_READ_DEFAULT_ROWS)
+        limit = max(1, min(PEER_READ_MAX_ROWS, limit))
+        after = max(0, int((args or {}).get('afterSeq') or 0))
+        rows = self.store.events(target, after)  # kho tự chặn ở 500 hàng mỗi lần đọc
+        window = len(rows)
+        events = []
+        for row in rows[:limit]:
+            data = row['data'] if isinstance(row['data'], dict) else {'value': row['data']}
+            events.append({
+                'seq': row['seq'], 'type': row['type'], 'created': row['created'],
+                'data': peer_safe_data(data)})
+        system_log.write('peer.read', session_id=sid, target=target, rows=len(events),
+                         afterSeq=after, window=window)
+        return {'sessionId': target, 'events': events, 'limit': limit, 'window': window,
+                'truncated': window > len(events)}
+
+    # --- T9: chờ tới lúc bạn GIAO kết quả ------------------------------------------------
+    def notify_peer_delivery(self, recipient):
+        """Đánh thức mọi lượt đang chờ `recipient` — gọi NGAY SAU khi ghi biên nhận.
+
+        Đây là toàn bộ cơ chế đánh thức của `await_children`: không polling, không trễ nhịp. Chỗ ghi
+        biên nhận (T11 `queue_delivery`) gọi hàm này trong cùng một nhịp vòng lặp, nên người chờ chạy
+        tiếp ở bước kế tiếp. Trả số hàng chờ đã đánh thức — `0` là chuyện thường: phần lớn kết quả
+        tới lúc cha đang bận một bước khác và được bơm vào lượt kế tiếp (T12).
+        """
+        waiters = list(self.peer_waiters.get(recipient) or ())
+        for event in waiters:
+            event.set()
+        return len(waiters)
+
+    def peer_pool(self, sid):
+        """Những phiên mà `sid` có thể chờ, kèm lượt đang nói tới.
+
+        Con chờ anh em CÙNG CHA trong đúng lượt nó được sinh ra; orchestrator chờ con của chính nó
+        trong lượt hiện tại. Cùng một hàng rào với `peer_read` (`peer_scope`), nên không có đường
+        nào chờ được một phiên mà mình không được phép đọc.
+        """
+        session = self.store.get(sid)
+        parent_id = session.get('parent_id')
+        if parent_id:
+            row = self.store.child(sid)
+            turn = row['parent_turn'] if row else None
+            rows = self.store.children_of(parent_id, turn=turn)
+        else:
+            rows = self.store.children_of(sid, turn=self.active_turn.get(sid))
+        return [row for row in rows if row['session_id'] != sid]
+
+    def resolve_peer_addresses(self, sid, addresses):
+        """Phân giải địa chỉ (`role:x`, `peer:<sid>`, tên vai, rỗng) — MỘT lần, không đoán lại.
+
+        Trả `(found, missing)`: `found` là các hàng sổ con thật, `missing` là địa chỉ chưa có phiên
+        nào (vai chưa được sinh). Chỗ gọi mở cửa sổ dò khi `missing` khác rỗng.
+        """
+        pool = {row['session_id']: row for row in self.peer_pool(sid)}
+        wanted = [str(item).strip() for item in (addresses or []) if str(item).strip()]
+        if not wanted:
+            # Rỗng = mọi phiên bạn của lượt hiện tại.
+            return list(pool.values()), ([] if pool else [''])
+        found, missing = [], []
+        for address in wanted:
+            if address.startswith('peer:'):
+                row = pool.get(address[5:].strip())
+                (found if row else missing).append(row or address)
+                continue
+            role = address[5:].strip() if address.startswith('role:') else address
+            hits = [row for row in pool.values() if row['role'] == role]
+            if hits:
+                for row in hits:
+                    if row not in found:
+                        found.append(row)
+            else:
+                missing.append(address)
+        return found, missing
+
+    async def wait_for_peers(self, sid, targets, mode, timeout_seconds):
+        """Chờ tới lúc bạn giao: tỉnh bằng biên nhận, chết bằng lưới an toàn (T9).
+
+        Trả `(status, done_rows, pending_rows, waited_ms, extension_exhausted)`. Hạn chót của lượt được
+        HOÃN trong lúc chờ (cùng khuôn `wait_for_decision`) và cộng dồn vào `self.wait_extension`: chờ
+        bạn không được biến thành hết hạn, nhưng cũng không được kéo dài lượt vô hạn.
+        """
+        started = time.monotonic()
+        budget = self.run_budget.get(sid)
+        paused = budget.when() if budget is not None else None
+        spent = self.wait_extension.get(sid, 0.0)
+        if spent >= PEER_WAIT_TOTAL_MAX_SECONDS:
+            # Đã chờ đủ hạn mức của lượt: KHÔNG hoãn hạn chót thêm, trả lời ngay với dữ liệu đang có.
+            return 'timeout', [], list(targets), 0, True
+        limit = min(timeout_seconds, PEER_WAIT_TOTAL_MAX_SECONDS - spent)
+        paused_at = started
+        if paused is not None:
+            try:
+                budget.reschedule(None)
+            except RuntimeError:
+                paused = None
+        try:
+            while True:
+                pending = self.peer_wait_pending(sid, targets)
+                waited = time.monotonic() - started
+                if not pending:
+                    return 'done', list(targets), [], waited, False
+                if mode == 'any' and len(pending) < len(targets):
+                    # `any`: mục tiêu đầu tiên giao là đủ — những người còn lại vẫn nằm trong `pending`.
+                    return 'done', [row for row in targets if row not in pending], pending, waited, False
+                if waited >= limit:
+                    return 'timeout', [row for row in targets if row not in pending], pending, waited, False
+                if self.peer_targets_dead(pending):
+                    # Mọi mục tiêu còn lại đã đóng sổ mà chưa giao: chờ tiếp là chờ một việc không tới.
+                    return 'timeout', [row for row in targets if row not in pending], pending, waited, False
+                event = asyncio.Event()
+                self.peer_waiters.setdefault(sid, set()).add(event)
+                try:
+                    await asyncio.wait_for(event.wait(), timeout=max(0.01, min(self.peer_wait_tick, limit - waited)))
+                except asyncio.TimeoutError:
+                    pass  # nhịp kiểm tra lại; THỨC dậy thật là `notify_peer_delivery`
+                finally:
+                    self.peer_waiters.get(sid, set()).discard(event)
+        finally:
+            waited = time.monotonic() - paused_at
+            self.wait_extension[sid] = self.wait_extension.get(sid, 0.0) + waited
+            if paused is not None:
+                try:
+                    budget.reschedule(paused + waited)
+                except RuntimeError:
+                    pass
+
+    def peer_wait_pending(self, sid, targets):
+        """Mục tiêu nào CHƯA giao kết quả cho `sid` — đọc bảng biên nhận, không đoán."""
+        pending = []
+        for target in targets:
+            receipts = [row for row in self.store.deliveries_of(target['session_id'])
+                        if row['recipient'] == sid and row['state'] in ('pending', 'injected')]
+            if not receipts:
+                pending.append(target)
+        return pending
+
+    def peer_targets_dead(self, targets):
+        """`True` khi mọi mục tiêu đã đóng sổ con mà chưa giao — không còn gì để chờ."""
+        rows = [self.store.child(target['session_id']) for target in targets]
+        return bool(rows) and all(row is None or row['status'] != 'started' for row in rows)
+
+    def peer_delivery_summary(self, target, budget):
+        """Một mục `done`: câu trả lời THẬT của bạn, cắt theo ngân sách còn lại của kết quả."""
+        text = ''
+        try:
+            events = self.store.events(target['session_id'])
+            answers = [event['data'].get('text') or '' for event in events
+                       if event['type'] == 'assistant' and event['data'].get('final')]
+            text = answers[-1] if answers else ''
+        except KeyError:
+            text = ''
+        # Trạng thái đọc lại từ sổ con ngay lúc trả kết quả: một bạn kịp xong (mà không giao) trong lúc
+        # chờ thì phải hiện là `completed`, không giữ mãi ảnh chụp lúc bắt đầu chờ.
+        row = self.store.child(target['session_id'])
+        room = max(0, min(CHILD_ANSWER_MAX_CHARS, budget[0]))
+        summary, truncated = bound_child_text(text, room)
+        budget[0] -= len(summary)
+        return {'sessionId': target['session_id'], 'role': target['role'],
+                'status': (row or {}).get('status') or 'gone', 'summary': summary,
+                'chars': len(text), 'truncated': truncated}
+
+    async def await_children(self, session, args):
+        """T9 — đứng chờ đúng nghĩa: dừng ở một mốc, chờ bạn GIAO kết quả, rồi chạy tiếp.
+
+        Lượt không bao giờ trông như treo và không bao giờ chết vì đã chờ: lưới an toàn trả
+        `timeout` kèm `pending` để chỗ gọi chạy tiếp với dữ liệu đang có.
+        """
+        sid = session['id']
+        mode = str((args or {}).get('mode') or 'all')
+        if mode not in ('all', 'any'):
+            raise ValueError('PEER_WAIT_MODE: mode must be "all" or "any"')
+        requested = (args or {}).get('timeoutSeconds')
+        timeout = PEER_WAIT_SAFETY_SECONDS
+        if requested is not None:
+            timeout = max(1, min(PEER_WAIT_MAX_SECONDS, int(requested)))
+            if timeout != int(requested):
+                self.store.emit(sid, 'notice', {'code': PEER_WAIT_CLAMPED_CODE,
+                                               'message': (f'{PEER_WAIT_CLAMPED_CODE}: timeoutSeconds '
+                                                           f'{requested} is outside [1, {PEER_WAIT_MAX_SECONDS}]; '
+                                                           f'waiting at most {timeout} s'),
+                                               'requested': requested, 'applied': timeout})
+        found, missing = self.resolve_peer_addresses(sid, (args or {}).get('targets'))
+        if missing:
+            # Cửa sổ dò: anh em có thể được sinh ngay sau lời gọi này. Đây là chỗ DUY NHẤT có nhịp chờ
+            # theo đồng hồ, và nó có trần (`PEER_TARGET_GRACE_SECONDS`).
+            grace_until = time.monotonic() + self.peer_target_grace
+            while time.monotonic() < grace_until:
+                await asyncio.sleep(min(self.peer_wait_tick, max(0.0, grace_until - time.monotonic())))
+                found, missing = self.resolve_peer_addresses(sid, (args or {}).get('targets'))
+                if not missing:
+                    break
+        if not found:
+            system_log.write('peer.wait.missing', session_id=sid, missing=missing)
+            return {'status': 'pending_target', 'mode': mode, 'targets': [], 'done': [],
+                    'pending': missing, 'waitedMs': 0, 'extensionExhausted': False}
+        turn = self.active_turn.get(sid)
+        wall_started = time.time()
+        self.store.emit(sid, 'peer_wait', {
+            'targets': [{'sessionId': row['session_id'], 'role': row['role']} for row in found],
+            'mode': mode, 'waitsUntilDelivery': True, 'safetySeconds': timeout,
+            'deadline': round(wall_started + timeout, 3), 'turn': turn})
+        if self.store.child(sid) is not None:
+            # Sổ con của chính người chờ: giao diện đọc `waiting_for` để ghi "đang chờ <vai> giao kết
+            # quả", và nó tự hết khi hàng này mất `waiting_for`.
+            self.store.child_wait(sid, [f"peer:{row['session_id']}" for row in found], wall_started)
+        await session_journal.append(self.executor, self.store, sid, 'step',
+                                     f'waiting for {len(found)} peer session(s) to deliver their result '
+                                     f"({mode}): {', '.join(row['role'] for row in found)}",
+                                     data={'mode': mode, 'targets': [row['session_id'] for row in found],
+                                           'turn': turn})
+        status, done_rows, pending_rows, waited, exhausted = await self.wait_for_peers(
+            sid, found, mode, timeout)
+        if self.store.child(sid) is not None:
+            self.store.child_wait(sid, [], None)
+        budget = [PEER_WAIT_RESULT_CHARS]
+        done = [self.peer_delivery_summary(row, budget) for row in done_rows]
+        payload = {'status': status, 'mode': mode, 'turn': turn,
+                   'waitedMs': int(waited * 1000), 'extensionExhausted': exhausted,
+                   'safetySeconds': timeout, 'done': done,
+                   'pending': [{'sessionId': row['session_id'], 'role': row['role'],
+                                'status': (self.store.child(row['session_id']) or {}).get('status') or 'gone'}
+                               for row in pending_rows],
+                   'truncated': any(item['truncated'] for item in done)}
+        self.store.emit(sid, 'peer_wait_end', payload)
+        system_log.write('peer.wait.end', session_id=sid, status=status, turn=turn,
+                         waitedMs=payload['waitedMs'], done=len(done), pending=len(pending_rows))
+        return payload
 
     def session_search(self, sid, args):
         """A6 — tra lịch sử bền của phiên: **mọi** checkpoint + nhật ký + `events`, không chỉ 20 hàng mới.
@@ -2861,9 +3160,9 @@ class HarnessRuntime(RuntimeCommands):
             if isinstance(ticket, dict):
                 # D-3: lời từ chối để lại một VÉ trên hàng dữ kiện (`F:`) — cố ý KHÔNG phải `P:`:
                 # bản bị từ chối không có tệp nào để giữ, nên vé không được lọt vào cổng xoá `P:`
-                # của `migrate_plans.py --delete-orphan`. Câu dưới là đường duy nhất nói cho model
-                # biết nó được gửi lại nguyên văn (khối ký ức `brief()` chỉ có sáu nhóm, không có
-                # nhóm `fact` — xem bàn giao C4).
+                # của `migrate_plans.py --delete-orphan`. Vé tới model bằng HAI đường: câu dưới đây
+                # (lời từ chối) và khối ký ức `brief()` — C4 sửa ở vòng 22: `group_rows` xếp hàng vé
+                # vào nhóm "đang tắc", vẫn đúng sáu nhóm.
                 await session_journal.append(
                     self.executor, self.store, sid, 'fact',
                     f"PLAN_IDENTITY_AMBIGUOUS: slug «{slug}» giống "

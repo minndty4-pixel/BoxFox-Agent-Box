@@ -149,6 +149,20 @@ class BriefTextTest(unittest.TestCase):
         assert len(tiny) <= 400
         assert "bản ghi nữa" in tiny  # cắt thì phải nói đã cắt bao nhiêu
 
+    def test_hang_ve_mo_ho_roi_vao_nhom_dang_tac_con_fact_thuong_thi_khong(self) -> None:
+        """C4 (vòng 22): vé mơ hồ phải tới model, nhưng **không** mở nhóm thứ bảy cho hàng `fact`."""
+        ticket = _record("fact", 7, "PLAN_IDENTITY_AMBIGUOUS: slug «kế hoạch mới» giống 66% nhóm «cũ»",
+                         status="info", data={"identityAmbiguityTicket": {"slug": "kế hoạch mới",
+                                                                    "score": 0.6667,
+                                                                    "matchedIdentity": "cũ"}})
+        plain = _record("fact", 8, "repo dùng CRLF cho backend", status="info")
+        brief = journal.brief_text([ticket, plain])
+        headings = [line for line in brief.splitlines() if line.startswith("[") and ". " in line]
+        assert len(headings) == 6, 'vé không được sinh ra nhóm thứ bảy'
+        blocked = brief.split("[4. đang tắc]")[1].split("[5.")[0]
+        assert "F:ab12cd34-7" in blocked, 'vé phải nằm trong nhóm đang tắc'
+        assert "F:ab12cd34-8" not in brief, 'một dữ kiện thường không thuộc nhóm nào trong sáu nhóm'
+
     def test_checkpoint_lines_appear_and_goals_come_from_newest_task(self) -> None:
         rows = [
             _record("task", 1, "mục tiêu đợt 20", status="open"),
