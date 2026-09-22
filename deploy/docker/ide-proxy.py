@@ -69,6 +69,15 @@ except ImportError:
 PLAN_ROOT = os.environ.get("PLAN_ROOT", os.environ.get("PLANS_ROOT", "/home/agent/workspace/.plans"))
 PLANS_ROOT = PLAN_ROOT
 
+# Cờ boolean trong query string: nhận `1`/`true` (giống cờ CLI), còn lại là False.
+_TRUTHY_FLAGS = frozenset({"1", "true", "yes", "on"})
+
+
+def _flag_on(raw) -> bool:
+    """`?assign=1` / `?assign=true` → True; thiếu/giá trị khác → False (không đoán)."""
+
+    return str(raw or "").strip().lower() in _TRUTHY_FLAGS
+
 
 class ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     """HTTPServer đa luồng — code-server mở nhiều kết nối song song
@@ -547,6 +556,11 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                 params = urllib.parse.parse_qs(parsed.query)
                 target_dir = params.get("path", [""])[0]
                 filename = params.get("name", [""])[0]
+                # Đợt 22 (kế hoạch v1 Phần A, A3.4): `assign=1` để BOX cấp số RULE-5
+                # (`.uploaded_artifacts/<max+1>.<ext>`), `mkdirs=1` để tạo chuỗi thư mục
+                # cha còn thiếu (giữ cây khi tải cả thư mục lên). `'1'` và `'true'` đều nhận.
+                assign_number = _flag_on(params.get("assign", [""])[0])
+                mkdirs = _flag_on(params.get("mkdirs", [""])[0])
                 try:
                     size_hint = int(self.headers.get("Content-Length", "0") or "0")
                 except ValueError:
@@ -563,7 +577,17 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                         remaining -= len(chunk)
                         yield chunk
 
-                result = workspace_files.write_upload(target_dir, filename, body_chunks(), size_hint)
+                # Trần 25 MiB cho MỌI đường đi qua route này, kể cả panel Workspace Files:
+                # đây là chủ ý của D-6, không phải hồi quy.
+                result = workspace_files.write_upload(
+                    target_dir,
+                    filename,
+                    body_chunks(),
+                    size_hint,
+                    assign_number=assign_number,
+                    mkdirs=mkdirs,
+                    max_bytes=workspace_files.UPLOAD_MAX_BYTES,
+                )
                 self._send_json_cors(200, json.dumps(result))
                 return
 

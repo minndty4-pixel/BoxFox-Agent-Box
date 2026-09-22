@@ -7,6 +7,7 @@ dùng một thư mục tạm riêng và patch ``WORKSPACE_ROOT`` để cô lập
 from __future__ import annotations
 
 import atexit
+from concurrent.futures import ThreadPoolExecutor
 import io
 import os
 from pathlib import Path
@@ -261,7 +262,8 @@ class WorkspaceFilesTest(unittest.TestCase):
     # --- write_upload / write_as_agent ---
     def test_write_upload_creates_file_with_mode_and_returns_path(self) -> None:
         result = write_upload("", "uploaded.txt", [b"hello world"], 11)
-        self.assertEqual(result, {"path": "uploaded.txt", "sizeBytes": 11})
+        # `name` luôn có (đợt 22): đường cấp số trả tên do box cấp, đường thường trả tên gửi lên.
+        self.assertEqual(result, {"path": "uploaded.txt", "name": "uploaded.txt", "sizeBytes": 11})
         path = self.root / "uploaded.txt"
         self.assertTrue(path.exists())
         self.assertEqual(path.read_text(), "hello world")
@@ -292,7 +294,76 @@ class WorkspaceFilesTest(unittest.TestCase):
 
     def test_write_upload_enforces_size_hint(self) -> None:
         with self.assertRaises(WorkspaceTooLarge):
-            write_upload("", "big.txt", [b"x"], workspace_files.MAX_UPLOAD_SIZE + 1)
+            write_upload("", "big.txt", [b"x"], workspace_files.UPLOAD_MAX_BYTES + 1)
+
+    def test_write_upload_enforces_streamed_bytes_too(self) -> None:
+        # size_hint là gợi ý của client — trần thật vẫn được ép trên luồng byte.
+        with self.assertRaises(WorkspaceTooLarge):
+            write_upload("", "big.txt", [b"x" * (1024 * 1024), b"y" * (25 * 1024 * 1024)], 0)
+        leftover = self.root / "big.txt"
+        if leftover.exists():
+            # Ghi là stream: tệp cụt còn lại sau lỗi là chấp nhận được — nhưng không bao giờ đủ trần.
+            self.assertLess(leftover.stat().st_size, workspace_files.UPLOAD_MAX_BYTES)
+
+    # --- Đợt 22 / A3: box cấp số RULE-5 + tạo thư mục con ---
+    def test_assign_number_is_monotonic_and_keeps_extension(self) -> None:
+        first = write_upload(".uploaded_artifacts", "notes.md", [b"a"], 1,
+                             assign_number=True, mkdirs=True)
+        second = write_upload(".uploaded_artifacts", "báo cáo.md", [b"bb"], 2,
+                              assign_number=True)
+        self.assertEqual(first, {"path": ".uploaded_artifacts/1.md", "name": "1.md", "sizeBytes": 1})
+        self.assertEqual(second, {"path": ".uploaded_artifacts/2.md", "name": "2.md", "sizeBytes": 2})
+        self.assertEqual((self.root / ".uploaded_artifacts" / "1.md").read_bytes(), b"a")
+        mode = (self.root / ".uploaded_artifacts" / "2.md").stat().st_mode & 0o777
+        self.assertEqual(mode, 0o640)
+        # Không zero-pad — RULE-5 (`docs/naming.md` §2).
+        self.assertEqual(sorted(os.listdir(self.root / ".uploaded_artifacts")), ["1.md", "2.md"])
+
+    def test_assign_number_ignores_non_numeric_files_and_keeps_ext(self) -> None:
+        upload_dir = self.root / ".uploaded_artifacts"
+        upload_dir.mkdir()
+        self.write(".uploaded_artifacts/probe.md", "không phải một phần của dãy số")
+        self.write(".uploaded_artifacts/12.txt", "số 12")
+        result = write_upload(".uploaded_artifacts", "x.md", [b"z"], 1, assign_number=True)
+        self.assertEqual(result["name"], "13.md")
+
+    def test_assign_number_without_extension(self) -> None:
+        result = write_upload(".uploaded_artifacts", "README", [b"z"], 1,
+                              assign_number=True, mkdirs=True)
+        self.assertEqual(result["name"], "1")
+
+    def test_assign_number_never_reuses_a_number_under_concurrency(self) -> None:
+        """`ThreadingHTTPServer` cho hai lời gọi upload chạy song song — `O_EXCL` giữ chỗ."""
+        (self.root / ".uploaded_artifacts").mkdir()
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(
+                lambda index: write_upload(".uploaded_artifacts", f"p{index}.md", [b"x" * 4], 4,
+                                           assign_number=True),
+                range(8),
+            ))
+        names = sorted(result["name"] for result in results)
+        self.assertEqual(len(set(names)), 8)
+        self.assertEqual(names, [f"{n}.md" for n in range(1, 9)])
+        self.assertEqual(sorted(os.listdir(self.root / ".uploaded_artifacts")),
+                         [f"{n}.md" for n in range(1, 9)])
+
+    def test_mkdirs_keeps_directory_tree(self) -> None:
+        payload = b"export {}\n"
+        result = write_upload(".uploaded_artifacts/proj/src", "a.ts", [payload], len(payload),
+                              assign_number=True, mkdirs=True)
+        self.assertEqual(result["path"], ".uploaded_artifacts/proj/src/1.ts")
+        deep = self.root / ".uploaded_artifacts" / "proj" / "src" / "1.ts"
+        self.assertTrue(deep.exists())
+        self.assertEqual(deep.read_bytes(), payload)
+        # Thư mục do box tạo thuộc agent, mode 0750 — cùng luật `_ensure_dirs` của unzip.
+        self.assertEqual(deep.parent.stat().st_mode & 0o777, 0o750)
+        if os.geteuid() == 0:
+            self.assertEqual(deep.parent.stat().st_uid, workspace_files.AGENT_UID)
+
+    def test_without_mkdirs_missing_subdir_is_404(self) -> None:
+        with self.assertRaises(WorkspaceNotFound):
+            write_upload(".uploaded_artifacts/proj", "a.ts", [b"x"], 1,
+                         assign_number=True, mkdirs=False)
 
 
 class WorkspaceWriteApiTest(unittest.TestCase):
@@ -558,14 +629,14 @@ class WorkspaceWriteApiTest(unittest.TestCase):
         self.assertTrue(names[1].startswith(names[0].split("-", 1)[0] + "-"))
 
     def test_delete_refuses_root_and_protected_entries(self) -> None:
-        for name in (".plans", ".trash", ".generated_artifacts"):
+        for name in (".plans", ".trash", ".generated_artifacts", ".uploaded_artifacts"):
             (self.root / name).mkdir()
         self.write(".plans/v1-pilot.md", "# plan\n")
-        for protected in ("", ".plans", ".trash", ".generated_artifacts"):
+        for protected in ("", ".plans", ".trash", ".generated_artifacts", ".uploaded_artifacts"):
             with self.assertRaises(WorkspaceConflict) as caught:
                 delete_entry(protected)
             self.assertEqual(caught.exception.status_code, 409)
-        for name in (".plans", ".trash", ".generated_artifacts"):
+        for name in (".plans", ".trash", ".generated_artifacts", ".uploaded_artifacts"):
             self.assertTrue((self.root / name).exists())
         self.assertEqual(self.trash_names(), [])
         # mục con của `.plans` không phải "chính .plans" → vẫn xoá mềm được
@@ -573,6 +644,13 @@ class WorkspaceWriteApiTest(unittest.TestCase):
             delete_entry(".plans/v1-pilot.md")["trashPath"].startswith(".trash/")
         )
         self.assertFalse((self.root / ".plans" / "v1-pilot.md").exists())
+
+    def test_rename_refuses_protected_upload_root(self) -> None:
+        (self.root / ".uploaded_artifacts").mkdir()
+        with self.assertRaises(WorkspaceConflict) as caught:
+            rename_entry(".uploaded_artifacts", "uploads")
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertTrue((self.root / ".uploaded_artifacts").exists())
 
     def test_delete_rejects_escape_and_depth(self) -> None:
         deep = "/".join(["a"] * (workspace_files.MAX_DEPTH + 1))
