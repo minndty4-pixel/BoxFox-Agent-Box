@@ -37,6 +37,52 @@ class BaseTest(unittest.TestCase):
         return session_files.session_paths(self.root, sid)
 
 
+class SessionHistoryKeptTest(BaseTest):
+    """D-5 — tên `.session-history` và hai tệp nhật ký là **hợp đồng**, không phải chi tiết nội bộ.
+
+    Đổi tên chúng trong im lặng là phá dữ liệu đang có ở ba nơi cùng lúc, nên ca này khoá cả ba:
+
+    * **trong box**: `<workspace>/.session-history/` giữ các thư mục phiên + `INDEX.json`
+      (đo 2026-09-22: 8 thư mục phiên, 15 tệp, 128 KB) — bản ghi cũ nằm đúng chỗ đó;
+    * **trên máy chủ nhà**: `~/BoxFox/harness/sessions.sqlite` (bảng `journal`) là bản đầy đủ, còn
+      `backfill_history.DEFAULT_ROOT` là đường dẫn bản nạp lịch sử cũ dùng — hai bề mặt phải đọc
+      cùng một chỗ, đổi một nơi là hai bên nói hai chuyện khác nhau;
+    * **lúc dựng box**: `box-entrypoint.sh` tạo thư mục với `chmod 0750` + `chown 1000:1000`; đổi
+      tên mà không sửa entrypoint thì thư mục mới không có chủ/mode đúng.
+
+    Ca này không cấm cải tiến: nó bắt buộc người đổi tên phải sửa **cả ba** nơi trong cùng một lần,
+    và khi đó đây là chỗ để cập nhật có ý thức (chủ nhà chốt D-5: **giữ nguyên**, chỉ ghim lại).
+    """
+
+    def test_the_directory_and_journal_names_are_pinned(self) -> None:
+        self.assertEqual(session_files.SESSION_HISTORY_DIRNAME, ".session-history")
+        self.assertEqual(session_files.SESSION_HISTORY_DIR.name, ".session-history")
+        self.assertEqual(session_files.JOURNAL_JSONL_NAME, "journal.jsonl")
+        self.assertEqual(session_files.JOURNAL_MD_NAME, "journal.md")
+
+    def test_the_layout_is_built_from_the_pinned_names(self) -> None:
+        paths = self.paths()
+        self.assertEqual(paths.root.name, ".session-history")
+        self.assertEqual(paths.journal_jsonl.name, "journal.jsonl")
+        self.assertEqual(paths.journal_md.name, "journal.md")
+        self.assertEqual(paths.journal_jsonl.parent, paths.journal_md.parent)
+
+    def test_the_backfill_default_root_is_the_same_directory(self) -> None:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        import backfill_history
+
+        self.assertTrue(backfill_history.DEFAULT_ROOT.endswith("/home/agent/workspace/.session-history"),
+                        backfill_history.DEFAULT_ROOT)
+        self.assertTrue(backfill_history.DEFAULT_ROOT.endswith("/" + session_files.SESSION_HISTORY_DIRNAME))
+
+    def test_the_entrypoint_creates_that_directory_for_the_agent_user(self) -> None:
+        script = (Path(__file__).resolve().parents[1] / "box-entrypoint.sh").read_text(encoding="utf-8")
+        self.assertIn(".session-history", script,
+                      "entrypoint phải tạo đúng thư mục mà session_files/backfill đang đọc")
+        self.assertRegex(script, r"chmod 0750")
+        self.assertRegex(script, r"chown 1000:1000")
+
+
 class Sid8Test(BaseTest):
     def test_takes_first_eight_hex_without_root(self) -> None:
         self.assertEqual(session_files.sid8_of(SID), "ab12cd34")
