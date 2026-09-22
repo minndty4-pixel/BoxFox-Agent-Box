@@ -125,6 +125,9 @@ const vi = {
     // Lệnh điều khiển vẫn gửi được khi agent đang chạy (BUG-21) — nhãn nút Gửi
     // phải nói rõ vì sao nút còn bật dù đang bận.
     sendControlWhileBusy: 'Gửi lệnh điều khiển trong khi agent đang chạy',
+    // Nhãn nút Gửi trong lúc tệp đang được đưa lên box (A5/A6): người dùng phải
+    // biết vì sao lượt gửi chưa bắt đầu.
+    uploadingAttachments: 'Đang tải tệp lên máy ảo…',
   },
   tabs: {
     chat: 'Chat',

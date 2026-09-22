@@ -125,6 +125,8 @@ const en: SameShape<typeof vi> = {
     elementContextLiveUnsupported:
       'LIVE mode has no consumer for attached elements yet — the backend does not process them, so this content will not reach the agent.',
     sendControlWhileBusy: 'Send a control command while the agent is running',
+    // Send-button label while the attachments are being uploaded (A5/A6).
+    uploadingAttachments: 'Uploading attachments to the sandbox…',
   },
   tabs: {
     chat: 'Chat',

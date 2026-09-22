@@ -122,7 +122,7 @@ export function RouterTestChat() {
     <div className="min-h-0 flex-1 overflow-y-auto p-5 space-y-6 select-text">
       {turns.length === 0 ? <div className="flex h-full flex-col items-center justify-center p-8 text-center"><div className="max-w-sm space-y-2"><div className="mx-auto flex size-10 items-center justify-center rounded-xl bg-panel2 border border-line text-muted"><Sparkles className="size-5 text-brand" /></div><h3 className="text-sm font-semibold text-fg">{t('chat.empty.title')}</h3><p className="text-xs leading-relaxed text-muted">{t('chat.routerEmptyBody')}</p></div></div> : turns.map(turn => <RouterTurn key={turn.id} turn={turn} snapshot={snapshot} busy={isSending} onOpenLightbox={setLightboxSrc} />)}<div ref={messagesEndRef} />
     </div>
-    <ChatInputBar router={{ models: routerModels, activeModelId: selectionKey(selection), isBusy: isSending, onModelChange: id => setSelection(options.find(option => option.value === id)?.selection ?? null), onSend: (prompt, image) => { if (selected && !routerUnavailable && !loading) void send(prompt, undefined, image) }, onStop: stop }} />
+    <ChatInputBar router={{ models: routerModels, activeModelId: selectionKey(selection), isBusy: isSending, onModelChange: id => setSelection(options.find(option => option.value === id)?.selection ?? null), onSend: (prompt, images) => { if (selected && !routerUnavailable && !loading) void send(prompt, undefined, images?.[0]) }, onStop: stop }} />
     {lightboxSrc && <MediaLightboxModal type="image" src={lightboxSrc} caption="Ảnh người dùng đính kèm" onClose={() => setLightboxSrc(null)} />}
   </div>
 }

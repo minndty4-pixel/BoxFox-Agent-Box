@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { resolveThinkingLevel } from '../lib/harnessThinking'
 import { agentApi } from '../lib/agentApi'
+import type { OutgoingAttachment } from '../lib/chat/attachmentUpload'
 import { useHarnessStore } from './harnessStore'
 import { useOwnerSettingsStore } from './ownerSettingsStore'
 import { useSessionRecordStore } from './sessionRecordStore'
@@ -66,7 +67,16 @@ interface State {
   intentSeq: Record<string, number>
   fetchSavedSessions: () => Promise<SavedSessionRow[]>
   deleteSession: (id: string) => Promise<void>
-  send: (chatId: string, prompt: string, selection: RouterChatSelection | null, image?: string | null, modelLabel?: string, thinkingLevels?: string[]) => Promise<void>
+  send: (
+    chatId: string,
+    prompt: string,
+    selection: RouterChatSelection | null,
+    image?: string | null,
+    modelLabel?: string,
+    thinkingLevels?: string[],
+    images?: string[] | null,
+    attachments?: OutgoingAttachment[],
+  ) => Promise<void>
   refresh: (chatId: string) => Promise<void>
   stop: (chatId: string) => Promise<void>
   /** Trả lời một quyết định qua harness; cập nhật ngay tại chỗ khi thành công. */
@@ -382,7 +392,7 @@ export const useHarnessChatStore = create<State>((set, get) => ({
       throw error
     }
   },
-  send: async (chatId, prompt, selection, image, modelLabel, thinkingLevels) => {
+  send: async (chatId, prompt, selection, image, modelLabel, thinkingLevels, images, attachments) => {
     const current = get().sessions[chatId] ?? empty()
     const control = /^\/(help|skills|agents|status|context|stop)\s*$/.test(prompt)
     if ((current.status === 'running' || current.status === 'starting' || current.status === 'awaiting_decision') && !control) return
@@ -477,8 +487,15 @@ export const useHarnessChatStore = create<State>((set, get) => ({
       throw new Error('SESSION_NOT_FOUND: could not open a harness session')
     }
 
+    // `image` (số ít) vẫn được gửi để tương thích với harness cũ trong lúc triển khai A7;
+    // `images` là hợp đồng mới (nhiều ảnh) và `attachments` là tệp đã nằm thật trên đĩa box.
     const submitTurn = (id: string, route: unknown) => agentApi(`/sessions/${id}/turns`, {
-      prompt: prompt || 'Inspect the attached image.', image, route, invocationId: crypto.randomUUID() })
+      prompt: prompt || (attachments?.length ? 'Inspect the attached files.' : 'Inspect the attached image.'),
+      image: images?.[0] ?? image,
+      ...(images?.length ? { images } : {}),
+      ...(attachments?.length ? { attachments } : {}),
+      route,
+      invocationId: crypto.randomUUID() })
 
     try {
       let id = current.id ?? (isHexId(chatId) ? chatId : localStorage.getItem(storageKey(chatId)))

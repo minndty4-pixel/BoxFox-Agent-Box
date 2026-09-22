@@ -40,6 +40,7 @@ import { useProviderStore } from '../../store/providerStore'
 import { useT } from '../../i18n/context'
 import { LabelDot } from '../LabelDot'
 import { ChatInputBar, type RouterComposerAdapter } from './ChatInputBar'
+import type { OutgoingAttachment } from '../../lib/chat/attachmentUpload'
 import { ContextUsageBar } from './ContextUsageBar'
 import { MediaLightboxModal, type LightboxMediaProps } from '../chat/MediaLightboxModal'
 import { Video, Play, BrainCircuit } from 'lucide-react'
@@ -375,7 +376,7 @@ export function ChatPanel() {
         harnessClearError(chatId)
         setDismissedWarning(null)
       },
-      onSend: (prompt: string, image?: string | null) => {
+      onSend: (prompt: string, images?: string[] | null, attachments?: OutgoingAttachment[]) => {
         harnessClearError(chatId)
         if (connectionWarning) setDismissedWarning(connectionWarning)
         const thinkingLevel = useHarnessStore.getState().thinkingLevel
@@ -403,12 +404,22 @@ export function ChatPanel() {
           // trong ô nhập, không bị xoá im lặng (BUG-17/F1).
           // Mức thinking của model đang chọn đi kèm để store kéo mức toàn cục về
           // mức model thật sự công bố trước khi gửi lượt.
-          return harnessSend(chatId, prompt, selection, image, modelLabel, activeOption?.thinkingLevels).then(() => {
+          return harnessSend(
+            chatId,
+            prompt,
+            selection,
+            images?.[0],
+            modelLabel,
+            activeOption?.thinkingLevels,
+            images,
+            attachments,
+          ).then(() => {
             captureRunError()
             return !useHarnessChatStore.getState().sessions[chatId]?.error
           })
         }
-        if (selected) void routerSend(prompt, undefined, image)
+        // Router chat chưa có hợp đồng nhiều ảnh: giữ nguyên một ảnh như trước.
+        if (selected) void routerSend(prompt, undefined, images?.[0])
         return undefined
       },
       onStop: handleStopAll,

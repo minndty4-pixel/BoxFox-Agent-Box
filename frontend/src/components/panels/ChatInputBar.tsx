@@ -6,6 +6,7 @@ import {
   Square,
   Paperclip,
   Crosshair,
+  Loader2,
   X,
 } from 'lucide-react'
 import { useAgentStore } from '../../store/agentStore'
@@ -16,7 +17,14 @@ import { useT } from '../../i18n/context'
 import { useCompactComposer } from '../../hooks/useCompactComposer'
 import { HarnessModelPicker, type RouterSingleModel } from '../chat/HarnessModelPicker'
 import { RepoPicker } from '../chat/RepoPicker'
-import { AttachmentPicker, type AttachedFile } from '../chat/AttachmentPicker'
+import {
+  AttachmentPicker,
+  formatAttachmentSize,
+  shortenAttachmentPath,
+  type AttachedFile,
+} from '../chat/AttachmentPicker'
+import { uploadAttachments, type OutgoingAttachment } from '../../lib/chat/attachmentUpload'
+import { createWorkspaceRepository, type WorkspaceRepository } from '../../lib/workspace'
 import { ShortcutsPopover } from '../chat/ShortcutsPopover'
 import { useSlashCompletion } from '../chat/useSlashCompletion'
 import { LabelDot } from '../LabelDot'
@@ -38,8 +46,16 @@ export interface RouterComposerAdapter {
   /**
    * Trả `false` (hoặc Promise resolve `false`) khi lần gửi thất bại — khi đó
    * composer khôi phục lại nội dung vừa gõ thay vì xoá trắng (BUG-17/F1).
+   *
+   * `images` là **mọi** ảnh đính kèm (đã cắt còn 2 ảnh đầu, xem `collectTurnImages`) chứ
+   * không chỉ ảnh đầu như trước; `attachments` là các tệp đã nằm THẬT trên đĩa box
+   * (`uploadAttachments` chạy xong mới gọi tới đây, nên đường dẫn trong đó luôn đọc được).
    */
-  onSend: (prompt: string, image?: string | null) => void | Promise<boolean>
+  onSend: (
+    prompt: string,
+    images?: string[] | null,
+    attachments?: OutgoingAttachment[],
+  ) => void | Promise<boolean>
   onStop: () => void
 }
 
@@ -55,11 +71,49 @@ export function isControlCommand(text: string): boolean {
   return (CONTROL_COMMANDS as readonly string[]).includes(normalized)
 }
 
-export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
+/**
+ * Trần ảnh inline của một lượt: harness chỉ nhận nhiều nhất 2 ảnh và thân request bị chặn ở
+ * 1 MiB, nên hai ảnh phải nằm gọn trong 800 000 ký tự base64 (phần còn lại là JSON + prompt).
+ */
+export const MAX_TURN_IMAGES = 2
+export const MAX_TURN_IMAGE_CHARS = 800_000
+
+/** Tất cả ảnh có `dataUrl`, cắt còn 2 ảnh đầu và tổng ≤ 800 000 ký tự. */
+function collectTurnImages(attachments: readonly AttachedFile[]): string[] | undefined {
+  const images: string[] = []
+  let total = 0
+  for (const attachment of attachments) {
+    if (!attachment.dataUrl) continue
+    if (images.length >= MAX_TURN_IMAGES) break
+    // Ảnh quá lớn bị bỏ qua nhưng KHÔNG chặn các ảnh nhỏ hơn phía sau (nếu còn chỗ).
+    if (total + attachment.dataUrl.length > MAX_TURN_IMAGE_CHARS) continue
+    images.push(attachment.dataUrl)
+    total += attachment.dataUrl.length
+  }
+  return images.length ? images : undefined
+}
+
+/**
+ * `repository` để test (và nhúng) truyền repo riêng; mặc định lấy đúng repo của ứng dụng
+ * (`createWorkspaceRepository`) — cùng nguồn với panel Workspace Files, không tạo kênh thứ hai.
+ */
+export function ChatInputBar({
+  router,
+  repository,
+}: {
+  router?: RouterComposerAdapter
+  repository?: WorkspaceRepository
+}) {
   const t = useT()
   const [input, setInput] = useState('')
   const slash = useSlashCompletion(input, setInput)
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
+  const [uploading, setUploading] = useState(false)
+  const [attachError, setAttachError] = useState<string | null>(null)
+  const defaultRepositoryRef = useRef<WorkspaceRepository | null>(null)
+  if (!defaultRepositoryRef.current) defaultRepositoryRef.current = createWorkspaceRepository()
+  const repositoryRef = useRef<WorkspaceRepository>(repository ?? defaultRepositoryRef.current)
+  repositoryRef.current = repository ?? defaultRepositoryRef.current
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const barRef = useRef<HTMLDivElement>(null)
   const compact = useCompactComposer(barRef)
@@ -95,7 +149,11 @@ export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
                 id: `pasted-${Date.now()}`,
                 name: `Pasted_Image_${Date.now().toString(36)}.png`,
                 source: 'computer',
-                size: `${(blob.size / 1024).toFixed(0)} KB`,
+                size: formatAttachmentSize(blob.size),
+                sizeBytes: blob.size,
+                // Giữ chính đối tượng File: ảnh dán từ clipboard cũng phải đi tới box (A2/A5),
+                // không chỉ nằm lại trong `dataUrl` của trình duyệt.
+                file: blob,
                 dataUrl: reader.result as string,
               },
             ])
@@ -106,21 +164,49 @@ export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
     }
   }
 
-  const handleSend = () => {
+  const handleSend = async () => {
+    // Chặn gửi hai lần: `handleSend` giờ bất đồng bộ (upload xong mới gửi), nên Enter
+    // hai lần liên tiếp sẽ tạo hai lượt cùng bản nháp nếu không khoá.
+    if (uploading) return
     if (!input.trim() && attachments.length === 0 && pendingElements.length === 0) return
     const draftText = input
     const draftAttachments = attachments
-    const textToSend = attachments.length > 0
-      ? `${input.trim()}${attachments.some(a => !a.dataUrl) ? `\n\n[Attached Files: ${attachments.filter(a => !a.dataUrl).map((a) => a.name).join(', ')}]` : ''}`
-      : input.trim()
-    const firstImage = attachments.find((a) => Boolean(a.dataUrl))?.dataUrl
+    const draftElements = pendingElements
+    // Text gửi đi là ĐÚNG những gì người dùng gõ: không còn chuỗi `[Attached Files: …]`
+    // — khối mô tả tệp do harness dựng từ `attachments` (hợp đồng A7).
+    const textToSend = input.trim()
+    const images = collectTurnImages(attachments)
+
+    // Lệnh điều khiển (`/stop`, `/status`, …) không mang tệp: upload sẽ chỉ tạo rác
+    // trong `.uploaded_artifacts` mà không ai đọc.
+    let outgoing: OutgoingAttachment[] | undefined
+    if (attachments.length > 0 && !isControlCommand(textToSend)) {
+      const files = attachments.filter((a) => Boolean(a.file))
+      if (files.length > 0) {
+        setAttachError(null)
+        setUploading(true)
+        try {
+          outgoing = await uploadAttachments(
+            files.map((a) => ({ name: a.name, file: a.file as File, relativePath: a.relativePath })),
+            { repo: repositoryRef.current },
+          )
+        } catch (error) {
+          // Chip đỏ + giữ nguyên bản nháp: người dùng bấm Gửi lại là gửi lại được, chứ
+          // không mất công chọn tệp từ đầu.
+          setUploading(false)
+          setAttachError(error instanceof Error ? error.message : String(error))
+          return
+        }
+        setUploading(false)
+      }
+    }
 
     let result: void | Promise<boolean> = undefined
-    if (router) result = router.onSend(textToSend, firstImage)
+    if (router) result = router.onSend(textToSend, images, outgoing)
     else sendCommand({
         type: 'user_message',
         text: textToSend,
-        ...(pendingElements.length > 0 ? { elements: pendingElements } : {}),
+        ...(draftElements.length > 0 ? { elements: draftElements } : {}),
       })
     setInput('')
     setAttachments([])
@@ -197,6 +283,13 @@ export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
                   <Paperclip className="size-3 text-muted shrink-0" />
                 )}
                 <span className="truncate max-w-[140px] font-mono">{file.name}</span>
+                {file.size && <span className="shrink-0 text-muted">{file.size}</span>}
+                {/* Tệp trong thư mục vừa chọn: nói rõ nó nằm ở đâu, không chỉ tên tệp. */}
+                {file.relativePath && (
+                  <span className="shrink-0 text-muted" title={file.relativePath}>
+                    {shortenAttachmentPath(file.relativePath)}
+                  </span>
+                )}
                 <button
                   type="button"
                   onClick={() => setAttachments((prev) => prev.filter((a) => a.id !== file.id))}
@@ -208,6 +301,17 @@ export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
               </div>
             ))}
           </div>
+        )}
+
+        {/* Lỗi upload: chip đỏ + giữ nguyên bản nháp (A6). Nói thẳng tệp nào hỏng thay vì
+            im lặng bỏ tệp — đây là bài học của BUG-40. */}
+        {attachError && (
+          <p
+            data-testid="composer-attach-error"
+            className="mb-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-[11px] text-rose-400"
+          >
+            {attachError}
+          </p>
         )}
 
         {/* Element context chips (khung ④ Element Selector, plan §8-F12) —
@@ -338,12 +442,14 @@ export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
               <button
                 type="button"
                 onClick={handleSend}
-                disabled={!canSend}
+                disabled={!canSend || uploading}
                 data-testid="composer-send"
+                data-uploading={uploading ? 'true' : undefined}
+                aria-busy={uploading || undefined}
                 className="flex size-7 items-center justify-center rounded-lg bg-zinc-100 text-zinc-900 shadow-xs transition hover:bg-white disabled:opacity-30 disabled:hover:bg-zinc-100 cursor-pointer animate-in fade-in zoom-in-90 duration-150"
-                title={isBusy ? t('composer.sendControlWhileBusy') : 'Send prompt (Enter)'}
+                title={uploading ? t('composer.uploadingAttachments') : isBusy ? t('composer.sendControlWhileBusy') : 'Send prompt (Enter)'}
               >
-                <ArrowUp className="size-3.5" />
+                {uploading ? <Loader2 className="size-3.5 animate-spin" /> : <ArrowUp className="size-3.5" />}
               </button>
             )}
           </div>
