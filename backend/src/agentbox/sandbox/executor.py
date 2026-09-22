@@ -10,6 +10,21 @@ from ..vendor.hermes.computer_backend import image_dimensions_from_bytes
 WORKER = Path(__file__).with_name('worker.py').read_text(encoding='utf-8')
 
 
+def box_identity(session, step=None, tool_call_id=None):
+    """Khoá định danh gửi kèm mỗi yêu cầu ra box (P1.4): phiên, bước, id lời gọi công cụ.
+
+    Chỉ giá trị harness THẬT SỰ biết mới có mặt trên dây: chỗ gọi cũ (không truyền gì) phải
+    nhận ĐÚNG thân yêu cầu cũ — box đã đọc `step`/`toolCallId` từ lâu
+    (`deploy/docker/ide-proxy.py:284`) nhưng không được thấy khoá lạ khi harness không biết.
+    """
+    body = {'session': session}
+    if step is not None:
+        body['step'] = step
+    if tool_call_id is not None:
+        body['toolCallId'] = tool_call_id
+    return body
+
+
 class SandboxExecutor:
     def __init__(self, container='agentbox-box', api_url='http://127.0.0.1:8081', api_key='boxfox-local-dev-token'):
         self.container = container
@@ -26,12 +41,17 @@ class SandboxExecutor:
             response.raise_for_status()
             return response.json()
 
-    async def execute(self, name, args, session):
+    async def execute(self, name, args, session, turn=None, step=None, tool_call_id=None):
+        # P1.4: `turn`/`step`/`tool_call_id` do HARNESS đặt (không lấy từ `args` của model). Chỉ
+        # chuyển tiếp giá trị THẬT: chỗ gọi cũ không truyền gì thì `_execute` nhận đúng ba tham
+        # số như trước (bài kiểm cũ thay `_execute` bằng một hàm ba tham số).
+        context = {key: value for key, value in (('turn', turn), ('step', step),
+                                                 ('tool_call_id', tool_call_id)) if value is not None}
         if name in {'computer_screen_capture', 'computer_screen_record', 'computer_use', 'browser_use', 'inspect_element'}:
             async with self.visual_lock:
-                result = await self._execute(name, args, session)
+                result = await self._execute(name, args, session, **context)
         else:
-            result = await self._execute(name, args, session)
+            result = await self._execute(name, args, session, **context)
         self._log_desktop_note(name, result, session)
         return result
 
@@ -59,15 +79,17 @@ class SandboxExecutor:
             **note,
         )
 
-    async def _execute(self, name, args, session):
+    async def _execute(self, name, args, session, turn=None, step=None, tool_call_id=None):
+        # `turn`/`step`/`tool_call_id` đi cùng yêu cầu (P1.4): hai route capture/ghi hình nhận
+        # `step`/`toolCallId` (`deploy/docker/ide-proxy.py:284`), worker nhận cả ba trong payload.
         if name == 'inspect_element':
             return await self.request('/__box/inspect-element', {'x': int(args['x']), 'y': int(args['y'])})
         if name == 'computer_screen_capture':
             # A3 (đợt 20): gửi kèm `session` để ảnh mới nằm ở `captures/screen/<sid8>/` thay vì
             # đổ chung một thư mục phẳng (đo sống: 375 tệp / 113 MB, 123 tệp không payload nào
             # nhắc tới nên không biết của phiên nào). Box không có `session` thì giữ khuôn cũ.
-            data = await self.request('/__box/capture', {'target': {'kind': 'screen'},
-                                                         'output': 'base64', 'session': session})
+            data = await self.request('/__box/capture', {'target': {'kind': 'screen'}, 'output': 'base64',
+                                                         **box_identity(session, step, tool_call_id)})
             raw = base64.b64decode(data.get('data', ''))
             dimensions = image_dimensions_from_bytes(raw)
             if not dimensions:
@@ -90,7 +112,7 @@ class SandboxExecutor:
                     raise ValueError('Recording already owned by this session; stop first')
                 # A3: ghi hình cũng theo phiên (xem `computer_screen_capture` ở trên).
                 data = await self.request('/__box/record/start', {'target': {'kind': 'screen'},
-                                                                'session': session})
+                                                                **box_identity(session, step, tool_call_id)})
                 self.recordings[session] = data['recordingId']
                 return data
             if action == 'stop':
@@ -105,7 +127,9 @@ class SandboxExecutor:
             '--workdir', '/home/agent/workspace', self.container, '/opt/pw-driver/bin/python3', '-c', WORKER,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         try:
-            out, err = await asyncio.wait_for(proc.communicate(json.dumps({'name': name, 'args': args, 'session': session}).encode()), timeout=140)
+            payload = {'name': name, 'args': args, 'session': session, 'turn': turn, 'step': step,
+                       'toolCallId': tool_call_id}
+            out, err = await asyncio.wait_for(proc.communicate(json.dumps(payload).encode()), timeout=140)
         except BaseException:
             if proc.returncode is None:
                 proc.kill()
