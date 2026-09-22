@@ -1322,6 +1322,13 @@ Vite `:3100`, box `agentbox-box`), không ca nào chạy lại tính năng cũ k
   *sau* con `12` bước kèm dòng `session.child_budget_clamped {requestedSteps: 40, steps: 12, deadlineSeconds: 600}`, còn
   phiên `60/600` vẫn cho con `40/600` (luật D-15 và luật thừa hưởng hạn chót của đường lệnh không đổi). Bộ `deploy/docker`
   (**496 passed**) và frontend (**118 tệp / 958 bài**) chạy lại trên `7a7befd`: không hồi quy.
+- **Lệch nguyên văn so với kế hoạch ở C4 (đợt 1)** — C4 mục 3 viết "Nhóm *dữ kiện bền* trong `brief()` cũng hiện câu này cho
+  model"; kiểm lại mã: `journal.group_rows` chỉ có **sáu** nhóm (`goal`, `done`, `doing`, `open_decisions`, `blocked`, `next`)
+  và hàng `fact` của vé không rơi vào nhóm nào (nhánh `decision` đòi `kind == 'decision'`), nên câu vé **không** tới model.
+  Thứ tới model là **câu từ chối** đã đổi ở mục 6 ("khai báo `identity` mới rõ ràng, **hoặc** gửi lại nguyên văn"), và đường
+  gửi lại nguyên văn chạy đúng như kế hoạch (T9: vé tiêu đúng một lần, `score 0.6667`). Hành vi đạt yêu cầu, một câu trong
+  kế hoạch thì không; chủ nhà quyết có sửa cho đúng nguyên văn hay không (giữ sáu nhóm hay gộp hàng `fact` vào nhóm có sẵn —
+  `group_rows` đang ghi rõ "không thêm nhóm thứ bảy").
 - **Dấu vết đo để lại** (đợt kiểm thử, không phải bản ghi sản phẩm): `.plans` **thêm** `v1/v2-boxfox-upgrades-two.md`,
   `v1/v2-kettle-lantern.md`, `v1-fix4-real-version.md`; hai tệp gốc `v1-agent-box-plan.md` / `v1-boxfox-5-upgrades.md`
   **không đổi một byte** (sha256 `30e05800…` / `4831506b…`); `.uploaded_artifacts` thêm `8.md`…`16.md`, `11.png`,
