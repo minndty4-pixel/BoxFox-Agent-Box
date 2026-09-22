@@ -53,14 +53,23 @@ vào kế hoạch** (`docs/plan/v22-boxfox-plan.md`).
 > Ghi chú cho D-15: "chẩn đoán kẹt" không phải một lượt model mới toanh — nó là **một** lượt gọi có trần, nằm trong
 > hạn chót còn lại của chính lượt đó, và phải trả về bốn thứ: đã làm gì, kẹt ở đâu, còn lại gì, thử gì tiếp.
 
+**Cập nhật thi công vòng 22 (2026-09-22, đợt 2 — mesh agent con).** D-11, D-12, D-13 và D-15 **đã áp xong** (D-15 xong từ
+đợt 1 cùng D-1): không có `spawn_peer` — cây con **phẳng một tầng**, `max_depth = 1`; `await_children` chờ **tới lúc bạn
+giao** và tỉnh dậy bằng chính biên nhận giao hàng, ba con số 300 s chỉ là **lưới an toàn** — chạm lưới thì `peer_wait_end`
+mang `status='timeout'` và lượt **không** bị đánh `failed` (đo sống: lượt `bb142655d9634b7f86270717b985e3fb` chờ đúng
+**300 001 ms** rồi vẫn `completed`); tool trong một bước vẫn **tuần tự**, song song là fan-out **theo cha**
+(`BOXFOX_PEER_FANOUT`, mặc định 3 con mỗi cha, trần toàn cục 8); trần `timeoutSeconds` của `await_children` bị kẹp ở 300 s
+kèm notice `PEER_WAIT_CLAMPED`. D-13 kèm theo: T14 (`parallelReadTools`) **không** làm trong vòng 22 — cờ này được khai thì
+trả notice `PEER_MESH_NOTICE` nói thẳng nó chưa có hiệu lực. D-14 (mốc bật `enforce`) vẫn `Đã chốt`: thuộc đợt bằng chứng sống.
+
 ## 3. Việc chủ nhà giao thêm trong cùng vòng (chưa chốt phương án, đã chốt là phải làm)
 
 | Mã | Việc | Chốt là phải làm | Số đo hiện tại | Trạng thái |
 |---|---|---|---|---|
 | D-6 | Nội dung tệp đính kèm phải đi tới box, và menu `+` phải bấm được | Có | Trước: menu có trong DOM nhưng bị cắt (BUG-39); `user` event chỉ mang tên tệp; `.uploaded_artifacts` rỗng (BUG-40). Sau (vòng 22): hit-test `true` ở **cả bốn** mục menu; `.uploaded_artifacts` **5 → 7 tệp** khớp byte; event `user` và ngữ cảnh gửi model đều mang `absolutePath` thật | Đã xong |
-| D-7 | Agent con phải **nhìn thấy nhau**: test chờ review, kết quả review về cả `main` và `test`; plan chạy song song research rồi chờ research trả; các luồng check và long task tương tự | Có | Chưa có: con chạy tuần tự, không có `peer_read` / `await_children`, `session_search` khoá theo sid của chính nó | Đã chốt |
+| D-7 | Agent con phải **nhìn thấy nhau**: test chờ review, kết quả review về cả `main` và `test`; plan chạy song song research rồi chờ research trả; các luồng check và long task tương tự | Có | Sau (vòng 22 đợt 2): con có `peer_read` + `await_children` (chờ **tới lúc bạn giao**, lưới an toàn 300 s) + nhận giao hàng `deliverTo` với biên nhận idempotent; chuỗi sống `main → testing → review` xanh — 2 con cùng lượt, 2 biên nhận `injected`, cha chờ 10 869 ms rồi `done` (trước: con chạy tuần tự, không có công cụ peer, chỉ cha làm trung gian) | Đã xong |
 | D-8 | Câu trả lời cuối phải mang **bằng chứng sống** của việc đã làm (đặc biệt khi đổi mã hoặc đổi UI/UX) | Có | Không có cổng kiểm tra nào; nhãn `done` luôn xanh; store bỏ `session.journal` | Đã chốt |
-| D-9 | Bảng Sub-agents phải tách theo **từng turn** | Có | Lượt `2+2` (3 s) vẫn hiện con của lượt trước (BUG-43) | Đã chốt |
+| D-9 | Bảng Sub-agents phải tách theo **từng turn** | Có | Sau (vòng 22 đợt 2): bảng đọc sổ con theo `parent_turn` — chip `Lượt 1 · 2`, nút `tất cả lượt`, khối theo lượt riêng (BUG-43 đã sửa); trước: lượt `2+2` (3 s) vẫn hiện con của lượt trước | Đã xong |
 | D-10 | Kiến trúc được phép nặng, **ưu tiên ổn định**, chấp nhận tốn thêm token/bước/thời gian | Có | — | Đã chốt |
 
 **Cập nhật thi công vòng 22 (2026-09-22).** **D-6 đã xong** — tệp vào box **đúng byte**, đường dẫn tuyệt đối do harness suy ra
@@ -87,3 +96,4 @@ vào kế hoạch** (`docs/plan/v22-boxfox-plan.md`).
 | 2026-09-22 | Lập sổ; chốt D-1…D-5 theo khuyến nghị, ghi nhận D-6…D-10 là việc phải làm | Nam Nam |
 | 2026-09-22 | Chốt D-11…D-15 (năm câu hỏi khi soạn kế hoạch thi công): không cho con tự sinh, chờ tới khi nhận output, giữ tool tuần tự, mốc `enforce` theo số S4, con 40/300 kèm chẩn đoán kẹt | Nam Nam |
 | 2026-09-22 | Đợt 1 vòng 22 thi công xong: D-1…D-5 và D-6 chuyển `Đã xong` kèm số đo thi công; D-1 bổ sung số con **40 bước / 300 s** theo D-15; D-7…D-10 giữ `Đã chốt` (thuộc đợt sau) | Nam Nam |
+| 2026-09-22 | Đợt 2 vòng 22 (mesh agent con) thi công xong: D-7 và D-9 chuyển `Đã xong` kèm số đo sống; D-11, D-12, D-13 và D-15 ghi nhận **đã áp xong**; D-14 giữ `Đã chốt` (đợt bằng chứng sống); T14 (`parallelReadTools`) để lại vòng sau theo D-13 | Nam Nam |

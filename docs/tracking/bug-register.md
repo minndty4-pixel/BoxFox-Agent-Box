@@ -1107,3 +1107,66 @@ lệnh `Write-Output` (`Exited with code 127`) — không liên quan đợt này
 `worker.py` được gửi **nội tuyến** trong mỗi lần gọi, nên thay đổi phía box (`read_file_payload`, `SESSION_OP_NAMES`) có hiệu lực ngay.
 (3) `frontend/.env.local` (tệp **không** được theo dõi, dùng cho đường xem trước) trỏ API về `"."`, nên bộ frontend phải chạy với
 `VITE_BOX_API_URL=http://localhost:8081` — với biến đó **118 tệp / 958 bài passed**.
+
+### 6.24 Vòng 22 (đợt 2 — mesh agent con): ba lỗi và hai khiếm khuyết lộ ra trong chính lúc thi công (BUG-48…BUG-52)
+
+Bốn cái đầu đo được trên lượt **sống** (harness thật + giao diện thật ở `localhost:3100`), cái thứ năm lộ ra khi rà lại bộ đếm
+của T13. Ba cái đã sửa trong đợt này; BUG-51 **ghi nhận, chưa sửa** vì hướng sửa là thay đổi cấu trúc ở đường đóng lượt.
+
+**BUG-48 — mức Cao — cha chờ chính con ruột đã đóng sổ, lượt treo tới lưới an toàn.** `peer_wait_pending` coi một mục tiêu là
+xong **chỉ khi** có biên nhận của người chờ trong `child_deliveries`; mà T11 chỉ ghi biên nhận cho `main` khi con **khai**
+`deliverTo`. Cách gọi tự nhiên nhất của cha — `await_children()` không truyền gì, chờ đúng những đứa con ruột của mình — vì thế
+trả `timeout` cho **những đứa con đã chạy xong**, và lượt cha ngồi chờ hết lưới an toàn 300 s một cách vô ích. Sửa (`fa6a2b7`):
+`peer_is_own_closed_child(sid, target)` — mục tiêu là con ruột của người chờ **và** hàng sổ con đã đóng ⇒ coi là xong; kèm theo,
+`deliver_child_result` đánh thức cha ngay lúc con đóng sổ khi con khai người nhận rỗng (không để cha chờ hết nhịp quét).
+Bạn cùng cha giữ nguyên luật cũ: đóng sổ mà chưa giao là **chưa** giao. Test:
+`test_await_children.py::test_await_children_cha_khong_can_bien_nhan_tu_con_ruot_da_dong_so` (chờ xong trong **< 1,0 s** thay vì
+chờ hết lưới) và ca cũ về hàng xóm cùng cha vẫn giữ `status == 'timeout'`.
+
+**BUG-49 — mức Cao — chi phí của con ghi thiếu: chỉ bước cuối, và `NULL` khi bước cuối không có `usage`.** Hai đường đóng sổ
+của con — `close_detached_child` (mọi con `wait=false`, tức đường mà lượt sống đi qua) và đường cha-chờ-con trong `_run_child` —
+đều chỉ đọc `turn_end` **cuối cùng**. Đo sống: phiên `3647fe8e3e8f43d79e9753a4c2cdb463`, con `review` chạy 9 bước có
+`outputTokens` trong luồng, bước 9 là bước chẩn đoán `partial` **không** mang khối `usage`, nên hàng sổ con ghi
+`output_tokens = NULL` và `childTokens` của lượt cha báo **0**; phiên `46c47921a8474c4a985b9c64f3144cac`, con `review` 5 bước với
+token từng bước 410 + 535 + 368 + 488 + 1 076 = **2 877** nhưng sổ chỉ ghi **1 076**. Sửa (`51a1af7`):
+`SessionStore.child_usage_from_events(child_id)` đọc **cả chuỗi** `turn_end` của con (`stepsUsed` lấy `max` vì là số luỹ kế của
+lượt, `outputTokens` **cộng** theo bước), `child_close_once(..., steps_used, output_tokens)` ghi được bộ số, và event `child`
+kết thúc mang theo `stepsUsed`/`outputTokens`. Test:
+`test_peer_cost.py::test_token_cua_con_cong_ca_chuoi_buoc_khong_chi_buoc_cuoi` (con ba bước, bước cuối không `usage` ⇒ sổ ghi
+3 bước / 12 token) và `test_async_delegation.py::test_con_tu_xong_cung_cong_token_ca_chuoi_buoc`.
+
+**BUG-50 — mức Trung bình — nhãn chờ in `[object Object]`.** Sự kiện thật `peer_wait` mang `targets` dạng **vật thể**
+(`[{'sessionId': …, 'role': …}]`, sinh từ hàng sổ con), còn `peerLabel` trong `frontend/src/lib/chat/peerPipeline.ts` chỉ biết
+chuỗi (`String(target ?? '').trim()`), nên hàng con trong panel Sub-agents hiện nguyên `[object Object]`. Đo sống trên DOM
+(phiên `e94f1af064254fef8a0e5b681db7db1f`, lượt chạy qua giao diện):
+`đang chờ [object Object] giao kết quả· lưới an toàn còn 5:00`. Sửa (`5a084f6`): `peerLabel` đọc vật thể trước — lấy chuỗi không
+rỗng đầu tiên trong `role`, `roleId`, `sessionId`, `name` (đệ quy qua `peerLabel`), trả chuỗi rỗng khi không đọc được, **không bao
+giờ** trả `[object Object]`; nhánh chuỗi (bỏ tiền tố `role:`) giữ nguyên. Sau khi sửa, cùng kịch bản sống (phiên `19271d91…`,
+lượt 2, con `testing` chờ con `review`): `đang chờ review giao kết quả· lưới an toàn còn 5:00`. Test:
+`frontend/src/lib/chat/peerPipeline.test.ts` (4 ca, gồm `openPeerWait` với dạng vật thể thật) và một ca trong
+`SubagentInspectorPanel.turns.test.tsx` khẳng định huy hiệu **không** chứa `[object Object]`.
+
+**BUG-51 — mức Thấp — `finish` đọc sổ con trước khi reap, nên ảnh chụp thiếu phần của con bị reap. — CHƯA SỬA.** `reap_children`
+(T7) chạy trong khối `finally` của `_run`, tức **sau** khi event `finish` đã phát; một con còn `started` lúc lượt đóng vì thế
+không có mặt trong `childSteps`/`childTokens` của lượt. Đo sống: phiên `bb142655d9634b7f86270717b985e3fb` — `finish` ở
+`1790100321.0228` ghi `childCount 2, childSteps 19, childTokens 12 509`; hàng con `testing` (`944d6bde…`) đóng ở
+`1790100321.0249` bằng `PARENT_TURN_ENDED` với `steps_used 11`, `output_tokens 5 093` — lệch nhau **2,2 ms**, và sổ con đúng
+trong khi ảnh chụp ở `finish` thiếu 11 bước / 5 093 token. Số trong **sổ con** (thứ giao diện và `session_metrics.peers` đọc)
+vẫn đúng; chỉ ảnh chụp của riêng event `finish` thiếu. Ghi nhận, không sửa trong đợt này: hướng sửa (reap **trước** khi phát
+`finish`, hoặc phát thêm một event hiệu chỉnh sau reap) là thay đổi thứ tự ở đường đóng lượt — làm muộn trong vòng này là rủi ro
+không cần thiết; vòng sau sửa kèm test khoá thứ tự.
+
+**BUG-52 — mức Trung bình — ngân sách chờ 300 s của "mỗi lượt" trên thực tế là mỗi PHIÊN.** `runtime.wait_extension` chỉ được
+cộng thêm mỗi lần chờ mà **không bao giờ** được đặt lại, nên lượt thứ hai của một phiên thừa hưởng ngân sách đã tiêu của lượt
+thứ nhất: chờ đủ 300 s ở lượt một thì mọi lượt sau không còn ngân sách chờ, và `await_children` trả `extensionExhausted` ngay.
+Lỗi lộ ra khi rà lại bộ đếm của T13 chứ không từ một triệu chứng người dùng báo. Sửa (`a21c598`): `_run` đặt
+`self.wait_extension[sid] = 0.0` ngay sau khối xác định số lượt. Test:
+`test_peer_cost.py::test_ngan_sach_cho_ve_khong_o_moi_luot` (đẩy bộ đếm của phiên lên 1 000 s trước lượt một, khẳng định lượt
+đó vẫn còn nguyên 300 s và bộ đếm sau lượt chỉ còn giây đã chờ của **chính lượt đó**).
+
+**Ghi nhận, không phải lỗi.** (1) `test_terminal_tools.py::test_terminal_exec_echo` **đỏ sẵn có** (`bash` của sandbox không có
+`Write-Output`, `Exited with code 127`) — không liên quan đợt này. (2) Hai lượt sống chết vì lý do môi trường:
+`UPSTREAM_HTTP_429` ("This target is cooling down after a provider limit") ở phiên `b4f26ca6e8c44f458cceb5ba86e87e34` và
+`62146c6e498d41f4b662d8295d91054e`; lượt sống chạy lại sau đó xanh. (3) Hai ca `test_cua_element_selector.py` phụ thuộc desktop
+của box (X/VNC) và mạng egress của box — không thuộc mã đợt này. (4) Không dựng lại ảnh box: `worker.py` gửi nội tuyến trong
+mỗi lần gọi.

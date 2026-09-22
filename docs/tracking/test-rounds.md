@@ -1336,3 +1336,171 @@ Vite `:3100`, box `agentbox-box`), không ca nào chạy lại tính năng cũ k
   **không đổi một byte** (sha256 `30e05800…` / `4831506b…`); `.uploaded_artifacts` thêm `8.md`…`16.md`, `11.png`,
   `big26c.bin` (0 B, phép thử chunked), `exact25.bin` (đúng 25 MiB); `deep/` đã bị đưa vào `.trash/1790085372-deep` bởi
   chính phép kiểm đường bảo vệ.
+
+## Vòng 22 — đợt 2 (mesh agent con): sổ con, giao hàng có định tuyến, chờ bạn, chi phí theo lượt (2026-09-22, tối)
+
+- Phạm vi (đợt 2 của kế hoạch `docs/plan/v22-boxfox-plan.md`, việc T1–T18; T14 là việc **tuỳ chọn** để lại vòng sau theo D-13):
+  (T1–T4) sổ con + bảng giao hàng + bộ đếm lượt một chiều và bảng Sub-agents theo **từng lượt**;
+  (T5–T7) fan-out theo cha giữ trần toàn cục, `delegate_task(wait=false)`, hết lượt cha thì con dừng;
+  (T8–T10) `peer_read`, `await_children`, watchdog; (T11–T12) `deliverTo` + biên nhận idempotent và bơm kết quả vào vòng bước;
+  (T13) chi phí theo lượt + trần + công tắc; (T15) giao diện chờ/giao/nhận; (T16) chuỗi đầu-cuối trên runtime thật;
+  (T17) chạy sống và thu bằng chứng; (T18) tài liệu (mục này, `bug-register.md` § 6.24, `owner-decisions.md`, ADR-0003).
+- Cách chạy: router 3101 + harness 3102 (khởi động lại trên mã mới) + Vite 3100 + box `agentbox-box` đang chạy; ảnh box **không**
+  dựng lại (`worker.py` gửi nội tuyến mỗi lần gọi). Lượt sống qua API (`POST /api/agent/sessions/{sid}/turns`) và qua giao diện
+  (agent-browser 0.21.2); xem trước `localhost:3100`. Model: OpenCode Free `muse-spark-1.3-contributor-free`. Mọi số dưới đây đọc
+  thẳng `~/BoxFox/harness/sessions.sqlite` hoặc in ra từ chính lượt chạy.
+- Kết quả: **T1–T13 và T15–T18 xong**, T14 để lại vòng sau (D-13). Nhóm test peer **113 passed / 898 deselected** (38,02 s);
+  ba ca chuỗi đầu-cuối (`backend/tests/integration/test_peer_mesh_chain.py`: 2 ca offline + 1 ca sống opt-in); giao diện
+  **2 tệp / 15 ca**. Chuỗi sống chạy xanh — hai con cùng lượt 1, hai biên nhận `injected`, cha chờ **10 869 ms** rồi `done` —
+  và lượt sống đo chi phí xác nhận `children.steps_used` / `output_tokens` **bằng tổng chuỗi bước** của chính con đó.
+  **Bốn khiếm khuyết** lộ ra trong lúc thi công: BUG-48, BUG-49, BUG-50 (đã sửa) và BUG-51 (ghi nhận, chưa sửa — xem Phần 6).
+
+### Phần 1 — Sổ con, bộ đếm lượt, bảng Sub-agents theo từng lượt (T1–T4)
+
+- **Sổ con** là bảng `children` trong `~/BoxFox/harness/sessions.sqlite`:
+  `(session_id PK, parent_id, parent_turn, spawn_step, role, goal, status, reason, deliveries, waiting_for, waiting_since,
+  started, finished, steps_used, output_tokens, answer_chars)`. **Bảng giao hàng** là `child_deliveries`
+  `(id, child_id, recipient, recipient_turn, kind, state, chars, truncated, created, injected, skip_reason)` với
+  `UNIQUE(child_id, recipient, recipient_turn)` — đó là thứ làm biên nhận **idempotent**.
+- **Bộ đếm lượt một chiều**: `sessions.turn_count` chỉ tăng; mọi event của một lượt mang `turn`, kể cả cặp event `child` mở/đóng
+  (đo sống: hai event `child` mở và hai event `child` đóng của lượt 1 đều mang `turn: 1`), và `system_log.write(..., turn=…)`
+  nhận cùng con số. `child` event mang thêm `step` (bước cha đã sinh con).
+- **BUG-43 đã sửa**: bảng Sub-agents tách theo **từng lượt**. DOM sống có `data-testid="subagents-turn-scope"` với chip
+  `Lượt 1 · 2` và nút `tất cả lượt`, khối theo lượt `subagents-turn-block` ("Lượt 1 · 2 con / N steps / …"), hàng con mang
+  `lượt 1 · bước 1 · N steps used`. Test: `SubagentInspectorPanel.turns.test.tsx`.
+
+### Phần 2 — Fan-out theo cha, uỷ thác bất đồng bộ, dọn con (T5–T7)
+
+- Trần cũ là **một** `Semaphore(3)` dùng chung cả tiến trình. Trần mới: `FANOUT_PER_PARENT_DEFAULT = 3`,
+  `FANOUT_PER_PARENT_MAX = 6` (qua `BOXFOX_PEER_FANOUT`), giữ **trần toàn cục** `FANOUT_GLOBAL_CEILING = 8`; hết chỗ thì sau
+  `FANOUT_QUEUE_WAIT_SECONDS = 30` model nhận lỗi tool `FANOUT_BUSY` — lượt **không** treo vì hết slot. Trần thứ hai
+  `CHILDREN_PER_TURN_MAX = 12` (mã `CHILDREN_PER_TURN_EXHAUSTED`) chặn vòng lặp sinh con trong một lượt 40 bước.
+- `delegate_task(wait=false)` sinh con rồi trả về ngay; đường đóng sổ của nó là `close_detached_child` (xem Phần 5 vì đây chính
+  là đường mà lượt sống đi qua).
+- Hết lượt cha ⇒ `reap_children(sid, reason='PARENT_TURN_ENDED')` đóng mọi con còn `started`. Đo sống trong lượt đo chi phí:
+  con `testing` (`944d6bde…`) được đóng bằng `PARENT_TURN_ENDED` **2,2 ms sau** khi lượt cha phát event `finish`
+  (`finish` ở `1790100321.0228`, hàng con `finished` ở `1790100321.0249`) — đây là gốc của BUG-51.
+
+### Phần 3 — Con nhìn thấy nhau: `peer_read`, `await_children`, watchdog (T8–T10)
+
+- `peer_read` cho con đọc luồng của bạn cùng cha (có cắt theo `PEER_WAIT_RESULT_CHARS = 16 000`). `await_children` nhận
+  `targets` dạng `role:<vai>` hoặc mã phiên, `mode` `any`/`all`, và `timeoutSeconds` bị kẹp ở trần
+  `PEER_WAIT_MAX_SECONDS = 300` kèm notice `PEER_WAIT_CLAMPED`.
+- **Chờ bằng sự kiện, không chờ đồng hồ** (D-12): hàm ngủ tới khi **biên nhận giao hàng** được ghi và tỉnh dậy trong cùng nhịp;
+  ba con số 300 s (`PEER_WAIT_SAFETY_SECONDS`, `PEER_WAIT_MAX_SECONDS`, `PEER_WAIT_TOTAL_MAX_SECONDS`) là **lưới an toàn**.
+  Chạm lưới ⇒ `peer_wait_end` mang `status='timeout'`, lượt **không** bị đánh `failed`. Giao diện in đúng câu đó: hàng con hiện
+  `đang chờ review giao kết quả· lưới an toàn còn 5:00`.
+- **Watchdog** (`peer_watchdog.py`, quét mỗi `WATCHDOG_TICK_SECONDS = 10`) đóng ba loại hàng còn sót: quá
+  `CHILD_WALL_MAX_SECONDS = 900` ⇒ `WATCHDOG_TIMEOUT` (huỷ task), hàng `started` của tiến trình **trước** ⇒ `RESTART`
+  (không chạy lại thao tác tool), con mồ côi ⇒ `ORPHAN`. Quá `300 + PEER_WAIT_FORCE_GRACE_SECONDS = 30` giây chờ thì watchdog
+  **đánh thức cưỡng bức** người đang chờ.
+
+### Phần 4 — Giao hàng có định tuyến và wake-up (T11–T12)
+
+- `deliverTo` nhận tối đa `PEER_DELIVER_MAX = 4` địa chỉ, mỗi địa chỉ là `role:<vai>` hoặc `main`; địa chỉ **chưa tồn tại**
+  vẫn nhận được (dò mỗi `PEER_TARGET_POLL_SECONDS = 1.0` giây trong `PEER_TARGET_GRACE_SECONDS = 20` giây, vì anh em có thể
+  được sinh ngay sau người gửi). Kết quả đi vào lượt kế của người nhận **đúng một lần** nhờ khoá duy nhất; hàng biên nhận đi
+  `pending` → `injected` (hoặc `skipped` kèm `reason`).
+- **Wake-up**: kết quả của bạn vào **vòng bước kế tiếp** của lượt đang chạy — người dùng không phải gửi thêm một câu để thấy kết quả.
+  Đo sống: event `peer_delivery` mang `state='injected'` và bước kế của người nhận nhận khối kết quả trong `messages`.
+- **Luật chờ của cha** (BUG-48, xem Phần 6): cha chờ con ruột **đã đóng sổ** thì xong ngay, không cần biên nhận; bạn cùng cha
+  giữ luật cũ — đóng sổ mà chưa giao là **chưa** giao.
+
+### Phần 5 — Chi phí theo lượt (T13)
+
+Bảng đọc thẳng sổ (`sổ con` là nguồn chân lý; `chốt-cuối` là ảnh chụp tại thời điểm lượt phát `finish`):
+
+```text
+phiên                              trạng thái  lượt bước cha token cha chờ (ms)  con  bước con  token con  biên nhận chốt-cuối (con/bước/token)
+bb142655d9634b7f86270717b985e3fb   completed   1    3        1376      300001    2    30        17602      1         2/19/12509
+19271d91159d42b58935b7423c452115   completed   2    6        3844      421994    4    54        6346       3         4/54/6346
+e94f1af064254fef8a0e5b681db7db1f   failed      1    3        1107      None      2    9         2097       2         —
+3647fe8e3e8f43d79e9753a4c2cdb463   completed   1    6        1069      209208    2    10        0          2         2/10/0
+62146c6e498d41f4b662d8295d91054e   failed      1    1        0         None      0    0         0          0         —
+b4f26ca6e8c44f458cceb5ba86e87e34   failed      1    3        984       None      2    2         0          2         —
+```
+
+- **Sửa lỗi đếm token (BUG-49)**: dòng `3647fe8e…` là lượt sống trước bản vá — hai con chạy 10 bước mà `token con = 0`.
+  Hai dòng đầu chạy sau bản vá: `bb142655…` con `review` **19 bước / 12 509 token**, `19271d91…` bốn con **54 bước / 6 346 token**.
+- **Kiểm chứng theo từng con** (`/var/tmp/v22/t13_verify_cost.py`): với mỗi con, `children.steps_used` = `max(turn_end.stepsUsed)`
+  và `children.output_tokens` = `sum(turn_end.outputTokens)` của **chính luồng con đó** — lượt sống `bb142655…`:
+  `review 19/19 bước, 12 509/12 509 token OK`; `testing 11/11 bước, 5 093/5 093 token OK`.
+- **BUG-51 (chưa sửa)**: `finish` đọc sổ con **trước** khi `reap_children` đóng những con còn `started`, nên ảnh chụp thiếu đúng
+  phần của con bị reap — `bb142655…`: sổ 30 bước / 17 602 token, `finish` 19 bước / 12 509 token, lệch 11 bước / 5 093 token.
+- **Công tắc và trần** (mọi env đọc lại **mỗi lần hỏi**, đổi có hiệu lực ngay): `BOXFOX_PEER_MESH=off` tắt cả mesh
+  (`peer_mesh_enabled()` — không tool peer, uỷ thác chặn như bản trước đợt 2); `BOXFOX_PEER_FANOUT=1` hạ về một con mỗi cha;
+  `BOXFOX_PEER_WAIT_MAX=<giây>` chỉ **hạ** trần chờ. Cờ `parallelReadTools` (Q3/T14) không đổi hành vi ⇒ đi kèm notice
+  `PEER_MESH_NOTICE`.
+
+### Phần 6 — Bốn khiếm khuyết lộ ra khi thi công (BUG-48 … BUG-51)
+
+- **BUG-48 — mức Cao — cha chờ chính con ruột đã đóng sổ, lượt treo tới lưới an toàn.** `peer_wait_pending` coi một mục tiêu là
+  xong chỉ khi có biên nhận của người chờ; mà T11 chỉ ghi biên nhận cho `main` khi con **khai** `deliverTo`. Cách gọi tự nhiên
+  nhất của cha — `await_children()` trần, con ruột không khai người nhận — vì thế trả `timeout` cho đúng những đứa con đã chạy
+  xong. Sửa (`fa6a2b7`): `peer_is_own_closed_child` xét **con ruột đã đóng** là đã xong, và `deliver_child_result` đánh thức cha
+  ngay lúc con đóng sổ khi con khai người nhận rỗng. Bạn cùng cha giữ luật cũ. Test:
+  `test_await_children.py::test_await_children_cha_khong_can_bien_nhan_tu_con_ruot_da_dong_so` (đo được `elapsed < 1,0 s`
+  thay vì chờ hết lưới).
+- **BUG-49 — mức Cao — chi phí của con ghi thiếu (và ghi `NULL` khi bước cuối không có `usage`).** Hai đường đóng sổ của con
+  (`close_detached_child` cho mọi con `wait=false`, và đường cha-chờ-con trong `_run_child`) chỉ lấy `turn_end` **cuối cùng**,
+  nên `steps_used`/`output_tokens` là số của **một bước**, và là `NULL` khi bước cuối là bước chẩn đoán `partial` không mang khối
+  `usage`. Đo sống: phiên `3647fe8e…` con `review` 9 bước mà hàng sổ con `output_tokens = NULL`, `childTokens` của lượt cha báo
+  **0**; phiên `46c47921…` con `review` 5 bước, sổ ghi **1 076** trong khi tổng luồng là **2 877**. Sửa (`51a1af7`):
+  `SessionStore.child_usage_from_events` đọc **cả chuỗi** `turn_end` (`stepsUsed` lấy `max` vì là số luỹ kế, `outputTokens`
+  cộng theo bước), `child_close_once` ghi được bộ số, và event `child` kết thúc mang theo `stepsUsed`/`outputTokens`.
+  Test: `test_peer_cost.py::test_token_cua_con_cong_ca_chuoi_buoc_khong_chi_buoc_cuoi` và
+  `test_async_delegation.py::test_con_tu_xong_cung_cong_token_ca_chuoi_buoc`.
+- **BUG-50 — mức Trung bình — nhãn chờ in `[object Object]`.** Sự kiện thật `peer_wait` mang `targets` dạng **vật thể**
+  (`[{'sessionId': …, 'role': …}]`) còn `peerLabel` chỉ biết chuỗi. Đo sống trên DOM của panel (phiên
+  `e94f1af064254fef8a0e5b681db7db1f`): `đang chờ [object Object] giao kết quả· lưới an toàn còn 5:00`. Sửa (`5a084f6`):
+  `peerLabel` đọc vật thể trước — lấy chuỗi không rỗng đầu tiên trong `role`, `roleId`, `sessionId`, `name` (đệ quy), trả chuỗi rỗng
+  khi không đọc được, **không bao giờ** trả `[object Object]`. Sau khi sửa, cùng kịch bản sống (phiên `19271d91…`, lượt 2):
+  `đang chờ review giao kết quả· lưới an toàn còn 5:00` (ảnh `images/t17ui_15_child_wait_fixed.png`, ảnh trước khi sửa:
+  `images/t17ui_10_child_wait.png`). Test: `frontend/src/lib/chat/peerPipeline.test.ts` (4 ca) + một ca trong
+  `SubagentInspectorPanel.turns.test.tsx` khẳng định huy hiệu **không** chứa `[object Object]`.
+- **BUG-51 — mức Thấp — `finish` đọc sổ con trước khi reap, nên thiếu phần của con bị reap.** `reap_children` chạy trong khối
+  `finally` của `_run`, tức **sau** khi event `finish` đã phát; một con còn `started` lúc lượt đóng vì thế không có mặt trong
+  `childSteps`/`childTokens` của lượt. Đo sống (phiên `bb142655…`): `finish` ở `1790100321.0228` ghi `2/19/12 509`, hàng con
+  `testing` đóng ở `1790100321.0249` bằng `PARENT_TURN_ENDED` với `11` bước / `5 093` token — lệch **2,2 ms**. Số trong sổ con
+  vẫn **đúng**; chỉ ảnh chụp ở `finish` thiếu. **Chưa sửa trong đợt này** (đổi thứ tự reap/finish là thay đổi cấu trúc ở đường
+  đóng lượt, làm muộn vòng này là rủi ro không cần thiết); hướng sửa để vòng sau: reap trước khi phát `finish`, hoặc phát thêm
+  một event hiệu chỉnh sau reap.
+
+### Phần 7 — Số đo kiểm thử của đợt
+
+- Nhóm peer: `.venv/bin/python -m pytest backend/tests/unit -q -k "peer or delivery or child or delegate or watchdog or cost or async"`
+  ⇒ **113 passed, 898 deselected in 38,02 s**. Riêng cụm sổ con/giao hàng/watchdog/chờ:
+  `test_async_delegation.py test_peer_watchdog.py test_peer_cost.py test_peer_registry.py test_delivery_routing.py
+  test_delivery_injection.py test_await_children.py` ⇒ **71 passed in 25,35 s**; sau khi thêm hai ca chi phí:
+  `test_peer_cost.py test_async_delegation.py` ⇒ **22 passed in 9,99 s**.
+- Chuỗi đầu-cuối trên runtime thật: `backend/tests/integration/test_peer_mesh_chain.py` ⇒ **2 passed, 1 skipped in 4,51 s**
+  (ca sống bị bỏ qua khi thiếu `BOXFOX_LIVE_PEER_MESH=1`); bật `BOXFOX_LIVE_PEER_MESH=1` ⇒ **1 passed, 2 deselected in 24,39 s**.
+- Giao diện: `npx vitest run src/lib/chat/peerPipeline.test.ts src/components/panels/SubagentInspectorPanel.turns.test.tsx`
+  ⇒ **2 tệp, 15 ca đạt in 1,31 s**.
+
+### Phần 8 — Bằng chứng sống của đợt
+
+- Chuỗi sống xanh (`/var/tmp/v22/t17_live_chain3.log`, exit 0; phiên `8539b60acd7f4187936d0a4f0ab99582`):
+
+```text
+[SỐNG] phiên 8539b60acd7f4187936d0a4f0ab99582 — completed, 2 con, 2 biên nhận
+  con testing   lượt 1 bước 1 → completed steps=2 tokens=505
+  con review    lượt 1 bước 1 → completed steps=1 tokens=291
+  biên nhận peer → 38aaead1 injected
+  biên nhận main → 8539b60a injected
+  cha chờ: [{'sessionId': '38aaead12bf54a799cc48b26195b0819', 'role': 'testing'}] mode=all hạn-an-toàn=60s
+  hết chờ: done chờ=10869ms còn-lại=[]
+  chốt lượt: {"status": "completed", "turn": 1, "steps": 2, "waitedMs": 10869, "childCount": 2, "childSteps": 3, "childTokens": 796, "childDeliveries": 2}
+```
+
+- Lượt sống qua **giao diện** (Vite 3100 + agent-browser), panel Sub-agents đọc bằng DOM:
+  `đang chờ review giao kết quả· lưới an toàn còn 5:00` → `đã giao cho testing` → `đã nhận từ review · 212 chars`
+  (phiên `19271d91…`, lượt 2); lượt trước đó: `đã nhận từ review · 1298 chars`, `đã giao cho main, testing`.
+  Ảnh: `images/t17ui_15_child_wait_fixed.png`, `images/t17ui_16_receipts_after_wait.png`, `images/t17ui_14_receipt_fixed.png`,
+  `images/t17ui_12_child_wait_fixed.png`, `images/t17ui_13_receipts.png`, `images/t17ui_10_child_wait.png` (trước khi sửa nhãn),
+  `images/t17ui_02_waiting.png`, `images/t17ui_09_receipts.png`.
+- `peer_wait` / `peer_wait_end` là chuyện của **người chờ**: chúng nằm trong luồng của **cha**, không nằm trong luồng của con —
+  biến thể sống `test_chuoi_tren_harness_song` đọc đúng luồng đó (bản đầu đi tìm trong luồng con nên đỏ).
+- Ghi nhận: hai lượt sống chết vì lý do môi trường — `UPSTREAM_HTTP_429` ("This target is cooling down after a provider limit")
+  ở phiên `b4f26ca6…` và `62146c6e…` — không liên quan mã đợt này; phiên `e94f1af0…` `failed` ở lượt UI còn giữ nguyên trong
+  bảng để đối chiếu.
