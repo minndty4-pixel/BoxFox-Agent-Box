@@ -945,3 +945,130 @@ bên 9Router — bỏ đi thì mất đối chiếu mà hành vi không đổi.
 **Đính chính số của chính bản ghi này.** Ngưỡng 70 % cũ ghi sai ở §6.20: đúng là **697 132** cho cửa sổ
 1 000 000 (`int((1 000 000 − 4 096) × 0,7)`) và **20 070** cho cửa sổ 32 768 — không phải 697 232 và 20 270. Con số
 ngưỡng **mới** (301 200 / 86 732 / 20 070) và mọi bằng chứng sống không đổi.
+
+### 6.22 Vòng 21 — năm việc chủ nhà giao: bốn lỗi đo sống và một lỗi giao diện (chưa sửa, đã lên kế hoạch)
+
+Vòng 21 không sửa mã sản phẩm (đợt này chỉ đo và lên kế hoạch). Năm lỗi dưới đây **đã đo sống**, mỗi lỗi
+trỏ thẳng tới phần sửa trong `docs/plan/v21-boxfox-plan.md`; nhật ký đầy đủ ở
+`docs/tracking/test-rounds.md` § *Vòng 21*.
+
+**Cập nhật vòng 22 (2026-09-22).** Đợt foundation của vòng 22 đã sửa **bốn** lỗi dưới đây rồi đo lại; bảng và số đo ở § 6.23.
+Trạng thái mới: **BUG-39 — ĐÃ SỬA** (popover render qua portal; hit-test trả `true` ở **cả bốn** mục, mục Drive nói thật "chưa kết nối"),
+**BUG-40 — ĐÃ SỬA** (tệp vào box **đúng byte**, đường dẫn tuyệt đối có trong event `user` **và** trong ngữ cảnh gửi model, chuỗi
+`[Attached Files: …]` bị bỏ), **BUG-41 — ĐÃ SỬA** (một lượt thử lại có ép công cụ trước khi chịu thua), **BUG-42 — ĐÃ SỬA**
+(chạm trần bước hoặc hạn chót ⇒ `partial` + chẩn đoán bốn phần thay vì `failed` trắng; con nhận tới 40 bước / 300 s).
+**BUG-43 giữ nguyên** vì thuộc đợt peer-mesh của vòng 22 (D-9) — đợt này không đụng tới.
+
+**BUG-39 — mức Trung bình — menu `+` đủ mục trong DOM nhưng bị `overflow-hidden` cắt, người dùng thấy "chưa có upload".**
+Khi menu đang mở, `document.elementFromPoint` tại tâm mục `Tải lên hình ảnh` (`itemRect [290,642,226,45]`) trả về khung
+chat ⇒ mục không phải phần tử trên cùng, tức không vẽ ra. Tổ tiên cắt là `flex min-w-0 items-center gap-1.5 overflow-hidden`
+(`frontend/src/components/panels/ChatInputBar.tsx:268`) trong khi popover đặt `absolute bottom-full`
+(`frontend/src/components/chat/AttachmentPicker.tsx:159`). Lặp lại được ở cả địa chỉ công khai lẫn `localhost:3100`.
+Sửa theo `A1` (bỏ `overflow-hidden` hoặc render bằng portal, không chữa bằng `z-index`).
+
+**BUG-40 — mức Cao — nội dung tệp đính kèm không bao giờ tới box; agent chỉ nhận cái tên.**
+Chỉ ảnh được đọc bằng `FileReader` thành `dataUrl` (`AttachmentPicker.tsx:56-68`); tệp thường chỉ giữ `name`/`size`
+(`:69-77`) và lúc gửi trở thành chuỗi `` `[Attached Files: ${…}]` `` (`ChatInputBar.tsx:113-115`). Đo sống: event `user` của
+phiên `0ef73471c38d4c63a593755345213dcf` đúng bằng phần text cộng `\n\n[Attached Files: probe-upload.txt]`, không nội dung
+và không đường dẫn; sau lượt `docker exec agentbox-box ls .uploaded_artifacts` **rỗng** và
+`find /home/agent/workspace -name '*probe-upload*'` **không có**. Agent phải tự đi tìm, kết luận "tệp không tồn tại".
+Đường ống nhận tệp đã có sẵn nhưng **chưa có đường nào gọi từ ô soạn tin** (panel Workspace Files đã gọi nó —
+`frontend/src/hooks/useWorkspaceFiles.ts:473`): `POST /__box/file/upload` (`deploy/docker/ide-proxy.py:540-568`),
+`workspace_files.write_upload` (`deploy/docker/workspace_files.py:743-754`), client `frontend/src/lib/workspace/http.ts:70-87`,
+thư mục đích tạo lúc boot (`deploy/docker/box-entrypoint.sh:15-24`); luật tên RULE-5 (`docs/naming.md:24`) **chưa có code
+nào cấp số** — kế hoạch `A2–A6` giao việc cấp số cho phía box.
+
+**BUG-41 — mức Trung bình — `TURN_EMPTY_RESPONSE` đánh `failed` cả lượt dù model đã làm việc, không thử lại, không trả phần đã làm.**
+Phiên `0ef73471…` chết ở bước 5: `error {code: TURN_EMPTY_RESPONSE}` với `thought` đã có nhưng không có text và không có
+tool call; người dùng mất trọn lượt, không có câu trả lời một phần. Sửa theo `B6` (một lượt thử lại có ép công cụ, hết cách
+mới `failed`), cùng họ với lỗi C2 đã sửa ở đợt 20.
+
+**BUG-42 — mức Cao — con chạm `DEADLINE` (10 bước/120 s) thì mất trắng phần đã làm, cha chỉ nhận `failed`.**
+Phiên con `ea9486495da646d7aac4ccd4214ea8ed` (`delegate_task role=explore`) chạy 10/10 bước, 33 tool call, hết 120 s ⇒
+`DEADLINE: the turn ran out of time before an answer was produced`, `answerChars = 0`; cha nhận `status=failed` và phải nói
+với người dùng là "không có bằng chứng nào". Cùng mã lỗi `DEADLINE` như ảnh chủ nhà gửi (`Error code: DEADLINE`,
+`Worked for 180s`); lượt gốc trong ảnh là chủ nhà báo, vòng này không tái hiện được (phiên gốc đã bị dọn khỏi store) —
+vòng này tái hiện được cùng mã lỗi ở **agent con** (120 s). Trần bước
+cũng đánh `failed` một việc đã xong (`failures.py:52`). Sửa theo `B2–B4`: tách mã `STEP_BUDGET_EXHAUSTED` /
+`DEADLINE_EXCEEDED`, **trả `partial` có nội dung thay vì `failed`**, nâng ngân sách con lên 24 bước/240 s, và ghim `X:`
+blocker để lần sau biết đã mất gì.
+
+**BUG-43 — mức Trung bình — bảng Sub-agents không theo turn: con của turn trước hiện ở turn sau.**
+Đo sống: lượt 2 sinh con `ea948649…`; lượt 3 hỏi `2+2` (xong trong 3 s, không gọi tool nào) mà bảng vẫn ghi
+`SPECIALISTS PIPELINE · 1 TOTAL · Explore Specialist FAILED · 33 tools executed`
+(`/code/.generated_artifacts/images/r21_perTurn_03_turn3_with_stale_child.png`). Gốc: `childrenMap` dựng từ **mọi** event
+`child` của phiên (`frontend/src/components/panels/SubagentInspectorPanel.tsx:162-196`, render `:347`/`:361`) và store không
+cắt theo turn (`frontend/src/store/harnessChatStore.ts:294`); event `child` cũng **không mang `turn`/`step`**
+(`backend/src/agentbox/agent_core/runtime.py:2523-2530`, `:2564`) nên giao diện không có dữ liệu để phân. Sửa theo `E1–E3`.
+
+**Ghi nhận đúng, không phải lỗi.** (1) Trần mặc định 16 bước **không** chặn việc vừa phải: lượt đọc hai tệp + grep + viết
+báo cáo + đọc lại xong ở **bước 8** (phiên `dddebffb…`). (2) `muse-spark-1.2-contributor-free` và
+`muse-spark-1.3-contributor-free` của OpenCode Free đều chạy được (`status: passed`, có usage), nên không có việc "thiếu model".
+(3) Địa chỉ xem trước công khai chỉ để **xem**: harness chỉ nhận `Origin` loopback
+(`backend/src/agentbox/api/server.py:119-139`), nên mọi lượt chạy phải đi qua `localhost:3100` — đúng thiết kế, không phải lỗi.
+
+### 6.23 Vòng 22 (đợt 1 — foundation) — bốn lỗi vòng 21 đã sửa và đo lại, một lỗi mới (BUG-44)
+
+Đợt 1 của `docs/plan/v22-boxfox-plan.md` sửa bốn lỗi đo sống ở vòng 21, đo lại bằng ba bộ test và một lượt thử sống đầu-cuối qua
+`localhost:3100`; chính lượt đo đó lộ thêm **một** lỗi (BUG-44) thuộc đợt bằng chứng sống. Nhật ký đầy đủ (số đo, lệnh, phiên):
+`docs/tracking/test-rounds.md` § *Vòng 22*.
+
+| Mã | Mức | Nội dung | Nơi sửa | Trạng thái |
+|---|---|---|---|---|
+| BUG-39 | TB | Menu `+` đủ mục trong DOM nhưng bị `overflow-hidden` cắt | `frontend/src/components/chat/AttachmentPicker.tsx`, `frontend/src/components/panels/ChatInputBar.tsx` | ĐÃ SỬA |
+| BUG-40 | Cao | Nội dung tệp đính kèm không bao giờ tới box; agent chỉ nhận cái tên | `frontend/src/lib/chat/attachmentUpload.ts`, `frontend/src/components/panels/ChatInputBar.tsx`, `backend/src/agentbox/agent_core/{attachments,runtime}.py`, `backend/src/agentbox/skills/runtime_commands.py`, `backend/src/agentbox/api/server.py`, `deploy/docker/{workspace_files,upload_files,ide-proxy}.py` | ĐÃ SỬA |
+| BUG-41 | TB | `TURN_EMPTY_RESPONSE` đánh `failed` cả lượt dù model đã làm việc | `backend/src/agentbox/agent_core/runtime.py` | ĐÃ SỬA |
+| BUG-42 | Cao | Con (và lượt chính) chạm trần bước/hạn chót thì mất trắng phần đã làm | `backend/src/agentbox/agent_core/{limits,failures,runtime}.py` | ĐÃ SỬA |
+| BUG-43 | TB | Bảng Sub-agents không theo turn | — | HOÃN — thuộc đợt peer-mesh của vòng 22 (D-9) |
+| BUG-44 | TB | Câu trả lời về tệp đính kèm có thể in **nội dung cũ trong ngữ cảnh** mà không mở tệp; không cổng nào bắt | — | MỚI — thuộc đợt bằng chứng sống (D-8) của vòng 22 |
+
+**BUG-39 — đã sửa, đo lại sống.** Popover nay render qua **portal** nên không còn bị tổ tiên `overflow-hidden`
+(`frontend/src/components/panels/ChatInputBar.tsx`) cắt. Số đo sau sửa, cùng phép thử vòng 21: `document.elementFromPoint` tại tâm
+**cả bốn** mục trả `true` (`Tải lên hình ảnh`, `Tải lên tệp tin` — có dòng `Tối đa 25 MB/tệp · 20 tệp/lượt`, `Tải lên thư mục`,
+`Google Drive`); mục Drive ở trạng thái `disabled: true` và hiện đúng câu "Chưa kết nối — không đính kèm được tài liệu Drive".
+Bài kiểm giao diện khoá hành vi này trong `frontend/src/components/chat/AttachmentPicker*.test.tsx` và `ChatInputBar.*.test.tsx`.
+
+**BUG-40 — đã sửa, đo lại sống.** Đường gửi nay **tải tệp lên box trước**, rồi gửi kèm chỉ đường dẫn
+(`frontend/src/lib/chat/attachmentUpload.ts`), harness kiểm và suy ra đường dẫn tuyệt đối
+(`backend/src/agentbox/agent_core/attachments.py`) rồi ghép khối `[Tệp đính kèm đã lưu trong box]` vào text gửi model.
+Số đo: `.uploaded_artifacts` **5 → 7 tệp** trong đợt (`6.md` 31 B, `7.md` 34 B), cả hai **khớp byte** với tệp gốc;
+event `user` của phiên `c4cf5256d3174303b363cd3896ba0246` mang
+`{name: 7.md, path: .uploaded_artifacts/7.md, absolutePath: /home/agent/workspace/.uploaded_artifacts/7.md, sizeBytes: 34, kind: file}`;
+hàng `messages` của phiên trong `~/BoxFox/harness/sessions.sqlite` (ngữ cảnh gửi model) chứa khối
+`[Tệp đính kèm đã lưu trong box]` với dòng `- /home/agent/workspace/.uploaded_artifacts/6.md (6.md, 31 B)`;
+phiên **mới** `92f76c90467d4dfaaa3bbb3d40278069` (không ngữ cảnh cũ) nhận **chỉ đường dẫn tương đối** rồi gọi
+`file_read {"path": "/home/agent/workspace/.uploaded_artifacts/6.md"}` và trả về đúng dòng đầu của tệp
+(`stepsUsed 2`, `toolsRun 1`). Số RULE-5 nay do **box** cấp bằng `O_CREAT|O_EXCL` + thử lại số kế (BOX-6, `docs/naming.md` § 9):
+bốn lượt tải song song cùng lúc cho `2.md 3.md 4.md 5.md`, `uniq -d` rỗng.
+
+**BUG-41 — đã sửa.** Ranh giới câu trả lời cuối nay **thử lại một lần** khi model kết thúc mà không có text và không có tool call:
+lần thử lại ghim notice `TURN_EMPTY_RESPONSE_RETRY` kèm `attempt`/`how` và một hàng `system_log.write('turn.retry', …)`; chỉ khi lần
+thử lại cũng rỗng thì lượt mới chịu thua như trước. Bài khoá: `backend/tests/unit/test_harness_runtime.py` (nhánh thử lại) và
+`test_turn_partial_budget.py`.
+
+**BUG-42 — đã sửa, đo lại sống.** Hai mã nay tách hẳn (`STEP_BUDGET_EXHAUSTED`, `DEADLINE_EXCEEDED`; mã cũ giữ lại chỉ để đọc
+bản ghi cũ), và cả hai đường đều đóng bằng **chẩn đoán bốn phần** thay vì `failed` trắng. Số đo: lượt `maxSteps: 4`
+(phiên `1cbb482079de430091e2de76f18144ae`) kết thúc `partial` với `turn_end {status: partial, stepsUsed: 2, toolsRun: 1, deadlineUsedMs: 4953, partial: true, diagnosis: true}`
+và **đúng một** notice `STEP_BUDGET_EXHAUSTED {diagnosisChars: 465, reservedSteps: 3}`; câu trả lời cuối 465 ký tự, đủ bốn phần
+(đã làm / đang kẹt ở / còn lại / thử tiếp theo); hàng `sessions` vẫn `completed` (không thêm giá trị `status` mới). Lượt con
+`explore` `122a9a866b1342249b9affc749d9030d` nhận `maxSteps 5` / `deadlineSeconds 300` (kẹp theo cha) và trả về cha
+`{status: partial, answerChars: 948, reason: STEP_BUDGET_EXHAUSTED, diagnosis: true, stuckReason: STEP_BUDGET_EXHAUSTED, is_error: false}`.
+Ngân sách mới của con: `CHILD_MAX_STEPS = 40`, `CHILD_DEADLINE_SECONDS = 300` — vẫn bị kẹp theo cha như trước, nên trần thật là
+`min(40, maxSteps của cha)`. Không lượt đo nào sinh hàng `X:` mới (nhánh ghim blocker chỉ chạy khi chẩn đoán không kịp).
+
+**BUG-44 — mức Trung bình — model trả lời về tệp đính kèm bằng nội dung của **lượt trước**, không mở tệp; không cổng nào bắt.**
+Đo sống trong chính lượt E3 đầu tiên (phiên `c4cf5256d3174303b363cd3896ba0246`): người dùng gửi `6.md` **mới** rồi hỏi dòng đầu tiên;
+`turn_end` ghi `toolsRun: 0` (không có lần đọc nào) nhưng câu trả lời vẫn nêu đúng đường dẫn tuyệt đối và in **nội dung cũ** của tệp
+(`LIVE-E2E-1790075144940`, của lượt trước trong cùng phiên), trong khi tệp trên đĩa lúc đó đã là `FOUNDATION-E2E-20260922T111913`.
+Nội dung cũ **trông đúng** (đúng đường dẫn, đúng khuôn) nên người đọc không có cách nào biết là sai — đây là mặt trái của D-6:
+đường dẫn tới nơi được, nhưng **không gì ép model mở tệp**, và **không cổng nào** kiểm câu trả lời cuối
+(`frontend/src/components/chat/HarnessStepView.tsx` ghim badge `done` vô điều kiện; store bỏ `session.journal`). Cùng ngày, khi model
+**có** gọi `file_read` (phiên `92f76c90467d4dfaaa3bbb3d40278069`) thì câu trả lời đúng từng ký tự, nên lỗi nằm ở đường "không đọc"
+chứ không ở đường truyền tệp. Hướng sửa: **cổng bằng chứng** của D-8 (`docs/plan/v22-evidence-proof.md`); đợt này ghi nhận,
+không sửa — đúng phạm vi đã chốt.
+
+**Ghi nhận, không phải lỗi.** (1) `test_terminal_tools.py::test_terminal_exec_echo` **đỏ sẵn có** vì `bash` của sandbox không có
+lệnh `Write-Output` (`Exited with code 127`) — không liên quan đợt này; bộ backend còn lại **902 passed**. (2) Không dựng lại ảnh box:
+`worker.py` được gửi **nội tuyến** trong mỗi lần gọi, nên thay đổi phía box (`read_file_payload`, `SESSION_OP_NAMES`) có hiệu lực ngay.
+(3) `frontend/.env.local` (tệp **không** được theo dõi, dùng cho đường xem trước) trỏ API về `"."`, nên bộ frontend phải chạy với
+`VITE_BOX_API_URL=http://localhost:8081` — với biến đó **118 tệp / 958 bài passed**.

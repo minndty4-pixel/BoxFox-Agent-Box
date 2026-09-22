@@ -1004,3 +1004,229 @@ khai **1 000 000** trong bảng cửa sổ của router (OpenRouter công bố �
 3. Dải identity mơ hồ `0,5 ≤ j < 0,75`: từ chối một lần (khuyến nghị) hay gộp luôn.
 4. Ngưỡng cứng độ dài plan: từ chối khi > 150 000 ký tự (khuyến nghị) hay chỉ cảnh báo.
 5. Gốc thư mục theo phiên: `.session-history` (khuyến nghị) hay `.sessions/`.
+
+## Vòng 21 — năm việc chủ nhà giao: upload trong dấu `+`, trần bước, sub-agent nhìn nhau, bằng chứng sống, bảng theo turn (2026-09-22, sáng)
+
+- Phạm vi: (1) gửi nguyên nội dung một tệp Markdown dưới dạng text để kiểm chứng khả năng chạy, chất lượng
+  output plan và hành vi gọi sub-agent; (2) trần `maxSteps` 16 cùng hai lỗi quanh trần bước/hạn chót;
+  (3) kiến trúc để sub-agent nhìn thấy nhau và bàn giao có định tuyến; (4) bằng chứng sống gắn vào câu trả lời cuối;
+  (5) bảng Sub-agents phải theo từng turn. Model chính: OpenCode Free `muse-spark-1.2/1.3-contributor-free`.
+- Cách chạy: router 3101 + harness 3102 + Vite 3100 do phiên này khởi động; box `agentbox-box` đang chạy;
+  ba lượt qua API (`/tmp/run_turn.py`, log `/tmp/runA.txt`, `/tmp/runB.txt`, `/tmp/runD.txt`) và ba lượt qua giao diện
+  (agent-browser 0.21.2). Xem trước công khai: `https://wc91p7pgg7ed.preview.us1.vorflux.com` (chỉ để xem;
+  lớt chạy bị chặn vì `Origin` của harness chỉ nhận loopback — `backend/src/agentbox/api/server.py:119-139`).
+- Kết quả: **5/5 việc có kết luận đo được**; **4 lỗi mới** (BUG-39 … BUG-42) và **1 lỗi giao diện** (BUG-43);
+  kế hoạch sáu phần A–F ở `docs/plan/v21-boxfox-plan.md` (+ bản tóm tắt cùng chỗ).
+
+### Phần A — gửi tệp qua dấu `+`
+
+- Menu có đủ bốn mục trong DOM nhưng **bị cắt**: với menu đang mở, `document.elementFromPoint` tại tâm mục
+  `Tải lên hình ảnh` (`itemRect [290,642,226,45]`) trả về khung chat ⇒ mục không phải phần tử trên cùng.
+  Tổ tiên cắt là `flex min-w-0 items-center gap-1.5 overflow-hidden` (`ChatInputBar.tsx:268`) trong khi popover
+  đặt `absolute bottom-full` (`AttachmentPicker.tsx:159`). Lặp lại được ở **cả** địa chỉ công khai lẫn `localhost:3100`.
+- Gửi thật một tệp `probe-upload.txt` (đã dán nhãn vào input ẩn, vì menu không bấm được): chip hiện tên,
+  lượt chạy tạo phiên `0ef73471c38d4c63a593755345213dcf`, và event `user` **đúng bằng** phần text cộng
+  `\n\n[Attached Files: probe-upload.txt]` — **không nội dung, không đường dẫn**.
+- Sau lượt: `docker exec agentbox-box ls .uploaded_artifacts` **rỗng**, `find /home/agent/workspace -name '*probe-upload*'`
+  **không có**. Agent tự đi tìm, kết luận "tệp không tồn tại", rồi lượt chết bằng `TURN_EMPTY_RESPONSE`.
+- Đường ống đã có sẵn nhưng chưa ai gọi: `POST /__box/file/upload` (`deploy/docker/ide-proxy.py:540-568`),
+  `workspace_files.write_upload` (`deploy/docker/workspace_files.py:743-754`), client
+  `frontend/src/lib/workspace/http.ts:70-87`, thư mục `.uploaded_artifacts` tạo lúc boot
+  (`deploy/docker/box-entrypoint.sh:15-24`), luật tên RULE-5 **chưa có code nào cấp số** (`docs/naming.md:24`).
+
+### Phần B — gửi nguyên nội dung Markdown và chất lượng plan
+
+- Lượt 1 (dán 2 770 byte, `muse-spark-1.3-contributor-free`, phiên `67bdfd4bd6fa4398bd0273e62dd2acc0`):
+  `write_plan` bị từ chối **bốn lần** (`PLAN_QUALITY_REJECTED: missing (verification-section)`;
+  `missing (verification-command)`; `PLAN_EVAL_REJECTED: (steps-unanchored) chỉ 4/11 bước có lệnh…`;
+  `(plan-no-steps)`) rồi mới nhận ở lần thứ năm: `.plans/v1-boxfox-5-upgrades.md` 4 643 byte,
+  `levels {P1:1, P2..P8:2}`, kèm `ui_intent` mở tab Plan. Lượt xong ở **bước 6**, `completed`,
+  `contextEstimate 24001`, **không gọi sub-agent nào**.
+- Plan sinh ra vẫn sai sự thật ở ba chỗ: bịa tên hằng `DEFAULT_MAX_STEPS` (thật là `MAX_STEPS_DEFAULT`),
+  bịa `turnId`/`deadlineMs`, và tự nhận trong mục *Sources / Citations* rằng các số 40 bước / 10 MB / 120 s
+  là "giá trị tự chọn", không có nguồn.
+- Lượt 2 (delegation, `muse-spark-1.2-contributor-free`, phiên `b66559fa8e2743a79e7b1d079fecc881`):
+  cha gọi `delegate_task role=explore` (con `391cbed2…`, 8 bước, 7 tool) rồi `role=review`
+  (con `d79a2112…`, 8 bước, 7 tool), xong ở bước 3. Con `explore` tìm `ChatInputBar.tsx` khi mã nguồn chưa
+  được chép vào box nên kết luận "tệp không tồn tại"; con `review` **sửa lại** khi mã đã có. Đây là bằng chứng
+  sống cho thấy hôm nay chỉ có cha làm trung gian: con không đọc được việc của con khác, chỉ đọc lại sau khi cha
+  giao việc mới.
+
+### Phần C — trần bước và hạn chót
+
+- Việc vừa phải (đọc 2 tệp + grep + viết báo cáo + đọc lại, phiên `dddebffb887a4f6ca814c1514367d38d`),
+  chạy với **đúng mặc định** `{"maxSteps":16,"deadlineSeconds":180}`: xong ở **bước 8**, `completed`,
+  `contextEstimate 28235`. Không chạm trần.
+- Việc của con (`delegate_task role=explore`, phiên `ea9486495da646d7aac4ccd4214ea8ed`): chạy **10/10 bước**,
+  33 tool call, hết **120 s** ⇒ `DEADLINE: the turn ran out of time before an answer was produced`,
+  `answerChars = 0`, cha nhận `status=failed`. **Toàn bộ chín bước đã làm bị vứt**, không có đường trả về phần dở.
+  Cùng mã lỗi `DEADLINE` như ảnh chủ nhà gửi (`Error code: DEADLINE`, `Worked for 180s`). Chủ nhà báo ở lượt gốc;
+  vòng này **không tái hiện được băng đỏ ở lượt gốc** (phiên gốc cũ đã bị dọn khỏi store) — tái hiện được **cùng mã lỗi**
+  ở agent con (120 s) và thấy cha vẫn báo lỗi đó cho người dùng trong dòng `last_error`.
+- Lỗi thứ ba, đo được trong chính lượt gửi tệp: `TURN_EMPTY_RESPONSE: the model finished without a usable answer
+  (no text, no tool call)` tại bước 5 — model đã có `thought` nhưng không có text/tool call, lượt bị đánh `failed`,
+  **không thử lại**, người dùng mất cả lượt.
+
+### Phần D — kiến trúc sub-agent (đọc mã, không sửa)
+
+- Mỗi cha chỉ có một đường sinh con và chạy tuần tự (`runtime.py:2531-2534`); `child_slots` là `Semaphore(3)`
+  **toàn tiến trình** (`runtime.py:967`) nên hai cha tranh nhau ba slot; tool trong một bước cũng tuần tự
+  (`runtime.py:1730-1741`).
+- Con không có tool để đọc/đợi/nhắn bạn: tập tool là frozenset theo vai (`roles.py:7-11`, gán `:148-158`,
+  giao với cha `:163-165`), `session_search` chỉ orchestrator và **khoá theo sid của chính nó**
+  (`roles.py:159-160`, `runtime.py:1944-1945`, `:1966-1967`), con không hỏi được người dùng (`runtime.py:1991-1995`).
+- `store.events()` trả tối đa 500 hàng (`memory/session_store.py:136-139`); `child` event không mang `turn`/`step`
+  (`runtime.py:2523-2530`, `:2564`) nên giao diện không thể phân turn dù muốn.
+
+### Phần E — bằng chứng sống và bảng Sub-agents theo turn
+
+- Không có cổng nào cho câu trả lời cuối: chỉ kiểm "có text và `finish_reason` hợp lệ" (`runtime.py:1696`) rồi
+  phát thẳng (`:1712-1713`); cổng duy nhất đang chạy là cho **plan** (`runtime.py:2195`, `:2213`).
+  Giao diện ghim badge `done` **vô điều kiện** (`HarnessStepView.tsx:1534-1537`) và store bỏ luôn
+  `session.journal` mà backend đã trả (`harnessChatStore.ts:285-338`; `api/server.py:285-293`).
+- Bảng Sub-agents sai theo turn, đo sống: lượt 2 sinh con `ea948649…`; **lượt 3** hỏi `2+2` (xong trong 3 s,
+  không gọi tool nào) mà bảng vẫn ghi `SPECIALISTS PIPELINE · 1 TOTAL · Explore Specialist FAILED · 33 tools executed`.
+  Gốc: `childrenMap` dựng từ mọi event `child` của phiên (`SubagentInspectorPanel.tsx:162-196`, render `:347`/`:361`)
+  và store không cắt theo turn (`harnessChatStore.ts:294`).
+
+### Kiểm chứng model (chủ nhà hỏi)
+
+- `muse-spark-1.2-contributor-free` và `muse-spark-1.3-contributor-free`: **cả hai chạy được** — test qua router
+  đều `status: passed` (usage trả về), giao diện hiện đủ chín model `-free` trong tab "Single Models".
+  Không có báo cáo thiếu model.
+
+### Bằng chứng của vòng
+
+- Ảnh: `images/r21_preview_01_public_url.png`, `images/r21_upload_05_clipped.png`,
+  `images/r21_local_02_menu_clipped.png`, `images/r21_local_03_chip.png`, `images/r21_local_04_sent.png`
+  (bong bóng chat chứa `[Attached Files: probe-upload.txt]`), `images/r21_model_01_muse13_selected.png`,
+  `images/r21_perTurn_02_subagents_after_turn2.png`, `images/r21_perTurn_03_turn3_with_stale_child.png`.
+- Log: `/tmp/runA.txt`, `/tmp/runB.txt`, `/tmp/runD.txt`; phiên `67bdfd4b…`, `b66559fa…`, `dddebffb…`,
+  `0ef73471…`, con `ea948649…`.
+- Kế hoạch: `docs/plan/v21-boxfox-plan.md` (sáu phần A–F), tóm tắt `docs/plan/v21-boxfox-plan-summary.md`.
+## Vòng 22 — đợt foundation: tệp đính kèm tới box, trần bước có chẩn đoán, plan sạch theo tên, trần độ dài câu trả lời (2026-09-22, chiều)
+
+- Phạm vi (đợt 1 của kế hoạch `docs/plan/v22-boxfox-plan.md`, việc A1–A11 / B1–B10 / C1–C5 / D1–D2 / E1–E5):
+  (A) gửi tệp và hình từ dấu `+` tới box, đưa **đường dẫn thật** vào lượt; (B) ngân sách bước và hạn chót theo D-1/D-15 —
+  tách mã, **chẩn đoán bốn phần**, trả `partial` thay `failed`, ghi `stepsUsed`/`deadlineUsedMs`; (C) kế hoạch: `--apply`
+  sao lưu trước, vé mơ hồ dùng một lần; (D) trần độ dài câu trả lời; (E) ba bộ test và một lượt thử sống đầu-cuối.
+- Cách chạy: router 3101 + harness 3102 (khởi động lại trên mã mới) + Vite 3100 + box `agentbox-box` đang chạy;
+  ảnh box **không** dựng lại — `worker.py` được gửi nội tuyến trong mỗi lần gọi. Lượt sống qua API (`curl`) và một lượt qua
+  giao diện (agent-browser, phiên `foundation`). Xem trước: `localhost:3100`; lượt chạy bắt buộc đi qua loopback vì
+  `Origin` của harness chỉ nhận loopback (`backend/src/agentbox/api/server.py:119-143`).
+- Kết quả: **A, B, C, D xong**; ba bộ test xanh (backend **902 passed / 1 bài đỏ sẵn có**, frontend **958 passed**,
+  `deploy/docker` **493 passed**); ba phép kiểm bắt buộc của E3 xanh; **một lỗi mới** (BUG-44) lộ ra trong chính lượt đo.
+
+### Phần A — tệp đính kèm đi tới box (D-6, BUG-39, BUG-40)
+
+- Menu `+` bấm được sau khi popover render qua portal: hit-test tại tâm **cả bốn** mục đều trả `true`
+  (`Tải lên hình ảnh`, `Tải lên tệp tin`, `Tải lên thư mục`, `Google Drive`); mục Drive `disabled: true` và đọc đúng
+  "Chưa kết nối — không đính kèm được tài liệu Drive" (A9). Cùng phép đo ở vòng 21 trả về khung chat (`itemRect [290,642,226,45]`).
+- `.uploaded_artifacts` trước đợt E3: **5 tệp** (`1.md` … `5.md`). Trong đợt: **+2 tệp** — `6.md` (31 B, lượt qua API) và
+  `7.md` (34 B, lượt qua giao diện); cả hai **khớp byte** (`cat <n>.md | diff - /var/tmp/foundation-e2e.md`,
+  `... /var/tmp/foundation-e2e-ui.md` ⇒ không khác byte nào). Tổng sau đợt: **7 tệp / 32 KB**.
+- Số RULE-5 do box cấp (BOX-6): `POST /__box/file/upload?assign=1` trả `{"path": ".uploaded_artifacts/1.md", "name": "1.md", "sizeBytes": 28}`;
+  bốn lượt tải **song song** cùng lúc ⇒ `2.md 3.md 4.md 5.md`, `uniq -d` **rỗng** (không trùng số).
+- Đường dẫn vào lượt: event `user` cuối của phiên `c4cf5256d3174303b363cd3896ba0246` mang
+  `{name: 7.md, path: .uploaded_artifacts/7.md, absolutePath: /home/agent/workspace/.uploaded_artifacts/7.md, sizeBytes: 34, kind: file}`
+  — `absolutePath` do **harness suy ra**, không lấy từ client (bài `test_turn_attachments.py` khoá điều này bằng một hàng gửi kèm
+  `absolutePath: /etc/passwd` và khẳng định giá trị dùng thật không phải `/etc/passwd`).
+- Ngữ cảnh gửi model (đọc từ `~/BoxFox/harness/sessions.sqlite`, hàng `messages` của phiên): phần text của tin `user` cuối bằng
+  `Đọc tệp vừa đính kèm và in ra đúng dòng đầu tiên.` cộng khối `[Tệp đính kèm đã lưu trong box]` với dòng
+  `- /home/agent/workspace/.uploaded_artifacts/6.md (6.md, 31 B)` — đường dẫn tuyệt đối nằm **trong ngữ cảnh**; chuỗi
+  `[Attached Files: …]` của BUG-40 không còn xuất hiện ở đâu.
+- Lượt sống đầu-cuối qua phiên **mới** (không ngữ cảnh cũ) `92f76c90467d4dfaaa3bbb3d40278069`: gửi **chỉ** đường dẫn tương đối
+  `.uploaded_artifacts/6.md`; model gọi `file_read {"path": "/home/agent/workspace/.uploaded_artifacts/6.md"}` rồi trả về đúng dòng
+  `FOUNDATION-E2E-20260922T111913` — `turn_end {status: completed, stepsUsed: 2, toolsRun: 1, deadlineUsedMs: 4514}`.
+- Lượt qua giao diện (phiên `c4cf5256…`): chip `foundation-e2e-ui.md` + `1 KB` trong ô soạn tin; bong bóng người dùng mang chip
+  `7.md 1 KB .uploaded_artifacts/7.md` (A10); model gọi `file_read` đúng đường dẫn tuyệt đối và trả về
+  `Dòng đầu tiên của tệp /home/agent/workspace/.uploaded_artifacts/7.md: FOUNDATION-E2E-UI-20260922T113232`
+  — `turn_end {status: completed, stepsUsed: 2, toolsRun: 1, deadlineUsedMs: 2569}`.
+
+### Phần B — trần bước và hạn chót có chẩn đoán (D-1, D-15, BUG-41, BUG-42)
+
+- Số mặc định sống: `GET /api/agent/runtime-info` ⇒
+  `{maxStepsDefault: 40, maxStepsMax: 60, deadlineDefaultSeconds: 180, deadlineMaxSeconds: 600, childMaxSteps: 40, childDeadlineSeconds: 300}`.
+- Kẹp trần nói ra đúng một lần: `POST /api/agent/sessions {"maxSteps": 999}` ⇒ phiên `2e92c8242d184ce3ad5d69f2192e7522`,
+  **đúng một** notice `STEPS_CLAMPED {requested: 999, applied: 60}`, `config.maxSteps = 60`, `config.stepsClamped = true`,
+  `sessionMetrics.stepsClamped = true`.
+- Lượt trong ngân sách (phiên `43b363cc79f04e84a86af7c1f02db757`, `maxSteps: 40`, `deadlineSeconds: 300`):
+  `turn_end {status: completed, stepsUsed: 1, toolsRun: 0, deadlineUsedMs: 1934}`, **không có notice nào**.
+- Lượt chạm trần bước (phiên `1cbb482079de430091e2de76f18144ae`, `maxSteps: 4`) đóng bằng **`partial` có nội dung**:
+  `turn_end {status: partial, stepsUsed: 2, toolsRun: 1, deadlineUsedMs: 4953, partial: true, diagnosis: true}`; **đúng một** notice
+  `STEP_BUDGET_EXHAUSTED {partial: true, diagnosis: true, diagnosisChars: 465, stepsUsed: 2, toolsRun: 1, maxSteps: 4, reservedSteps: 3, deadlineSeconds: 300, deadlineUsedMs: 4959}`;
+  hàng `sessions` vẫn `completed` (không thêm giá trị `status` mới — ràng buộc § 4 của sổ chủ nhà); câu trả lời cuối 465 ký tự,
+  đủ bốn phần `Đã làm / Đang kẹt ở / Còn lại / Thử tiếp theo`.
+- Lượt con chạm ngân sách (cha `79049fc16a2349e6866d892583ab64da`, `maxSteps 5`, `deadlineSeconds 300`): con `explore`
+  `122a9a866b1342249b9affc749d9030d` **nhận** `maxSteps 5` / `deadlineSeconds 300` — bị kẹp theo **cha**, không phải số trần 40/300;
+  notice của con `STEP_BUDGET_EXHAUSTED {diagnosisChars: 948, stepsUsed: 3, toolsRun: 2, maxSteps: 5, reservedSteps: 3, deadlineUsedMs: 14563}`;
+  event `child` thứ hai mang về cha `{status: partial, answerChars: 948, is_error: false, reason: STEP_BUDGET_EXHAUSTED, diagnosis: true, stuckReason: STEP_BUDGET_EXHAUSTED}`;
+  cha xong `turn_end {status: completed, stepsUsed: 2, toolsRun: 1, deadlineUsedMs: 24602}`.
+- Hàng `X:` mới trong các lượt đo: **0** — cả hai ca chạm trần đều đóng bằng chẩn đoán, nên nhánh ghim blocker vào nhật ký
+  không chạy (nhánh đó vẫn có bài khoá ở `test_limits_notice.py`, và nhãn máy `note: 'max-steps'` giữ nguyên).
+- Mã cũ vẫn đọc được: `KNOWN_PREFIXES` giữ `MAX_STEPS` / `DEADLINE` cho bản ghi cũ; mã mới là `STEP_BUDGET_EXHAUSTED`,
+  `DEADLINE_EXCEEDED`, `ANSWER_TOO_LONG`.
+- `TURN_EMPTY_RESPONSE` (BUG-41) nay **thử lại một lần** trước khi chịu thua: lần thử lại ghim notice
+  `TURN_EMPTY_RESPONSE_RETRY` kèm `attempt`/`how` và một hàng `system_log.write('turn.retry', reason='empty_response', …)`;
+  nếu vẫn rỗng thì lỗi cũ được ném như trước. Trong các lượt đo của đợt này không lượt nào rỗng.
+
+### Phần C — kế hoạch sạch theo tên (D-2, D-3, D-5)
+
+- `migrate_plans.py --apply` nay **luôn** sao lưu từng byte vào `.plans-backups/<UTC>/` (kèm `manifest.json` có `sha256`) trước khi ghi;
+  `--delete-orphan` từ chối (exit 2) khi còn bản ghi `P:` trỏ tới tệp; `--backup-dir DIR` chỉ đổi **chỗ** đặt bản sao, không tắt luật.
+  Script và `upload_files.py` đã staged vào ảnh (lớp 5) cùng khối kiểm `10b-bis` của `smoke-test.sh`; quy trình ở
+  `docs/plan/v22-plans-migration-runbook.md`, luật ở `docs/naming.md` § 7.
+- Vé mơ hồ dùng một lần (D-3): lượt `write_plan` rơi vào dải jaccard 0,5–0,75 bị từ chối **một lần** kèm hàng `fact`
+  `PLAN_IDENTITY_AMBIGUOUS: …`; gửi lại **nguyên văn** thì được nhận đúng một lần (`identityMatchedBy: 'ambiguity-ticket'`,
+  `identityForcedNew: false`, `identityAmbiguity` ghim vào cả payload `plan_written` lẫn hàng `P:`), và vé **không rò** sang slug
+  hay phiên khác. Ba bài trong `backend/tests/unit/test_write_plan.py` khoá cả ba chiều.
+- `.session-history` giữ nguyên tên (D-5, `docs/naming.md` § 8): đo lúc ghi sổ **16 thư mục phiên / 23 tệp / 224 KB**
+  (lần đo trước trong `naming.md`: 9/16/140 KB) — con số tự tăng theo phiên sống, đúng lý do không đổi tên.
+
+### Phần D — trần độ dài câu trả lời (D-4)
+
+- Hằng số trong `limits.py`: `ANSWER_WARN_CHARS = 60_000`, `ANSWER_MAX_CHARS = 150_000`; trần của plan không đổi
+  (`PLAN_WARN_CHARS = 40_000`, `PLAN_MAX_CHARS = 150_000`).
+- Cổng nằm ở ranh giới câu trả lời cuối: ≤ 60 000 ký tự không đổi gì; trong khoảng 60 000–150 000 ghim một notice
+  `ANSWER_LENGTH_WARN` cùng hàng `system_log.write('answer.length', …)`; trên 150 000 cắt còn 150 000 ký tự, ghim **một** hàng `X:`
+  nói rõ `chars`/`keptChars`/`limit` và lượt trả `partial`.
+- Giao diện đi qua đúng bộ render notice sẵn có: `HarnessStepView.notice.test.tsx` khoá `data-notice-code="ANSWER_TOO_LONG"`,
+  số `150000` trong chuỗi hiển thị và việc câu trả lời vẫn hiển thị đầy đủ.
+
+### Phần E — ba bộ test, lượt sống, và ba phép kiểm bắt buộc
+
+- `cd backend && .venv/bin/python -m pytest tests/unit -q` ⇒ **1 failed, 902 passed**. Bài đỏ duy nhất là
+  `test_terminal_tools.py::test_terminal_exec_echo` — **có sẵn từ trước**, do `bash` của sandbox không có lệnh `Write-Output`
+  (`Exited with code 127`), không liên quan đợt này.
+- `-k "partial_budget or child_diagnosis"` ⇒ **15 passed**; ca bắt buộc của chủ nhà
+  `test_child_diagnosis.py::test_budget_exhausted_child_returns_diagnosis` ⇒ **passed**.
+- `-k "answer_length or plan_eval"` ⇒ **53 passed**; `-k "turn_attachments or partial_budget"` ⇒ **20 passed**;
+  `-k "plan_registry or write_plan or plan_eval or file_tools or file_read"` ⇒ **152 passed**.
+- `cd frontend && VITE_BOX_API_URL=http://localhost:8081 npx vitest run` ⇒ **118 tệp / 958 bài passed**;
+  `npx tsc -b --noEmit` ⇒ **sạch**. Biến môi trường là cần thiết vì `frontend/.env.local` (tệp không được theo dõi, dùng cho
+  đường xem trước) trỏ API về `"."`; với biến này, bài `src/lib/workspace/index.test.ts` cũng xanh.
+- `cd deploy/docker && .venv/bin/python -m pytest tests -q` ⇒ **493 passed**.
+- Ba phép kiểm **bắt buộc** của E3: (1) menu `+` bấm được — hit-test `true` ở **cả bốn** mục; (2) tệp vào box **đúng byte** —
+  `6.md`/`7.md` khớp `diff`, đường dẫn thật có trong event `user` **và** trong ngữ cảnh gửi model; (3) chẩn đoán khi chạm trần —
+  notice `STEP_BUDGET_EXHAUSTED` có `diagnosis: true` và câu trả lời cuối đủ bốn phần.
+
+### Khẳng định cố ý đổi (E1)
+
+Danh sách đầy đủ nằm trong PR của đợt này; các điểm chính: `test_failure_classification.py` (hết hạn ⇒ `DEADLINE_EXCEEDED`),
+`test_limits_notice.py` (tiền tố hàng nhật ký `STEP_BUDGET_EXHAUSTED:` và ca kẹp trần mới), `test_child_truncation.py`
+(`partial_turn`), `test_compaction_events.py` (`turn_end` thêm `stepsUsed`/`toolsRun`/`deadlineUsedMs`),
+`test_session_length_payload.py` (`stepsClamped` trong `sessionMetrics`), `test_harness_runtime.py`, `test_delegation_contract.py`
+(ca kẹp ngân sách con), `test_worker_session_ops.py` (bốn → **năm** op vì A7 thêm `uploads_prune`), và
+`frontend/src/components/chat/ChatInputBar.controlSend.test.tsx:142` (`toHaveBeenCalledWith('/skill', undefined, undefined)`).
+
+### Bằng chứng của vòng
+
+- Ảnh: `images/foundation_e2e_01_chip.png` (chip `foundation-e2e-ui.md 1 KB` trong ô soạn tin),
+  `images/foundation_e2e_02_sent.png` (sau khi gửi), `images/foundation_e2e_03_menu.png` (menu `+` đủ bốn mục, Drive nói thật
+  "chưa kết nối"), `images/foundation_e2e_04_answer.png` (bong bóng người dùng có chip `7.md`, câu trả lời `done`).
+- Phiên: `c4cf5256…` (lượt qua giao diện, hai lượt có tệp), `92f76c90467d4dfaaa3bbb3d40278069` (lượt API không ngữ cảnh cũ),
+  `43b363cc79f04e84a86af7c1f02db757` (40/300), `1cbb482079de430091e2de76f18144ae` (chạm trần bước), `2e92c824…` (kẹp 999),
+  `79049fc16a2349e6866d892583ab64da` (cha gọi con) + con `122a9a866b1342249b9affc749d9030d`.
+- Tệp đo: `/var/tmp/foundation-e2e.md`, `/var/tmp/foundation-e2e-ui.md`; bản chụp `X:` = 0 hàng nên không có tệp nhật ký kèm theo.
+- Ảnh chụp bằng agent-browser 0.21.2 (phiên `foundation`); lượt API bằng `curl` tới `http://127.0.0.1:3102` với
+  `X-BoxFox-Admin: 1` và `Origin: http://localhost:3100`.

@@ -163,3 +163,28 @@ Hai hệ quả:
    BOX-4), không bao giờ một dòng cho mỗi tệp đã xoá.
 2. **`.uploaded_artifacts` nằm trong `PROTECTED_PATHS`** (`deploy/docker/workspace_files.py`): panel
    Workspace Files không xoá/đổi tên được cả gốc, chỉ dọn được qua đường retention ở trên.
+
+## 10. Tệp đính kèm của một lượt, và `file_read` trên tệp nhị phân (D-6, D-15 — đợt 22)
+
+Hai khuôn dưới đây sinh ra từ BUG-39/BUG-40 và từ lượt đo sống ở vòng 22: mô hình chỉ đọc được tệp nếu
+biết **đường dẫn thật trong box**, và chỉ biết mình đang cầm tệp nhị phân nếu harness nói thẳng ra.
+
+| Mã | Khuôn | Ai ép | Ghi chú |
+|---|---|---|---|
+| BOX-7 | Hàng `attachments[]` của một lượt: `{name, path, absolutePath, sizeBytes, kind}`, `kind` ∈ {`file`, `folder-item`} | `backend/src/agentbox/agent_core/attachments.py` | `path` là đường dẫn **tương đối** trong workspace (không mở đầu `/`, không `..`, không byte NUL); `absolutePath` do **harness suy** = `/home/agent/workspace/<path>` — client gửi `absolutePath` gì cũng bị bỏ (bài kiểm gửi hẳn `/etc/passwd`) |
+| BOX-7 | Khối ghim vào text gửi model: dòng đầu **`[Tệp đính kèm đã lưu trong box]`**, mỗi tệp một dòng **`- <absolutePath> (<name>, <size>)`** | `attachments.attachment_prompt_block`, gọi ở `agent_core/runtime.py` và `skills/runtime_commands.py` | Một nguồn cho cả hai đường (lượt thường và command/skill); `<size>` theo `format_size` (`23 B` / `12 KB` / `1.5 MB`) |
+| BOX-7 | Trần một lượt: **20 tệp** ở ô soạn tin, **25 tệp** ở harness, **2 ảnh** inline, ảnh `≤ 700 000` ký tự, tổng ảnh `≤ 800 000` ký tự | `frontend/src/components/chat/AttachmentPicker.tsx` (`MAX_ATTACHMENTS_PER_TURN`, `MAX_ATTACHMENT_BYTES`, `MAX_ATTACHMENT_BYTES_PER_TURN`), `attachments.py` (`MAX_ATTACHMENTS`, `MAX_INLINE_MEDIA`, `MAX_INLINE_IMAGE_CHARS`, `INLINE_IMAGE_CHARS_TOTAL`) | Ô soạn tin chặn mềm (25 MiB/tệp, 100 MiB/lượt); harness là cổng ngoài ⇒ HTTP 400 `ATTACHMENTS_INVALID` / `IMAGE_LIMIT` / `IMAGE_LIMIT_TOTAL`, lượt không chạy. Hai con số tệp **khác nhau có chủ đích**: giao diện chặn sớm, harness chặn muộn |
+| BOX-8 | `file_read` trên tệp nhị phân trả **thêm** `encoding: "base64"`, `bytesRead`, `sizeBytes`, `truncated`; `content` cắt ở **30 000** ký tự base64 = **22 500 byte** đầu | `backend/src/agentbox/sandbox/worker.py` (`read_file_payload`, `BINARY_READ_CHARS`) | Nhị phân = **36 đuôi** trong `BINARY_EXTENSIONS`, hoặc 8 KiB đầu có byte `0x00`, hoặc tệp đuôi chữ mà giải mã UTF-8 hỏng; `truncated` nói **sự thật của phép đọc** (1 KiB nằm trọn ⇒ `False`) |
+| BOX-8 | Đường tool native (không qua box) mở đầu bằng **`[Binary file: <tên>, size: <N> bytes]`** | `backend/src/agentbox/tools/file_ops.py` | Kèm `metadata["is_binary"] = True`; tệp chữ giữ nguyên hợp đồng cũ (không có `encoding`/`bytesRead`) |
+
+Ba hệ quả:
+
+1. **Tệp đính kèm là dữ liệu của client, đường dẫn tuyệt đối thì không.** `validate_attachments` chỉ nhận
+   đường dẫn tương đối rồi tự dựng `absolutePath`, nên mô hình không bị đẩy ra ngoài workspace dù thân
+   request gửi lên có gì.
+2. **Không còn chuỗi giả `[Attached Files: …]`.** Trước đây ô soạn tin chỉ ghép **tên** tệp vào text
+   (BUG-40) — mô hình "biết" có tệp mà không có cách nào mở; nay thứ duy nhất nói về tệp là khối
+   `[Tệp đính kèm đã lưu trong box]` với đường dẫn đọc được.
+3. **Đọc hỏng không làm chết lượt.** Trước A8, `file_read` gọi thẳng `read_text` nên một tệp `.png`/`.pdf`
+   làm lượt chết `UnicodeDecodeError`, mô hình không đọc được gì và người dùng không biết vì sao; nay
+   đường nhị phân trả base64 kèm số byte, còn tệp đuôi chữ hỏng UTF-8 rơi xuống đúng đường đó.
