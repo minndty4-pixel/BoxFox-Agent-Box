@@ -110,3 +110,32 @@ ls -R "$BOX_WORKSPACE/.session-history"
 
 Kiểm ở mức code: `deploy/docker/tests/test_session_files.py` và
 `deploy/docker/tests/test_journal_naming.py` là nơi luật BOX-1…BOX-4 bị ép bằng test.
+
+## 7. Thư mục sao lưu kế hoạch `.plans-backups` (đợt 22)
+
+Chốt D-2 của chủ nhà: **sao lưu trước khi áp dụng**. `migrate_plans.py --apply` vì vậy luôn sao **từng
+byte** mọi tệp `vN-*.md` dưới `.plans` (đệ quy, bỏ tệp tạm) vào một thư mục mới **trước** khi ghi:
+
+| Mã | Khuôn | Ai ép | Ghi chú |
+|---|---|---|---|
+| BOX-5 | `<workspace>/.plans-backups/<UTC>/` — `<UTC>` = `%Y-%m-%dT%H-%M-%SZ`, mỗi lần chạy một thư mục | `deploy/docker/migrate_plans.py` | Đổi chỗ bằng `--backup-dir`; không có cờ tắt |
+| BOX-5 | `<workspace>/.plans-backups/<UTC>/manifest.json` — `createdAt`, `root`, `fileCount`, `totalBytes`, `reason` (báo cáo dry-run của chính lần chạy đó), `files[]` với `relativePath` + `sizeBytes` + `sha256` | `deploy/docker/migrate_plans.py` | `sha256` để chứng minh bản sao là từng byte của bản gốc, không phải lời hứa |
+| BOX-5 | Bản sao giữ **đúng cây con** của `.plans` (`subplans/v2-x.md` → `<UTC>/subplans/v2-x.md`) | `deploy/docker/migrate_plans.py` | Khôi phục = `cp -a <UTC>/. <workspace>/.plans/` |
+
+Ba hệ quả của luật này:
+
+1. **Nằm NGOÀI `.plans`, cạnh nó.** Bộ đọc `plan_files.py` đi đệ quy trong `.plans` và sẽ nhặt bản
+   sao thành những kế hoạch thứ hai; ngoài ra `<UTC>/v1-…` không có header nên còn sinh `mismatch`.
+2. **Không nằm trong `PROTECTED_PATHS`** (`deploy/docker/workspace_files.py`) — đây là rác đọc được và
+   xoá được tay; chỉ `--delete-orphan` mới có cổng từ chối, còn bản sao thì `rm -rf` là xong.
+3. **Không đặt lại bộ đếm, không ghi đè:** mỗi lần chạy một thư mục mới; ghi hỏng thì cả thư mục vừa
+   tạo bị bỏ đi và `.plans` không đổi một byte (*hoặc có bản sao, hoặc không chạy*).
+
+## 8. Vì sao `.session-history` KHÔNG đổi tên (D-5, đợt 22)
+
+Chủ nhà chốt D-5: **giữ nguyên** luật BOX-1 (`<workspace>/.session-history/<sid8>/…`). Đổi tên nó — hoặc
+đổi `journal.jsonl`/`journal.md` — là phá dữ liệu đang có ở ba nơi cùng lúc: (a) các thư mục phiên +
+`INDEX.json` đã nằm đúng chỗ đó trong box (đo 2026-09-22: **8 thư mục phiên, 15 tệp, 128 KB**), (b) bản
+đầy đủ ở `~/BoxFox/harness/sessions.sqlite` (bảng `journal`) tra theo id phiên, và (c) `backfill_history.DEFAULT_ROOT`
+= `/home/agent/workspace/.session-history`. Ca test chống đổi tên: `deploy/docker/tests/test_session_files.py`
+→ `SessionHistoryKeptTest` — khoá cả ba nơi, kể cả `box-entrypoint.sh` (`chmod 0750` + `chown 1000:1000`).

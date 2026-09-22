@@ -151,3 +151,24 @@ ide-proxy để nhánh `413` chạm tới được qua HTTP); `MAX_IDENTITY_LENG
 Thumbnail cache ở `WORKSPACE_ROOT/.generated_artifacts/thumbnails`, key
 `sha256(rel|mtime|size)` để hết hiệu lực khi file đổi; thư mục `.generated_artifacts`
 và `.trash` bị ẩn khỏi listing và zip.
+
+## Sao lưu `.plans` (`.plans-backups`)
+
+> **Cập nhật**: 2026-09-22 (đợt 22, phần C) — `migrate_plans.py` được stage vào image
+> (`/usr/local/bin/migrate_plans.py`) và `--apply` giờ **sao lưu trước khi ghi**.
+
+Luật chạm tới workspace của đợt này:
+
+- `.plans-backups/` nằm **cạnh** `.plans`, không nằm trong nó: bộ đọc `plan_files.py` đi
+  đệ quy trong `.plans` nên bản sao đặt trong đó sẽ thành những kế hoạch thứ hai.
+  Tên thư mục là UTC (`%Y-%m-%dT%H-%M-%SZ`), mỗi lần chạy một thư mục mới, kèm
+  `manifest.json` giữ báo cáo dry-run của chính lần đó + `sha256` từng tệp.
+- `.plans-backups` **không** nằm trong `PROTECTED_PATHS` (`workspace_files.py:85-87`):
+  nó là rác đọc được và xoá tay được. `workspace_files.py` chỉ bảo vệ `.plans`, `.trash`,
+  `.generated_artifacts`, `.session-history`, `.uploaded_artifacts` ở cấp 1.
+- Đọc `.plans` để biết đã staged chưa: `docker exec agentbox-box python3
+  /usr/local/bin/migrate_plans.py --help` phải in ra `--backup-dir` và `--delete-orphan`.
+
+Runbook (4 bước, chi tiết ở `docs/plan/v22-plans-migration-runbook.md`): sao lưu DB harness
+bằng `sqlite3` module (máy không có CLI `sqlite3`) → dry-run trong box → `--apply` (tự sao
+lưu `.plans-backups/…`) → dry-run lại phải ra `nothingToDo: true`.

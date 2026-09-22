@@ -286,6 +286,12 @@ COPY box-firewall /usr/local/sbin/box-firewall
 COPY box-firewall-rules.py /usr/local/bin/box-firewall-rules.py
 COPY ide-proxy.py /usr/local/bin/ide-proxy.py
 COPY plan_files.py /usr/local/bin/plan_files.py
+# Nạp header cho `.plans` cũ (D-2, đợt 22): phải chạy được **trong box** vì script đọc/ghi đúng
+# `.plans` và `.session-history` mà box đang giữ, và `--apply` tự sao lưu vào `.plans-backups/`
+# cạnh `.plans` trước khi ghi. Không có dòng COPY này thì chỉ chạy được từ ngoài (trên bản sao) —
+# đúng trạng thái trước đợt 22. Vẫn cần `plan_files.py` ở trên: script nhập lại nó để dùng cùng
+# bộ luật tên file/khối header.
+COPY migrate_plans.py /usr/local/bin/migrate_plans.py
 COPY capture.py /usr/local/bin/capture.py
 # Nhật ký phiên (đợt 20): `session_files.py` là nguồn duy nhất cho khung thư mục
 # `.session-history/<sid8>/…`, `session_ops.py` là mặt op cho `worker.py` (được gửi nội
