@@ -928,6 +928,13 @@ CHILD_ANSWER_MAX_CHARS = 8000
 # Echoes of the parent's own goal/context/prompt are already in the parent's `tool_start` event verbatim.
 CHILD_ECHO_MAX_CHARS = 3000
 CHILD_EXPECT_MAX_CHARS = 2000
+# T7 — lý do ghi vào sổ con khi lượt của CHA đóng mà con vẫn đang chạy (mồ côi). Không phải
+# lỗi của con: nó bị dừng vì người đã giao việc không còn chờ nữa.
+TURN_ENDED_REASON = 'PARENT_TURN_ENDED'
+# Con bị huỷ trước khi kịp mở bước nào (hoặc bị `stop`): hàng `sessions` còn `running` nhưng
+# KHÔNG có kết quả nào. Ghi thẳng chữ `cancelled` vào hàng sổ con là sai — đó là trạng thái
+# phiên, không phải lý do.
+CHILD_CANCELLED_REASON = 'TURN_CANCELLED'
 # Appended to every child prompt (<= 1200 chars, asserted by tests). Free-form prose from a child is what
 # made the first round of plans unusable: no evidence, no verification, no honest limits.
 CHILD_RESULT_CONTRACT = f"""
@@ -938,7 +945,8 @@ Result contract (the parent needs exactly this back). Your own budget is at most
 ## Verification performed — each check you actually ran and its result. Never claim success without evidence; if you could not run a check, say so.
 ## Limitations & open questions — what you could not verify, your assumptions, and what the parent must decide.
 Keep it compact and drop nothing that proves a claim. An unevidenced claim is a failure, not an answer.
-If you run out of steps or time, stop starting work and answer with the four-part diagnosis instead: {DIAGNOSIS_PARTS} — a `partial` answer with that diagnosis is worth far more to the parent than an empty failure."""
+If you run out of steps or time, stop starting work and answer with the four-part diagnosis instead: {DIAGNOSIS_PARTS} — a `partial` answer with that diagnosis is worth far more to the parent than an empty failure.
+Non-blocking start: the parent may start you with `wait=false` and return before you finish. It then reads your result only when you deliver it or when it calls `await_children`, so finish compactly and early rather than late and complete."""
 
 
 def bound_child_text(text, limit):
@@ -1053,6 +1061,11 @@ class HarnessRuntime(RuntimeCommands):
         # `global_child_slots` là trần toàn cục của cả tiến trình. `parent_running` đếm con đang
         # chạy của mỗi cha, `parent_waiters` đếm người đang xếp hàng — cần cả hai để biết lúc nào
         # được phép bỏ một entry mà không làm người chờ mắc kẹt.
+        # T7 — sid con đang bị `reap_children` dọn. Người dọn thêm TẤT CẢ sid vào đây trước khi
+        # huỷ bất kỳ task nào: callback của con chỉ đóng hàng khi hàng còn `started`, mà trong
+        # lúc chờ gather thì hàng vẫn `started` — không chặn thì callback ghi trạng thái
+        # `running` (con chưa chạy bước nào) thành "kết quả".
+        self.reaping = set()
         self.parent_slots = {}
         self.parent_running = {}
         self.parent_waiters = {}
@@ -1354,6 +1367,135 @@ class HarnessRuntime(RuntimeCommands):
         if task and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+
+    # --- Con sống ngoài lượt cha (T6/T7) ---------------------------------------------------
+    def close_detached_child(self, parent_id, child_id, role, turn, step, goal, task):
+        """Đóng sổ + phát event cho một con `wait=false` khi NÓ tự xong (T6).
+
+        Chạy trong `done_callback` của con, tức là trên vòng lặp và không ai chờ kết quả: hàm
+        này không được ném (callback ném chỉ làm hỏng log) và phải NHẢ SLOT trong mọi trường
+        hợp.
+
+        Hàng sổ con là thứ chống ghi hai lần: chỉ hàng còn `started` mới được đóng ở đây. Hàng
+        đã đóng (người dọn T7 vừa dọn, hoặc phiên đã bị xoá) thì callback chỉ nhả slot — một sự
+        việc, một bản ghi.
+        """
+        try:
+            if child_id in self.reaping:
+                return  # người dọn (T7) đang làm việc này — nó ghi lý do `PARENT_TURN_ENDED`
+            row = self.store.child(child_id)
+            if row is None or row['status'] != 'started':
+                return
+            status, reason, steps_used, output_tokens, answer_chars = 'failed', None, None, None, 0
+            try:
+                session = self.store.get(child_id)
+                status = session['status']
+                events = self.store.events(child_id)
+                end = next((event['data'] for event in reversed(events)
+                            if event['type'] == 'turn_end'), {})
+                steps_used = end.get('stepsUsed') or end.get('step')
+                output_tokens = end.get('outputTokens')
+                answers = [event['data'].get('text') or '' for event in events
+                           if event['type'] == 'assistant' and event['data'].get('final')]
+                answer_chars = len(answers[-1]) if answers else 0
+                if status == 'completed':
+                    reason = self.partial_turn(child_id)
+                    if reason:
+                        status = 'partial'
+                elif status in ('running', 'idle'):
+                    # Con chưa có kết quả nào: `running` là trạng thái của phiên, không phải câu
+                    # trả lời. Nói thẳng nó bị huỷ, và đóng luôn hàng phiên để giao diện thôi
+                    # hiển thị "đang chạy" cho một con đã chết.
+                    status = 'failed'
+                    reason = CHILD_CANCELLED_REASON if task.cancelled() else None
+                    self.store.save(child_id, session['messages'], 'cancelled')
+                else:
+                    reason = next((event['data'].get('code') for event in reversed(events)
+                                   if event['type'] == 'error'), status)
+            except KeyError:
+                status, reason = 'failed', 'SESSION_GONE'
+            self.store.child_finish(child_id, status, reason=reason, steps_used=steps_used,
+                                    output_tokens=output_tokens, answer_chars=answer_chars)
+            self.store.emit(parent_id, 'child', {
+                'sessionId': child_id, 'role': role, 'status': status, 'turn': turn, 'step': step,
+                'goal': goal, 'reason': reason, 'stepsUsed': steps_used, 'outputTokens': output_tokens,
+                'answerChars': answer_chars, 'detached': True,
+                'is_error': status != 'completed'})
+        except Exception as exc:  # pragma: no cover - chốt chặn cuối, không bao giờ được ném
+            system_log.write('child.detached_close_failed', level='warn', session_id=parent_id,
+                             message=str(exc)[:300])
+        finally:
+            self.release_child_slot(parent_id)
+
+    async def reap_children(self, sid, reason=TURN_ENDED_REASON, turn=None):
+        """Dừng con còn sống của lượt này khi lượt CHA đóng (T7) — chống phiên mồ côi.
+
+        `wait=false` (T6) để cha sinh con rồi đi tiếp, nên lượt cha có thể kết thúc trong khi con
+        vẫn chạy: không ai đọc kết quả, không ai nhả slot, và giao diện vẫn thấy con "đang chạy".
+        Hàm này dọn đúng những hàng đó: huỷ task, chờ nó đóng, ghi sổ con `failed` kèm lý do,
+        phát ĐÚNG MỘT event `child` kết thúc vào luồng cha, và ghim MỘT hàng nhật ký `X:`.
+
+        Chỉ đụng con của CHÍNH lượt này (`parent_turn=turn`): con của lượt trước đã được dọn ở
+        lượt đó, và một lượt không được giết việc của lượt khác.
+        """
+        # Con ĐÃ xong mà callback của nó chưa kịp chạy thì không phải con mồ côi: để callback đóng
+        # hàng đó theo trạng thái THẬT của nó. Người dọn chỉ nhận những con còn sống thật.
+        pending = []
+        for row in self.store.children_of(sid, turn=turn):
+            if row['status'] != 'started':
+                continue
+            task = self.tasks.get(row['session_id'])
+            if task is not None and task.done() and not task.cancelled():
+                continue
+            pending.append(row)
+        if not pending:
+            return []
+        ids = [row['session_id'] for row in pending]
+        # Chặn callback của TẤT CẢ con trước khi huỷ bất kỳ task nào (xem `self.reaping`).
+        self.reaping.update(ids)
+        reaped = []
+        try:
+            # Huỷ TẤT CẢ trước khi chờ bất kỳ con nào: huỷ lần lượt thì con sau vẫn được xếp lịch
+            # trong lúc chờ con trước, nó kịp tự kết thúc, và sự việc bị ghi hai lần.
+            tasks = [self.tasks.get(child_id) for child_id in ids]
+            for task in tasks:
+                if task is not None and not task.done():
+                    task.cancel()
+            live = [task for task in tasks if task is not None]
+            if live:
+                await asyncio.gather(*live, return_exceptions=True)
+            for row, task in zip(pending, tasks):
+                child_id = row['session_id']
+                if task is not None and task.done() and not task.cancelled():
+                    # Con kịp xong trong lúc chờ: trả nó lại cho callback của nó, để hàng sổ con
+                    # mang trạng thái THẬT thay vì bị ghi đè bằng `PARENT_TURN_ENDED`.
+                    self.reaping.discard(child_id)
+                    continue
+                self.tasks.pop(child_id, None)
+                current = self.store.child(child_id)
+                if current is None or current['status'] != 'started':
+                    continue
+                self.store.child_finish(child_id, 'failed', reason=reason)
+                session = self.store.get(child_id)
+                if session['status'] in ('running', 'idle'):
+                    self.store.save(child_id, session['messages'], 'cancelled')
+                finished = {'sessionId': child_id, 'role': row['role'], 'status': 'failed',
+                            'turn': row['parent_turn'], 'step': row['spawn_step'],
+                            'goal': row['goal'], 'reason': reason, 'reaped': True,
+                            'is_error': True, 'answerChars': 0}
+                self.store.emit(sid, 'child', finished)
+                reaped.append(finished)
+        finally:
+            self.reaping.difference_update(ids)
+        # MỘT hàng nhật ký cho cả sự việc, không phải một hàng cho mỗi con: người đọc cần biết
+        # "lượt này đã bỏ rơi n con", còn danh sách sid nằm trong payload cho máy lọc.
+        _journal_row(self.store, sid,
+                     f'{reason}: {len(reaped)} child session(s) of this turn were still running when the '
+                     'turn ended — they were stopped and their answers are lost; start children with '
+                     '`wait=false` only when you will read them with `await_children`',
+                     {'turn': turn, 'children': [row['sessionId'] for row in reaped],
+                      'roles': [row['role'] for row in reaped]})
+        return reaped
 
     # --- Fan-out theo cha (T5) -----------------------------------------------------------
     @staticmethod
@@ -2364,6 +2506,14 @@ class HarnessRuntime(RuntimeCommands):
             self.active_messages.pop(sid, None)
             self.active_step.pop(sid, None)
             await self.executor.cleanup(sid)
+            # T7 — lượt này đóng thì con của CHÍNH NÓ không được sống tiếp. Con đã xong trước đó
+            # thì hàm này không thấy hàng `started` nào, nên đây là no-op ở lượt thường. Dọn con
+            # không bao giờ được làm hỏng việc đóng lượt: hỏng thì ghi log rồi đi tiếp.
+            try:
+                await self.reap_children(sid, turn=self.active_turn.get(sid))
+            except Exception as exc:  # pragma: no cover - chốt chặn cuối
+                system_log.write('child.reap_failed', level='warn', session_id=sid,
+                                 message=str(exc)[:300])
 
     async def dispatch(self, session, name, args, call_id=None):
         sid, config = session['id'], session['config']
@@ -3189,6 +3339,14 @@ class HarnessRuntime(RuntimeCommands):
         # T5 — slot sống bằng VÒNG ĐỜI của con, không bằng khối `async with`: con `wait=false`
         # (T6) trả về ngay trong khi nó vẫn chạy, nên chỗ nhả duy nhất đúng là lúc task đóng
         # (chạy cả khi con bị huỷ).
+        if not wait:
+            # T6 — sinh con KHÔNG chặn: cha nhận `sessionId` ngay và đi tiếp; kết quả của con tới
+            # bằng đường giao hàng (T11) hoặc bằng `await_children` (T9), và callback dưới đây
+            # đóng sổ con khi nó tự xong (kèm nhả slot).
+            task.add_done_callback(lambda finished, cid=child['id'], pid=parent_id: self.close_detached_child(
+                pid, cid, role, turn, step, echo_goal, finished))
+            return {'status': 'started', 'sessionId': child['id'], 'role': role,
+                    'turn': turn, 'step': step, 'deliverTo': deliver_to}
         task.add_done_callback(lambda _task, pid=parent_id: self.release_child_slot(pid))
         try:
             answer = await task

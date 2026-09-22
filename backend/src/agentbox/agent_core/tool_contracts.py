@@ -78,7 +78,10 @@ SCHEMAS = [
          'deliverable plus the evidence you need back (sections, file:line, commands and their output, citations). The '
          'child is told to finish with Findings / Evidence / Verification performed / Limitations & open questions and '
          'to never claim success without evidence. Read the returned status, tools_run, last_error and truncated flag; '
-         'a child answer without evidence is not a result.',
+         'a child answer without evidence is not a result. Pass `wait=false` to start several children '
+         'and keep working: this call returns at once, the child delivers its result to you '
+         '(`deliverTo`), and you read it with `await_children`. The default `wait=true` blocks this '
+         'call until the child answers.',
          {'role': {'type': 'string',
                    'enum': ['explore', 'plan', 'design', 'build', 'debug', 'review', 'simplify', 'testing', 'research'],
                    'description': 'Specialist id. Only `research` can look things up outside the workspace: it holds '
@@ -94,7 +97,14 @@ SCHEMAS = [
           'expect': {'type': 'string',
                      'description': 'Required RESULT SHAPE, stated by you: the exact deliverable and the evidence that '
                                     'proves it (which files with line numbers, which commands and what their output '
-                                    'must show, which sources). The child must return exactly this.'}},
+                                    'must show, which sources). The child must return exactly this.'},
+          'wait': {'type': 'boolean',
+                   'description': 'false = start the child and return at once with its sessionId; you read the '
+                                  'result later with `await_children` (or it is delivered to you). Default true: '
+                                  'this call blocks until the child answers.'},
+          'deliverTo': {'type': 'array', 'items': {'type': 'string'},
+                        'description': 'Who the child must hand its result to when it finishes (roles or '
+                                       'session ids, e.g. ["main", "review"]). Empty = the parent only.'}},
          ['role', 'goal']),
     tool('ask_user', 'Ask the user a question and BLOCK this turn until they answer. Give 2-5 options; the runtime always adds the approve/reject pair when you omit it. If nobody answers before the deadline (default 300 s) the answer is a rejection, so ask only when the answer changes what you do next.',
          {'question': STRING, 'options': DECISION_OPTIONS, 'deadlineSeconds': {'type': 'integer'}}, ['question', 'options']),

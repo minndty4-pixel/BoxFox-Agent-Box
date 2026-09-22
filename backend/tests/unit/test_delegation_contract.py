@@ -73,7 +73,9 @@ def run_delegation(tmp_path, delegate_task_args, child_answer, parent_values=Non
 def test_delegate_task_schema_states_the_result_shape_and_stays_backward_compatible():
     schema = next(s for s in SCHEMAS if s['function']['name'] == 'delegate_task')['function']
     properties = schema['parameters']['properties']
-    assert set(properties) == {'role', 'goal', 'context', 'expect'}
+    # T6 (vòng 22) thêm `wait` (sinh con không chặn) và `deliverTo` (con giao kết quả cho ai).
+    assert set(properties) == {'role', 'goal', 'context', 'expect', 'wait', 'deliverTo'}
+    assert properties['wait']['type'] == 'boolean' and properties['deliverTo']['type'] == 'array'
     assert schema['parameters']['required'] == ['role', 'goal'], \
         'existing callers send role/goal/context only: nothing new may become required'
     for name, spec in properties.items():
