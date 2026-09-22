@@ -1107,6 +1107,9 @@ class HarnessRuntime(RuntimeCommands):
         # chót của lượt (trần `PEER_WAIT_TOTAL_MAX_SECONDS`), `peer_target_grace`/`peer_wait_tick`
         # là thuộc tính (không phải hằng số đọc thẳng) để test không phải chờ 20 s thật.
         self.peer_waiters = {}
+        # T10 — watchdog đánh thức cưỡng bức: người chờ thấy cờ này thì trả về `timeout` với dữ liệu
+        # đang có (và ghi `forced: True` trong `peer_wait_end`), lượt KHÔNG bị đánh `failed`.
+        self.peer_force_wake = set()
         self.wait_extension = {}
         self.peer_target_grace = PEER_TARGET_GRACE_SECONDS
         self.peer_wait_tick = PEER_TARGET_POLL_SECONDS
@@ -2799,6 +2802,10 @@ class HarnessRuntime(RuntimeCommands):
             while True:
                 pending = self.peer_wait_pending(sid, targets)
                 waited = time.monotonic() - started
+                if sid in self.peer_force_wake:
+                    # Watchdog (T10) đã đánh thức cưỡng bức: trả lời ngay với dữ liệu đang có. Cờ
+                    # được `await_children` đọc và xoá (nó ghi `forced: True` vào `peer_wait_end`).
+                    return 'timeout', [row for row in targets if row not in pending], pending, waited, False
                 if not pending:
                     return 'done', list(targets), [], waited, False
                 if mode == 'any' and len(pending) < len(targets):
@@ -2865,7 +2872,8 @@ class HarnessRuntime(RuntimeCommands):
         """T9 — đứng chờ đúng nghĩa: dừng ở một mốc, chờ bạn GIAO kết quả, rồi chạy tiếp.
 
         Lượt không bao giờ trông như treo và không bao giờ chết vì đã chờ: lưới an toàn trả
-        `timeout` kèm `pending` để chỗ gọi chạy tiếp với dữ liệu đang có.
+        `timeout` kèm `pending` để chỗ gọi chạy tiếp với dữ liệu đang có. `forced: True` nghĩa là
+        watchdog (T10) đã cắt cơn chờ, không phải chính người gọi hết hạn.
         """
         sid = session['id']
         mode = str((args or {}).get('mode') or 'all')
@@ -2916,7 +2924,9 @@ class HarnessRuntime(RuntimeCommands):
             self.store.child_wait(sid, [], None)
         budget = [PEER_WAIT_RESULT_CHARS]
         done = [self.peer_delivery_summary(row, budget) for row in done_rows]
-        payload = {'status': status, 'mode': mode, 'turn': turn,
+        forced = sid in self.peer_force_wake
+        self.peer_force_wake.discard(sid)
+        payload = {'status': status, 'mode': mode, 'turn': turn, 'forced': forced,
                    'waitedMs': int(waited * 1000), 'extensionExhausted': exhausted,
                    'safetySeconds': timeout, 'done': done,
                    'pending': [{'sessionId': row['session_id'], 'role': row['role'],

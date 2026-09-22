@@ -134,6 +134,21 @@ PEER_DELIVER_MAX = 4
 # Đọc env mỗi lần hỏi, không đọc một lần lúc nạp: một tiến trình harness sống lâu, nên đổi
 # công tắc phải có tác dụng ngay mà không cần khởi động lại. `off` (hoặc rỗng) ⇒ hành vi y
 # hệt bản trước đợt 2.
+# T10 — Watchdog: ba lưới an toàn cuối của sổ con, và ba lý do chúng ghi vào sổ.
+# `CHILD_WALL_MAX_SECONDS = 900` rộng hơn hẳn trần thời gian của MỘT con (`CHILD_DEADLINE_SECONDS`
+# = 300): watchdog chỉ được huỷ con đã vượt xa mọi ngưỡng hợp lệ, nếu không nó thành kẻ giết việc
+# đang chạy tốt. Nhịp quét thưa (10 s) vì mỗi nhịp là một giao dịch trên SQLite dùng chung.
+WATCHDOG_TICK_SECONDS = 10
+CHILD_WALL_MAX_SECONDS = 900
+# Hàng `started` còn sót lại từ lần chạy TRƯỚC (tiến trình bị giết): thao tác tool không được chạy
+# lại, nên không hồi sinh — đóng nó bằng `RESTART`, cùng luật với `UPDATE sessions SET
+# status='interrupted'` lúc mở DB.
+WATCHDOG_RESTART_REASON = 'RESTART'
+WATCHDOG_TIMEOUT_REASON = 'WATCHDOG_TIMEOUT'
+WATCHDOG_ORPHAN_REASON = 'ORPHAN'
+# Chờ bạn quá `PEER_WAIT_SAFETY_SECONDS` cộng ngần này thì watchdog đánh thức cưỡng bức. Người chờ
+# chạy tiếp bình thường với `peer_wait_end status='timeout'`, lượt KHÔNG bị đánh `failed`.
+PEER_WAIT_FORCE_GRACE_SECONDS = 30
 PEER_MESH_ENV = 'BOXFOX_PEER_MESH'
 PEER_FANOUT_ENV = 'BOXFOX_PEER_FANOUT'
 PARALLEL_READ_ENV = 'BOXFOX_PARALLEL_READ_TOOLS'

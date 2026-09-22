@@ -351,3 +351,31 @@ def test_await_children_kep_timeout_va_ghi_notice(tmp_path):
                if event['type'] == 'notice' and event['data'].get('code') == 'PEER_WAIT_CLAMPED']
     assert len(notices) == 1 and notices[0]['applied'] == PEER_WAIT_MAX_SECONDS
     store.close()
+
+
+def test_watchdog_danh_thuc_cuong_buc_tra_timeout_va_ghi_dau_forced(tmp_path):
+    """T10 nối vào T9: watchdog cắt cơn chờ thì người chờ trả `timeout` NGAY và nói `forced: True`.
+
+    Không có ca này thì cờ `peer_force_wake` là code chết: `wait_for_peers` vẫn ngủ đủ `tick` và
+    `peer_wait_end` không phân biệt được "tự hết hạn" với "bị watchdog cắt".
+    """
+    store, runtime, sid = build(tmp_path)
+    peer = add_peer(store, sid, 'review', status='started')
+    session = store.get(sid)
+
+    async def run():
+        runtime.peer_force_wake.add(sid)          # watchdog vừa quyết định cắt
+        started = time.monotonic()
+        result = await runtime.await_children(session, {'targets': ['role:review'],
+                                                       'mode': 'all', 'timeoutSeconds': 300})
+        return result, time.monotonic() - started
+
+    result, elapsed = asyncio.run(run())
+    assert result['status'] == 'timeout' and result['forced'] is True
+    assert result['pending'][0]['role'] == 'review'
+    assert elapsed < 2.0, 'bị cắt thì trả ngay, không ngủ nốt nhịp kiểm tra'
+    assert sid not in runtime.peer_force_wake, 'cờ là chuyện MỘT LẦN: lần chờ sau không bị cắt oan'
+    waits = [event['data'] for event in store.events(sid) if event['type'] == 'peer_wait_end']
+    assert len(waits) == 1 and waits[0]['forced'] is True
+    assert store.child(sid) is None, 'phiên gốc không phải con của ai'
+    store.close()

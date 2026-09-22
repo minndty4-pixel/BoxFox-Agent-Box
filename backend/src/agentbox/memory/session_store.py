@@ -302,6 +302,22 @@ class SessionStore:
                 (status, reason, time.time(), steps_used, output_tokens, answer_chars, child_id))
         return self.child(child_id)
 
+    def child_close_once(self, child_id, status, reason=None):
+        """Đóng hàng sổ con và CHỈ trả hàng khi chính NGƯỜI GỌI NÀY vừa đóng nó.
+
+        `child_finish` nói kết quả cuối cùng; hàm này nói AI đã đóng. Hai đường cùng đóng một hàng
+        (callback của `delegate_task` với watchdog T10, hoặc hai watchdog) thì đúng một bên nhận
+        `rowcount == 1`, nên đúng một event `child` được phát và người đọc không thấy hai lý do
+        khác nhau cho cùng một cái chết.
+        """
+        with self.db:
+            cursor = self.db.execute(
+                "UPDATE children SET status=?, reason=?, finished=?, waiting_for='[]', waiting_since=NULL"
+                " WHERE session_id=? AND status='started'", (status, reason, time.time(), child_id))
+            if cursor.rowcount != 1:
+                return None
+        return self.child(child_id)
+
     def child(self, child_id):
         """Một hàng sổ con (đã giải JSON), hoặc `None` khi chưa có hàng nào."""
         row = self.db.execute('SELECT * FROM children WHERE session_id=?', (child_id,)).fetchone()

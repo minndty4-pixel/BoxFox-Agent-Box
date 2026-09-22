@@ -8,6 +8,7 @@ from pathlib import Path
 from aiohttp import web
 from ..agent_core import plan_registry
 from ..agent_core.plan_header import IDENTITY_PATTERN
+from ..agent_core.peer_watchdog import PeerWatchdog
 from ..agent_core.runtime import HarnessRuntime, DecisionError
 from ..agent_core.failures import (BACKOFF_JITTER, BACKOFF_SECONDS, DEFAULT_MAX_RETRIES,
                                    RATE_LIMIT_MAX_SECONDS, RETRY_BUDGET_SECONDS)
@@ -159,6 +160,21 @@ def create_app(runtime):
             logger.info('context window healed for %s stored sessions', healed)
 
     app.on_startup.append(heal_stored_context_windows)
+
+    async def start_peer_watchdog(_app):
+        """T10 — sổ con phải được quét kể cả khi mọi đường dọn con khác chết theo tiến trình.
+
+        Nhịp quét đầu tiên đóng mọi hàng `started` còn sót từ lần chạy trước bằng lý do `RESTART`:
+        thao tác tool không được chạy lại, nên một con của lần chạy trước không bao giờ có kết quả —
+        để nó `started` thì giao diện hiển thị "đang chạy" cho một phiên đã chết.
+        """
+        watchdog = PeerWatchdog(runtime.store, runtime)
+        runtime.watchdog = watchdog
+        watchdog.start()
+        # Không ghi gì lúc khởi động: file nhật ký phải rỗng cho tới khi có VIỆC xảy ra, và việc
+        # watchdog làm thì chính nó ghi (`watchdog.child_closed` / `watchdog.wait_forced`).
+
+    app.on_startup.append(start_peer_watchdog)
 
     async def health(request):
         return web.json_response({'status': 'ok', 'service': 'boxfox-harness', 'version': HARNESS_VERSION})
@@ -536,6 +552,9 @@ def create_app(runtime):
         })
 
     async def close(app):
+        watchdog = getattr(runtime, 'watchdog', None)
+        if watchdog is not None:
+            await watchdog.stop()
         for sid in list(runtime.tasks):
             await runtime.stop(sid)
         runtime.store.close()
