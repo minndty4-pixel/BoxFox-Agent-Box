@@ -1314,6 +1314,14 @@ Vite `:3100`, box `agentbox-box`), không ca nào chạy lại tính năng cũ k
   ≥ 80 ký tự là mở, không đòi dấu hiệu chẩn đoán; lượt dở khi chưa có bước nào đang mở thì thiếu hàng `turn_end` nên
   `stepsUsed`/`toolsRun` không tới bàn điều khiển; vé mơ hồ của plan ghim theo `(slug, thư mục)` chứ **không** theo nội dung
   plan) **không** vá trong đợt này — ghi ở mục "phản hồi ngoài phạm vi" của PR #3.
+  Bốn điểm vá được đo lại **sống** trên hai tiến trình thật (harness PID 119915 giữ cây `3865d9c` cho phép đo "trước", rồi
+  PID 137585 trên cây `7a7befd`): phiên `maxSteps: 3 / deadlineSeconds: 5` — lượt 2 *trước* là `turn_end {status: "error"}` +
+  `error {DEADLINE_EXCEEDED}`, hàng `sessions` `failed`, không câu trả lời; *sau* là `turn_end {status: partial,
+  diagnosis: true, deadlineUsedMs: 5254}` + notice `DEADLINE_EXCEEDED {diagnosisChars: 320, readToolCalls: 2}`, hàng
+  `sessions` `completed`, không event `error`. Lượt `/explore` trên phiên 12 bước: *trước* con `40` bước — **rộng hơn cha**;
+  *sau* con `12` bước kèm dòng `session.child_budget_clamped {requestedSteps: 40, steps: 12, deadlineSeconds: 600}`, còn
+  phiên `60/600` vẫn cho con `40/600` (luật D-15 và luật thừa hưởng hạn chót của đường lệnh không đổi). Bộ `deploy/docker`
+  (**496 passed**) và frontend (**118 tệp / 958 bài**) chạy lại trên `7a7befd`: không hồi quy.
 - **Dấu vết đo để lại** (đợt kiểm thử, không phải bản ghi sản phẩm): `.plans` **thêm** `v1/v2-boxfox-upgrades-two.md`,
   `v1/v2-kettle-lantern.md`, `v1-fix4-real-version.md`; hai tệp gốc `v1-agent-box-plan.md` / `v1-boxfox-5-upgrades.md`
   **không đổi một byte** (sha256 `30e05800…` / `4831506b…`); `.uploaded_artifacts` thêm `8.md`…`16.md`, `11.png`,
