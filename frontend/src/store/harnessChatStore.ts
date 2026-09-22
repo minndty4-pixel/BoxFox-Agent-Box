@@ -11,10 +11,51 @@ import type { TabIntent } from './uiStore'
 import type { RouterChatSelection } from './routerChatStore'
 
 export interface HarnessEvent { seq: number; type: string; data: Record<string, unknown>; created: number }
-interface HarnessSession { id: string; status: string; events: HarnessEvent[]; config?: Record<string, unknown> }
+interface HarnessSession { id: string; status: string; events: HarnessEvent[]; config?: Record<string, unknown>
+  /** Khối `journal` của `GET /sessions/{sid}` — đọc ở `parseJournalPush`, không dùng trực tiếp. */
+  journal?: unknown }
+
+/** Một mảnh bằng chứng trong hàng `E:` — con trỏ kiểm chứng được (tệp, lệnh, ảnh), không phải lời kể. */
+export interface JournalEvidenceItem {
+  type: string
+  path: string | null
+  command: string | null
+  note: string | null
+}
+
+/**
+ * Một hàng nhật ký bền của phiên (khối `journal.records` — A9). Chỉ giữ những trường giao diện
+ * thật sự đọc; hàng `E:` là hàng mang bằng chứng của một lượt.
+ */
+export interface JournalRow {
+  seq: number
+  kind: string
+  text: string
+  id: string | null
+  status: string | null
+  data: Record<string, unknown>
+  evidence: JournalEvidenceItem[]
+  /** Số LƯỢT của bản ghi — hàng ghi trước vòng này không có, nên phải phân biệt được "không có" với 0. */
+  turn: number | null
+  step: number | null
+}
+
+/**
+ * Nhật ký của một phiên trong state. `evidenceByTurn` là DẪN XUẤT từ `records` (khoá theo `turn`),
+ * giữ sẵn ở đây để chỗ vẽ không phải quét lại toàn bộ nhật ký mỗi vòng poll 1200 ms.
+ */
+export interface HarnessJournal {
+  records: JournalRow[]
+  lastSeq: number
+  degraded: boolean
+  evidenceByTurn: Record<number, JournalRow>
+}
+
 interface RunView { id: string | null; status: string; events: HarnessEvent[]; error: string | null; lastModelLabel?: string
   /** Cặp `(số, nguồn)` của cửa sổ ngữ cảnh trong `config` phiên — harness nén theo đúng số này. */
-  contextWindow?: number | null; contextWindowSource?: string | null }
+  contextWindow?: number | null; contextWindowSource?: string | null
+  /** Nhật ký bền của phiên (khối `journal` đã gộp qua các vòng poll). */
+  journal?: HarnessJournal | null }
 export interface SavedSessionRow {
   id: string
   role: string
@@ -283,6 +324,103 @@ function sessionContextWindow(config: Record<string, unknown> | undefined) {
   }
 }
 
+/** `evidence[]` của một hàng `E:` — mục méo bị bỏ, không bịa thêm mục. */
+function parseJournalEvidence(value: unknown): JournalEvidenceItem[] {
+  if (!Array.isArray(value)) return []
+  const items: JournalEvidenceItem[] = []
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object') continue
+    const item = raw as Record<string, unknown>
+    const type = asString(item.type)
+    if (!type) continue
+    items.push({ type, path: asString(item.path), command: asString(item.command), note: asString(item.note) })
+  }
+  return items
+}
+
+/** `journal.records` → hàng đã lọc kiểu. Hàng không có `seq` là hàng không gộp được ⇒ bỏ. */
+export function parseJournalRows(value: unknown): JournalRow[] {
+  if (!Array.isArray(value)) return []
+  const rows: JournalRow[] = []
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object') continue
+    const item = raw as Record<string, unknown>
+    const seq = asNumber(item.seq)
+    if (seq === null) continue
+    rows.push({
+      seq,
+      kind: String(item.kind ?? ''),
+      text: String(item.text ?? ''),
+      id: asString(item.id),
+      status: asString(item.status),
+      data: item.data && typeof item.data === 'object' ? (item.data as Record<string, unknown>) : {},
+      evidence: parseJournalEvidence(item.evidence),
+      turn: asNumber(item.turn),
+      step: asNumber(item.step),
+    })
+  }
+  return rows.sort((a, b) => a.seq - b.seq)
+}
+
+/** Khối `journal` thô của API: `{records, lastSeq, degraded}` (A9). */
+export interface JournalPush {
+  records: JournalRow[]
+  lastSeq: number
+  degraded: boolean
+}
+
+/**
+ * Đọc khối `journal` của `GET /sessions/{sid}`; trả `null` khi harness không gửi khối đó (bản cũ) —
+ * chỗ gọi phải giữ nguyên nhật ký đang có thay vì coi như phiên không có bằng chứng nào.
+ */
+export function parseJournalPush(value: unknown): JournalPush | null {
+  if (!value || typeof value !== 'object') return null
+  const block = value as Record<string, unknown>
+  if (!Array.isArray(block.records)) return null
+  const records = parseJournalRows(block.records)
+  const declared = asNumber(block.lastSeq)
+  return {
+    records,
+    lastSeq: declared ?? records.at(-1)?.seq ?? 0,
+    degraded: block.degraded === true,
+  }
+}
+
+/**
+ * Hàng `E:` theo số LƯỢT. Một lượt chỉ có một hàng (P3.4), nhưng nếu dữ liệu cũ có nhiều hơn thì
+ * hàng `seq` lớn nhất thắng — bản mới nhất là bản cổng vừa chấm.
+ */
+export function evidenceRowsByTurn(records: JournalRow[]): Record<number, JournalRow> {
+  const byTurn: Record<number, JournalRow> = {}
+  for (const row of records) {
+    if (row.kind !== 'evidence' || row.turn === null) continue
+    const seen = byTurn[row.turn]
+    if (!seen || row.seq > seen.seq) byTurn[row.turn] = row
+  }
+  return byTurn
+}
+
+/**
+ * Gộp khối `journal` mới vào nhật ký đang giữ, theo `seq` — cùng luật với `events`: vòng poll
+ * 1200 ms không được nhân đôi hàng. API luôn trả 50 hàng cuối nên lần gộp nào cũng chồng lên
+ * phần đã có; giữ hợp của hai bên là cách duy nhất để lượt cũ không biến mất khi nhật ký dài.
+ *
+ * `degraded` là cờ MỘT CHIỀU của phiên (nó đếm các `notice` đã ghim trong bảng `events`, mà bảng
+ * đó chỉ ghi thêm): đã từng hỏng thì nói thật là đã từng hỏng, không tự tắt đi.
+ */
+export function mergeJournal(previous: HarnessJournal | null | undefined, incoming: JournalPush): HarnessJournal {
+  const bySeq = new Map<number, JournalRow>()
+  for (const row of previous?.records ?? []) bySeq.set(row.seq, row)
+  for (const row of incoming.records) bySeq.set(row.seq, row)
+  const records = [...bySeq.values()].sort((a, b) => a.seq - b.seq)
+  return {
+    records,
+    lastSeq: Math.max(previous?.lastSeq ?? 0, incoming.lastSeq, records.at(-1)?.seq ?? 0),
+    degraded: incoming.degraded || Boolean(previous?.degraded),
+    evidenceByTurn: evidenceRowsByTurn(records),
+  }
+}
+
 /** True khi harness trả lời rằng id phiên không còn tồn tại (mã `SESSION_NOT_FOUND`). */
 function isStaleSession(error: unknown): boolean {
   return /SESSION_NOT_FOUND/.test(String(error))
@@ -300,6 +438,8 @@ export const useHarnessChatStore = create<State>((set, get) => ({
       const lastServerSeq = current.events.filter(e => e.type !== 'model_change').at(-1)?.seq ?? 0
       const session = await agentApi<HarnessSession>(`/sessions/${id}?after=${lastServerSeq}`)
       const prevEvents = current.events ?? []
+      // Nhật ký đi cùng vòng poll này (hàng `E:` là bằng chứng của lượt); gộp theo `seq` như `events`.
+      const journalPush = parseJournalPush(session.journal)
       const newEvents = session.events.filter(e => !prevEvents.some(old => old.seq === e.seq && old.type === e.type))
       const allEvents = [...prevEvents, ...newEvents]
       // Ý định mở tab: chỉ xét event có `seq` vượt mốc đã xử lý, nên vòng poll
@@ -339,6 +479,7 @@ export const useHarnessChatStore = create<State>((set, get) => ({
               status: session.status,
               error: sessionError,
               events: allEvents,
+              journal: journalPush ? mergeJournal(current.journal, journalPush) : current.journal,
               ...sessionContextWindow(session.config),
             },
           },

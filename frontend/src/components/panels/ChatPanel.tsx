@@ -610,6 +610,9 @@ export function ChatPanel() {
             // Chip kế hoạch / sub-agent / quyết định trong transcript đều mở tab
             // tại chỗ — người dùng đọc chat không bị mất vị trí (giữ nguyên khung cuộn).
             onOpenTab={(tab, target) => showTab(tab, target ?? null)}
+            // P4.1/P4.3 — nhật ký bền của phiên (`GET /sessions/{sid}` trả về, store gộp theo `seq`):
+            // hàng `E:` trong đó là bằng chứng cổng đã ghim cho từng lượt.
+            journal={harnessRun.journal ?? null}
           />
         )}
         {/* Sub-agent Status Capsule — Theo dõi tiến độ sub-agent và mở SubagentInspectorPanel */}

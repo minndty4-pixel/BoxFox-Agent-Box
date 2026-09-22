@@ -216,6 +216,46 @@ const en: SameShape<typeof vi> = {
       recipient_not_running: 'người nhận đã đóng',
       unknown: 'không rõ lý do',
     },
+    // Đợt 3 / P4 — giao diện cổng bằng chứng sống. Nhãn ba trạng thái của huy hiệu lượt, chữ
+    // trong khối `Bằng chứng`, và câu dịch cho từng mã `missing[].reason` của cổng: người đọc
+    // phải hiểu VÌ SAO lượt bị chấm là chưa kiểm chứng, nên mỗi mã có một câu tiếng người.
+    evidenceBadge: {
+      verified: 'đã kiểm chứng',
+      unverified: 'chưa kiểm chứng',
+      not_measurable: 'chưa đo được',
+    },
+    evidenceBadgeTitleVerified: 'Bằng chứng của lượt: {{count}} mảnh, không khẳng định nào thiếu bằng chứng.',
+    evidenceBadgeTitleMissing: 'Chưa kiểm chứng: {{count}} khẳng định chưa có bằng chứng — {{reasons}}. Câu trả lời không bị sửa; cổng chỉ ghim nhãn.',
+    evidenceBadgeTitleNothing: 'Chưa kiểm chứng: lượt này chưa để lại bằng chứng nào để chấm.',
+    evidenceBadgeTitleUnmeasured: 'Cổng bằng chứng không đo được lượt này — lý do ở khối bằng chứng bên dưới.',
+    // Lượt không mang trường `evidence` (phiên cũ, hoặc công tắc đo đang tắt): không mặc định xanh.
+    evidenceBadgeTitleLegacy:
+      'Lượt này không mang trường bằng chứng (lượt trước vòng 23, hoặc công tắc đo đang tắt) — mặc định là chưa kiểm chứng, không phải đã kiểm chứng.',
+    evidenceLegacyNote: 'lượt trước vòng 23 — không có số đo bằng chứng',
+    evidenceGate: 'cổng: BOXFOX_EVIDENCE_GATE = {{mode}}',
+    evidenceHide: 'Ẩn bằng chứng',
+    evidenceShow: 'Hiện bằng chứng',
+    evidenceOpenFile: 'Mở trong Files',
+    evidenceCommandsTitle: 'Lệnh đã chạy',
+    evidenceArtifactsTitle: 'Tệp và ảnh của lượt',
+    evidenceArtifactsEmpty: 'Lượt này không để lại tệp hay ảnh nào mở được.',
+    evidenceMissingTitle: 'Khẳng định chưa có bằng chứng',
+    evidenceMissingEmpty: 'Lượt này không có khẳng định nào thiếu bằng chứng — mục vẫn hiện để người đọc biết nó đã được chấm.',
+    evidenceReceiptCount: '{{count}} bằng chứng',
+    evidenceReceiptUnverified: '{{count}} khẳng định chưa kiểm',
+    evidenceJournalDegraded: 'Nhật ký bền trong box chưa ghi được ở phiên này — số liệu lấy từ hàng SQLite của harness.',
+    evidenceReason: {
+      no_evidence_for_tools: 'lượt có chạy công cụ nhưng không để lại mảnh bằng chứng nào',
+      change_without_verification: 'tệp đã đổi nhưng không có lệnh nào kiểm lại',
+      claim_path_not_in_turn: 'câu trả lời nhắc tới một tệp mà lượt này không hề đụng tới',
+      claim_path_missing: 'câu trả lời nhắc tới một tệp không có trong workspace',
+      ui_change_without_capture: 'giao diện đã đổi nhưng chưa có ảnh chụp sau thay đổi',
+      answer_references_unknown_command: 'câu trả lời nhắc tới một lệnh không có trong lượt',
+      box_unreachable: 'không kết nối được box để dò bằng chứng',
+      box_probe_failed: 'phép dò bằng chứng trong box bị lỗi',
+      gate_error: 'cổng bằng chứng tự hỏng ở lượt này',
+      answer_too_long: 'câu trả lời dài quá nên cổng không đo được lượt này',
+    },
   },
   contextUsage: {
     title: 'Context window',

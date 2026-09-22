@@ -24,7 +24,7 @@ import {
   RefreshCw,
   FolderOpen,
 } from 'lucide-react'
-import type { HarnessEvent } from '../../store/harnessChatStore'
+import type { HarnessJournal, HarnessEvent, JournalRow } from '../../store/harnessChatStore'
 import { useUiStore } from '../../store/uiStore'
 import type { ProviderSnapshot } from '../../types/provider'
 import type { RouterChatSelection } from '../../store/routerChatStore'
@@ -75,6 +75,12 @@ interface HarnessStepViewProps {
   selection?: RouterChatSelection | null
   /** Mở tab tại chỗ khi người dùng bấm chip kế hoạch / sub-agent / quyết định. */
   onOpenTab?: (tab: TranscriptTabId, target?: Record<string, unknown> | null) => void
+  /**
+   * P4.1/P4.3 — nhật ký bền của phiên (`journal` của `GET /sessions/{sid}`, đã gộp qua các vòng
+   * poll). Hàng `E:` trong đó là bằng chứng cổng đã ghim; thiếu prop này thì lượt vẫn vẽ được,
+   * chỉ không có mảnh nào đến từ nhật ký.
+   */
+  journal?: HarnessJournal | null
 }
 
 /**
@@ -143,11 +149,24 @@ export interface ActivityCounts {
   captures: number
   failed: number
   unfinished: number
+  /**
+   * P4.4 — số mảnh bằng chứng mở được của lượt. `undefined` (không phải 0) khi lượt không mang
+   * trường `evidence`: công tắt đo đang tắt, hoặc hàng nhật ký cũ, thì lượt không có số để nói.
+   */
+  evidence?: number
+  /** P4.4 — số khẳng định cổng chấm là chưa có bằng chứng; cũng chỉ có khi cổng đã chấm. */
+  unverified?: number
 }
 
 export interface ActivityReceiptPart {
   label: string
   tone: 'muted' | 'rose' | 'amber'
+}
+
+/** Nhãn hai số của cổng bằng chứng: chữ do i18n cấp, hàm thuần này không tự bịa chữ. */
+export interface ActivityReceiptLabels {
+  evidence: string
+  unverified: string
 }
 
 export const ACTIVITY_TONE_CLASS: Record<ActivityReceiptPart['tone'], string> = {
@@ -160,8 +179,11 @@ export const ACTIVITY_TONE_CLASS: Record<ActivityReceiptPart['tone'], string> = 
  * R2: dòng biên nhận in đúng những gì đang nằm trong khối hoạt động, để việc gấp khối không
  * giấu mất chuyện "có lệnh chưa trả kết quả". Trả mảng đoạn thuần (không JSX) để kiểm thử được
  * bằng đơn vị; đoạn đếm 0 bị bỏ, không có gì thì trả mảng rỗng.
+ *
+ * P4.4: hai số của cổng bằng chứng đi CUỐI dòng — chúng chỉ có mặt khi lượt thật sự mang trường
+ * `evidence`, còn lượt cũ thì dòng biên nhận giữ nguyên như trước.
  */
-export function activityReceipt(counts: ActivityCounts): ActivityReceiptPart[] {
+export function activityReceipt(counts: ActivityCounts, labels?: Partial<ActivityReceiptLabels>): ActivityReceiptPart[] {
   const parts: ActivityReceiptPart[] = []
   if (counts.thinking) parts.push({ label: 'Thinking', tone: 'muted' })
   if (counts.commands > 0) {
@@ -172,6 +194,11 @@ export function activityReceipt(counts: ActivityCounts): ActivityReceiptPart[] {
   }
   if (counts.failed > 0) parts.push({ label: `${counts.failed} failed`, tone: 'rose' })
   if (counts.unfinished > 0) parts.push({ label: `${counts.unfinished} without result`, tone: 'amber' })
+  if (counts.evidence) parts.push({ label: labels?.evidence ?? `${counts.evidence} evidence`, tone: 'muted' })
+  // Khẳng định thiếu bằng chứng là chuyện phải đọc thấy: tô hổ phách như `without result`.
+  if (counts.unverified) {
+    parts.push({ label: labels?.unverified ?? `${counts.unverified} unverified`, tone: 'amber' })
+  }
   return parts
 }
 
@@ -408,6 +435,425 @@ export function extractToolMedia(
     durationSec,
     unfinished,
   }
+}
+
+/* ------------------------------------------------------------------ *
+ * P4 — cổng bằng chứng sống: đọc `evidence` của lượt + mảnh bằng chứng
+ * ------------------------------------------------------------------ */
+
+/** Trạng thái HIỂN THỊ của huy hiệu lượt. Ba giá trị, không có giá trị thứ tư "không biết". */
+export type EvidenceBadgeState = 'verified' | 'unverified' | 'not_measurable'
+
+/** Một lý do cổng chấm là thiếu bằng chứng: mã máy (`reason`) + câu backend kể (`detail`). */
+export interface EvidenceMissing {
+  reason: string
+  detail: string
+}
+
+/**
+ * Một mảnh bằng chứng cổng đã chấm, đọc từ `evidence.artifacts[]`. Đây là dữ liệu THÔ của backend
+ * (`{kind, path, command, exitCode, changed, tool, step, bytes, …}`) — không suy diễn thêm gì.
+ */
+export interface EvidenceFragment {
+  kind: string | null
+  path: string | null
+  command: string | null
+  /** Nhãn đọc được của mảnh: `exit N` với lệnh, chính `kind` với tệp. */
+  note: string | null
+  /** Tệp trong workspace mà mảnh này nói về (khác `path` = chính tệp bằng chứng). */
+  changed: string | null
+  tool: string | null
+  /** Vân tay nội dung cổng ghim vào event (`sha256`) — bằng chứng độc lập với lời khai. */
+  sha256: string | null
+  /** Số byte của tệp bằng chứng, khi payload có. */
+  bytes: number | null
+}
+
+/** Bản đọc đã chuẩn hoá của trường `evidence` trên event `assistant` cuối lượt. */
+export interface AnswerEvidence {
+  /** Giá trị `verdict` THẬT trong event; `null` khi event có `evidence` nhưng thiếu `verdict`. */
+  verdict: string | null
+  state: EvidenceBadgeState
+  checked: number | null
+  /** Công tắc cổng lúc chấm lượt (`off|warn|strict`) — hiện nguyên văn trong khối bằng chứng. */
+  mode: string | null
+  turn: number | null
+  missing: EvidenceMissing[]
+  /** Mảnh bằng chứng cổng đã ghim cho lượt (`artifacts[]` của event). */
+  artifacts: EvidenceFragment[]
+  /** Tệp trong workspace mà cổng nói đã đổi ở lượt này. */
+  changedFiles: string[]
+}
+
+/**
+ * Ba `verdict` của backend → ba trạng thái hiển thị. Verdict LẠ (backend mới hơn UI này) rơi về
+ * `unverified`: thà nói chưa kiểm chứng còn hơn tô xanh một lượt mình không hiểu.
+ */
+const EVIDENCE_VERDICT_STATE: Record<string, EvidenceBadgeState> = {
+  sufficient: 'verified',
+  insufficient: 'unverified',
+  not_measurable: 'not_measurable',
+}
+
+export const EVIDENCE_BADGE_CLASS: Record<EvidenceBadgeState, string> = {
+  verified: 'text-emerald-400',
+  unverified: 'text-amber-400',
+  not_measurable: 'text-zinc-400',
+}
+
+function parseEvidenceMissing(value: unknown): EvidenceMissing[] {
+  if (!Array.isArray(value)) return []
+  const items: EvidenceMissing[] = []
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object') continue
+    const item = raw as Record<string, unknown>
+    const reason = typeof item.reason === 'string' ? item.reason : ''
+    if (!reason) continue
+    items.push({ reason, detail: typeof item.detail === 'string' ? item.detail : '' })
+  }
+  return items
+}
+
+/** `artifacts[]` của event: mảnh cổng đã ghim. Mảnh không có đường dẫn lẫn lệnh thì bỏ. */
+function parseEvidenceFragments(value: unknown): EvidenceFragment[] {
+  if (!Array.isArray(value)) return []
+  const items: EvidenceFragment[] = []
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object') continue
+    const item = raw as Record<string, unknown>
+    const kind = typeof item.kind === 'string' ? item.kind : null
+    const path = typeof item.path === 'string' && item.path ? item.path : null
+    const command = typeof item.command === 'string' && item.command ? item.command : null
+    if (!path && !command) continue
+    const exitCode = typeof item.exitCode === 'number' ? item.exitCode : null
+    items.push({
+      kind,
+      path,
+      command,
+      // Nhãn chỉ nói điều payload nói: `exit 3` khi có số, còn lại là chính `kind`.
+      note: kind === 'command' && exitCode !== null ? `exit ${exitCode}` : kind,
+      changed: typeof item.changed === 'string' && item.changed ? item.changed : null,
+      tool: typeof item.tool === 'string' ? item.tool : null,
+      sha256: typeof item.sha256 === 'string' && item.sha256 ? item.sha256 : null,
+      bytes: typeof item.bytes === 'number' ? item.bytes : null,
+    })
+  }
+  return items
+}
+
+/** `changedFiles[]`: backend ghi chuỗi đường dẫn, bản cũ hơn có thể ghi `{path}` — nhận cả hai. */
+function parseChangedFiles(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const paths: string[] = []
+  for (const raw of value) {
+    if (typeof raw === 'string' && raw) paths.push(raw)
+    else if (raw && typeof raw === 'object') {
+      const path = (raw as Record<string, unknown>).path
+      if (typeof path === 'string' && path) paths.push(path)
+    }
+  }
+  return paths
+}
+
+/**
+ * P4.2: đọc trường `evidence` của event `assistant` cuối lượt.
+ *
+ * Trả `null` khi lượt KHÔNG mang trường này — phiên cũ, hoặc công tắt đo đang tắt (lúc đó backend
+ * không gắn `evidence` vào event). `null` là "không đo", KHÔNG phải "đã kiểm chứng": chỗ vẽ phải
+ * nói `unverified` và không được bịa mục bằng chứng rỗng.
+ */
+export function readAnswerEvidence(event: HarnessEvent | null | undefined): AnswerEvidence | null {
+  const raw = event?.data?.evidence
+  if (!raw || typeof raw !== 'object') return null
+  const block = raw as Record<string, unknown>
+  const verdict = typeof block.verdict === 'string' ? block.verdict : null
+  return {
+    verdict,
+    state: (verdict && EVIDENCE_VERDICT_STATE[verdict]) || 'unverified',
+    checked: typeof block.checked === 'number' ? block.checked : null,
+    mode: typeof block.mode === 'string' ? block.mode : null,
+    turn: typeof block.turn === 'number' ? Math.trunc(block.turn) : null,
+    missing: parseEvidenceMissing(block.missing),
+    artifacts: parseEvidenceFragments(block.artifacts),
+    changedFiles: parseChangedFiles(block.changedFiles),
+  }
+}
+
+/** Câu tiếng người cho một mã `reason`; mã lạ thì in nguyên mã, không đoán nghĩa. */
+export function evidenceReasonText(t: Translate, reason: string): string {
+  const key = `chat.evidenceReason.${reason}` as TKey
+  const text = t(key)
+  return text || reason
+}
+
+/** Đuôi tệp được coi là mảnh bằng chứng của lượt (P1.4 sinh ra chúng). */
+export const EVIDENCE_FILE_EXTENSIONS = ['.diff', '.patch', '.txt', '.log', '.md', '.json']
+
+/** Một mảnh bằng chứng mở được của lượt — đúng thứ khối `Bằng chứng` đếm và liệt kê. */
+export interface TurnArtifact {
+  /** Đường dẫn THẬT trên đĩa box; cũng là giá trị hook `data-artifact-path`. */
+  path: string
+  /** Có mặt khi mảnh này là ảnh/ghi hình: bấm mở khung xem lớn như mọi media khác. */
+  media: ToolMedia | null
+  /** Nhãn phụ đọc từ hàng `E:` / `artifacts[]` (`diff`, `image`, …) — không suy diễn thêm. */
+  note: string | null
+  /** Nguồn thật của mục, để chỗ vẽ nói được vì sao nó ở đây. */
+  source: 'changed' | 'media' | 'tool' | 'journal' | 'fragment'
+  /** Vân tay nội dung (`sha256`), khi cổng hoặc payload công cụ có ghim. */
+  sha256: string | null
+  /** Số byte của tệp bằng chứng, khi payload công cụ có ghi. */
+  bytes: number | null
+  /** Số dòng thêm/bớt mà công cụ báo (`numbers` của `tool_end`) — `null` khi không đo được. */
+  added: number | null
+  removed: number | null
+}
+
+/** Số đo của một mảnh bằng chứng, gom từ payload `tool_end` theo đường dẫn `artifact`. */
+export interface TurnArtifactFact {
+  sha256: string | null
+  bytes: number | null
+  added: number | null
+  removed: number | null
+}
+
+function numberOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+/**
+ * P4.3: số đo THẬT của từng mảnh bằng chứng, đọc từ `tool_end.result` của chính lượt — chỗ công cụ
+ * báo nó vừa ghi tệp nào (`artifact`), `sha256After`, `added`/`removed` và số byte. Không có nguồn
+ * nào khác mang những con số này: hàng `E:` chỉ ghim đường dẫn, còn event `assistant.evidence` ghim
+ * `sha256`/`bytes` (đọc ở `parseEvidenceFragments`) nhưng không có số dòng.
+ */
+export function turnArtifactFacts(turn: HarnessTurn): Map<string, TurnArtifactFact> {
+  const facts = new Map<string, TurnArtifactFact>()
+  for (const item of turn.items) {
+    if (item.kind !== 'tool' || !item.end) continue
+    const result = item.end.data.result
+    if (!result || typeof result !== 'object') continue
+    const payload = result as Record<string, unknown>
+    const path = typeof payload.artifact === 'string' && payload.artifact ? payload.artifact : null
+    const numbers = payload.numbers
+    if (!path || !numbers || typeof numbers !== 'object') continue
+    const raw = numbers as Record<string, unknown>
+    const sha256 = typeof raw.sha256After === 'string' && raw.sha256After ? raw.sha256After : null
+    facts.set(path, {
+      sha256,
+      bytes: numberOrNull(raw.bytes),
+      added: numberOrNull(raw.added),
+      removed: numberOrNull(raw.removed),
+    })
+  }
+  return facts
+}
+
+/** Một lệnh cổng ghi nhận đã chạy ở lượt: chữ lệnh + mã thoát/thời lượng ĐO ĐƯỢC từ chính lượt. */
+export interface TurnCommand {
+  command: string
+  /** Mã thoát thật (từ `tool_end.result.exit_code`); `null` khi nhật ký là nguồn duy nhất. */
+  exitCode: number | null
+  /** Thời gian chạy thật (ms) giữa `tool_start` và `tool_end`; `null` khi thiếu một trong hai. */
+  durationMs: number | null
+  /** Nhãn phụ dựng từ hai số trên (`exit 0 · 2.9s`); không có số nào thì để trống, không bịa. */
+  note: string | null
+}
+
+/** Số đo của một lệnh, gom theo chữ lệnh — dùng để ghép vào nhật ký cổng ghim. */
+export interface TurnCommandFact {
+  exitCode: number | null
+  durationMs: number | null
+}
+
+/** `840ms` / `2.9s` — đủ chính xác để người đọc ước lượng, không thêm chữ thừa. */
+function formatMs(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  return `${(ms / 1000).toFixed(1)}s`
+}
+
+/**
+ * P4.3: số đo THẬT của từng lệnh trong lượt, đọc từ cặp `tool_start`/`tool_end` mà giao diện đã có
+ * sẵn trong timeline. Vì sao cần: hàng `E:` của nhật ký chỉ ghim chữ lệnh (bản đang chạy còn ghim
+ * `exit None` khi payload lệnh không mang mã thoát), còn event `assistant.evidence.artifacts[]`
+ * cũng bỏ trống mã thoát. Hai payload đó không nói được lệnh chạy xong hay chưa, nên mặt "đã kiểm
+ * chứng" phải lấy số từ chính sự kiện công cụ thay vì in một nhãn rỗng.
+ */
+export function turnCommandFacts(turn: HarnessTurn): Map<string, TurnCommandFact> {
+  const facts = new Map<string, TurnCommandFact>()
+  for (const item of turn.items) {
+    if (item.kind !== 'tool' || !item.end) continue
+    const args = item.end.data.args
+    const command = args && typeof args === 'object' ? (args as Record<string, unknown>).command : null
+    if (typeof command !== 'string' || !command) continue
+    const result = item.end.data.result
+    const rawExit = result && typeof result === 'object' ? (result as Record<string, unknown>).exit_code : null
+    const exitCode = typeof rawExit === 'number' ? rawExit : null
+    const spent = item.start && item.end.created > item.start.created ? item.end.created - item.start.created : null
+    const durationMs = spent !== null && spent > 0 ? Math.round(spent * 1000) : null
+    const previous = facts.get(command)
+    // Lần chạy sau chỉ thay lần trước khi nó ĐO ĐƯỢC nhiều hơn (mã thoát thật thắng `null`).
+    if (previous && previous.exitCode !== null) continue
+    facts.set(command, { exitCode, durationMs })
+  }
+  return facts
+}
+
+/** Ảnh/ghi hình của lượt lấy từ payload `tool_end`, đã khử trùng theo đường dẫn. */
+export function turnMediaOf(turn: HarnessTurn, startAllowed?: Set<number>): ToolMedia[] {
+  const media: ToolMedia[] = []
+  const seen = new Set<string>()
+  for (const item of turn.items) {
+    if (item.kind !== 'tool' || !item.end) continue
+    const found = extractToolMedia(item.end, { allowStartMedia: Boolean(startAllowed?.has(item.end.seq)) })
+    const key = found?.artifactPath ?? found?.src ?? ''
+    if (!found || seen.has(key)) continue
+    seen.add(key)
+    media.push(found)
+  }
+  return media
+}
+
+/**
+ * P4.3: mọi mảnh bằng chứng MỞ ĐƯỢC của một lượt, gom từ các nguồn thật — không nguồn nào là
+ * phỏng đoán:
+ *
+ *  (a) ảnh/ghi hình đã có của lượt (payload `tool_end`, `opts.media` do `TurnBlock` đưa xuống để
+ *      không tính lại và để dùng đúng luật `allowStartMedia` của D3);
+ *  (b) tệp bằng chứng sinh trong lượt (`artifact` của `tool_end` với đuôi trong
+ *      `EVIDENCE_FILE_EXTENSIONS`) — đây là `.diff` mà cổng đã ghim;
+ *  (c) mảnh cổng ghim trong hàng `E:` của lượt (`evidence[]`, và `data.artifacts[]` nếu có);
+ *  (d) `artifacts[]`/`changedFiles[]` của chính event `assistant` — cổng ghim vào event trước khi
+ *      ghim nhật ký, và nhật ký có thể đang `degraded`, nên đọc cả hai đường là đọc đúng thực tế;
+ *  (e) tệp trong workspace mà cổng nói đã đổi (`changedFiles`) — người đọc quan tâm tệp nguồn, và
+ *      mở được nó trong Files là cách kiểm chứng độc lập với chính lời khai của agent.
+ *
+ * Khử trùng theo đường dẫn, giữ thứ tự gặp: một đường dẫn chỉ hiện một lần dù nhiều nguồn nhắc.
+ */
+export function collectTurnArtifacts(
+  turn: HarnessTurn,
+  opts?: {
+    media?: ToolMedia[]
+    evidenceRow?: JournalRow | null
+    evidence?: AnswerEvidence | null
+    facts?: Map<string, TurnArtifactFact>
+  },
+): TurnArtifact[] {
+  const items: TurnArtifact[] = []
+  const seen = new Set<string>()
+  const media = opts?.media ?? turnMediaOf(turn)
+  const facts = opts?.facts
+  const mediaOf = (path: string) => media.find((m) => m.artifactPath === path) ?? null
+  const push = (artifact: {
+    path: string
+    media: ToolMedia | null
+    note: string | null
+    source: TurnArtifact['source']
+    sha256?: string | null
+    bytes?: number | null
+  }) => {
+    if (!artifact.path || seen.has(artifact.path)) return
+    seen.add(artifact.path)
+    // Số đo ghép từ hai nguồn thật: payload công cụ (`facts`) và mảnh cổng ghim vào event.
+    const fact = facts?.get(artifact.path) ?? null
+    items.push({
+      ...artifact,
+      sha256: artifact.sha256 ?? fact?.sha256 ?? null,
+      bytes: artifact.bytes ?? fact?.bytes ?? null,
+      added: fact?.added ?? null,
+      removed: fact?.removed ?? null,
+    })
+  }
+
+  // (e) tệp nguồn đã đổi: đứng đầu danh sách vì đây là thứ người đọc hỏi tới.
+  for (const path of opts?.evidence?.changedFiles ?? []) {
+    push({ path, media: mediaOf(path), note: null, source: 'changed' })
+  }
+  for (const fragment of opts?.evidence?.artifacts ?? []) {
+    if (fragment.changed) push({ path: fragment.changed, media: mediaOf(fragment.changed), note: null, source: 'changed' })
+  }
+  // (a) ảnh/ghi hình của lượt.
+  for (const found of media) {
+    if (!found.artifactPath) continue
+    push({ path: found.artifactPath, media: found, note: null, source: 'media' })
+  }
+  // (b) tệp bằng chứng sinh trong lượt.
+  for (const item of turn.items) {
+    if (item.kind !== 'tool' || !item.end) continue
+    const path = artifactPathOf(item.end)
+    if (!path || !EVIDENCE_FILE_EXTENSIONS.includes(extensionOf(path))) continue
+    push({ path, media: mediaOf(path), note: null, source: 'tool' })
+  }
+  // (c) mảnh cổng ghim trong hàng `E:`.
+  const row = opts?.evidenceRow
+  const journalPaths: Array<{ path: string; note: string | null }> = []
+  for (const fragment of row?.evidence ?? []) {
+    if (fragment.path) journalPaths.push({ path: fragment.path, note: fragment.note })
+  }
+  const dataArtifacts = row?.data?.artifacts
+  if (Array.isArray(dataArtifacts)) {
+    for (const raw of dataArtifacts) {
+      if (!raw || typeof raw !== 'object') continue
+      const item = raw as Record<string, unknown>
+      if (typeof item.path === 'string' && item.path) journalPaths.push({ path: item.path, note: null })
+      if (typeof item.changed === 'string' && item.changed) journalPaths.push({ path: item.changed, note: null })
+    }
+  }
+  // (d) mảnh cổng ghim trong chính event — kèm `sha256`/`bytes` mà chỉ đường này có.
+  for (const fragment of opts?.evidence?.artifacts ?? []) {
+    if (fragment.path) journalPaths.push({ path: fragment.path, note: fragment.note })
+  }
+  for (const found of journalPaths) {
+    const fragment = (opts?.evidence?.artifacts ?? []).find((item) => item.path === found.path)
+    push({
+      path: found.path,
+      media: mediaOf(found.path),
+      note: found.note,
+      source: 'journal',
+      sha256: fragment?.sha256 ?? null,
+      bytes: fragment?.bytes ?? null,
+    })
+  }
+  return items
+}
+
+/**
+ * P4.3: các lệnh cổng ghi nhận đã chạy ở lượt. Hai đường đọc cùng một sự thật: hàng `E:` của nhật
+ * ký (`evidence[]` kiểu `command`, nhãn `exit N`) và `artifacts[]` của event (kiểu `command`, có
+ * `exitCode`). Nguồn thứ ba — `facts` từ `turnCommandFacts` — mới là chỗ có mã thoát và thời lượng
+ * thật; khi có, nó thắng nhãn của payload vì payload thường chỉ có chữ lệnh.
+ */
+export function collectTurnCommands(
+  evidenceRow?: JournalRow | null,
+  evidence?: AnswerEvidence | null,
+  facts?: Map<string, TurnCommandFact>,
+): TurnCommand[] {
+  const items: TurnCommand[] = []
+  const seen = new Set<string>()
+  const push = (command: string, fallback: string | null) => {
+    if (!command || seen.has(command)) return
+    seen.add(command)
+    const fact = facts?.get(command) ?? null
+    const exitCode = fact?.exitCode ?? exitCodeOfNote(fallback)
+    const durationMs = fact?.durationMs ?? null
+    const note = [
+      exitCode !== null ? `exit ${exitCode}` : null,
+      durationMs !== null ? formatMs(durationMs) : null,
+    ].filter(Boolean).join(' · ')
+    items.push({ command, exitCode, durationMs, note: note || null })
+  }
+  for (const fragment of evidenceRow?.evidence ?? []) {
+    if (fragment.type === 'command') push(fragment.command ?? '', fragment.note)
+  }
+  for (const fragment of evidence?.artifacts ?? []) {
+    if (fragment.kind === 'command') push(fragment.command ?? '', fragment.note)
+  }
+  return items
+}
+
+/** `exit 0` → 0; mọi nhãn khác (kể cả `exit None` của payload hỏng) → không có số. */
+function exitCodeOfNote(note: string | null): number | null {
+  const matched = note ? /^exit (\d+)$/.exec(note.trim()) : null
+  return matched ? Number(matched[1]) : null
 }
 
 function resolveProvider(modelId?: string, connectionId?: string, snapshot?: ProviderSnapshot | null): string {
@@ -829,8 +1275,10 @@ export function HarnessStepView({
   snapshot,
   selection,
   onOpenTab,
+  journal,
 }: HarnessStepViewProps) {
   const isBusy = status === 'running' || status === 'starting'
+  const t = useT()
 
   const turns = useMemo(() => buildHarnessTurns(events), [events])
 
@@ -845,15 +1293,26 @@ export function HarnessStepView({
             <TurnBlock
               turn={turn}
               sessionId={sessionId ?? null}
+              ordinal={index + 1}
               isTurnBusy={isTurnBusy}
               onOpenLightbox={onOpenLightbox}
               snapshot={snapshot}
               selection={selection}
               onOpenTab={onOpenTab}
+              journal={journal ?? null}
             />
           </div>
         )
       })}
+
+      {/* P4.1: nhật ký bền của box không ghi được ở phiên này (`degraded` của khối `journal`).
+          Nuốt cờ này đi là để người đọc tin nhầm rằng bằng chứng nào cũng đã được ghim. */}
+      {journal?.degraded && (
+        <div className="flex items-start gap-1.5 py-1 text-[11px] text-zinc-500 select-text" data-journal-degraded="true">
+          <ShieldAlert className="mt-0.5 size-3 shrink-0" />
+          <span>{t('chat.evidenceJournalDegraded')}</span>
+        </div>
+      )}
 
       {/* Provider Connection Warning / Error: báo cùng chữ đỏ inline, không tạo box mới, tự động ẩn khi chat mới / đang chạy */}
       {!isBusy && connectionWarning && (
@@ -898,19 +1357,24 @@ function attachmentKindLabel(label: string): string {
 function TurnBlock({
   turn,
   sessionId,
+  ordinal,
   isTurnBusy,
   onOpenLightbox,
   snapshot,
   selection,
   onOpenTab,
+  journal,
 }: {
   turn: HarnessTurn
   sessionId: string | null
+  /** Số thứ tự lượt trong phiên (bắt đầu từ 1) — dùng khi lượt cũ không mang `evidence.turn`. */
+  ordinal: number
   isTurnBusy: boolean
   onOpenLightbox?: (media: LightboxMediaProps) => void
   snapshot?: ProviderSnapshot | null
   selection?: RouterChatSelection | null
   onOpenTab?: (tab: TranscriptTabId, target?: Record<string, unknown> | null) => void
+  journal?: HarnessJournal | null
 }) {
   const t = useT()
   const [copiedUser, setCopiedUser] = useState(false)
@@ -977,24 +1441,47 @@ function TurnBlock({
     return (childSessionId: string) => roles.get(childSessionId) ?? null
   }, [turn.items])
 
-  const turnMedia = useMemo(() => {
-    const media: ToolMedia[] = []
-    const seen = new Set<string>()
-    for (const item of turn.items) {
-      if (item.kind !== 'tool' || !item.end) continue
-      const found = extractToolMedia(item.end, { allowStartMedia: startAllowedSeqs.has(item.end.seq) })
-      // Cùng một tệp có thể xuất hiện ở nhiều tool_end; chỉ hiện một lần.
-      const key = found?.artifactPath ?? found?.src ?? ''
-      if (found && !seen.has(key)) {
-        seen.add(key)
-        media.push(found)
-      }
-    }
-    return media
-  }, [turn.items, startAllowedSeqs])
+  const turnMedia = useMemo(() => turnMediaOf(turn, startAllowedSeqs), [turn, startAllowedSeqs])
 
   const reasoningTokens = typeof turn.usage?.reasoning_tokens === 'number' ? turn.usage.reasoning_tokens : 0
   const thoughtText = turn.thought && turn.thought.trim() ? turn.thought : null
+
+  /* ---------------- P4: cổng bằng chứng của lượt ---------------- */
+
+  // `null` = lượt không mang trường `evidence` (phiên cũ / công tắc đo tắt) — KHÔNG phải đã xác minh.
+  const answerEvidence = useMemo(() => readAnswerEvidence(turn.finalAssistant), [turn.finalAssistant])
+
+  // Số lượt để tra hàng `E:`: ưu tiên con số backend ghi trong chính event; lượt cũ không có thì
+  // dùng thứ tự trong phiên (đúng cách backend đếm lượt: bắt đầu từ 1).
+  const turnNumber = answerEvidence?.turn ?? ordinal
+  const evidenceRow = useMemo(
+    () => (answerEvidence && journal?.evidenceByTurn ? journal.evidenceByTurn[turnNumber] ?? null : null),
+    [answerEvidence, journal, turnNumber],
+  )
+
+  const artifactFacts = useMemo(() => turnArtifactFacts(turn), [turn])
+  const turnArtifacts = useMemo(
+    () =>
+      answerEvidence
+        ? collectTurnArtifacts(turn, { media: turnMedia, evidenceRow, evidence: answerEvidence, facts: artifactFacts })
+        : [],
+    [answerEvidence, turn, turnMedia, evidenceRow, artifactFacts],
+  )
+
+  // Lệnh cổng ghi nhận đã chạy: cũng là bằng chứng, nhưng mở bằng mắt chứ không mở bằng tab.
+  const commandFacts = useMemo(() => turnCommandFacts(turn), [turn])
+  const turnCommands = useMemo(
+    () => (answerEvidence ? collectTurnCommands(evidenceRow, answerEvidence, commandFacts) : []),
+    [answerEvidence, evidenceRow, commandFacts],
+  )
+
+  // Hàng `E:` có thể mang danh sách `missing` mà event không có (event cũ hơn hàng nhật ký);
+  // hợp hai nguồn, không bịa mục nào.
+  const missingEvidence = useMemo(() => {
+    if (!answerEvidence) return []
+    if (answerEvidence.missing.length) return answerEvidence.missing
+    return parseEvidenceMissing(evidenceRow?.data?.missing)
+  }, [answerEvidence, evidenceRow])
 
   // R2 (yêu cầu 5): số liệu của dòng biên nhận đếm từ chính dữ liệu lượt — không có con số nào
   // được viết tay ở đây. `captures` dùng danh sách media đã khử trùng của lượt.
@@ -1009,10 +1496,27 @@ function TurnBlock({
       if (result && typeof result === 'object' && (result as Record<string, unknown>).is_error) failed += 1
       if (!item.end && turn.isCompleted) unfinished += 1
     }
-    return { thinking: Boolean(thoughtText), commands, captures: turnMedia.length, failed, unfinished }
-  }, [turn.items, turn.isCompleted, thoughtText, turnMedia])
+    return {
+      thinking: Boolean(thoughtText),
+      commands,
+      captures: turnMedia.length,
+      failed,
+      unfinished,
+      // P4.4: hai số của cổng chỉ có khi cổng đã chấm lượt này (`answerEvidence` khác null), và
+      // `evidence` đếm ĐÚNG số mục khối Bằng chứng liệt kê — biên nhận phải đọc ra được từ khối.
+      evidence: answerEvidence ? turnArtifacts.length + turnCommands.length : undefined,
+      unverified: answerEvidence ? missingEvidence.length : undefined,
+    }
+  }, [turn.items, turn.isCompleted, thoughtText, turnMedia, answerEvidence, turnArtifacts, turnCommands, missingEvidence])
 
-  const receipt = useMemo(() => activityReceipt(counts), [counts])
+  const receipt = useMemo(
+    () =>
+      activityReceipt(counts, {
+        evidence: t('chat.evidenceReceiptCount', { count: counts.evidence ?? 0 }),
+        unverified: t('chat.evidenceReceiptUnverified', { count: counts.unverified ?? 0 }),
+      }),
+    [counts, t],
+  )
 
   // Khối hoạt động: mở khi lượt đang chạy, gấp còn dòng biên nhận khi lượt xong — nhưng ý định
   // của người dùng thắng: đã bấm thì không tự đổi nữa.
@@ -1355,6 +1859,10 @@ function TurnBlock({
         copiedAssistant={copiedAssistant}
         onCopyAssistant={handleCopyAssistant}
         onOpenLightbox={onOpenLightbox}
+        evidence={answerEvidence}
+        artifacts={turnArtifacts}
+        commands={turnCommands}
+        missing={missingEvidence}
       />
 
       {/* 5. Turn Error: Rendered cleanly within the specific turn where it occurred */}
@@ -1664,6 +2172,219 @@ function CompactionNotice({ event }: { event: HarnessEvent }) {
   )
 }
 
+/** P4.2: câu giải thích của huy hiệu, dịch từ chính `missing[]` của cổng. */
+function evidenceTitleText(t: Translate, evidence: AnswerEvidence, missing: EvidenceMissing[]): string {
+  if (evidence.state === 'verified') return t('chat.evidenceBadgeTitleVerified', { count: evidence.checked ?? 0 })
+  if (evidence.state === 'not_measurable') return t('chat.evidenceBadgeTitleUnmeasured')
+  if (!missing.length) return t('chat.evidenceBadgeTitleNothing')
+  return t('chat.evidenceBadgeTitleMissing', {
+    count: missing.length,
+    reasons: missing.map((item) => evidenceReasonText(t, item.reason)).join('; '),
+  })
+}
+
+/**
+ * P4.3 — khối `Bằng chứng` của lượt: mở sẵn, dòng biên nhận là HÀNG ĐẦU của khối, dưới nó là những
+ * nhóm có thật dữ liệu.
+ *
+ * Nhóm `Khẳng định chưa có bằng chứng` luôn hiện, kể cả khi rỗng: người đọc phải biết mục đó đã
+ * được chấm, chứ không phải bị giấu đi. Nhóm lệnh/tệp chỉ hiện khi có mục — một hàng rỗng ở đó
+ * không nói thêm điều gì.
+ */
+function EvidenceBlock({
+  evidence,
+  artifacts,
+  commands,
+  missing,
+  onOpenLightbox,
+}: {
+  evidence: AnswerEvidence
+  artifacts: TurnArtifact[]
+  commands: TurnCommand[]
+  missing: EvidenceMissing[]
+  onOpenLightbox?: (media: LightboxMediaProps) => void
+}) {
+  const t = useT()
+  const [open, setOpen] = useState(true)
+  const stateClass = EVIDENCE_BADGE_CLASS[evidence.state]
+  const total = artifacts.length + commands.length
+
+  // P4.3: tệp thì mở bằng tab Files (đúng đường `tabIntentTargets.files` mà `useWorkspaceFiles` đọc,
+  // và là thao tác người dùng nên không bị công tắc `autoOpenTabs` chặn); ảnh/ghi hình thì mở khung
+  // xem lớn như mọi media khác của lượt.
+  const openInFiles = (path: string) => useUiStore.getState().showTab('files', { path })
+
+  return (
+    <div className="max-w-3xl rounded-xl border border-line bg-panel2/40" data-evidence-artifacts="true">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        data-evidence-toggle="true"
+        className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-[11px] text-muted hover:text-fg transition cursor-pointer select-none text-left"
+      >
+        <ShieldAlert className={`size-3 shrink-0 ${stateClass}`} />
+        <span className="flex flex-wrap items-center">
+          <span className="font-medium text-zinc-300">{t('chat.evidenceReceiptCount', { count: total })}</span>
+          <span className="text-zinc-600">{' · '}</span>
+          <span className={missing.length > 0 ? 'text-amber-400' : undefined}>
+            {t('chat.evidenceReceiptUnverified', { count: missing.length })}
+          </span>
+          {/* Công tắc cổng lúc chấm lượt — nguyên văn giá trị backend trả, không suy diễn. */}
+          {evidence.mode && (
+            <>
+              <span className="text-zinc-600">{' · '}</span>
+              <span className="font-mono text-[10px] text-zinc-500">{t('chat.evidenceGate', { mode: evidence.mode })}</span>
+            </>
+          )}
+        </span>
+        <span className="ml-auto shrink-0 text-[10px] text-zinc-500">
+          {open ? t('chat.evidenceHide') : t('chat.evidenceShow')}
+        </span>
+      </button>
+
+      {open && (
+        <div className="space-y-2 border-t border-line/70 px-2.5 py-2">
+          {commands.length > 0 && (
+            <div className="space-y-1">
+              <div className="flex items-center gap-1 text-[11px] font-medium text-zinc-300">
+                <Terminal className="size-3" />
+                <span>{t('chat.evidenceCommandsTitle')}</span>
+                <span className="ml-auto font-mono text-[10px] text-zinc-500">{commands.length}</span>
+              </div>
+              {commands.map((row) => (
+                <div
+                  key={row.command}
+                  data-evidence-command={row.command}
+                  className="flex items-baseline gap-2 rounded-lg border border-line/70 bg-panel/50 px-2 py-1"
+                >
+                  <code className="min-w-0 flex-1 truncate font-mono text-[11px] text-zinc-200" title={row.command}>
+                    {row.command}
+                  </code>
+                  {row.exitCode !== null && (
+                    <span
+                      className={`shrink-0 font-mono text-[10px] ${
+                        row.exitCode === 0 ? 'text-emerald-400/80' : 'text-amber-400/90'
+                      }`}
+                    >
+                      exit {row.exitCode}
+                    </span>
+                  )}
+                  {row.durationMs !== null && (
+                    <span className="shrink-0 font-mono text-[10px] text-zinc-500">{formatMs(row.durationMs)}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="space-y-1">
+            <div className="flex items-center gap-1 text-[11px] font-medium text-zinc-300">
+              <FileText className="size-3" />
+              <span>{t('chat.evidenceArtifactsTitle')}</span>
+              <span className="ml-auto font-mono text-[10px] text-zinc-500">{artifacts.length}</span>
+            </div>
+            {artifacts.length === 0 ? (
+              <div className="px-1 text-[11px] text-zinc-500" data-evidence-artifacts-empty="true">
+                {t('chat.evidenceArtifactsEmpty')}
+              </div>
+            ) : (
+              artifacts.map((artifact) => (
+                <div
+                  key={artifact.path}
+                  data-artifact-path={artifact.path}
+                  className="flex items-center gap-2 rounded-lg border border-line/70 bg-panel/50 px-2 py-1"
+                >
+                  {/* Đường dẫn luôn đọc được bằng mắt, kể cả khi panel Files không mở nổi thư mục ẩn. */}
+                  <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-zinc-200" title={artifact.path}>
+                    {artifact.path}
+                  </span>
+                  {artifact.note && <span className="shrink-0 font-mono text-[10px] text-zinc-500">{artifact.note}</span>}
+                  {/* Vân tay nội dung: người đọc đối chiếu được với tệp trên đĩa mà không phải tin lời khai. */}
+                  {artifact.sha256 && (
+                    <span
+                      className="shrink-0 font-mono text-[10px] text-zinc-500"
+                      title={`sha256 ${artifact.sha256}`}
+                    >
+                      {`sha256 ${artifact.sha256.slice(0, 10)}…`}
+                    </span>
+                  )}
+                  {(artifact.added !== null || artifact.removed !== null) && (
+                    <span className="shrink-0 font-mono text-[10px]">
+                      <span className="text-emerald-400/80">{`+${artifact.added ?? 0}`}</span>
+                      <span className="text-zinc-600">{' '}</span>
+                      <span className="text-amber-400/90">{`−${artifact.removed ?? 0}`}</span>
+                    </span>
+                  )}
+                  {artifact.bytes !== null && (
+                    <span className="shrink-0 font-mono text-[10px] text-zinc-600">{`${artifact.bytes} B`}</span>
+                  )}
+                  {artifact.media ? (
+                    <button
+                      type="button"
+                      data-artifact-open="media"
+                      onClick={() =>
+                        onOpenLightbox?.({
+                          type: artifact.media!.kind,
+                          src: artifact.media!.src,
+                          caption: artifact.media!.caption,
+                          sourceUrl: artifact.media!.sourceUrl,
+                          duration: artifact.media!.durationSec,
+                        })
+                      }
+                      className="inline-flex shrink-0 items-center gap-1 text-[10px] text-brand hover:text-brand/80 transition cursor-pointer"
+                    >
+                      <Maximize2 className="size-3" />
+                      <span>{t('chat.zoom')}</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      data-artifact-open="files"
+                      aria-label={`${t('chat.evidenceOpenFile')}: ${artifact.path}`}
+                      onClick={() => openInFiles(artifact.path)}
+                      className="inline-flex shrink-0 items-center gap-1 text-[10px] text-brand hover:text-brand/80 transition cursor-pointer"
+                    >
+                      <FolderOpen className="size-3" />
+                      <span>{t('chat.evidenceOpenFile')}</span>
+                    </button>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className="space-y-1">
+            <div className="flex items-center gap-1 text-[11px] font-medium text-zinc-300">
+              <AlertCircle className={`size-3 ${missing.length > 0 ? 'text-amber-400' : 'text-zinc-500'}`} />
+              <span>{t('chat.evidenceMissingTitle')}</span>
+              <span className="ml-auto font-mono text-[10px] text-zinc-500">{missing.length}</span>
+            </div>
+            {missing.length === 0 ? (
+              <div className="px-1 text-[11px] text-zinc-500" data-evidence-missing-empty="true">
+                {t('chat.evidenceMissingEmpty')}
+              </div>
+            ) : (
+              missing.map((item) => (
+                <div
+                  key={`${item.reason}:${item.detail}`}
+                  data-evidence-missing={item.reason}
+                  className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-2 py-1"
+                >
+                  <div className="text-[11px] text-amber-100/90">{evidenceReasonText(t, item.reason)}</div>
+                  {item.detail && <div className="mt-0.5 text-[10px] text-zinc-400">{item.detail}</div>}
+                  {/* Mã máy in nguyên văn: người đọc đối chiếu được với log, và test có hook để bám. */}
+                  <div className="mt-0.5 font-mono text-[10px] text-zinc-500">{item.reason}</div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** F6: tóm tắt câu trả lời cuối + nút mở rộng + ảnh/video gắn kèm của cả lượt. */
 function FinalAnswerBlock({
   turn,
@@ -1674,6 +2395,10 @@ function FinalAnswerBlock({
   copiedAssistant,
   onCopyAssistant,
   onOpenLightbox,
+  evidence,
+  artifacts,
+  commands,
+  missing,
 }: {
   turn: HarnessTurn
   providerId: string
@@ -1683,7 +2408,16 @@ function FinalAnswerBlock({
   copiedAssistant: boolean
   onCopyAssistant: () => void
   onOpenLightbox?: (media: LightboxMediaProps) => void
+  /** P4.2 — `null` khi lượt không mang trường `evidence`: huy hiệu phải nói `unverified`. */
+  evidence: AnswerEvidence | null
+  /** P4.3 — mảnh bằng chứng mở được của lượt (rỗng khi lượt không có cổng chấm). */
+  artifacts: TurnArtifact[]
+  /** P4.3 — lệnh cổng ghi nhận đã chạy ở lượt. */
+  commands: TurnCommand[]
+  /** P4.3 — khẳng định cổng chấm là thiếu bằng chứng; rỗng vẫn phải hiện mục. */
+  missing: EvidenceMissing[]
 }) {
+  const t = useT()
   const [expanded, setExpanded] = useState(false)
 
   const fullText = String(turn.finalAssistant?.data?.text ?? '')
@@ -1695,6 +2429,12 @@ function FinalAnswerBlock({
   // R3: nút chỉ tồn tại khi có gì để mở — phần chữ còn lại, hoặc lưới ảnh của lượt.
   const hasMore = truncated || media.length > 0
 
+  // P4.2: ba trạng thái, và "không có trường `evidence`" KHÔNG BAO GIỜ là `verified`.
+  const badgeState: EvidenceBadgeState = evidence?.state ?? 'unverified'
+  const badgeLabel = t(`chat.evidenceBadge.${badgeState}` as TKey)
+  const badgeTitle = evidence ? evidenceTitleText(t, evidence, missing) : t('chat.evidenceBadgeTitleLegacy')
+  const BadgeIcon = badgeState === 'verified' ? CheckCircle2 : badgeState === 'not_measurable' ? ShieldAlert : AlertCircle
+
   return (
     <div className="space-y-1.5 pl-0.5" data-final-answer="true">
       {/* Model Info Header */}
@@ -1703,9 +2443,20 @@ function FinalAnswerBlock({
         <span className="font-semibold text-fg">{targetModelId}</span>
         <span className="text-zinc-500">·</span>
         <span>{formatTime(turn.finalAssistant.created || turn.endTime)}</span>
-        <span className="flex items-center gap-1 text-emerald-400 font-medium">
-          <CheckCircle2 className="size-3" />
-          <span>done</span>
+        {/* P4.2 — huy hiệu cổng bằng chứng thay cho nhãn `done` viết tay: `data-evidence-badge` là
+            trạng thái ĐANG HIỆN, `data-evidence-verdict` là `verdict` thật của backend và chỉ có
+            mặt khi lượt thật sự mang trường `evidence`. */}
+        <span
+          data-evidence-badge={badgeState}
+          data-evidence-verdict={evidence?.verdict ?? undefined}
+          role="status"
+          tabIndex={0}
+          title={badgeTitle}
+          aria-label={badgeTitle}
+          className={`flex items-center gap-1 font-medium ${EVIDENCE_BADGE_CLASS[badgeState]}`}
+        >
+          <BadgeIcon className="size-3" />
+          <span>{badgeLabel}</span>
         </span>
 
         {/* Token Usage Metrics (↑ prompt_tokens ↓ completion_tokens) */}
@@ -1738,6 +2489,14 @@ function FinalAnswerBlock({
         </button>
       </div>
 
+      {/* P4.2 — lượt chưa kiểm chứng thì câu giải thích phải đọc được ngay, không nằm sau tooltip.
+          Lượt không mang trường `evidence` in đúng dấu hiệu nhận ra nó: `lượt trước vòng 23`. */}
+      {badgeState !== 'verified' && (
+        <p className={`max-w-3xl text-[11px] leading-relaxed ${EVIDENCE_BADGE_CLASS[badgeState]}`} data-evidence-note="true">
+          {evidence ? badgeTitle : t('chat.evidenceLegacyNote')}
+        </p>
+      )}
+
       {/* Summary (mặc định) hoặc toàn bộ markdown khi người dùng mở rộng */}
       <div className="max-w-3xl text-sm text-fg leading-relaxed" data-final-text={expanded ? 'expanded' : 'summary'}>
         <MarkdownRenderer content={visibleText} />
@@ -1756,6 +2515,18 @@ function FinalAnswerBlock({
           </button>
         )}
       </div>
+
+      {/* P4.3 — khối bằng chứng. Chỉ có mặt khi lượt THẬT SỰ mang trường `evidence`: lượt cũ thì
+          vắng mặt là thật, không dựng một mục rỗng cho đủ hình. */}
+      {evidence && (
+        <EvidenceBlock
+          evidence={evidence}
+          artifacts={artifacts}
+          commands={commands}
+          missing={missing}
+          onOpenLightbox={onOpenLightbox}
+        />
+      )}
 
       {/* Ảnh/video sinh ra trong lượt — nằm TRONG phần chi tiết: chỉ hiện sau khi người dùng mở */}
       {expanded && media.length > 0 && (
