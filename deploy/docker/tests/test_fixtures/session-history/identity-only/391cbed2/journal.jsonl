@@ -1,0 +1,2 @@
+{"ts":"2026-09-22T09:20:31.220Z","kind":"task","id":"T:391cbed2-1","session":"391cbed2a2774b6e93c7f0c2f4b1a9d5","sid8":"391cbed2","actor":"agent","text":"chuyển kế hoạch thử vào subplans/","status":"open"}
+{"ts":"2026-09-22T09:21:02.007Z","timestamp":"2026-09-22T09:21:02.007Z","kind":"plan","id":"P:test-plan@v1","session":"391cbed2a2774b6e93c7f0c2f4b1a9d5","sid8":"391cbed2","actor":"agent","text":"kế hoạch test-plan v1 đã ghi (900 B)","status":"draft","data":{"identity":"test-plan","version":1,"slug":"test-plan","relativePath":".plans/subplans/v1-test-plan.md"}}
