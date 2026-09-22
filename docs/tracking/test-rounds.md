@@ -1748,6 +1748,15 @@ diện hiện `4 bằng chứng`) — nay bỏ số khỏi câu đó. (F3) câu 
 dẫn chứng; `_COMMAND_RE` nuốt dấu phân cách nên lệnh trong dấu backtick không bao giờ khớp; lượt giao việc con được
 `sufficient` khi con còn đang chạy; và `en.ts` của khối bằng chứng vẫn là tiếng Việt (theo nếp có sẵn của tệp).
 
+**Đo sống sau hậu kiểm** (harness `3102` khởi động lại trên `b9f6f07`, phiên `3170db0250ae43d0b6609edbd0f81a5f`,
+hai lượt):
+- lượt 1 ghi `src/app.py` rồi chạy `wc -c src/app.py`: `evidenceVerdict=sufficient`, `evidenceChecked=2`,
+  `evidenceMissing=0`, `changedFiles=1` — trước hậu kiểm chính lượt này bị ghim `change_without_verification` (BUG-62);
+- mảnh diff mang tên `…/evidence/3170db02/3170db02_001_app.py.diff` — **số bước thật** (`001`), không còn `_000_`
+  (BUG-60); hàng `E:` ghi `note: 'exit 0'` thay cho `exit None` (BUG-61);
+- lệnh điều khiển `/status` phát hàng `user` mang `control: true`, lượt thật kế tiếp mang số `2`, và **không** dòng
+  `turn.index_drift` nào trong `~/BoxFox/logs/harness.jsonl` (BUG-64).
+
 **Số đo sau hậu kiểm.** Backend: cả bộ unit ⇒ **1 failed, 1078 passed in 182,40 s** (ca đỏ duy nhất vẫn là
 `test_terminal_tools.py::test_terminal_exec_echo`, đỏ vì box không có PowerShell); nhóm cổng ⇒ `test_evidence_gate.py`
 **31 passed**, `test_evidence_gate_runtime.py` **15 passed**, `test_turn_counter.py` **5 passed** (thêm ca "lệnh điều
