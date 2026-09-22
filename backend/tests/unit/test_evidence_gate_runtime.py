@@ -85,7 +85,7 @@ class FixtureExecutor:
 
     # --- hợp đồng executor -------------------------------------------------
     async def execute(self, name, args, sid, **_identity):
-        self.calls.append({'name': name, 'args': copy.deepcopy(args)})
+        self.calls.append({'name': name, 'args': copy.deepcopy(args), 'session': sid})
         if name == 'file_write':
             relative = str(args.get('path') or '')
             target = self.written(relative)
@@ -298,6 +298,35 @@ def test_phep_do_box_di_dung_lenh_co_dinh_va_khong_tu_bao_minh_doi(tmp_path):
         'phép dò THẤY tệp đổi mà không có mảnh nào chứng minh ⇒ nói đúng mã đó'
     assert info['changedFiles'] == ['src/app.py', 'docs/x.md'], \
         'danh sách đã đổi đọc từ phép dò, không từ câu chữ của model'
+    store.close()
+
+
+def test_phep_do_ghi_tep_tho_ngoai_phien_de_khong_sinh_tep_rac(tmp_path):
+    """BUG-71 — tệp thô của phép dò do CHÍNH harness ghi, không cần worker ghim lại lần nữa.
+
+    Lượt gọi này không phải một bước của model. Mang `session` vào thì tầng ghi bằng chứng của worker
+    sinh thêm một tệp `.diff` (tên mang bước `000`) bên cạnh bản đọc được, mà không mảnh cổng nào
+    trỏ tới. Đo sống trước khi sửa: mỗi lượt `needs_probe` để lại ĐÚNG HAI tệp trong thư mục phiên
+    (`4987d659`, `1c65d2e7` — §6.27). Không có `session` thì worker im lặng, còn tệp thô vẫn nằm
+    đúng chỗ vì đường dẫn do harness dựng sẵn.
+    """
+    executor = FixtureExecutor(tmp_path, probe_stdout='1700000000.5 12 ./src/app.py\n')
+    client = FixtureModel([answer('', calls=[call('run_script', {'path': 'scripts/migrate.py'})]),
+                           answer('Đã chạy `scripts/migrate.py`.')])
+    store, _runtime, session = run_turns(tmp_path, client, ('chạy script lạ',), executor=executor)
+    sid = session['id']
+
+    writes = executor.named('file_write')
+    assert len(writes) == 1, 'lượt này chỉ có một lần ghi: chính tệp thô của phép dò'
+    assert writes[0]['session'] is None, \
+        'ghi nội bộ phải NGOÀI phiên, nếu không worker ghim thêm một tệp .diff rác (BUG-71)'
+
+    step = events_of(store, sid, 'turn_end')[-1]['step']
+    artifact = executor.written(f'{EVIDENCE_DIR}/{sid[:8]}/{sid[:8]}_{step}_changes.txt')
+    assert artifact.exists() and 'src/app.py' in artifact.read_text(encoding='utf-8'), \
+        'bỏ định danh không được làm mất bản thô của phép dò'
+    siblings = sorted(item.name for item in artifact.parent.iterdir())
+    assert siblings == [artifact.name], f'đúng một tệp bằng chứng cho lượt dò, thấy {siblings}'
     store.close()
 
 

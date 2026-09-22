@@ -2269,8 +2269,15 @@ class HarnessRuntime(RuntimeCommands):
         try:
             # Bản đọc được là quà, không phải điều kiện — nhưng nó cũng không được treo lượt: một box
             # treo ở chính chỗ ghi này sẽ ăn hạn chót và xoá câu trả lời đang được chấm.
+            #
+            # BUG-71: lần ghi NỘI BỘ này cố ý KHÔNG mang `session`. Có định danh thì tầng ghi bằng
+            # chứng của worker ghim thêm một tệp `.diff` cho chính tệp bằng chứng vừa tạo — tên nó
+            # mang bước `000` (lượt gọi này không phải một bước của model) và không mảnh cổng nào
+            # trỏ tới, nên mỗi lượt `needs_probe` để lại một tệp rác bên cạnh bản đọc được. Không có
+            # `session` thì worker vẫn ghi tệp nhưng im lặng (`write_evidence` trả `None` khi thiếu
+            # định danh), đúng luật P1.4 mục 5 cho lượt gọi ngoài phiên.
             await asyncio.wait_for(
-                self.executor.execute('file_write', {'path': artifact, 'content': output}, sid),
+                self.executor.execute('file_write', {'path': artifact, 'content': output}, None),
                 _clamp_timeout(EVIDENCE_PROBE_TIMEOUT_SECONDS, remaining, 1))
         except Exception:  # tệp không ghi được thì thôi
             artifact = None
