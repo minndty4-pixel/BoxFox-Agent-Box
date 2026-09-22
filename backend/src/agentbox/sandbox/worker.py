@@ -86,6 +86,49 @@ def path(value):
     return resolved
 
 
+# A8 (đợt 22): `file_read` từng gọi thẳng `read_text` nên một tệp nhị phân người dùng vừa tải
+# lên (`.png`, `.pdf`) làm lượt chết `UnicodeDecodeError` — mô hình không đọc được gì và người
+# dùng không biết vì sao. Đuôi dưới đây là danh sách nhị phân, cộng phép dò byte `\x00` trong
+# 8 KiB đầu (bắt cả tệp không có đuôi quen thuộc).
+BINARY_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.tif', '.tiff', '.pdf',
+                     '.zip', '.gz', '.tgz', '.bz2', '.xz', '.7z', '.rar', '.docx', '.xlsx', '.pptx',
+                     '.whl', '.so', '.bin', '.exe', '.dll', '.mp4', '.mov', '.avi', '.mp3', '.wav',
+                     '.woff', '.woff2', '.ttf', '.otf', '.sqlite', '.db')
+BINARY_SNIFF_BYTES = 8192
+BINARY_READ_CHARS = 30000
+
+
+def read_file_payload(target):
+    """Nội dung một tệp cho `file_read`: văn bản như cũ, nhị phân thì base64 (A8).
+
+    Tệp nhị phân trả `encoding: 'base64'` để mô hình biết nó đang cầm một mẩu đã mã hoá chứ
+    không phải văn bản, kèm `bytesRead`/`sizeBytes` để nó tự đối chiếu còn thiếu bao nhiêu.
+    `truncated` nói SỰ THẬT của phép đọc (đủ hay thiếu byte), không phải "đây là tệp nhị phân":
+    một tệp 1 KiB nằm trọn trong `content` mà bị gắn `truncated: True` sẽ khiến mô hình kết luận
+    sai là nó chưa thấy hết tệp.
+
+    Nhánh văn bản giữ nguyên hành vi cũ (30 000 ký tự đầu); chỉ thêm một đường lui: tệp có đuôi
+    văn bản nhưng không giải mã được UTF-8 (ảnh chụp lưu sai tên, tệp nén đổi đuôi) đi tiếp
+    bằng đường base64 thay vì làm lượt chết `UnicodeDecodeError`.
+    """
+    binary = target.suffix.lower() in BINARY_EXTENSIONS
+    if not binary:
+        with open(target, 'rb') as handle:
+            binary = b'\x00' in handle.read(BINARY_SNIFF_BYTES)
+    if not binary:
+        try:
+            return {'content': target.read_text(encoding='utf-8')[:BINARY_READ_CHARS]}
+        except UnicodeDecodeError:
+            binary = True
+    # 30 000 ký tự base64 ≈ 22 500 byte thật; đọc đúng ngần ấy rồi mã hoá.
+    size = target.stat().st_size
+    with open(target, 'rb') as handle:
+        raw = handle.read(BINARY_READ_CHARS * 3 // 4)
+    return {'content': base64.b64encode(raw).decode('ascii')[:BINARY_READ_CHARS],
+            'encoding': 'base64', 'truncated': len(raw) < size, 'bytesRead': len(raw),
+            'sizeBytes': size}
+
+
 def process_marker(session):
     if not re.fullmatch(r'[a-zA-Z0-9_-]{1,100}', session):
         raise ValueError('Invalid session identifier')
@@ -304,7 +347,8 @@ try:  # pragma: no cover - đường dẫn chỉ tồn tại khi worker chạy T
 except ImportError:  # box chưa re-stage hai tệp nhật ký: xem `SESSION_OPS_UNAVAILABLE` bên dưới
     _session_ops = None
 
-SESSION_OP_NAMES = ('session_ensure', 'journal_append', 'checkpoint_write', 'captures_prune')
+SESSION_OP_NAMES = ('session_ensure', 'journal_append', 'checkpoint_write', 'captures_prune',
+                    'uploads_prune')
 # Gán mặc định TRƯỚC nhánh có điều kiện: `importlib.reload` chạy lại thân mô-đun trong chính
 # namespace cũ, nên một biến chỉ được gán trong nhánh `if` sẽ giữ giá trị cũ khi nhánh đó không chạy.
 SESSION_OPS = ()
@@ -341,7 +385,7 @@ def execute(name, args, session):
             marker.unlink(missing_ok=True)
         return {'content': 'Session subprocess cleanup complete'}
     if name == 'file_read':
-        return {'content': path(args['path']).read_text(encoding='utf-8')[:30000]}
+        return read_file_payload(path(args['path']))
     if name == 'file_write':
         target = path(args['path'])
         write_text(target, args['content'])

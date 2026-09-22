@@ -49,7 +49,11 @@ KNOWN_PREFIXES = (
     'DECISION_INVALID',
     'DECISION_NOT_FOUND',
     'DECISION_ALREADY_RESOLVED',
-    'MAX_STEPS',
+    'MAX_STEPS',          # lượt cũ trong DB: giữ nguyên nghĩa, KHÔNG dùng cho code mới
+    'DEADLINE',           # như trên — mã cũ, chỉ để đọc lại bản ghi cũ
+    'STEP_BUDGET_EXHAUSTED',  # vòng 22 (D-1): hết ngân sách bước, tách khỏi hết hạn chót
+    'DEADLINE_EXCEEDED',      # vòng 22 (D-1): hết hạn chót của lượt
+    'ANSWER_TOO_LONG',        # vòng 22 (D-4): câu trả lời vượt trần cứng
     'SKILL_TASK_REQUIRED',
     'MISSING_TASK',
     'SESSION_BUSY',
@@ -116,7 +120,9 @@ def classify_failure(exc: BaseException) -> tuple[str, str]:
     name = type(exc).__name__
 
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
-        return 'DEADLINE', 'DEADLINE: the turn ran out of time before an answer was produced'
+        # Vòng 22 (D-1): mã nói rõ là HẠN CHÓT, không lẫn với hết ngân sách bước. Mã cũ
+        # `DEADLINE` vẫn đọc được trong lịch sử nên nó nằm lại trong KNOWN_PREFIXES.
+        return 'DEADLINE_EXCEEDED', 'DEADLINE_EXCEEDED: the turn ran out of time before an answer was produced'
 
     # httpx timeouts: the upstream WAS reachable but too slow. Say that, and keep the code
     # distinct from a hard deadline so the retry decision stays separate from the wording.

@@ -15,7 +15,9 @@ from agentbox.agent_core.runtime import HarnessRuntime
 from agentbox.agent_core.tool_contracts import schemas_for
 from agentbox.memory.session_store import SessionStore
 
-METRIC_KEYS = {'messageCount', 'contextEstimate', 'compressionCount', 'deadlineClamped'}
+# B7 (vòng 22) thêm `stepsClamped` — đối xứng với `deadlineClamped` của C1: một `maxSteps`
+# bị kẹp cũng phải nói ra, không im lặng như trước.
+METRIC_KEYS = {'messageCount', 'contextEstimate', 'compressionCount', 'deadlineClamped', 'stepsClamped'}
 
 
 def answer(text='done', calls=None, finish='stop'):
@@ -152,6 +154,6 @@ def test_the_route_serves_the_metrics_and_never_the_transcript(tmp_path):
     payload = asyncio.run(run())
     assert METRIC_KEYS <= set(payload['sessionMetrics'])
     assert payload['sessionMetrics'] == {'messageCount': 5, 'contextEstimate': payload['sessionMetrics']['contextEstimate'],
-                                         'compressionCount': 0, 'deadlineClamped': False}
+                                         'compressionCount': 0, 'deadlineClamped': False, 'stepsClamped': False}
     assert 'messages' not in payload, 'transcript vẫn không được gửi kèm mỗi lần hỏi'
     assert payload['id'] == sid and payload['events'], 'events vẫn là bản ghi đầy đủ như trước'

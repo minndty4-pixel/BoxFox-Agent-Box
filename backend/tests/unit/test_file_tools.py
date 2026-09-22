@@ -41,6 +41,25 @@ def test_file_write_and_read(tmp_path: Path):
     assert "1: print('hello world')" in r_res.content
 
 
+def test_file_read_reports_a_binary_file_instead_of_decoding_it(tmp_path: Path):
+    """A8: công cụ đọc của HARNESS cũng phải nói thật về tệp nhị phân, không ném.
+
+    `worker.py::file_read` (trong box) là mặt của lượt thật; đây là mặt còn lại — công cụ
+    `FileReadTool` mà harness dùng khi tự đọc tệp. Hai mặt phải cùng một hợp đồng: nhị phân thì
+    trả mô tả ngắn kèm cờ, không trả về một nửa chuỗi đã giải mã sai.
+    """
+    ctx = ToolContext(workspace_dir=tmp_path)
+    payload = b'\x89PNG\r\n\x1a\n' + bytes(range(256))
+    (tmp_path / 'shot.png').write_bytes(payload)
+
+    result = asyncio.run(FileReadTool().execute({'path': 'shot.png'}, ctx))
+
+    assert not result.is_error
+    assert result.content.startswith('[Binary file: shot.png')
+    assert result.metadata.get('is_binary') is True
+    assert result.metadata.get('size_bytes') == len(payload)
+
+
 def test_file_edit_block_success(tmp_path: Path):
     ctx = ToolContext(workspace_dir=tmp_path)
     fpath = tmp_path / "calc.py"

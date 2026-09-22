@@ -4,20 +4,24 @@ import json
 import uuid
 from dataclasses import asdict
 from .commands import INFO, ROLE_SKILLS, EXTERNAL
+from ..agent_core.attachments import attachment_prompt_block, validate_attachments
 from ..agent_core.failures import classify_failure, failure_detail
 from ..observability.system_log import system_log
 from ..agent_core.compression import ContextCompressor, context_estimate, estimate_tokens
 
 
 class RuntimeCommands:
-    async def submit(self, sid, prompt, image=None, route=None, invocation_id=None):
+    async def submit(self, sid, prompt, image=None, route=None, invocation_id=None, images=None,
+                     attachments=None):
         session = self.store.get(sid)
         if not isinstance(prompt, str):
             raise ValueError('Prompt is required')
         invocation_id = invocation_id or uuid.uuid4().hex
         if not isinstance(invocation_id, str) or len(invocation_id) > 100:
             raise ValueError('Invalid invocation ID')
-        request = json.dumps([prompt, image, route], sort_keys=True)
+        # `images`/`attachments` PHẢI nằm trong khoá idempotency: nếu không, lần thử lại của
+        # cùng `invocationId` với tệp khác sẽ trả kết quả cũ (A7).
+        request = json.dumps([prompt, image, route, images, attachments], sort_keys=True)
         old = self.store.db.execute('SELECT request,result FROM command_invocations WHERE session_id=? AND id=?', (sid, invocation_id)).fetchone()
         if old:
             if old[0] != request:
@@ -119,15 +123,24 @@ class RuntimeCommands:
             # Route của lượt có thể đổi model; tra metadata của CHÍNH model đó (cùng
             # nguồn như lúc tạo phiên) để `start()` vẫn đối chiếu được `thinkingLevel`
             # thay vì bỏ qua kiểm tra (B13).
-            self.start(sid, prompt, image, route, await self.route_metadata(session, route))
+            self.start(sid, prompt, image, route, await self.route_metadata(session, route),
+                       images=images, attachments=attachments)
         else:
             self._next_turn_skills(session, enabled)
             session = self.store.get(sid)
             if route:
                 session['config']['route'] = route
                 self.store.update_config(sid, session['config'])
-            self.store.emit(sid, 'user', {'text': prompt})
-            self.store.save(sid, session['messages'] + [{'role': 'user', 'content': prompt}], 'running')
+            # Nhánh command/skill: khối tệp đính kèm phải được dựng ở ĐÂY nữa, nếu không
+            # đường skill mất đường dẫn dù người dùng đã đính kèm tệp (A7).
+            checked = validate_attachments(attachments)
+            block = attachment_prompt_block(checked)
+            event = {'text': prompt}
+            if checked:
+                event['attachments'] = checked
+            self.store.emit(sid, 'user', event)
+            self.store.save(sid, session['messages'] + [{'role': 'user',
+                                                        'content': f'{prompt}\n\n{block}' if block else prompt}], 'running')
             self.tasks[sid] = asyncio.create_task(self._command_task(sid, resolved, image))
         with self.store.db:
             self.store.db.execute('UPDATE command_invocations SET result=? WHERE session_id=? AND id=?', (json.dumps(result), sid, invocation_id))

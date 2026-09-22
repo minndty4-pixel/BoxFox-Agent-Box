@@ -261,20 +261,33 @@ def s8_budget(entries, turns) -> dict:
         if not start or not end:
             continue
         start_data = _data(start)
+        end_data = _data(end)
         max_steps = start_data.get('maxSteps')
         deadline = start_data.get('deadlineSeconds')
-        steps = _data(end).get('steps')
-        duration = end.get('durationMs')
+        # B9 (vòng 22): `turn_end` giờ mang thẳng ba số của lượt — `stepsUsed`, `toolsRun`,
+        # `deadlineUsedMs` — nên không phải suy ra từ thời lượng. Bản ghi của lượt cũ chỉ có
+        # `steps`/`durationMs`, nên hai khoá đó ở lại làm đường lùi (hồi tương thích).
+        steps = end_data.get('stepsUsed')
+        if not isinstance(steps, int):
+            steps = end_data.get('steps')
+        duration = end_data.get('deadlineUsedMs')
+        if not isinstance(duration, (int, float)):
+            duration = end.get('durationMs')
+        tools_run = end_data.get('toolsRun')
+        if not isinstance(tools_run, int):
+            tools_run = len(turn['tools'])
         ratios = {}
         if isinstance(max_steps, int) and max_steps > 0 and isinstance(steps, int):
             ratios['steps'] = steps / max_steps
         if isinstance(deadline, (int, float)) and deadline > 0 and isinstance(duration, (int, float)):
             ratios['time'] = (duration / 1000) / deadline
         if ratios and max(ratios.values()) > BUDGET_WARN_RATIO:
-            flagged.append({**_flagged(turn), 'ratios': {key: round(value, 3) for key, value in ratios.items()}})
+            flagged.append({**_flagged(turn), 'toolsRun': tools_run,
+                            'ratios': {key: round(value, 3) for key, value in ratios.items()}})
     return _result('S8', 'Ngân sách', status='measured', value=len(flagged), unit='turn',
                    severity='warning', threshold=f'> {int(BUDGET_WARN_RATIO * 100)}% trần bước/thời gian',
-                   flagged=flagged, note='so steps/maxSteps và durationMs/deadlineSeconds của cùng lượt',
+                   flagged=flagged, note='đọc thẳng stepsUsed/deadlineUsedMs/toolsRun của lượt; '
+                                        'lượt cũ (chưa có khoá) mới suy từ steps/durationMs',
                    method='plan')
 
 

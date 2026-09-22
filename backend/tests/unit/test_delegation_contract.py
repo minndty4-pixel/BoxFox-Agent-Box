@@ -51,7 +51,7 @@ def delegate_args(**overrides):
     return args
 
 
-def run_delegation(tmp_path, delegate_task_args, child_answer):
+def run_delegation(tmp_path, delegate_task_args, child_answer, parent_values=None):
     """Parent delegates once, the child answers with `child_answer`, the parent finishes."""
 
     async def run():
@@ -59,7 +59,7 @@ def run_delegation(tmp_path, delegate_task_args, child_answer):
         model = FixtureModel([answer(calls=[call('delegate_task', delegate_task_args)]),
                               answer(child_answer), answer('parent final')])
         runtime = HarnessRuntime(store, FixtureExecutor(), model)
-        sid = runtime.create({'skills': []})['id']
+        sid = runtime.create({'skills': [], **(parent_values or {})})['id']
         await runtime.start(sid, 'Delegate to a specialist')
         child_events = [event['data'] for event in store.events(sid) if event['type'] == 'child']
         tool_messages = [message for message in store.get(sid)['messages'] if message['role'] == 'tool']
@@ -105,6 +105,24 @@ def test_child_prompt_carries_the_result_contract_and_the_parents_expected_shape
     assert len(CHILD_RESULT_CONTRACT) <= 1200
     assert len(prompt) <= len('Find out how FHIR Patient search works') + 16000 + CHILD_EXPECT_MAX_CHARS \
         + len(CHILD_RESULT_CONTRACT) + 64
+
+
+def test_child_budget_is_clamped_by_the_parent_and_by_the_engine_ceiling(tmp_path):
+    """B6 — con 40 bước / 300 s, nhưng KHÔNG BAO GIỜ vượt cha (luật `min()` giữ nguyên).
+
+    `300 s` là **trần**, không phải bảo đảm: hạn chót mặc định của cha là 180 s nên lượt mặc
+    định luôn kẹp con xuống 180 s — không lượt nào thực sự dài thêm vì con.
+    """
+    cases = [
+        ({'maxSteps': 60, 'deadlineSeconds': 600}, 40, 300),
+        ({'maxSteps': 12, 'deadlineSeconds': 60}, 12, 60),
+        ({}, 40, 180),
+    ]
+    for parent_values, steps, seconds in cases:
+        _, _, child = run_delegation(tmp_path / f"p{steps}-{seconds}", delegate_args(),
+                                     'child answer', parent_values=parent_values)
+        assert child['config']['maxSteps'] == steps, parent_values
+        assert child['config']['deadlineSeconds'] == seconds, parent_values
 
 
 def test_a_runaway_child_answer_is_bounded_and_reported_honestly(tmp_path):

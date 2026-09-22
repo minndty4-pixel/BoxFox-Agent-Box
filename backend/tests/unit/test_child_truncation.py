@@ -88,7 +88,7 @@ def test_a_truncated_first_answer_is_retried_exactly_once_without_tools(tmp_path
     assert notices(store, session['id'], TRUNCATED_OUTPUT_NOTICE_CODE) == [], \
         'thử lại thành công thì không có gì phải báo là dở'
     assert turn_ends(store, session['id'])[-1]['status'] == 'completed'
-    assert runtime.truncated_turn(session['id']) is False
+    assert runtime.partial_turn(session['id']) is None, 'thử lại thành công ⇒ không có mã lý do nào'
     store.close()
 
 
@@ -122,7 +122,8 @@ def test_a_turn_truncated_twice_is_reported_as_partial(tmp_path):
     assert len(rows) == 1, 'đúng một notice cho một lượt'
     assert rows[0]['partial'] is True
     assert rows[0]['outputTokens'] == 2048, 'số token THẬT của lần thử lại thứ hai'
-    assert runtime.truncated_turn(sid) is True
+    assert runtime.partial_turn(sid) == TRUNCATED_OUTPUT_NOTICE_CODE, \
+        'B5: hàm trả MÃ LÝ DO, không phải cờ đúng/sai'
     end = turn_ends(store, sid)[-1]
     assert end['status'] == 'partial' and end['finishReason'] == 'length'
     assert end['outputTokens'] == 2048

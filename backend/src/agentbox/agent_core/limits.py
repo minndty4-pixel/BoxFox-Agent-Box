@@ -13,12 +13,16 @@ INSTRUCTIONS_MAX_CHARS = 12000
 # con số này (mặc định khi thiếu trường, trần khi gửi quá), vai trò con bị chặn chặt
 # hơn ở `runtime.delegate()`. Để ở đây vì `GET /api/agent/runtime-info` phải báo lại
 # đúng những con số engine đang áp — giao diện không chép tay lần thứ hai.
-MAX_STEPS_DEFAULT = 16
+# Vòng 22 (D-1, D-15): chủ nhà chốt phiên chính 16 → **40** bước và phiên con **40 bước / 300 s**
+# (trước là 10 / 120). Số đo vòng 21: việc vừa phải xong ở 8 bước, việc dài 27 bước; con chạm
+# 10 bước / 120 s thì trả `answerChars = 0` (BUG-42), nên ngân sách con là chỗ chữa chính.
+# `300 s` của con là **trần**, không phải bảo đảm — `runtime.delegate()` vẫn `min()` theo cha.
+MAX_STEPS_DEFAULT = 40
 MAX_STEPS_MAX = 60
 DEADLINE_DEFAULT_SECONDS = 180
 DEADLINE_MAX_SECONDS = 600
-CHILD_MAX_STEPS = 10
-CHILD_DEADLINE_SECONDS = 120
+CHILD_MAX_STEPS = 40
+CHILD_DEADLINE_SECONDS = 300
 
 # Trần BYTE của một request mà router chấp nhận, và phần byte của request không nằm trong
 # `messages` (prompt vai + schema công cụ). Bộ nén phải biết cả hai: trên cửa sổ 1M, ngưỡng
@@ -70,3 +74,31 @@ DEADLINE_MIN_SECONDS = 5
 # lại hạ trần output và bỏ công cụ để model buộc phải trả lời bằng chữ.
 TRUNCATED_OUTPUT_MAX_TOKENS = 2048
 TRUNCATED_OUTPUT_NOTICE_CODE = 'PROVIDER_OUTPUT_TRUNCATED'
+
+# --- Vòng 22: ngân sách không còn "mất trắng", và trần độ dài câu trả lời -----------------
+# Ba số dưới đây là hợp đồng của đường chẩn đoán chỗ tắc (yêu cầu mới của chủ nhà, D-15):
+# chạm trần bước hoặc hạn chót thì lượt (cha **hoặc** con) phải tự đọc lại trạng thái, sửa
+# một lần nếu đường cũ sai, rồi trả `partial` kèm bốn phần: đã làm / tắc ở đâu / còn lại /
+# thử gì tiếp. `WRAP_UP_STEPS_RESERVED` là số bước giữ chỗ cho việc đó (trần của phần
+# "sửa lại một lần"), nên lượt hữu ích ngắn đi đúng ba bước.
+STEP_BUDGET_NOTICE_CODE = 'STEP_BUDGET_EXHAUSTED'
+DEADLINE_NOTICE_CODE = 'DEADLINE_EXCEEDED'
+STEPS_CLAMP_NOTICE_CODE = 'STEPS_CLAMPED'
+WRAP_UP_STEPS_RESERVED = 3
+WRAP_UP_MAX_TOKENS = 1024
+WRAP_UP_TIMEOUT_SECONDS = 30
+WRAP_UP_READ_TOOL_CALLS = 2
+DIAGNOSIS_MIN_CHARS = 80
+
+# Trần độ dài câu trả lời cuối (D-4): 60 000 ký tự thì cảnh báo, 150 000 thì từ chối và trả
+# `partial` kèm tệp toàn văn. Ngưỡng của **kế hoạch** (40 000 / 150 000) là bộ số khác, không đụng.
+ANSWER_WARN_CHARS = 60_000
+ANSWER_MAX_CHARS = 150_000
+ANSWER_LENGTH_WARN_CODE = 'ANSWER_LENGTH_WARN'
+ANSWER_TOO_LONG_CODE = 'ANSWER_TOO_LONG'
+# Dòng chỉ dẫn này sống ở ĐÂY, không chép tay vào từng prompt vai: `runtime.start()` là nơi
+# duy nhất dựng prompt hệ thống cho mọi vai, nên mọi prompt đều mang câu này.
+ANSWER_LENGTH_HINT = (
+    f'Keep the final answer under {ANSWER_WARN_CHARS:,} characters. If the content is longer, '
+    'write it to a file in the workspace and quote the path instead of pasting it into the answer.'
+)

@@ -260,6 +260,29 @@ def test_s8_flags_a_turn_over_eighty_percent_of_its_budget():
     assert signal['flagged'][0]['ratios'] == {'steps': 0.9, 'time': 0.9}
 
 
+def test_s8_reads_the_turn_numbers_directly_when_the_log_has_them():
+    entries = [
+        _entry('turn.start', sessionId='s1', data={'maxSteps': 10, 'deadlineSeconds': 100}),
+        # Vòng 22 (B9): lượt mới ghi thẳng `stepsUsed`/`deadlineUsedMs`/`toolsRun`. `steps` và
+        # `durationMs` ở đây cố tình nhỏ — nếu bài này đọc nhầm đường lùi thì tỉ lệ sẽ là
+        # 0.1/0.01 và phép khẳng định dưới trượt.
+        _entry('turn.end', sessionId='s1', durationMs=1000,
+               data={'status': 'completed', 'steps': 1, 'textChars': 900,
+                     'stepsUsed': 9, 'deadlineUsedMs': 90000, 'toolsRun': 7}),
+        # Lượt cũ: chỉ có khoá cũ, và `toolsRun` phải suy từ số `tool.end` của lượt.
+        _entry('turn.start', sessionId='s2', data={'maxSteps': 10, 'deadlineSeconds': 100}),
+        _entry('tool.end', sessionId='s2', data={'tool': 'file_read', 'isError': False}),
+        _entry('turn.end', sessionId='s2', durationMs=90000,
+               data={'status': 'completed', 'steps': 9, 'textChars': 900}),
+    ]
+    signal = rushed_index.compute(entries)['signals'][7]
+    assert signal['code'] == 'S8' and signal['count'] == 2
+    assert signal['flagged'][0]['ratios'] == {'steps': 0.9, 'time': 0.9}
+    assert signal['flagged'][0]['toolsRun'] == 7
+    assert signal['flagged'][1]['ratios'] == {'steps': 0.9, 'time': 0.9}
+    assert signal['flagged'][1]['toolsRun'] == 1, 'lượt cũ suy từ số tool.end đã ghi'
+
+
 def test_s9_and_s10_count_codes_and_missing_sections():
     entries = [
         _entry('turn.failed', sessionId='s1', level='error', code='UPSTREAM_HTTP_503',

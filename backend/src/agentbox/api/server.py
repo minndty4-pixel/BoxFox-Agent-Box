@@ -298,7 +298,9 @@ def create_app(runtime):
         # Check before submitting: `runtime.submit` would raise the same KeyError and the user
         # would get `INTERNAL_ERROR` for what is really a stale session id.
         known_session(sid)
-        result = await runtime.submit(sid, body.get('prompt'), body.get('image'), body.get('route'), body.get('invocationId'))
+        result = await runtime.submit(sid, body.get('prompt'), body.get('image'), body.get('route'),
+                                      body.get('invocationId'), images=body.get('images'),
+                                      attachments=body.get('attachments'))
         return web.json_response(result, status=202 if result['status'] == 'running' else 200)
 
     async def stop(request):

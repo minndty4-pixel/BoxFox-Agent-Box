@@ -136,7 +136,8 @@ def test_disabled_child_and_budget(tmp_path):
         await runtime.start(s['id'], 'Try disabled child')
         assert store.get(s['id'])['status'] == 'failed'
         assert 'disabled' in store.get(s['id'])['messages'][-1]['content']
-        assert 'MAX_STEPS' in store.events(s['id'])[-1]['data']['message']
+        # B2 (vòng 22): mã `MAX_STEPS` chung chung tách thành `STEP_BUDGET_EXHAUSTED`.
+        assert 'STEP_BUDGET_EXHAUSTED' in store.events(s['id'])[-1]['data']['message']
         store.close()
     asyncio.run(run())
 

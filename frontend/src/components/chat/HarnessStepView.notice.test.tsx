@@ -73,6 +73,40 @@ describe('HarnessStepView — notice thử lại', () => {
     expect(notice!.closest('[data-activity="true"]')).not.toBeNull()
   })
 
+  it('notice ANSWER_TOO_LONG đi qua đúng bộ render notice sẵn có', () => {
+    const host = render(
+      <HarnessStepView
+        events={[
+          ev('user', { text: 'viết báo cáo' }),
+          ev('assistant', { text: 'Báo cáo đầy đủ: xem .reports/v22.md', final: true }),
+          ev('notice', {
+            code: 'ANSWER_TOO_LONG',
+            partial: true,
+            chars: 200000,
+            keptChars: 150000,
+            limit: 150000,
+            journalSeq: 1,
+            message: 'ANSWER_TOO_LONG: the answer was 200000 chars and was cut at 150000 — write the '
+              + 'full content to a file in the workspace and quote the path',
+          }),
+        ]}
+        status="completed"
+        error={null}
+      />,
+    )
+    openActivity(host)
+
+    // Cổng D2 nói ra sự thật bằng một hàng CỦA khối hoạt động: đúng bộ render sẵn có, đúng mã,
+    // và có số ký tự thật — người dùng biết vì sao câu trả lời bị cắt chứ không đoán.
+    const notice = host.querySelector('[data-timeline="notice"]') as HTMLElement | null
+    expect(notice).toBeTruthy()
+    expect(notice?.getAttribute('data-notice-code')).toBe('ANSWER_TOO_LONG')
+    expect(notice?.textContent).toContain('150000')
+    expect(notice!.closest('[data-activity="true"]')).not.toBeNull()
+    // Lượt vẫn là lượt ĐÃ XONG: cắt bớt không biến câu trả lời thành lỗi.
+    expect(host.textContent).toContain('Báo cáo đầy đủ')
+  })
+
   it('bỏ văn bản đang stream của lần thử hỏng, không dán vào câu trả lời mới', () => {
     const host = render(
       <HarnessStepView

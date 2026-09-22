@@ -86,8 +86,11 @@ def test_every_step_opens_and_closes_a_turn(tmp_path):
     assert [t['step'] for t in ends] == [1, 2], 'và đúng hai lần đóng, cùng số bước'
     assert set(starts[0]) == {'step', 'modelId', 'contextWindow', 'threshold', 'contextEstimate'}
     # `outputTokens` chỉ xuất hiện khi usage có con số thật, nên khoá này là tuỳ chọn.
+    # B9 (vòng 22): `turn_end` mang thêm ba số luỹ kế của cả lượt — `stepsUsed`, `toolsRun`,
+    # `deadlineUsedMs`. Chúng có mặt ở MỌI lần đóng (mỗi bước một lần), nên lần đóng CUỐI là
+    # con số của cả lượt.
     assert set(ends[0]) == {'step', 'status', 'finishReason', 'toolCalls', 'contextEstimate',
-                            'outputTokens'}
+                            'outputTokens', 'stepsUsed', 'toolsRun', 'deadlineUsedMs'}
     assert starts[0]['modelId'] == 'deepseek-v4-flash'
     assert starts[0]['contextWindow'] == 32768
     assert ends[0]['status'] == 'tool_calls' and ends[0]['toolCalls'] == 1
