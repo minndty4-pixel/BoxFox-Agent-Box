@@ -311,6 +311,43 @@ def test_signals_that_cannot_be_measured_say_so():
     assert 'nội dung tin nhắn' in unmeasured['S4']['note']
 
 
+def test_s4_measures_the_gate_numbers_when_the_log_has_them():
+    """Đợt 3 vòng 22 (P5.1): cổng bằng chứng ghi số vào `turn.end` ⇒ S4 rời `not_measured`."""
+    entries = [
+        _entry('turn.start', sessionId='s1', data={'maxSteps': 10, 'deadlineSeconds': 100}),
+        _entry('turn.end', sessionId='s1',
+               data={'status': 'completed', 'steps': 2, 'textChars': 900, 'gateMode': 'warn',
+                     'evidenceVerdict': 'sufficient', 'evidenceMissing': 0}),
+        _entry('turn.start', sessionId='s2', data={'maxSteps': 10, 'deadlineSeconds': 100}),
+        _entry('turn.end', sessionId='s2',
+               data={'status': 'completed', 'steps': 2, 'textChars': 900, 'gateMode': 'warn',
+                     'evidenceVerdict': 'insufficient', 'evidenceMissing': 2}),
+    ]
+    report = rushed_index.compute(entries)
+    s4 = next(signal for signal in report['signals'] if signal['code'] == 'S4')
+    assert s4['status'] == 'measured', 'có số của cổng trong log thì không được nói chưa đo'
+    assert s4['value'] == 0.5, 'một nửa số lượt đo được bị gắn cờ'
+    assert 'S4' not in report['unmeasured']
+    assert s4['flagged'][0]['verdict'] == 'insufficient' and s4['flagged'][0]['missing'] == 2
+    assert '20 PHIÊN' in s4['note'], 'ngưỡng nâng `enforce` của §6 phải nằm ngay trong note'
+
+
+def test_s4_says_how_many_turns_it_measured_on_a_half_and_half_log():
+    """Log nửa vời: lượt cũ (không khoá) KHÔNG được tính là sạch — nó không vào mẫu."""
+    entries = [
+        _entry('turn.start', sessionId='s1', data={'maxSteps': 10, 'deadlineSeconds': 100}),
+        _entry('turn.end', sessionId='s1',
+               data={'status': 'completed', 'steps': 2, 'textChars': 900,
+                     'evidenceVerdict': 'insufficient', 'evidenceMissing': 1}),
+        _entry('turn.start', sessionId='s2', data={'maxSteps': 10, 'deadlineSeconds': 100}),
+        _entry('turn.end', sessionId='s2', data={'status': 'completed', 'steps': 2, 'textChars': 900}),
+    ]
+    s4 = next(signal for signal in rushed_index.compute(entries)['signals'] if signal['code'] == 'S4')
+    assert s4['status'] == 'measured' and s4['count'] == 1 and s4['value'] == 1.0
+    assert '1 lượt đã đo' in s4['note'] and '2 lượt' in s4['note'], \
+        'note phải nói rõ đã đo được bao nhiêu trên tổng bao nhiêu lượt trong cửa sổ'
+
+
 def test_index_weights_only_warning_signals_and_is_capped_at_one():
     entries = [_entry('turn.start', sessionId='s1', data={'maxSteps': 4, 'deadlineSeconds': 10}),
                _entry('tool.end', sessionId='s1', data={'tool': 'terminal_exec', 'isError': True}),

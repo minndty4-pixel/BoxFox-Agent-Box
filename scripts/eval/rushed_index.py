@@ -7,9 +7,13 @@ honesty rules apply, and they are enforced by the code rather than promised:
 1. a signal with no evidence in the log reports ``not_measured`` with the reason
    — it never becomes a 0 that looks like a clean run;
 2. a missing or empty log reports ``no_data`` and an index of ``None``;
-3. signals the plan defines over text we are not allowed to log (S4/S5 need the
-   answer text) are marked ``not_measured`` on purpose, because the system log
-   deliberately never stores message or file content (dev-system-log-plan §4.5).
+3. signals the plan defines over text we are not allowed to log are marked
+   ``not_measured`` on purpose, because the system log deliberately never stores
+   message or file content (dev-system-log-plan §4.5). S5 is still one of them.
+   S4 stopped being one in round 22: the evidence gate now writes
+   ``data.evidenceVerdict`` / ``data.evidenceMissing`` on ``turn.end``, so the
+   signal reads a number the runtime computed instead of prose, and it reports
+   ``not_measured`` only while the log has no such key yet.
 
 Where the log cannot express the plan's exact rule, the signal says ``proxy``
 and names what is missing (tool arguments, for instance, are not logged).
@@ -26,7 +30,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import logread  # noqa: E402  (sibling module, flat layout on purpose)
 
 # Tool names come from backend/src/agentbox/agent_core/tool_contracts.py.
-WRITE_TOOLS = ('file_write', 'file_edit_block', 'write_plan')
+#
+# P5.1 (đợt 3 vòng 22): danh sách gõ tay ở đây từng là bản sao của
+# `evidence_gate.WRITE_TOOLS`, và hai bản sao thì sớm muộn lệch nhau. Từ nay lấy từ nguồn duy nhất
+# (`agentbox` nằm trong `backend/src`, vừa được thêm vào `sys.path` ở trên). Đường dự phòng chỉ để
+# script còn chạy khi bị chép ra ngoài repo — nó KHÔNG phải nguồn thứ hai để bổ sung tay.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'backend' / 'src'))
+try:
+    from agentbox.agent_core.evidence_gate import PLAN_TOOLS as _GATE_PLAN_TOOLS
+    from agentbox.agent_core.evidence_gate import WRITE_TOOLS as _GATE_WRITE_TOOLS
+except Exception:  # pragma: no cover - bản sao rời, không có mã nguồn backend cạnh nó
+    _GATE_WRITE_TOOLS, _GATE_PLAN_TOOLS = ('file_write', 'file_edit_block'), ('write_plan',)
+# S3 của kế hoạch §3 tính MỌI lần ghi, kể cả `write_plan`; còn cổng bằng chứng cố ý không tính plan
+# viết (plan có cổng riêng, xem `evidence_gate`), nên hai danh sách được GHÉP ở đây thay vì chép
+# tay lại danh sách thứ ba.
+WRITE_TOOLS = tuple(_GATE_WRITE_TOOLS) + tuple(_GATE_PLAN_TOOLS)
 VERIFY_TOOLS = ('file_read', 'codebase_grep', 'codebase_glob', 'terminal_exec', 'browser_use',
                 'inspect_element', 'computer_screen_capture')
 UPSTREAM_PREFIXES = ('UPSTREAM_',)
@@ -45,6 +63,9 @@ UNMEASURED_LOG_TEXT = ('nhật ký hệ thống cố ý không ghi nội dung ti
                        '(dev-system-log-plan §4.5)')
 MISSING_FIELD_NOTE = ('nhật ký chưa có trường chứa dấu hiệu này; đây là việc thêm 1 khoá vào '
                       '`turn.end`/`tool.end`, không phải việc đo lại')
+# Mã lý do của S4 khi cửa sổ log chưa có khoá nào của cổng bằng chứng (log trước vòng 22). Đặt thành
+# hằng số để người đọc bảng grep được đúng một chuỗi, thay vì đọc câu chữ mỗi lần một khác.
+S4_NO_GATE_KEYS = 'not-evidence-gate-keys'
 
 
 def pair_turns(entries) -> list[dict]:
@@ -187,11 +208,46 @@ def s3_no_verification(entries, turns) -> dict:
 
 # --------------------------------------------------------------------------- S4
 def s4_unsupported_claims(entries, turns) -> dict:
-    return _result('S4', 'Khẳng định không có bằng chứng', status='not_measured', value=None,
+    """S4 — đọc số của cổng bằng chứng trên `turn.end` (P5.1, đợt 3 vòng 22).
+
+    Trước vòng 22 tín hiệu này chỉ đo được bằng cách đọc câu chữ trong câu trả lời, mà nhật ký hệ
+    thống cố ý không ghi nội dung (§4.5) ⇒ nó nằm mãi ở `not_measured`. Từ vòng 22, mỗi `turn.end`
+    mang `data.evidenceVerdict`/`data.evidenceMissing` do cổng tính lúc chạy, nên S4 đọc thẳng con
+    số đó. Luật trung thực #1 vẫn nguyên: lượt không có khoá ⇒ KHÔNG tính là 0, mà không vào mẫu;
+    cả cửa sổ log không có khoá nào ⇒ vẫn `not_measured` kèm lý do cũ.
+    """
+    flagged = []
+    measured = 0
+    for turn in turns:
+        end = turn.get('end') or {}
+        if end.get('event') != 'turn.end':
+            continue
+        data = _data(end)
+        missing = data.get('evidenceMissing')
+        verdict = data.get('evidenceVerdict')
+        if not isinstance(missing, int) or isinstance(missing, bool) or not verdict:
+            continue
+        measured += 1
+        if missing > 0:
+            flagged.append({**_flagged(turn), 'verdict': verdict, 'missing': missing})
+    if not measured:
+        return _result('S4', 'Khẳng định không có bằng chứng', status='not_measured', value=None,
+                       unit='share', severity='warning',
+                       threshold=f'cảnh báo khi > {int(UNVERIFIED_SHARE * 100)}%',
+                       flagged=[],
+                       note=(S4_NO_GATE_KEYS + ' — log chưa có số của cổng bằng chứng (`turn.end` '
+                             'thiếu `data.evidenceMissing`); đường cũ là phải đọc câu chữ trong '
+                             'câu trả lời: ' + UNMEASURED_LOG_TEXT),
+                       method='plan')
+    share = round(len(flagged) / measured, 4)
+    return _result('S4', 'Khẳng định không có bằng chứng', status='measured', value=share,
                    unit='share', severity='warning',
                    threshold=f'cảnh báo khi > {int(UNVERIFIED_SHARE * 100)}%',
-                   flagged=[],
-                   note='phải đọc câu chữ trong câu trả lời: ' + UNMEASURED_LOG_TEXT,
+                   flagged=flagged,
+                   note=(f'{measured} lượt đã đo (cửa sổ log có {len(turns)} lượt), '
+                         f'{len(flagged)} lượt bị gắn cờ; ngưỡng nâng mặc định lên `enforce`: '
+                         f'≥ 20 PHIÊN có số (cột `sessions` của báo cáo) VÀ tỉ lệ báo động sai '
+                         f'< 10 % — D-8, kế hoạch đợt 3 §6'),
                    method='plan')
 
 
