@@ -204,6 +204,18 @@ const en: SameShape<typeof vi> = {
     subagentSafetyNet: 'lưới an toàn còn {{time}}',
     subagentReceivedFrom: 'đã nhận từ {{role}}',
     subagentDeliversTo: 'đã giao cho {{targets}}',
+    // Bốn nhãn mới của đợt 22 (sửa sau soát) giữ nguyên tiếng Việt như bốn nhãn `subagent*`
+    // ngay trên: chúng là một cặp nghĩa với chúng (`sẽ giao` ↔ `sẽ nhận`, `không giao được` ↔
+    // `không nhận được`), tách nửa Việt nửa Anh sẽ đọc ra hai chuyện khác nhau.
+    subagentWillDeliverTo: 'sẽ giao cho {{targets}}',
+    subagentDeliversSkipped: 'không giao được cho {{target}} · {{reason}}',
+    subagentReceivingFrom: 'sẽ nhận từ {{role}}',
+    subagentReceiveSkipped: 'không nhận được từ {{role}} · {{reason}}',
+    subagentSkipReason: {
+      no_such_peer: 'không có người nhận',
+      recipient_not_running: 'người nhận đã đóng',
+      unknown: 'không rõ lý do',
+    },
   },
   contextUsage: {
     title: 'Context window',

@@ -32,17 +32,42 @@ import { MarkdownRenderer } from './MarkdownRenderer'
 import { formatAttachmentSize } from './AttachmentPicker'
 import { absoluteWorkspacePath } from '../../lib/chat/attachmentUpload'
 import { appendStreamText } from '../../lib/streamText'
-import { peerLabels, waitFromChildRow } from '../../lib/chat/peerPipeline'
+import {
+  deliveryLabel,
+  peerDeliveries,
+  peerDeliveryView,
+  peerLabels,
+  peerSkipReason,
+  shortPeerId,
+  type PeerSkipReason,
+} from '../../lib/chat/peerPipeline'
+import type { TKey, TVars } from '../../i18n/context'
 import { ProviderIcon } from '../providers/ProviderIcon'
 import type { LightboxMediaProps } from './MediaLightboxModal'
 
 /** Tab mà một chip trong transcript có thể mở (hợp đồng §3 — gợi ý, không ra lệnh). */
 export type TranscriptTabId = 'plan' | 'decisions' | 'subagents'
 
+type Translate = (key: TKey, vars?: TVars) => string
+
+/** Mã lý do `skipped` có chữ riêng; mã lạ hiện NGUYÊN mã (không giấu vì sao không giao). */
+const SKIP_REASON_KEY: Record<PeerSkipReason, TKey> = {
+  no_such_peer: 'chat.subagentSkipReason.no_such_peer',
+  recipient_not_running: 'chat.subagentSkipReason.recipient_not_running',
+}
+
+function skipReasonText(t: Translate, reason: string | null): string {
+  if (!reason) return t('chat.subagentSkipReason.unknown')
+  const known = peerSkipReason(reason)
+  return known ? t(SKIP_REASON_KEY[known]) : reason
+}
+
 interface HarnessStepViewProps {
   events: HarnessEvent[]
   status: string
   error: string | null
+  /** `sessionId` của phiên cha — nhờ nó mới gọi được tên `main` trong `deliveries[].recipient`. */
+  sessionId?: string | null
   connectionWarning?: string | null
   onDismissWarning?: () => void
   onOpenLightbox?: (media: LightboxMediaProps) => void
@@ -797,6 +822,7 @@ export function HarnessStepView({
   events,
   status,
   error,
+  sessionId,
   connectionWarning,
   onDismissWarning,
   onOpenLightbox,
@@ -818,6 +844,7 @@ export function HarnessStepView({
           <div key={turn.id} data-turn-latest={isLastTurn ? 'true' : undefined} data-turn-user="true">
             <TurnBlock
               turn={turn}
+              sessionId={sessionId ?? null}
               isTurnBusy={isTurnBusy}
               onOpenLightbox={onOpenLightbox}
               snapshot={snapshot}
@@ -870,6 +897,7 @@ function attachmentKindLabel(label: string): string {
 
 function TurnBlock({
   turn,
+  sessionId,
   isTurnBusy,
   onOpenLightbox,
   snapshot,
@@ -877,6 +905,7 @@ function TurnBlock({
   onOpenTab,
 }: {
   turn: HarnessTurn
+  sessionId: string | null
   isTurnBusy: boolean
   onOpenLightbox?: (media: LightboxMediaProps) => void
   snapshot?: ProviderSnapshot | null
@@ -933,6 +962,19 @@ function TurnBlock({
       if (!closed.has(path)) allowed.add(Math.min(...seqs))
     }
     return allowed
+  }, [turn.items])
+
+  // T15 — đích THẬT trong `deliveries[]` là `sessionId` của người nhận. Backend chỉ phân giải
+  // anh em CÙNG LƯỢT (hoặc chính phiên cha), nên bản đồ vai dựng từ chính lượt này là đủ.
+  const roleOfChild = useMemo(() => {
+    const roles = new Map<string, string>()
+    for (const item of turn.items) {
+      if (item.kind !== 'child') continue
+      const id = String(item.event.data.sessionId ?? '')
+      const role = String(item.event.data.role ?? '')
+      if (id && role) roles.set(id, role)
+    }
+    return (childSessionId: string) => roles.get(childSessionId) ?? null
   }, [turn.items])
 
   const turnMedia = useMemo(() => {
@@ -1202,23 +1244,47 @@ function TurnBlock({
               }
               if (item.kind === 'child') {
                 const childSessionId = String(item.event.data.sessionId ?? item.event.data.role ?? '')
-                // T15 — chip chuyên gia phải kể được đường ống peer: em này đang chờ ai giao
-                // kết quả, hoặc đã giao kết quả cho ai. Nguồn là hàng sổ con của CHA
-                // (`waiting_for`/`deliveredTo`) — transcript không poll luồng của từng em,
-                // nên đọc thẳng hàng sổ con là nguồn thật duy nhất ở đây.
-                const childWait = waitFromChildRow(item.event.data)
-                const childTargets = peerLabels(item.event.data.deliveredTo)
-                const pipeSuffix = childWait
-                  ? ` · ${t('chat.subagentWaitingFor', { role: childWait.roles.join(', ') || 'peer' })}`
-                  : childTargets.length > 0
-                    ? ` · ${t('chat.subagentDeliversTo', { targets: childTargets.join(', ') })}`
-                    : ''
+                // T15 — chip chuyên gia phải kể được đường ống peer, nhưng KHÔNG được hứa hão:
+                // * con còn chạy  → mũi tên là Ý ĐỊNH, đọc từ `deliverTo` lúc giao việc ("sẽ giao cho …");
+                // * con đóng sổ  → biên nhận THẬT trong `deliveries[]` (kèm người nhận bị `skipped`).
+                // Nhãn chờ peer không có ở đây: `peer_wait` nằm trong luồng của CHÍNH con đang chờ,
+                // và transcript không đọc luồng con (tab Sub-agents mới là chỗ poll luồng đó).
+                const childData = item.event.data
+                const childStatus = String(childData.status ?? '')
+                const pipeParts: string[] = []
+                const childTargets: string[] = []
+                if (childStatus === 'started' || childStatus === 'running') {
+                  childTargets.push(...peerLabels(childData.deliverTo))
+                  if (childTargets.length > 0) {
+                    pipeParts.push(
+                      t('chat.subagentWillDeliverTo', { targets: childTargets.join(', ') }),
+                    )
+                  }
+                } else {
+                  const view = peerDeliveryView(peerDeliveries(childData.deliveries), (recipient) =>
+                    deliveryLabel(recipient, sessionId, roleOfChild) ?? shortPeerId(recipient),
+                  )
+                  childTargets.push(...view.delivered, ...view.skipped.map((row) => row.target))
+                  if (view.delivered.length > 0) {
+                    pipeParts.push(
+                      t('chat.subagentDeliversTo', { targets: view.delivered.join(', ') }),
+                    )
+                  }
+                  for (const row of view.skipped) {
+                    pipeParts.push(
+                      t('chat.subagentDeliversSkipped', {
+                        target: row.target,
+                        reason: skipReasonText(t, row.reason),
+                      }),
+                    )
+                  }
+                }
+                const pipeSuffix = pipeParts.length > 0 ? ` · ${pipeParts.join(' · ')}` : ''
                 return (
                   <button
                     key={item.id}
                     type="button"
                     data-timeline="child"
-                    data-child-waiting={childWait ? 'true' : undefined}
                     data-child-targets={childTargets.length > 0 ? childTargets.join(',') : undefined}
                     aria-label={t('chat.openSubagentTab')}
                     onClick={() => onOpenTab?.('subagents', childSessionId ? { sessionId: childSessionId } : null)}

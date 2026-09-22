@@ -38,19 +38,40 @@ import { useUiStore } from '../../store/uiStore'
 import { MarkdownRenderer } from '../chat/MarkdownRenderer'
 import { appendStreamText } from '../../lib/streamText'
 import { useT } from '../../i18n/context'
+import type { TKey, TVars } from '../../i18n/context'
 import {
-  deliveryRows,
+  deliveryLabel,
   formatClock,
   hasAbsoluteDeadline,
+  mergeReceipts,
   openPeerWait,
+  peerDeliveries,
+  peerDeliveryView,
   peerLabels,
   peerReceipts,
+  peerSkipReason,
   receiptsFromDeliveries,
   safetyNetSeconds,
-  waitFromChildRow,
+  shortPeerId,
+  type PeerDelivery,
   type PeerReceipt,
+  type PeerSkipReason,
   type PeerWait,
 } from '../../lib/chat/peerPipeline'
+
+type Translate = (key: TKey, vars?: TVars) => string
+
+/** Mã lý do `skipped` có chữ riêng; mã lạ thì hiện NGUYÊN mã, không giấu vì sao không giao. */
+const SKIP_REASON_KEY: Record<PeerSkipReason, TKey> = {
+  no_such_peer: 'chat.subagentSkipReason.no_such_peer',
+  recipient_not_running: 'chat.subagentSkipReason.recipient_not_running',
+}
+
+function skipReasonText(t: Translate, reason: string | null): string {
+  if (!reason) return t('chat.subagentSkipReason.unknown')
+  const known = peerSkipReason(reason)
+  return known ? t(SKIP_REASON_KEY[known]) : reason
+}
 
 const ROLE_DESCRIPTIONS: Record<string, string> = {
   explore: 'Inspect the repository. Return file/symbol evidence, dependencies and unknowns.',
@@ -85,14 +106,13 @@ interface ChildSessionView {
   step: number | null
   /** Số bước con đã dùng, khi hàng sổ con báo (`stepsUsed`). */
   stepsUsed: number | null
-  /** `deliverTo` lúc giao việc (T15). */
+  /**
+   * `deliverTo` lúc giao việc — Ý ĐỊNH, không phải kết quả. Chỉ được vẽ khi con còn chạy
+   * ("sẽ giao cho …"); con đóng sổ rồi thì `deliveries` mới là sự thật.
+   */
   deliverTo: string[]
-  /** `deliveredTo` khi con kết thúc — mũi tên "đã giao cho …". */
-  deliveredTo: string[]
-  /** `deliveries[]` thật của hàng sổ con; mỗi mục là một biên nhận. */
-  deliveries: Array<Record<string, unknown>>
-  /** Hàng sổ con còn `waiting_for` ⇒ con đang chờ peer. */
-  waiting: PeerWait | null
+  /** `deliveries[]` thật của hàng sổ con; mỗi mục là một biên nhận kèm `state`/`reason`. */
+  deliveries: PeerDelivery[]
 }
 
 /** Một khối bảng của MỘT lượt (T4) — bảng cũ trộn mọi lượt vào một danh sách phẳng. */
@@ -154,9 +174,7 @@ function mergeChildEvent(
     step: null,
     stepsUsed: null,
     deliverTo: [],
-    deliveredTo: [],
     deliveries: [],
-    waiting: null,
   }
   view.turn = turn
   if (data.role) view.role = String(data.role)
@@ -174,12 +192,8 @@ function mergeChildEvent(
   if (stepsUsed !== null) view.stepsUsed = Math.trunc(stepsUsed)
   const deliverTo = peerLabels(data.deliverTo)
   if (deliverTo.length > 0) view.deliverTo = deliverTo
-  const deliveredTo = peerLabels(data.deliveredTo)
-  if (deliveredTo.length > 0) view.deliveredTo = deliveredTo
-  const deliveries = deliveryRows(data.deliveries)
+  const deliveries = peerDeliveries(data.deliveries)
   if (deliveries.length > 0) view.deliveries = deliveries
-  // Hàng MỚI NHẤT nói trạng thái hiện tại: event kết thúc không còn `waiting_for` ⇒ nhãn chờ tắt.
-  view.waiting = waitFromChildRow(data)
   return view
 }
 
@@ -353,6 +367,12 @@ export function SubagentInspectorPanel() {
   // nên đang hỏi câu 2 vẫn còn thấy con của câu 1 (BUG-43).
   const turnGroups = useMemo(() => buildChildTurns(harnessRun?.events ?? []), [harnessRun?.events])
   const childrenList = useMemo(() => turnGroups.flatMap((group) => group.children), [turnGroups])
+  /** `sessionId` → vai, để đọc `deliveries[].recipient` (đích THẬT là sessionId của người nhận). */
+  const rolesBySession = useMemo(
+    () => new Map(childrenList.map((child) => [child.sessionId, child.role])),
+    [childrenList],
+  )
+  const roleOfSession = (sessionId: string): string | null => rolesBySession.get(sessionId) ?? null
 
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
   const [thinkingExpanded, setThinkingExpanded] = useState(false)
@@ -363,8 +383,25 @@ export function SubagentInspectorPanel() {
   const [allTurns, setAllTurns] = useState(false)
   const [openTurns, setOpenTurns] = useState<Record<number, boolean>>({})
 
+  // Đổi phiên chat ⇒ bộ lọc lượt của phiên CŨ vô nghĩa với phiên mới (`turnGroups` khác hẳn),
+  // và bảng sẽ trống không lời giải thích. Xoá bộ lọc để phiên mới tự về lượt mới nhất của nó.
+  const filteredChatRef = useRef<string | null>(activeChatId)
+  useEffect(() => {
+    if (filteredChatRef.current === activeChatId) return
+    filteredChatRef.current = activeChatId
+    setViewedTurn(null)
+    setAllTurns(false)
+    setOpenTurns({})
+    setSelectedSessionId(null)
+  }, [activeChatId])
+
   const latestTurn = turnGroups.length > 0 ? turnGroups[turnGroups.length - 1].turn : null
-  const effectiveTurn = viewedTurn ?? latestTurn
+  // Lượt đã chọn có thể không còn tồn tại (vừa đổi phiên, hoặc lượt bị gom lại): lùi về lượt mới
+  // nhất thay vì để bảng rỗng mà không nói vì sao.
+  const effectiveTurn =
+    viewedTurn !== null && turnGroups.some((group) => group.turn === viewedTurn)
+      ? viewedTurn
+      : latestTurn
   const visibleGroups = useMemo(
     () => (allTurns ? turnGroups : turnGroups.filter((group) => group.turn === effectiveTurn)),
     [allTurns, effectiveTurn, turnGroups],
@@ -490,22 +527,19 @@ export function SubagentInspectorPanel() {
   }, [childEvents])
 
   // T15 — đường ống peer của em ĐANG XEM, đọc từ chính luồng của em đó (poll ở trên).
+  // Đây là nguồn SỐNG duy nhất: hàng sổ con của cha không mang `waiting_for` trong event nào.
   const activeWait = useMemo(() => openPeerWait(childEvents), [childEvents])
   const activeReceipts = useMemo(() => peerReceipts(childEvents), [childEvents])
 
-  // Hàng con của CHA mang `deliveries[]`/`deliveredTo`, nhưng biên nhận thuộc về em NHẬN:
+  // Hàng con của CHA mang `deliveries[]` (kèm `state`), nhưng biên nhận thuộc về em NHẬN:
   // phải đối chiếu `recipient` với role/sessionId của từng em rồi mới gắn huy hiệu.
   const receiptsByChild = useMemo(() => {
     const map = new Map<string, PeerReceipt[]>()
     for (const source of childrenList) {
-      const rows =
-        source.deliveries.length > 0
-          ? source.deliveries
-          : source.deliveredTo.map((recipient) => ({ recipient }))
-      if (rows.length === 0) continue
+      if (source.deliveries.length === 0) continue
       for (const child of childrenList) {
         if (child.sessionId === source.sessionId) continue
-        for (const receipt of receiptsFromDeliveries(rows, child.role, child.sessionId)) {
+        for (const receipt of receiptsFromDeliveries(source.deliveries, child.role, child.sessionId)) {
           const list = map.get(child.sessionId) ?? []
           list.push({ ...receipt, role: receipt.role || source.role })
           map.set(child.sessionId, list)
@@ -517,12 +551,7 @@ export function SubagentInspectorPanel() {
 
   // Đồng hồ chỉ chạy khi có mốc hạn THẬT (deadline tuyệt đối) — không đếm ngược bằng số giây
   // ước lượng, và không đếm khi người chờ đã tự đặt hạn riêng (`waitsUntilDelivery === false`).
-  const clockNeeded = useMemo(
-    () =>
-      hasAbsoluteDeadline(activeWait) ||
-      turnGroups.some((group) => group.children.some((child) => hasAbsoluteDeadline(child.waiting))),
-    [activeWait, turnGroups],
-  )
+  const clockNeeded = useMemo(() => hasAbsoluteDeadline(activeWait), [activeWait])
   const [nowMs, setNowMs] = useState(() => Date.now())
   useEffect(() => {
     if (!clockNeeded) return
@@ -530,12 +559,90 @@ export function SubagentInspectorPanel() {
     return () => clearInterval(timer)
   }, [clockNeeded])
 
+  /** Lượt chờ của một hàng: chỉ luồng đang được đọc mới có `peer_wait`/`peer_wait_end`. */
   const waitForRow = (child: ChildSessionView): PeerWait | null =>
-    activeChild?.sessionId === child.sessionId && activeWait ? activeWait : child.waiting
+    activeChild?.sessionId === child.sessionId ? activeWait : null
 
   const receiptsForRow = (child: ChildSessionView): PeerReceipt[] => {
     const own = activeChild?.sessionId === child.sessionId ? activeReceipts : []
-    return [...own, ...(receiptsByChild.get(child.sessionId) ?? [])]
+    return mergeReceipts(own, receiptsByChild.get(child.sessionId) ?? [])
+  }
+
+  /** `main` = phiên cha; em cùng lượt đọc theo `sessionId`; còn lại cắt ngắn id cho đọc được. */
+  const deliveryTarget = (recipient: string): string => {
+    const label = deliveryLabel(recipient, harnessRun?.id ?? activeChatId, roleOfSession)
+    return label ?? shortPeerId(recipient)
+  }
+
+  /** Mũi tên giao kết quả: con còn chạy ⇒ Ý ĐỊNH (`deliverTo`), con đóng sổ ⇒ biên nhận THẬT. */
+  const deliveryLines = (
+    child: ChildSessionView,
+  ): Array<{ key: string; icon: typeof ArrowRight; className: string; text: string }> => {
+    const lines: Array<{ key: string; icon: typeof ArrowRight; className: string; text: string }> = []
+    if (child.status === 'running') {
+      if (child.deliverTo.length > 0) {
+        lines.push({
+          key: 'intent',
+          icon: ArrowRight,
+          className: 'text-zinc-500',
+          text: t('chat.subagentWillDeliverTo', { targets: child.deliverTo.join(', ') }),
+        })
+      }
+      return lines
+    }
+    const view = peerDeliveryView(child.deliveries, deliveryTarget)
+    if (view.delivered.length > 0) {
+      lines.push({
+        key: 'delivered',
+        icon: ArrowRight,
+        className: 'text-zinc-500',
+        text: t('chat.subagentDeliversTo', { targets: view.delivered.join(', ') }),
+      })
+    }
+    view.skipped.forEach((row, index) => {
+      lines.push({
+        key: `skipped-${index}`,
+        icon: AlertCircle,
+        className: 'text-amber-300/90',
+        text: t('chat.subagentDeliversSkipped', {
+          target: row.target,
+          reason: skipReasonText(t, row.reason),
+        }),
+      })
+    })
+    return lines
+  }
+
+  /** Biên nhận: chỉ `injected` được nói "đã nhận"; `pending` là đang tới; `skipped` là không nhận. */
+  const receiptLine = (
+    receipt: PeerReceipt,
+  ): { icon: typeof ArrowRight; className: string; text: string } => {
+    if (receipt.state === 'injected') {
+      return {
+        icon: Inbox,
+        className: 'text-emerald-300',
+        text: `${t('chat.subagentReceivedFrom', { role: receipt.role })}${
+          receipt.chars !== null ? ` · ${receipt.chars} chars` : ''
+        }`,
+      }
+    }
+    if (receipt.state === 'skipped') {
+      return {
+        icon: AlertCircle,
+        className: 'text-amber-300/90',
+        text: t('chat.subagentReceiveSkipped', {
+          role: receipt.role,
+          reason: skipReasonText(t, receipt.reason),
+        }),
+      }
+    }
+    return {
+      icon: Clock,
+      className: 'text-sky-300',
+      text: `${t('chat.subagentReceivingFrom', { role: receipt.role })}${
+        receipt.chars !== null ? ` · ${receipt.chars} chars` : ''
+      }`,
+    }
   }
 
   const roleDescription = activeChild ? (ROLE_DESCRIPTIONS[activeChild.role] ?? 'Specialized subagent execution.') : ''
@@ -726,8 +833,7 @@ export function SubagentInspectorPanel() {
                               const waiting = waitForRow(child)
                               const receipts = receiptsForRow(child)
                               const safetySeconds = waiting ? safetyNetSeconds(waiting, nowMs) : null
-                              const targets =
-                                child.deliveredTo.length > 0 ? child.deliveredTo : child.deliverTo
+                              const deliveries = deliveryLines(child)
 
                               return (
                                 <button
@@ -802,7 +908,7 @@ export function SubagentInspectorPanel() {
                                   ) : null}
 
                                   {/* T15 — đang chờ peer giao kết quả; tự tắt khi `peer_wait_end` tới
-                                      hoặc khi hàng sổ con của cha không còn `waiting_for`. */}
+                                      trong luồng của chính em này (nguồn sống duy nhất). */}
                                   {waiting && (
                                     <div
                                       data-testid="child-peer-wait"
@@ -825,35 +931,39 @@ export function SubagentInspectorPanel() {
                                     </div>
                                   )}
 
-                                  {/* T15 — mũi tên giao kết quả (`deliverTo` lúc giao, `deliveredTo` khi xong). */}
-                                  {targets.length > 0 && (
-                                    <div
-                                      data-testid="child-delivers-to"
-                                      className="pl-9 flex items-center gap-1 text-[10px] text-zinc-500"
-                                    >
-                                      <ArrowRight className="size-3 shrink-0" />
-                                      <span className="truncate">
-                                        {t('chat.subagentDeliversTo', {
-                                          targets: targets.join(', '),
-                                        })}
-                                      </span>
+                                  {/* T15 — mũi tên giao kết quả: con còn chạy thì là Ý ĐỊNH
+                                      ("sẽ giao cho …"), con đóng sổ thì là biên nhận thật, và
+                                      người nhận bị `skipped` được kể ra chứ không đội lốt đã giao. */}
+                                  {deliveries.length > 0 && (
+                                    <div data-testid="child-delivers-to" className="space-y-0.5 pl-9">
+                                      {deliveries.map((line) => (
+                                        <div
+                                          key={line.key}
+                                          data-delivery-line={line.key}
+                                          className={`flex items-center gap-1 text-[10px] ${line.className}`}
+                                        >
+                                          <line.icon className="size-3 shrink-0" />
+                                          <span className="truncate">{line.text}</span>
+                                        </div>
+                                      ))}
                                     </div>
                                   )}
 
-                                  {/* T15 — biên nhận: em này đã nhận kết quả từ ai. */}
-                                  {receipts.map((receipt, index) => (
-                                    <div
-                                      key={`${receipt.role}-${receipt.deliveryId ?? index}`}
-                                      data-testid="child-receipt"
-                                      className="pl-9 flex items-center gap-1 text-[10px] text-emerald-300"
-                                    >
-                                      <Inbox className="size-3 shrink-0" />
-                                      <span className="truncate">
-                                        {t('chat.subagentReceivedFrom', { role: receipt.role })}
-                                        {receipt.chars !== null ? ` · ${receipt.chars} chars` : ''}
-                                      </span>
-                                    </div>
-                                  ))}
+                                  {/* T15 — biên nhận: em này đã nhận / đang nhận / không nhận được từ ai. */}
+                                  {receipts.map((receipt, index) => {
+                                    const line = receiptLine(receipt)
+                                    return (
+                                      <div
+                                        key={`${receipt.role}-${receipt.deliveryId ?? index}`}
+                                        data-testid="child-receipt"
+                                        data-receipt-state={receipt.state}
+                                        className={`pl-9 flex items-center gap-1 text-[10px] ${line.className}`}
+                                      >
+                                        <line.icon className="size-3 shrink-0" />
+                                        <span className="truncate">{line.text}</span>
+                                      </div>
+                                    )
+                                  })}
                                 </button>
                               )
                             })}
@@ -886,7 +996,9 @@ export function SubagentInspectorPanel() {
                           ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
                           : activeChild.status === 'running'
                             ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
-                            : 'bg-red-500/15 text-red-400 border border-red-500/30'
+                            : activeChild.status === 'partial'
+                              ? 'bg-sky-500/15 text-sky-400 border border-sky-500/30'
+                              : 'bg-red-500/15 text-red-400 border border-red-500/30'
                       }`}
                     >
                       {activeChild.status}

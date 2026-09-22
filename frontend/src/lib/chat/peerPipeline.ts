@@ -6,14 +6,18 @@
  *                      `safetySeconds`, `deadline`, `turn`, `step`.
  *   `peer_wait_end`  → luồng con đang chờ: `status` (done/timeout/empty/pending_target),
  *                      `waitedMs`, `done[]`, `pending[]`, `extensionExhausted`.
- *   `peer_delivery`  → luồng NGƯỜI NHẬN: `from`, `role`, `chars`, `truncated`, `deliveryId`.
+ *   `peer_delivery`  → luồng NGƯỜI NHẬN: `from`, `role`, `chars`, `truncated`, `deliveryId`, `state`.
+ *   `child`          → luồng CHA: `deliverTo` lúc giao việc, `deliveries[]` (mỗi mục có `state`,
+ *                      `chars`, và `reason` khi `state === 'skipped'`) khi con đóng sổ.
  *
  * Hai luật của chủ nhà (Q2) được cài ở đây, không phải ở chỗ vẽ:
  *   1. Chờ peer nghĩa là chờ **tới lúc peer giao kết quả** — không phải đếm ngược tới một
  *      hạn cố định. Nhãn vì vậy là "đang chờ <role> giao kết quả"; thời gian chỉ được nói
  *      thêm khi lượt chờ KHÔNG tự truyền hạn (`waitsUntilDelivery = true`) — đó là lưới an toàn.
- *   2. Nhãn tự tắt khi gặp `peer_wait_end` (đường chính) hoặc khi hàng sổ con của cha
- *      không còn `waiting_for` (đường dự phòng khi event kết thúc bị mất).
+ *   2. Nhãn chờ tự tắt khi gặp `peer_wait_end` trong luồng của chính con đang chờ. Đó là đường
+ *      DUY NHẤT: backend không phát `waiting_for` trong event `child` nào (nó chỉ là cột của sổ
+ *      con — `grep -rn waiting_for backend/src` ra đúng cột store và `child_wait()`), nên ở đây
+ *      không hứa một đường lùi nào cả.
  *
  * Mọi hàm ở đây trả `null`/mảng rỗng khi payload méo — không suy diễn trạng thái.
  */
@@ -58,9 +62,35 @@ function asText(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null
 }
 
+/** `deliveryId` thật là số nguyên của sqlite (`child_deliveries.id`), không phải chuỗi. */
+function asId(value: unknown): string | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(Math.trunc(value))
+  return asText(value)
+}
+
 function declaredTurn(value: unknown): number | null {
   const turn = asNumber(value)
   return turn !== null && turn > 0 ? Math.trunc(turn) : null
+}
+
+/**
+ * Trạng thái một biên nhận giao hàng — đúng ba giá trị backend ghi vào `child_deliveries.state`:
+ * `injected` (đã bơm vào transcript người nhận), `pending` (đã xếp hàng, chưa tiêu thụ),
+ * `skipped` (không giao được, kèm `reason`). Giá trị lạ/thiếu coi là `pending` — chưa có bằng
+ * chứng nào cho thấy người nhận đã nhận.
+ */
+export type DeliveryState = 'injected' | 'pending' | 'skipped'
+
+function deliveryState(value: unknown): DeliveryState {
+  return value === 'injected' || value === 'skipped' ? value : 'pending'
+}
+
+/** Hai mã `reason` backend ghi cho hàng `skipped` (`runtime.PEER_SKIP_*`). */
+export type PeerSkipReason = 'no_such_peer' | 'recipient_not_running'
+
+/** Mã lý do nằm trong nhóm đã biết; mã lạ trả `null` để người gọi hiện nguyên mã. */
+export function peerSkipReason(value: string | null): PeerSkipReason | null {
+  return value === 'no_such_peer' || value === 'recipient_not_running' ? value : null
 }
 
 /** Một lượt chờ peer đang MỞ, dựng từ `peer_wait` thật. */
@@ -71,19 +101,26 @@ export interface PeerWait {
   waitsUntilDelivery: boolean
   /** Lưới an toàn (giây) — chỉ để lượt không trông như treo. */
   safetySeconds: number | null
-  /** Mốc tuyệt đối (ms) của lưới an toàn, khi backend gửi kèm. */
+  /**
+   * Mốc tuyệt đối của lưới an toàn đúng như backend gửi (đợt 22: epoch GIÂY, `1790098963.461`),
+   * `null` khi không có. `deadlineMs()` là chỗ chuẩn hoá đơn vị — đừng trừ thẳng giá trị này.
+   */
   deadline: number | null
   /** `created` của event `peer_wait` (ms). */
   startedAt: number | null
   turn: number | null
 }
 
-/** Một biên nhận "đã nhận từ <role>" — dựng từ `peer_delivery` thật. */
+/** Một biên nhận "đã nhận từ <role>" — dựng từ `peer_delivery` / `deliveries[]` thật. */
 export interface PeerReceipt {
   /** Vai của bên GIAO (đã bỏ tiền tố `role:`). */
   role: string
   chars: number | null
   deliveryId: string | null
+  /** Trạng thái THẬT của biên nhận — chỉ `injected` mới được nói "đã nhận". */
+  state: DeliveryState
+  /** Mã lý do khi `skipped` (`no_such_peer` / `recipient_not_running`). */
+  reason: string | null
 }
 
 /**
@@ -123,35 +160,25 @@ export function peerReceipts(events: readonly HarnessEvent[]): PeerReceipt[] {
     if (event.type !== 'peer_delivery') continue
     const role = peerLabel(event.data.role ?? event.data.from)
     if (!role) continue
+    const state = deliveryState(event.data.state)
     receipts.push({
       role,
       chars: asNumber(event.data.chars),
-      deliveryId: asText(event.data.deliveryId),
+      deliveryId: asId(event.data.deliveryId),
+      state,
+      reason: state === 'skipped' ? asText(event.data.reason) : null,
     })
   }
   return receipts
 }
 
 /**
- * Hàng sổ con của CHA còn `waiting_for` ⇒ con đó đang chờ peer (đường dự phòng khi
- * luồng của con không được poll, hoặc `peer_wait_end` đã mất).
- */
-export function waitFromChildRow(data: Record<string, unknown>): PeerWait | null {
-  const roles = peerLabels(data.waiting_for ?? data.waitingFor)
-  if (roles.length === 0) return null
-  return {
-    roles,
-    waitsUntilDelivery: data.waitsUntilDelivery !== false,
-    safetySeconds: asNumber(data.safetySeconds),
-    deadline: asNumber(data.deadline),
-    startedAt: asNumber(data.waitingSince),
-    turn: declaredTurn(data.turn),
-  }
-}
-
-/**
  * Biên nhận mà một hàng con NHẬN được, đọc từ `deliveries[]` của một event `child` khác
- * (cha phát): mục nào có `recipient` trỏ đúng vai hoặc đúng phiên của hàng này.
+ * (cha phát): mục nào có `recipient` trỏ đúng phiên của hàng này.
+ *
+ * Đích thật là `sessionId` (`main` là chính phiên cha). Ngoài ra `resolve_delivery_targets`
+ * còn ghi một hàng `skipped` với `recipient` là CHÍNH TÊN VAI khi không có ai mang vai đó —
+ * hàng ấy chỉ được nhận khi nó đã bị bỏ, để không gắn nhầm biên nhận của người khác.
  */
 export function receiptsFromDeliveries(
   deliveries: unknown,
@@ -165,28 +192,134 @@ export function receiptsFromDeliveries(
     if (!raw || typeof raw !== 'object') continue
     const item = raw as Record<string, unknown>
     const recipient = String(item.recipient ?? '')
-    if (!keys.has(recipient)) continue
+    const state = deliveryState(item.state)
+    if (!keys.has(recipient) && !(state === 'skipped' && recipient === role)) continue
     receipts.push({
       role: peerLabel(item.role ?? item.from),
       chars: asNumber(item.chars),
-      deliveryId: asText(item.deliveryId ?? item.id),
+      deliveryId: asId(item.deliveryId ?? item.id),
+      state,
+      reason: state === 'skipped' ? asText(item.reason) : null,
     })
   }
   return receipts
 }
 
-/** `deliveries[]` thật của một event `child` (kết thúc) — mục méo bị bỏ. */
-export function deliveryRows(value: unknown): Array<Record<string, unknown>> {
-  if (!Array.isArray(value)) return []
-  return value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+/** Thứ tự "đi xa tới đâu" của ba trạng thái, dùng khi hai nguồn nói khác nhau về CÙNG một lần giao. */
+const RECEIPT_RANK: Record<DeliveryState, number> = { injected: 2, pending: 1, skipped: 0 }
+
+/**
+ * Gộp biên nhận từ hai nguồn (luồng của chính em + hàng sổ con của cha) và giữ trạng thái ĐI XA
+ * NHẤT cho mỗi lần giao: cùng vai và cùng số ký tự thì `injected` thắng `pending`, vì
+ * `peer_delivery` phát lúc hàng còn `pending` còn `deliveries[]` đọc sau khi người nhận đã tiêu thụ.
+ * Không gộp thì hàng của em vừa "sẽ nhận" vừa "đã nhận" cho đúng một kết quả.
+ */
+export function mergeReceipts(
+  first: readonly PeerReceipt[],
+  second: readonly PeerReceipt[],
+): PeerReceipt[] {
+  const merged = new Map<string, PeerReceipt>()
+  for (const receipt of [...first, ...second]) {
+    const key = `${receipt.role}|${receipt.chars ?? ''}`
+    const kept = merged.get(key)
+    if (!kept || RECEIPT_RANK[receipt.state] > RECEIPT_RANK[kept.state]) merged.set(key, receipt)
+  }
+  return [...merged.values()]
 }
 
-/** Mốc tuyệt đối đủ lớn để coi là epoch ms thật (bản ghi cũ dùng số nhỏ làm `created`). */
+/** Một mục trong `deliveries[]` của event `child` đóng sổ — biên nhận THẬT của một người nhận. */
+export interface PeerDelivery {
+  /**
+   * `sessionId` người nhận (`main` là chính phiên cha), hoặc tên vai khi địa chỉ dạng vai
+   * không phân giải được ai (`state === 'skipped'`).
+   */
+  recipient: string
+  /** Trạng thái thật của lần giao. */
+  state: DeliveryState
+  chars: number | null
+  /** Mã lý do khi `skipped`. */
+  reason: string | null
+}
+
+/** `deliveries[]` thật của một event `child` (kết thúc) — mục méo bị bỏ. */
+export function peerDeliveries(value: unknown): PeerDelivery[] {
+  if (!Array.isArray(value)) return []
+  const rows: PeerDelivery[] = []
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object') continue
+    const item = raw as Record<string, unknown>
+    const recipient = String(item.recipient ?? '').trim()
+    if (recipient.length === 0) continue
+    const state = deliveryState(item.state)
+    rows.push({
+      recipient,
+      state,
+      chars: asNumber(item.chars),
+      reason: state === 'skipped' ? asText(item.reason) : null,
+    })
+  }
+  return rows
+}
+
+/** Nhãn đọc được của một `recipient` thật: `main` cho phiên cha, tên vai cho em cùng lượt. */
+export function deliveryLabel(
+  recipient: string,
+  parentId: string | null | undefined,
+  roleOf: (sessionId: string) => string | null,
+): string | null {
+  if (parentId && recipient === parentId) return 'main'
+  return roleOf(recipient)
+}
+
+/** Session id 32 ký tự không đọc được — cắt còn 8 ký tự đầu; chuỗi ngắn (tên vai) giữ nguyên. */
+export function shortPeerId(value: string): string {
+  return value.length > 12 ? `${value.slice(0, 8)}…` : value
+}
+
+export interface PeerDeliveryView {
+  /** Nhãn người nhận ĐÃ nhận hàng (đã xếp hàng hoặc đã tiêu thụ) — rỗng khi không giao cho ai. */
+  delivered: string[]
+  /** Người nhận KHÔNG nhận được hàng, kèm mã lý do thật khi backend có. */
+  skipped: Array<{ target: string; reason: string | null }>
+}
+
+/**
+ * `deliveries[]` thật → hai danh sách để vẽ mũi tên giao kết quả.
+ *
+ * `pending`/`injected` đều là "đã giao" (hàng đã sang hộp thư người nhận); `skipped` thì KHÔNG —
+ * nó phải được kể ra kèm lý do, không được đội lốt "đã giao cho …".
+ */
+export function peerDeliveryView(
+  rows: readonly PeerDelivery[],
+  label: (recipient: string) => string,
+): PeerDeliveryView {
+  const delivered: string[] = []
+  const skipped: Array<{ target: string; reason: string | null }> = []
+  for (const row of rows) {
+    const target = label(row.recipient)
+    if (row.state === 'skipped') skipped.push({ target, reason: row.reason })
+    else delivered.push(target)
+  }
+  return { delivered, skipped }
+}
+
+/** Mốc epoch ms thật (bản ghi `created` cũ dùng số nhỏ, không được coi là hạn). */
 const EPOCH_MS_FLOOR = 1_000_000_000_000
+
+/** Mốc epoch GIÂY hợp lệ — backend đợt 22 phát `deadline` bằng giây (`1790098963.461`). */
+const EPOCH_S_FLOOR = 1_000_000_000
+
+/** `deadline` thật → epoch ms; nhận CẢ hai đơn vị backend có thể phát, `null` khi không phải mốc thật. */
+export function deadlineMs(deadline: number | null): number | null {
+  if (deadline === null) return null
+  if (deadline >= EPOCH_MS_FLOOR) return deadline
+  if (deadline >= EPOCH_S_FLOOR) return deadline * 1000
+  return null
+}
 
 /** `true` khi lưới an toàn có mốc tuyệt đối — chỉ khi đó mới cần đồng hồ đếm. */
 export function hasAbsoluteDeadline(wait: PeerWait | null): boolean {
-  return Boolean(wait && wait.deadline !== null && wait.deadline >= EPOCH_MS_FLOOR)
+  return Boolean(wait && deadlineMs(wait.deadline) !== null)
 }
 
 /**
@@ -198,8 +331,9 @@ export function hasAbsoluteDeadline(wait: PeerWait | null): boolean {
  */
 export function safetyNetSeconds(wait: PeerWait, nowMs: number): number | null {
   if (!wait.waitsUntilDelivery) return null
-  if (hasAbsoluteDeadline(wait)) {
-    return Math.max(0, Math.round(((wait.deadline as number) - nowMs) / 1000))
+  const deadline = deadlineMs(wait.deadline)
+  if (deadline !== null) {
+    return Math.max(0, Math.round((deadline - nowMs) / 1000))
   }
   if (wait.safetySeconds !== null && wait.safetySeconds > 0) return Math.round(wait.safetySeconds)
   return null

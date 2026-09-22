@@ -201,6 +201,17 @@ const vi = {
     subagentSafetyNet: 'lưới an toàn còn {{time}}',
     subagentReceivedFrom: 'đã nhận từ {{role}}',
     subagentDeliversTo: 'đã giao cho {{targets}}',
+    // Đợt 22 (sửa sau soát) — con còn chạy thì mũi tên là Ý ĐỊNH, không phải kết quả; biên nhận
+    // chỉ được nói "đã nhận" khi hàng thật sự `injected`.
+    subagentWillDeliverTo: 'sẽ giao cho {{targets}}',
+    subagentDeliversSkipped: 'không giao được cho {{target}} · {{reason}}',
+    subagentReceivingFrom: 'sẽ nhận từ {{role}}',
+    subagentReceiveSkipped: 'không nhận được từ {{role}} · {{reason}}',
+    subagentSkipReason: {
+      no_such_peer: 'không có người nhận',
+      recipient_not_running: 'người nhận đã đóng',
+      unknown: 'không rõ lý do',
+    },
   },
   contextUsage: {
     title: 'Cửa sổ context',

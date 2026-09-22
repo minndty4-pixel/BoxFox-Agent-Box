@@ -8,10 +8,11 @@
  * transcript (`HarnessStepView.buildHarnessTurns`): lượt của event `user` gần nhất
  * đứng trước. Lệch luật là bảng và khung chat nói hai chuyện khác nhau.
  *
- * T15 — đường ống peer: hàng con phải cho thấy "đang chờ <role> giao kết quả",
- * mũi tên "đã giao cho …" và huy hiệu "đã nhận từ <role>"; nhãn chờ phải TẮT khi
- * `peer_wait_end` tới hoặc khi hàng sổ con của cha không còn `waiting_for`
- * (đồng hồ chạy mãi khi mất event kết thúc là rủi ro đã ghi trong kế hoạch).
+ * T15 — đường ống peer: hàng con phải cho thấy "đang chờ <role> giao kết quả", mũi tên giao
+ * kết quả và huy hiệu biên nhận. Nhãn chờ là trạng thái SỐNG, đọc từ luồng của CHÍNH em đang
+ * xem (`peer_wait` → `peer_wait_end`); backend không phát `waiting_for` trong event `child` nào
+ * nên không có đường lùi từ hàng sổ con, và mũi tên cũng đọc `deliveries[]` thật chứ không đọc
+ * `deliveredTo` (khoá chỉ có ở frontend cũ).
  */
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -55,11 +56,6 @@ function seed(events: unknown[]) {
   })
 }
 
-function seedMore(events: unknown[]) {
-  const current = useHarnessChatStore.getState().sessions[CHAT_ID]?.events ?? []
-  seed([...current, ...events])
-}
-
 async function render(): Promise<HTMLElement> {
   const host = document.createElement('div')
   document.body.append(host)
@@ -82,6 +78,14 @@ function rows(host: HTMLElement): string[] {
   return [...host.querySelectorAll('[data-child-session-id]')].map(
     (node) => node.getAttribute('data-child-session-id') ?? '',
   )
+}
+
+function receipt(host: HTMLElement, sessionId: string): HTMLElement | null {
+  return host.querySelector(`[data-child-session-id="${sessionId}"] [data-testid="child-receipt"]`)
+}
+
+function arrow(host: HTMLElement, sessionId: string): HTMLElement | null {
+  return host.querySelector(`[data-child-session-id="${sessionId}"] [data-testid="child-delivers-to"]`)
 }
 
 function turnBlocks(host: HTMLElement): string[] {
@@ -234,6 +238,64 @@ describe('SubagentInspectorPanel — gom con theo lượt (T4)', () => {
 
     // Trước bản sửa, `partial` rơi vào nhánh cuối và bị tô đỏ như `failed` (D-1).
     expect(row(host, 'child-P')?.getAttribute('data-child-status')).toBe('partial')
+    // Huy hiệu ở đầu cột chi tiết cũng phải cùng một màu với danh sách (xanh da trời), không đỏ.
+    const badge = [...host.querySelectorAll('span')].find(
+      (node) =>
+        node.className.includes('uppercase') && node.textContent?.trim() === 'partial',
+    )
+    expect(badge).toBeTruthy()
+    expect(badge?.className).toContain('text-sky-400')
+    expect(badge?.className).not.toContain('text-red-400')
+  })
+
+  it('đổi phiên chat thì bộ lọc lượt của phiên cũ không để bảng trống', async () => {
+    useHarnessChatStore.setState({
+      sessions: {
+        'chat-A': {
+          id: 'sess-A',
+          status: 'idle',
+          error: null,
+          events: [
+            userEvent(1, 'lượt một của A', 1),
+            childEvent(2, 'child-A1', 'Explore', { turn: 1 }),
+            userEvent(3, 'lượt hai của A', 2),
+            childEvent(4, 'child-A2', 'Build', { turn: 2 }),
+          ] as never,
+        },
+        'chat-B': {
+          id: 'sess-B',
+          status: 'idle',
+          error: null,
+          events: [
+            userEvent(1, 'lượt năm của B', 5),
+            childEvent(2, 'child-B1', 'review', { turn: 5 }),
+          ] as never,
+        },
+      },
+    })
+    useAgentStore.setState({ activeSessionId: 'chat-A' })
+
+    const host = await render()
+    // Người dùng chọn lượt 1 của chat A: bộ lọc đang trỏ vào một lượt mà chat B không có.
+    act(() => {
+      host
+        .querySelector('[data-testid="subagents-turn-chip"][data-turn="1"]')
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(rows(host)).toEqual(['child-A1'])
+
+    act(() => {
+      useAgentStore.setState({ activeSessionId: 'chat-B' })
+    })
+
+    // Không được trống: phải tự về lượt mới nhất của phiên mới.
+    expect(turnBlocks(host)).toEqual(['5'])
+    expect(rows(host)).toEqual(['child-B1'])
+    expect(
+      host
+        .querySelector('[data-testid="subagents-turn-chip"][data-turn="5"]')
+        ?.getAttribute('data-selected'),
+    ).toBe('true')
   })
 })
 
@@ -328,10 +390,69 @@ describe('SubagentInspectorPanel — đường ống peer (T15)', () => {
     expect(wait?.textContent ?? '').not.toContain('lưới an toàn')
   })
 
-  it('hàng sổ con còn `waiting_for` thì hiện nhãn, mất `waiting_for` thì tắt', async () => {
+  it('lưới an toàn đếm theo `deadline` epoch GIÂY của backend, không đứng im ở 5:00', async () => {
+    // `deadline` thật của đợt 22 là epoch GIÂY (`1790098963.461`). Bản cũ đòi >= 1e12 (ms) nên
+    // vứt mốc này đi và luôn hiện đúng `safetySeconds` — "lưới an toàn còn 5:00" mãi mãi.
+    const deadlineSeconds = Math.round(Date.now() / 1000) + 120
+    fetchMock.mockImplementation(async (url: unknown) => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        events: String(url).includes('child-W')
+          ? [
+              ev(1, 'peer_wait', {
+                targets: [{ sessionId: 'child-R', role: 'review' }],
+                mode: 'wait',
+                waitsUntilDelivery: true,
+                safetySeconds: 300,
+                deadline: deadlineSeconds,
+                turn: 1,
+              }),
+            ]
+          : [],
+      }),
+    }))
     seed([
       userEvent(1, 'nhờ em soát', 1),
-      childEvent(2, 'child-W', 'testing', {
+      childEvent(2, 'child-W', 'testing', { turn: 1 }),
+    ])
+
+    const host = await render()
+    const text = row(host, 'child-W')?.querySelector('[data-testid="child-peer-wait"]')?.textContent ?? ''
+    const match = /lưới an toàn còn (\d+):(\d{2})/.exec(text)
+
+    expect(match).toBeTruthy()
+    const remaining = Number(match?.[1]) * 60 + Number(match?.[2])
+    expect(remaining).toBeGreaterThan(115)
+    expect(remaining).toBeLessThanOrEqual(120)
+  })
+
+  it('chỉ em ĐANG ĐƯỢC ĐỌC mới có nhãn chờ — hàng khác không mượn trạng thái đó', async () => {
+    // `waiting_for` là cột sổ con, KHÔNG xuất hiện trong event `child` nào, nên nhãn chờ chỉ có
+    // một nguồn sống: luồng của chính em đang poll. Hàng em kia không được mượn nhãn ấy.
+    fetchMock.mockImplementation(async (url: unknown) => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        events: String(url).includes('child-W')
+          ? [
+              ev(1, 'peer_wait', {
+                targets: [{ sessionId: 'child-R', role: 'review' }],
+                mode: 'wait',
+                waitsUntilDelivery: true,
+                safetySeconds: 300,
+                turn: 1,
+              }),
+            ]
+          : [],
+      }),
+    }))
+    seed([
+      userEvent(1, 'nhờ hai em', 1),
+      childEvent(2, 'child-W', 'testing', { turn: 1 }),
+      // `waiting_for` là hình dạng KHÔNG có thật trong event `child` nào của backend; hàng này
+      // cố tình mang nó để khoá lại rằng bản sửa đã bỏ hẳn đường lùi ấy (D-2 của vòng soát).
+      childEvent(3, 'child-R', 'review', {
         turn: 1,
         waiting_for: ['role:review'],
         waitingSince: 1000,
@@ -339,43 +460,120 @@ describe('SubagentInspectorPanel — đường ống peer (T15)', () => {
     ])
 
     const host = await render()
+
     expect(row(host, 'child-W')?.querySelector('[data-testid="child-peer-wait"]')).toBeTruthy()
-
-    act(() => {
-      seedMore([
-        childEvent(3, 'child-W', 'testing', {
-          turn: 1,
-          status: 'completed',
-          waiting_for: [],
-          deliverables: 'xong',
-        }),
-      ])
-    })
-
-    expect(row(host, 'child-W')?.querySelector('[data-testid="child-peer-wait"]')).toBeNull()
-    expect(row(host, 'child-W')?.getAttribute('data-child-status')).toBe('completed')
+    expect(row(host, 'child-R')?.querySelector('[data-testid="child-peer-wait"]')).toBeNull()
   })
 
-  it('`deliveredTo`/`deliveries[]` vẽ mũi tên giao kết quả và huy hiệu đã nhận', async () => {
+  it('con đang chạy: mũi tên nói Ý ĐỊNH `sẽ giao cho …`, không nói đã giao', async () => {
+    seed([
+      userEvent(1, 'nhờ hai em', 1),
+      childEvent(2, 'child-a', 'Build', {
+        turn: 1,
+        status: 'started',
+        deliverTo: ['main', 'role:testing'],
+      }),
+      childEvent(3, 'child-t', 'testing', { turn: 1, status: 'started' }),
+    ])
+
+    const host = await render()
+    const text = arrow(host, 'child-a')?.textContent ?? ''
+
+    expect(text).toContain('sẽ giao cho main, testing')
+    expect(text).not.toContain('đã giao cho')
+  })
+
+  it('con đóng sổ: mũi tên đọc `deliveries[]` thật, người nhận bị bỏ được kể ra', async () => {
     seed([
       userEvent(1, 'nhờ hai em', 1),
       childEvent(2, 'child-a', 'Build', {
         turn: 1,
         status: 'completed',
-        deliveredTo: ['role:review', 'main'],
-        deliveries: [{ recipient: 'role:review', chars: 1200, deliveryId: 'rc_1' }],
+        deliverTo: ['main', 'role:testing', 'role:review'],
+        // Đích THẬT là `sessionId`: `sess-1` là chính phiên cha (⇒ "main"), `child-t` là em testing.
+        deliveries: [
+          { recipient: 'sess-1', state: 'injected', chars: 1298, truncated: false },
+          { recipient: 'child-t', state: 'pending', chars: 1298, truncated: false },
+          { recipient: 'review', state: 'skipped', chars: 0, truncated: false, reason: 'no_such_peer' },
+        ],
       }),
-      childEvent(3, 'child-b', 'review', { turn: 1, status: 'completed' }),
+      childEvent(3, 'child-t', 'testing', { turn: 1, status: 'started' }),
+    ])
+
+    const host = await render()
+    const text = arrow(host, 'child-a')?.textContent ?? ''
+
+    expect(text).toContain('đã giao cho main, testing')
+    expect(text).toContain('không giao được cho review · không có người nhận')
+    expect(text).not.toContain('sẽ giao cho')
+  })
+
+  it('biên nhận chỉ nói "đã nhận" khi hàng thật sự `injected`', async () => {
+    seed([
+      userEvent(1, 'nhờ ba em', 1),
+      childEvent(2, 'giver', 'Build', {
+        turn: 1,
+        status: 'completed',
+        deliveries: [
+          { recipient: 'got-it', state: 'injected', chars: 1200 },
+          { recipient: 'on-the-way', state: 'pending', chars: 900 },
+          { recipient: 'never', state: 'skipped', chars: 0, reason: 'recipient_not_running' },
+        ],
+      }),
+      childEvent(3, 'got-it', 'review', { turn: 1, status: 'completed' }),
+      childEvent(4, 'on-the-way', 'testing', { turn: 1, status: 'running' }),
+      childEvent(5, 'never', 'research', { turn: 1, status: 'completed' }),
     ])
 
     const host = await render()
 
-    const arrow = row(host, 'child-a')?.querySelector('[data-testid="child-delivers-to"]')
-    expect(arrow?.textContent ?? '').toContain('đã giao cho review, main')
+    expect(receipt(host, 'got-it')?.textContent ?? '').toContain('đã nhận từ Build · 1200 chars')
+    expect(receipt(host, 'got-it')?.getAttribute('data-receipt-state')).toBe('injected')
+    expect(receipt(host, 'on-the-way')?.textContent ?? '').toContain('sẽ nhận từ Build · 900 chars')
+    expect(receipt(host, 'on-the-way')?.getAttribute('data-receipt-state')).toBe('pending')
+    expect(receipt(host, 'never')?.textContent ?? '').toContain(
+      'không nhận được từ Build · người nhận đã đóng',
+    )
+    expect(receipt(host, 'never')?.getAttribute('data-receipt-state')).toBe('skipped')
+  })
 
-    const receipt = row(host, 'child-b')?.querySelector('[data-testid="child-receipt"]')
-    expect(receipt?.textContent ?? '').toContain('đã nhận từ Build')
-    expect(receipt?.textContent ?? '').toContain('1200 chars')
+  it('luồng của em nói `pending` còn hàng sổ con nói `injected`: giữ một huy hiệu, bản đi xa hơn', async () => {
+    fetchMock.mockImplementation(async (url: unknown) => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        events: String(url).includes('receiver')
+          ? [
+              ev(1, 'peer_delivery', {
+                from: 'giver',
+                role: 'Build',
+                chars: 1522,
+                state: 'pending',
+                deliveryId: 16,
+              }),
+            ]
+          : [],
+      }),
+    }))
+    // `receiver` đứng trước để nó là em đang được đọc (bảng poll luồng của em đầu tiên).
+    seed([
+      userEvent(1, 'nhờ hai em', 1),
+      childEvent(2, 'receiver', 'testing', { turn: 1, status: 'running' }),
+      childEvent(3, 'giver', 'Build', {
+        turn: 1,
+        status: 'completed',
+        deliveries: [{ recipient: 'receiver', state: 'injected', chars: 1522 }],
+      }),
+    ])
+
+    const host = await render()
+    const badges = host.querySelectorAll(
+      '[data-child-session-id="receiver"] [data-testid="child-receipt"]',
+    )
+
+    expect(badges).toHaveLength(1)
+    expect(badges[0].getAttribute('data-receipt-state')).toBe('injected')
+    expect(badges[0].textContent ?? '').toContain('đã nhận từ Build · 1522 chars')
   })
 
   it('`peer_wait` với `targets` dạng VẬT THỂ hiện tên vai, không hiện `[object Object]`', async () => {

@@ -600,6 +600,8 @@ export function ChatPanel() {
             events={harnessRun.events}
             status={harnessRun.status}
             error={harnessRun.error}
+            // T15 — `deliveries[].recipient` là `sessionId`; `main` chính là phiên đang chạy.
+            sessionId={harnessRun.id}
             connectionWarning={connectionWarning}
             onDismissWarning={() => setDismissedWarning(connectionWarning)}
             onOpenLightbox={setLightboxMedia}
