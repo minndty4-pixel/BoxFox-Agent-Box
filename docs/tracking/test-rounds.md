@@ -1762,3 +1762,42 @@ hai lượt):
 **31 passed**, `test_evidence_gate_runtime.py` **15 passed**, `test_turn_counter.py` **5 passed** (thêm ca "lệnh điều
 khiển không phải một lượt"). Giao diện: ba tệp liên quan ⇒ **50 ca đạt** (tệp bằng chứng từ 7 lên **10 ca**: thêm ba ca
 — biên nhận `not_measurable`, lý do là khẳng định vẫn đếm, mã lý do lạ in nguyên mã), `tsc -b --noEmit` ⇒ **exit 0**.
+### Vòng chốt — đóng BUG-71 (rác tệp của phép dò) và lấy được mặt `not_measurable` sống (2026-09-22, khuya)
+
+**Vì sao vòng chốt còn sửa một lỗi.** Vòng kiểm độc lập để **BUG-71** lại sổ ("ghi nhận, chưa sửa — vòng sau").
+Lỗi nằm trong chính mã mới của đợt 3 (phép dò P3.2), cách sửa một dòng, và nó bắt người dùng trả giá ngay: mỗi lượt
+`needs_probe` để lại một tệp `.diff` vô nghĩa trong đúng thư mục mà P1.5 vừa dựng ra để dọn rác.
+
+**Cách sửa (`2752388`).** `probe_workspace` ghi tệp thô của phép dò bằng một lời gọi **ngoài phiên** (`session=None`)
+— đúng luật P1.4 mục 5: worker vẫn ghi tệp, còn `write_evidence` trả `None` khi thiếu định danh nên không ghim thêm gì.
+Đường dẫn do harness dựng sẵn nên bản đọc được vẫn nằm đúng chỗ. Ca kiểm mới
+`test_phep_do_ghi_tep_tho_ngoai_phien_de_khong_sinh_tep_rac`, và `FixtureExecutor` nay ghi lại `session` của mỗi lượt gọi.
+
+**Đo sống** (harness `3102` khởi động lại trên `2752388`, phiên `be76487a4a7b4e45add8f1bb3f526955`, lượt chạy
+`sh tools/mk71.sh` sinh `lop71.txt`):
+- thư mục `.generated_artifacts/captures/evidence/be76487a/` còn **đúng một tệp** `be76487a_2_changes.txt`; trước bản
+  vá mọi lượt `needs_probe` để lại **hai** tệp — thấy ở `4987d659`, `3170db02` và `1c65d2e7`;
+- cổng vẫn chấm bình thường: `turn.end` mang `evidenceVerdict=insufficient`, `evidenceChecked=1`, `changedFiles=1`
+  (`lop71.txt`). **BUG-66 lộ thêm một ca sống**: câu trả lời trung thực nhắc đúng tệp script nó vừa chạy
+  (`tools/mk71.sh`) mà vẫn bị ghim `claim_path_not_in_turn` — nên ngưỡng nâng `enforce` ở §6 kế hoạch (≥ 20 phiên có
+  số **và** tỉ lệ báo động sai < 10 %) **chưa đạt**; phải sửa BUG-66 trước.
+
+**Mặt `not_measurable` lấy được sống — ca mà vòng kiểm độc lập phải bỏ dở.** Câu hỏi 127 để người dùng chọn cách ép
+mặt thứ ba; vòng chốt chọn cách **không đụng gì đang dùng chung**: một harness cô lập (`3123`) với `docker` là một shim
+hỏng (`/var/tmp/v22dot3b/nodocker/docker`, exit 127) — mọi lời gọi tool và cả phép dò của cổng đều hỏng, còn model vẫn
+trả lời bình thường. Lượt chạy `sh tools/mk71.sh` (lệnh không nhận dạng được ⇒ `needs_probe`):
+- `turn.end`: `evidenceVerdict=not_measurable`, `evidenceChecked=1`, `evidenceMissing=1`, `changedFiles=0`;
+  `assistant.evidence.missing=[{reason: box_probe_failed, detail: unreachable: RuntimeError}]`;
+- khẳng định về đường dẫn **không** bị ghim — R5 thắng R3 đúng như §2.3, đo được sống;
+- giao diện (Vite `3131` → harness `3123`, agent-browser **0.21.2**): huy hiệu `data-evidence-badge="not_measurable"`,
+  hàng biên nhận `1 bằng chứng chưa đo được · cổng: BOXFOX_EVIDENCE_GATE = warn`, tiêu đề nhóm
+  `Chưa đo được lượt này`, hàng lý do `phép dò bằng chứng trong box bị lỗi / unreachable: RuntimeError /
+  box_probe_failed`, và ghi chú nhật ký hỏng (`Nhật ký bên trong box chưa ghi được ở phiên này — số liệu lấy từ hàng
+  SQLite của harness.`) hiện ra thay vì làm vỡ khung chat;
+- ảnh: `/code/.generated_artifacts/images/r22dot3b_12_not_measurable_turn.png` (khối thu gọn) và
+  `/code/.generated_artifacts/images/r22dot3b_13_not_measurable_expanded.png` (mở khối, thấy hàng lý do).
+
+**Số đo của vòng chốt.** Backend cả bộ unit ⇒ **1 failed, 1080 passed in 176,41 s** (ca đỏ duy nhất vẫn là
+`test_terminal_tools.py::test_terminal_exec_echo` — box không có PowerShell, lỗi môi trường có trước đợt này); nhóm
+cổng + worker (`test_evidence_gate_runtime.py`, `test_evidence_gate.py`, `test_worker_evidence.py`) ⇒ **58 passed
+in 6,59 s**.
