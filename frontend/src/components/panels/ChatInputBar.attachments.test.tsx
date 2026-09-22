@@ -132,6 +132,7 @@ describe('ChatInputBar — tệp đính kèm đi thật lên box (A6)', () => {
     const textarea = host.querySelector('textarea') as HTMLTextAreaElement
 
     typeInto(textarea, 'đọc tệp này giúp tôi')
+    expect(textarea.value).toBe('đọc tệp này giúp tôi')
     pickFile(host, [new File(['hello world'], 'notes.md')])
     await settle()
 
@@ -157,6 +158,19 @@ describe('ChatInputBar — tệp đính kèm đi thật lên box (A6)', () => {
     ])
     // Ô nhập được xoá sau khi gửi thành công.
     expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe('')
+  })
+
+  it('chip hiện dung lượng người đọc được (không "0 KB" cho tệp nhỏ)', async () => {
+    const { repo } = fakeRepo()
+    const host = render(<ChatInputBar router={routerAdapter(sendSpy())} repository={repo} />)
+
+    pickFile(host, [new File(['x'.repeat(30)], 'nho.md')])
+    await settle()
+
+    const chip = host.querySelector('[data-testid="chat-input-bar"] .font-mono')?.parentElement
+    expect(chip?.textContent).toContain('nho.md')
+    expect(chip?.textContent).toContain('1 KB')
+    expect(chip?.textContent).not.toContain('0 KB')
   })
 
   it('upload lỗi ⇒ onSend KHÔNG được gọi, ô nhập giữ nguyên, có chip đỏ nêu tên tệp', async () => {

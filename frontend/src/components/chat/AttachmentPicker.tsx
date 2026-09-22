@@ -142,7 +142,9 @@ export function AttachmentPicker({
         id: `${dataUrl ? 'img' : 'file'}-${Date.now()}-${idSeqRef.current}`,
         name: file.name,
         source: 'computer',
-        size: `${(file.size / 1024).toFixed(0)} KB`,
+        // Dùng chung một hàm định dạng: bản cũ `(size/1024).toFixed(0)` nói "0 KB" cho mọi
+        // tệp dưới 512 B — đúng sai lệch mà chip dung lượng ở ChatInputBar/transcript cũng gặp.
+        size: formatAttachmentSize(file.size),
         sizeBytes: file.size,
         file,
       }
