@@ -912,7 +912,7 @@ export function SubagentInspectorPanel() {
                                   {waiting && (
                                     <div
                                       data-testid="child-peer-wait"
-                                      className="pl-9 flex items-center gap-1 text-[10px] text-sky-300"
+                                      className="pl-9 flex flex-wrap items-center gap-x-1 gap-y-0.5 text-[10px] text-sky-300"
                                     >
                                       <Clock className="size-3 shrink-0" />
                                       <span className="truncate">
@@ -943,7 +943,7 @@ export function SubagentInspectorPanel() {
                                           className={`flex items-center gap-1 text-[10px] ${line.className}`}
                                         >
                                           <line.icon className="size-3 shrink-0" />
-                                          <span className="truncate">{line.text}</span>
+                                          <span className="truncate" title={line.text}>{line.text}</span>
                                         </div>
                                       ))}
                                     </div>
@@ -960,7 +960,7 @@ export function SubagentInspectorPanel() {
                                         className={`pl-9 flex items-center gap-1 text-[10px] ${line.className}`}
                                       >
                                         <line.icon className="size-3 shrink-0" />
-                                        <span className="truncate">{line.text}</span>
+                                        <span className="truncate" title={line.text}>{line.text}</span>
                                       </div>
                                     )
                                   })}
