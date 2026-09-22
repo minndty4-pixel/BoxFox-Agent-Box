@@ -1155,6 +1155,12 @@ class HarnessRuntime(RuntimeCommands):
         # với `DEADLINE_CLAMPED` của C1).
         requested_steps = max(1, int(values.get('maxSteps', MAX_STEPS_DEFAULT)))
         max_steps = min(MAX_STEPS_MAX, requested_steps)
+        # Cờ kẹp theo DẢI CỦA ENGINE tính trước khi kẹp theo cha: hai việc khác nhau, và notice
+        # `STEPS_CLAMPED`/`DEADLINE_CLAMPED` chỉ nói về dải (câu của nó ghi "outside the engine
+        # range"), không nói về ngân sách của cha.
+        engine_clamped_deadline = deadline != requested_deadline
+        engine_clamped_steps = max_steps != requested_steps
+        max_steps, deadline = self.clamp_child_budget(parent_id, max_steps, deadline)
         config = {'skills': list(dict.fromkeys(skills)), 'subagents': subagents, 'route': route,
                   'maxSteps': max_steps,
                   'deadlineSeconds': deadline,
@@ -1165,9 +1171,9 @@ class HarnessRuntime(RuntimeCommands):
                   # Cắt bằng hằng số dùng chung: phía giao diện đọc đúng con số này từ
                   # `limits.py` (qua `runtime-info`), không chép tay lại lần thứ hai.
                   'instructions': str(values.get('instructions', ''))[:INSTRUCTIONS_MAX_CHARS]}
-        if deadline != requested_deadline:
+        if engine_clamped_deadline:
             config['deadlineClamped'] = True
-        if max_steps != requested_steps:
+        if engine_clamped_steps:
             config['stepsClamped'] = True
         # Giữ metadata của model đã định tuyến: các lượt sau gửi route kèm
         # `thinkingLevel` (UI gửi ở mỗi lượt) và `start()` cần nó để đối chiếu.
@@ -1512,14 +1518,17 @@ class HarnessRuntime(RuntimeCommands):
     def partial_turn(self, sid):
         """Mã lý do khi lượt gần nhất của phiên này trả về câu trả lời DỞ, ngược lại `None`.
 
-        Vòng 22 (B5): ba notice BỀN nói cùng một sự thật — lượt bị nhà cung cấp cắt ở trần
+        Vòng 22 (B5): bốn notice BỀN nói cùng một sự thật — lượt bị nhà cung cấp cắt ở trần
         output (`PROVIDER_OUTPUT_TRUNCATED`, C2), hết trần bước (`STEP_BUDGET_EXHAUSTED`, B3),
-        hoặc hết hạn chót (`DEADLINE_EXCEEDED`, B4). Hàng `sessions` vẫn `completed` (bất biến
+        hết hạn chót (`DEADLINE_EXCEEDED`, B4), hoặc câu trả lời bị cắt ở trần độ dài
+        (`ANSWER_TOO_LONG`, D2 — soát engine, phát hiện 7: trước đó cha đọc con này là `completed`
+        trọn vẹn trong khi chính `turn_end` của con nói `partial`). Hàng `sessions` vẫn `completed` (bất biến
         #1: không thêm từ vựng trạng thái), nên `delegate` phải đọc notice để trả `partial` cho
         cha kèm ĐÚNG mã lý do — cha cần phân biệt "con bị nhà cung cấp cắt" với "con hết
         ngân sách" vì hai ca cần hai cách xử lý khác nhau.
         """
-        for code in (TRUNCATED_OUTPUT_NOTICE_CODE, STEP_BUDGET_NOTICE_CODE, DEADLINE_NOTICE_CODE):
+        for code in (TRUNCATED_OUTPUT_NOTICE_CODE, STEP_BUDGET_NOTICE_CODE, DEADLINE_NOTICE_CODE,
+                     ANSWER_TOO_LONG_CODE):
             if self._notice_seen(sid, code):
                 return code
         return None
@@ -1703,6 +1712,12 @@ class HarnessRuntime(RuntimeCommands):
         # không ai biết một bước dài bao nhiêu, ngưỡng nén lúc đó là bao nhiêu. Cặp event
         # dưới đây đóng đúng MỘT lần cho mỗi bước, trên mọi đường ra (xong, hỏng, bị dừng).
         turn = {'step': None}
+        # Đường chẩn đoán của lượt NÀY (không phải của phiên): `finish_partial` bật lên khi
+        # lượt đã chốt dở, và cổng hạn chót đọc nó — xem `clamp_child_budget` cùng vòng soát
+        # engine: cổng cũ hỏi `partial_turn(sid)` (quét MỌI notice của phiên), nên một phiên
+        # từng có lượt dở nào đó thì mọi hạn chót sau đó bỏ luôn đường chẩn đoán và đóng lượt
+        # bằng `failed` trắng — đúng thứ B4/BUG-42 dựng lên để xoá.
+        turn_partial = {'code': ''}
 
         def close_turn(status, finish_reason=None, tool_calls=0, usage=None, extra=None):
             """Đóng cặp `turn_start`/`turn_end` của bước đang mở, nếu có.
@@ -1743,6 +1758,10 @@ class HarnessRuntime(RuntimeCommands):
             lượt này không trọn vẹn. Hàng `sessions` vẫn `completed` (bất biến #1: không thêm từ
             vựng trạng thái). Trả `text` để chỗ gọi `return` thẳng.
             """
+            # D-4 — câu chốt cũng qua cổng độ dài: đường chốt trong cửa sổ giữ chỗ không được
+            # là đường vòng qua trần 150 000 ký tự (soát engine, phát hiện 3).
+            text, _ = self.enforce_answer_length(sid, text)
+            turn_partial['code'] = reason_code
             messages.append({'role': 'assistant', 'content': text})
             self.store.save(sid, messages, 'completed')
             self.store.emit(sid, 'assistant', {'text': text, 'thought': '', 'final': True})
@@ -2180,7 +2199,7 @@ class HarnessRuntime(RuntimeCommands):
             raise
         except Exception as exc:
             code, error = classify_failure(exc)
-            if code == DEADLINE_NOTICE_CODE and not self.partial_turn(sid):
+            if code == DEADLINE_NOTICE_CODE and not turn_partial['code']:
                 # B4 — hết hạn chót cũng đi ĐÚNG đường chẩn đoán của B3, chỉ khác cửa sổ: hạn chót
                 # của lượt đã tiêu hết nên `budget=None` (cửa sổ chốt vẫn bị chặn ở 30 s), và pha
                 # đọc cho phép `WRAP_UP_READ_TOOL_CALLS` lời gọi công cụ ĐỌC để model thấy lại
@@ -2569,6 +2588,34 @@ class HarnessRuntime(RuntimeCommands):
                     '(vé dùng được đúng một lần).',
                     data={plan_registry.AMBIGUITY_TICKET_KEY: ticket}, status='info')
             raise
+
+    def clamp_child_budget(self, parent_id, max_steps, deadline):
+        """D-15 — con KHÔNG BAO GIỜ rộng hơn cha, và đây là chỗ duy nhất mọi con đi qua.
+
+        `delegate()` đã tự kẹp con của nó (thêm trần 40 bước / 300 s), nhưng đường lệnh/kỹ năng
+        (`skills/runtime_commands._command_task`) dựng con bằng `create()` với `deadlineSeconds`
+        của phiên và **không** có `maxSteps`, nên con rơi về mặc định 40 bước: phiên đặt 12 bước
+        sinh ra con 40 bước — rộng hơn chính cha nó (đo sống vòng 22, soát engine). Kẹp theo cha ở
+        đây phủ mọi đường tạo con, kể cả đường CLI của `/claude-code`.
+
+        GIỮ LUẬT CŨ của đường lệnh: con thừa hưởng `deadlineSeconds` của phiên (bài kiểm
+        `test_command_child_inherits_the_session_time_budget` ghim điều đó — một lượt
+        `/claude-code` thật cần hơn 180 giây mặc định). Trần 40 bước / 300 s của D-15 vẫn nằm ở
+        `delegate()`; ở đây chỉ có luật "không rộng hơn cha".
+
+        Kẹp xảy ra thì ghi một dòng nhật ký hệ thống: đó là sự thật về ngân sách của con, và B7
+        đã chốt nguyên tắc "kẹp vẫn giữ, nhưng phải NÓI RA".
+        """
+        if parent_id is None:
+            return max_steps, deadline
+        parent_config = (self.store.get(parent_id) or {}).get('config') or {}
+        capped = (min(max_steps, int(parent_config.get('maxSteps', MAX_STEPS_DEFAULT))),
+                  min(deadline, int(parent_config.get('deadlineSeconds', DEADLINE_DEFAULT_SECONDS))))
+        if capped != (max_steps, deadline):
+            system_log.write('session.child_budget_clamped', level='info', parentId=parent_id,
+                             requestedSteps=max_steps, requestedDeadline=deadline,
+                             steps=capped[0], deadlineSeconds=capped[1])
+        return capped
 
     async def plan_registration_for(self, session, slug, args, declared):
         """B2 — chọn identity/version/parent từ chỉ mục box TRƯỚC khi ghi (§3.2–§3.4 + R1/R3).

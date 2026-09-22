@@ -1276,8 +1276,8 @@ Vite `:3100`, box `agentbox-box`), không ca nào chạy lại tính năng cũ k
   liên kết tượng trưng bị bỏ qua và không bị đi theo. Sống (phiên `629dfc6eced347f995b0da3c603aecb5`): vé mơ hồ dùng
   **một lần** — lượt 1 từ chối + hàng `F:` với `score 0.6667` (jaccard `{boxfox, upgrades}/{boxfox, 5, upgrades}` = 2/3),
   lượt 2 **nguyên văn** được nhận và ghim vé vào hàng `P:`, lượt 4 với slug khác sinh vé mới (không rò), lượt 5 ghi `v2`.
-- **Ba bộ test (T14)** — `backend/tests/unit`: **1 failed, 916 passed** (bài đỏ sẵn có `test_terminal_tools.py::test_terminal_exec_echo`,
-  `Exited with code 127`); `-k "partial_budget or child_diagnosis"`: **15 passed**; `-k "plan_eval or plan_registry or write_plan"`:
+- **Ba bộ test (T14)** — `backend/tests/unit`: **1 failed, 920 passed** (bài đỏ sẵn có `test_terminal_tools.py::test_terminal_exec_echo`,
+  `Exited with code 127`); `-k "partial_budget or child_diagnosis"`: **16 passed**; `-k "plan_eval or plan_registry or write_plan"`:
   **142 passed**; `deploy/docker`: **496 passed** (493 + ba bài mới của BUG-45/BUG-46); frontend `VITE_BOX_API_URL=http://localhost:8081
   npx vitest run`: **118 tệp / 958 bài passed**; `npx tsc -b --noEmit`: **sạch**.
 - **Ba lỗi trong chính mã mới** (BUG-45…BUG-47, bảng ở `bug-register.md` § 6.23, đều đã sửa kèm test): `prune` nuốt `OSError`
@@ -1297,6 +1297,23 @@ Vite `:3100`, box `agentbox-box`), không ca nào chạy lại tính năng cũ k
   giữ `result.status = 'running'` sau lượt lệnh thành công (`main` y hệt, không nơi nào đọc ngoài phép kiểm idempotency);
   (6) router chưa chuyển được một luồng nhà cung cấp **rỗng hoàn toàn** (`engine.mjs` đòi `finishReason`) nên nhánh B8 chỉ
   tới được bằng nội dung chỉ có khoảng trắng.
+- **Soát engine và vá trước khi gộp** (bản soát độc lập thứ ba, `v22-review-engine3`: **5/10 — Medium**,
+  "ship with mitigations"): bốn phát hiện đã vá trên chính nhánh này, mỗi phát hiện một bài kiểm mới —
+  (1) cổng chẩn đoán của hạn chót hỏi `partial_turn(sid)`, hàm này quét **mọi** notice bền của **phiên**, nên một phiên
+  từng có lượt dở nào đó thì mọi hạn chót sau đó bỏ luôn đường chẩn đoán và đóng lượt bằng `failed` trắng — đúng thứ
+  B4/BUG-42 dựng lên để xoá; nay là cờ theo **lượt** (`turn_partial`, bài `test_a_later_turn_still_gets_the_deadline_diagnosis`);
+  (2) con của đường lệnh/kỹ năng (`skills/runtime_commands._command_task`) không truyền `maxSteps` nên rơi về mặc định
+  40 bước — **rộng hơn cha** khi phiên đặt ít bước; nay mọi con đi qua `clamp_child_budget()` ngay trong `create()`, nên
+  đường CLI của `/claude-code` cũng bị phủ (`test_command_child_never_gets_more_steps_than_the_session`, và bài
+  "con lấy đúng ngân sách thời gian của phiên" cũ vẫn xanh vì trần engine của phiên là 600 s);
+  (3) câu chốt trong cửa sổ giữ chỗ vào thẳng transcript mà **không** qua cổng độ dài D2 ⇒ một câu 200 000 ký tự lọt
+  trần 150 000; nay `finish_partial` gọi `enforce_answer_length` trước khi lưu
+  (`test_a_diagnosis_is_never_stored_past_the_length_ceiling`); (4) `partial_turn` không quét `ANSWER_TOO_LONG` nên cha đọc
+  một con bị cắt là `completed` trọn vẹn trong khi `turn_end` của chính con nói `partial` — nay cùng nhóm
+  (`test_a_cut_answer_is_partial_for_the_parent_too`). Ba phát hiện còn lại của bản soát (cửa sổ giữ chỗ chỉ cần **độ dài**
+  ≥ 80 ký tự là mở, không đòi dấu hiệu chẩn đoán; lượt dở khi chưa có bước nào đang mở thì thiếu hàng `turn_end` nên
+  `stepsUsed`/`toolsRun` không tới bàn điều khiển; vé mơ hồ của plan ghim theo `(slug, thư mục)` chứ **không** theo nội dung
+  plan) **không** vá trong đợt này — ghi ở mục "phản hồi ngoài phạm vi" của PR #3.
 - **Dấu vết đo để lại** (đợt kiểm thử, không phải bản ghi sản phẩm): `.plans` **thêm** `v1/v2-boxfox-upgrades-two.md`,
   `v1/v2-kettle-lantern.md`, `v1-fix4-real-version.md`; hai tệp gốc `v1-agent-box-plan.md` / `v1-boxfox-5-upgrades.md`
   **không đổi một byte** (sha256 `30e05800…` / `4831506b…`); `.uploaded_artifacts` thêm `8.md`…`16.md`, `11.png`,

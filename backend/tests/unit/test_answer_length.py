@@ -139,3 +139,33 @@ def test_a_normal_answer_gets_no_notice_at_all(tmp_path):
     assert notices(store, sid) == []
     assert turn_ends(store, sid)[-1]['status'] == 'completed'
     store.close()
+
+
+def test_a_cut_answer_is_partial_for_the_parent_too(tmp_path):
+    """Soát engine #7: lượt bị cắt ở trần độ dài là `partial` với CHA, không phải `completed`.
+
+    `turn_end` của lượt đã nói `partial` từ D2, nhưng `partial_turn` không quét
+    `ANSWER_TOO_LONG`, nên cha đọc con này là `completed` trọn vẹn — hai chỗ nói hai chuyện.
+    """
+    store, runtime, session = run_turn(tmp_path, FixtureModel([answer('d' * 200_000)]))
+    sid = session['id']
+
+    assert notices(store, sid, ANSWER_TOO_LONG_CODE)[0]['partial'] is True
+    assert runtime.partial_turn(sid) == ANSWER_TOO_LONG_CODE, 'đúng mã lý do, không phải mã khác'
+    store.close()
+
+
+def test_a_diagnosis_is_never_stored_past_the_length_ceiling(tmp_path):
+    """Soát engine #3b: đường chốt trong cửa sổ giữ chỗ cũng qua cổng độ dài (D2).
+
+    Trước đợt này `finish_partial` lưu nguyên văn câu chẩn đoán, nên một câu 200 000 ký tự vào
+    thẳng transcript dù trần là 150 000 — đường vòng qua D-4.
+    """
+    store, _runtime, session = run_turn(tmp_path, FixtureModel([answer('e' * 200_000)]))
+    sid = session['id']
+
+    rows = notices(store, sid, ANSWER_TOO_LONG_CODE)
+    assert len(rows) == 1 and rows[0]['keptChars'] == ANSWER_MAX_CHARS
+    kept = store.get(sid)['messages'][-1]['content']
+    assert len(kept) == ANSWER_MAX_CHARS + len(answer_truncation_tail())
+    store.close()

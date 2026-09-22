@@ -353,3 +353,38 @@ def test_http_child_that_hits_its_budget_gives_the_parent_a_diagnosis(tmp_path):
         store.close()
 
     asyncio.run(run())
+
+
+def test_a_later_turn_still_gets_the_deadline_diagnosis(tmp_path):
+    """Soát engine #1 (High): cổng chẩn đoán của hạn chót phải theo **lượt**, không theo phiên.
+
+    Phiên ở đây đã có một lượt chốt dở (chạm trần bước) từ TRƯỚC; lượt sau chạm hạn chót vẫn phải
+    đi đường chẩn đoán. Cổng cũ hỏi `partial_turn(sid)` — hàm này quét **mọi** notice bền của
+    phiên — nên lượt thứ hai bị đóng bằng `failed` trắng không chẩn đoán: đúng thứ B4/BUG-42 dựng
+    lên để xoá, chỉ đổi cửa vào.
+    """
+    client = FixtureModel([answer(calls=[call('file_read', {'path': 'a'})]),
+                           answer(DIAGNOSIS_TEXT),          # lượt 1: chạm trần bước ⇒ partial
+                           asyncio.TimeoutError(),         # lượt 2: hết hạn chót
+                           answer(DIAGNOSIS_TEXT)])        # lượt 2: chẩn đoán
+    store = SessionStore(tmp_path / 'sessions.db')
+    runtime = HarnessRuntime(store, FixtureExecutor(), client)
+    session = runtime.create({'skills': [], 'connectionId': 'c1', 'modelId': 'deepseek-v4-flash',
+                              'maxSteps': 2})
+    sid = session['id']
+
+    async def run():
+        await runtime.submit(sid, 'lượt một')
+        await runtime.tasks[sid]
+        await runtime.submit(sid, 'lượt hai, dài hơn')
+        await runtime.tasks[sid]
+
+    asyncio.run(run())
+
+    assert len(notices(store, sid, STEP_BUDGET_NOTICE_CODE)) == 1, 'lượt đầu chốt dở như thiết kế'
+    rows = notices(store, sid, DEADLINE_NOTICE_CODE)
+    assert len(rows) == 1 and rows[0]['diagnosis'] is True, 'lượt hai VẪN có chẩn đoán'
+    assert [e for e in store.events(sid) if e['type'] == 'error'] == [], 'không có `failed` trắng'
+    assert store.get(sid)['status'] == 'completed', 'bất biến #1: hàng `sessions` vẫn `completed`'
+    assert turn_ends(store, sid)[-1]['status'] == 'partial'
+    store.close()

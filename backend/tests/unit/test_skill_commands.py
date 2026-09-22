@@ -279,3 +279,23 @@ def test_command_child_inherits_the_session_time_budget(registry):
         assert budget == 600
         assert child['config']['deadlineSeconds'] == budget, 'con lấy đúng ngân sách của phiên'
     asyncio.run(run())
+
+
+def test_command_child_never_gets_more_steps_than_the_session(registry):
+    """Soát engine #2: đường lệnh/kỹ năng không truyền `maxSteps`, nên con rộng hơn cha.
+
+    `delegate()` tự kẹp con của nó, nhưng con của lệnh được dựng bằng `create()` với
+    `deadlineSeconds` của phiên và **không** có `maxSteps` ⇒ rơi về mặc định 40 bước: phiên đặt
+    12 bước sinh ra con 40 bước. Luật "con không rộng hơn cha" giờ nằm trong `create()`.
+    """
+    async def run():
+        runtime = HarnessRuntime(registry.store, Executor(), Model(), registry.catalog)
+        parent = runtime.create({'skills': [], 'maxSteps': 12, 'deadlineSeconds': 600})
+        await runtime.submit(parent['id'], '/plan Inspect the system', invocation_id='invocation-4')
+        await runtime.tasks[parent['id']]
+        children = registry.store.db.execute('SELECT id FROM sessions WHERE parent_id=?', (parent['id'],)).fetchall()
+        assert len(children) == 1
+        child = registry.store.get(children[0]['id'])
+        assert child['config']['maxSteps'] == 12, 'con phải kẹp theo cha, không phải mặc định 40'
+        assert child['config']['deadlineSeconds'] <= 600
+    asyncio.run(run())
