@@ -234,6 +234,23 @@ def _clean_path(value):
     return text.replace('/home/agent/workspace/', '').strip('/')
 
 
+def _clean_command(value):
+    """A command token as the answer wrote it, without markdown dressing or sentence punctuation.
+
+    ``_COMMAND_RE``'s leading class eats the character before the runner (a space, ``>``, a backtick),
+    and its argument class eats whatever follows the argument, so `` `git status --short` `` comes out
+    as ``"`git status"``. Compared raw, that token can never match the command the turn really ran, so
+    an honest answer that formats a real command as code would be charged with an invented one (§2.3,
+    BUG-67). Dressing never belongs to the command; the words inside it do.
+    """
+    text = str(value or '').strip()
+    while text[:1] in ('`', '"', "'"):
+        text = text[1:].strip()
+    while text[-1:] in ('`', '"', "'", '.', ',', ';', ':', '!', '?', ')'):
+        text = text[:-1].strip()
+    return text
+
+
 def is_ui_path(path):
     """A workspace path that is part of the interface (so a UI change needs a capture)."""
     text = _clean_path(path).lower()
@@ -483,7 +500,7 @@ def claim_paths(text):
                 claims.append({'text': stripped[:MAX_CLAIM_CHARS], 'line': index + 1, 'path': path,
                                'command': None, 'assertive': assertive})
             for match in _COMMAND_RE.finditer(segment):
-                command = match.group(0).strip()
+                command = _clean_command(match.group(0))
                 key = ('command', command)
                 if key in seen:
                     continue
@@ -510,7 +527,7 @@ def _path_backed(path, known):
 
 
 def _command_backed(command, profile, fragments):
-    text = str(command or '').strip()
+    text = _clean_command(command)
     if not text:
         return True
     head = text.split()[0] if text.split() else text

@@ -1303,13 +1303,13 @@ không có khoá thì vẫn đếm như trước. Test: `test_lenh_dieu_khien_kh
 điều kiện": một box treo ở chỗ ghi ấy ăn hạn chót của lượt và xoá luôn câu trả lời đang được chấm. Sửa: cùng trần
 `_clamp_timeout(...)` như phép dò.
 
-**BUG-66…BUG-69 — ghi nhận, CHƯA SỬA (vòng sau).** (66) **R3 phạt oan văn xuôi trung thực:** `known_paths` chỉ là phạm vi
+**BUG-66, BUG-68, BUG-69 — ghi nhận, CHƯA SỬA (vòng sau); BUG-67 đã sửa trong vòng kiểm độc lập.** (66) **R3 phạt oan văn xuôi trung thực:** `known_paths` chỉ là phạm vi
 *lượt này*, nên câu trả lời nhắc tới tệp có thật trong box mà lượt không đọc (ví dụ dẫn chứng `docs/plan/…`) vẫn bị
 `claim_path_not_in_turn`; §2.3 của kế hoạch đòi thêm điều kiện "**và** không tồn tại trong box", nhưng chưa có manifest
 nào để kiểm — ba hình dạng đã đo: câu dẫn chứng, đích của `sed -i`, đích của `pytest`. (67) **`_COMMAND_RE` nuốt dấu phân
 cách**: dấu phân cách nằm trong chính `group(0)` mà `claim_paths` lưu lại, nên lệnh viết trong dấu backtick bị
 cắt mất một ký tự và **không bao giờ** khớp,
-còn lệnh không backtick chỉ khớp phần thân — một đích bịa vẫn qua. (68) **Lượt giao việc con được ghim `sufficient` khi
+còn lệnh không backtick chỉ khớp phần thân — một đích bịa vẫn qua. **Đã sửa (vòng kiểm độc lập, cùng PR):** mã lệnh nay được chuẩn hoá bằng helper mới `_clean_command` — bóc dấu backtick/nháy ở hai đầu và dấu câu cuối câu — ngay khi `claim_paths` lưu nó, và lần nữa khi `_command_backed` đối chiếu. Ca kiểm mới: `test_r3_lenh_da_chay_ma_viet_trong_dau_backtick_khong_bi_phat_oan` (ba câu: có backtick giữa câu, có backtick cuối câu, không backtick). Đo sống trên harness `3102`: lượt ghi `src/tick2.py` rồi chạy `git status --short`, câu trả lời bọc lệnh trong dấu backtick — **trước** khi sửa: `insufficient` + `answer_references_unknown_command` (mã lệnh lưu ra là "`git"); **sau** khi sửa: `sufficient`, `missing=[]`, `checked` vẫn 2. Nửa còn lại của (67) — lệnh không backtick chỉ khớp phần thân nên một đích bịa vẫn qua — **chưa sửa**, giữ nguyên ở vòng sau. (68) **Lượt giao việc con được ghim `sufficient` khi
 con còn đang chạy** (`delegate_task` trả `status='started'` là một mảnh `child` hợp lệ). (69) **Cổng chỉ chấm được hình
 dạng câu trả lời, không chấm được khẳng định thuần văn** — món nợ đã ghi ở §6.25 vẫn nguyên.
 

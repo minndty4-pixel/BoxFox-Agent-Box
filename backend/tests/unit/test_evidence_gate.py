@@ -278,6 +278,26 @@ def test_r3_lenh_khong_he_chay_trong_luot():
     assert 'answer_references_unknown_command' in [item['reason'] for item in verdict['missing']]
 
 
+def test_r3_lenh_da_chay_ma_viet_trong_dau_backtick_khong_bi_phat_oan():
+    """BUG-67: dấu backtick là dấu trang trí, không phải một ký tự của lệnh.
+
+    Đo sống trước khi sửa: cùng một lượt, câu trả lời viết `` `git status --short` `` bị chấm
+    `insufficient` kèm `answer_references_unknown_command` (mã lệnh lưu ra là ``"`git"``), còn câu
+    không backtick thì `sufficient` — cổng phạt đúng câu trả lời trung thực vì kiểu trình bày.
+    """
+    profile = gate.classify_turn([command_call('git status --short', stdout='clean', exit_code=0)])
+
+    for text in ('Đã xem trạng thái bằng `git status --short` ở cuối câu.',
+                 'Đã xem trạng thái bằng `git status --short`.',
+                 'Đã xem trạng thái bằng git status --short.'):
+        verdict = gate.assess(text, profile, None, evidence(command_call(
+            'git status --short', stdout='clean', exit_code=0)))
+        assert verdict['verdict'] == 'sufficient', text
+        assert verdict['missing'] == [], text
+        command_claims = [claim for claim in verdict['claims'] if claim.get('command')]
+        assert [claim['backed'] for claim in command_claims] == [True], text
+
+
 def test_r3_cau_chi_dan_buoc_tiep_khong_bi_tinh_la_lenh_bia():
     """Soát cổng: câu chẩn đoán MỘT dòng có "Đã làm:" ở đầu và `pytest` ở cuối.
 
