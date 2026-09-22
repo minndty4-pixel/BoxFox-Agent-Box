@@ -121,7 +121,10 @@ def test_bien_nhan_giao_hang_khong_the_giao_hai_lan(tmp_path):
     receipts = store.child_delivery_receipts(child)
     assert receipts == [
         {'recipient': 'peer-sid-2', 'state': 'injected', 'chars': 120, 'truncated': False},
-        {'recipient': 'peer-sid-2', 'state': 'skipped', 'chars': 90, 'truncated': True},
+        # T11 thêm `reason`: biên nhận bỏ qua phải nói VÌ SAO, nếu không thì "không giao được" và
+        # "người nhận đã xong" trông giống nhau trong sổ.
+        {'recipient': 'peer-sid-2', 'state': 'skipped', 'chars': 90, 'truncated': True,
+         'reason': 'recipient_not_running'},
     ]
     assert store.child_set_deliveries(child, receipts)['deliveries'] == receipts
     store.close()

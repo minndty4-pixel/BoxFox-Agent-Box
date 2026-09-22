@@ -381,6 +381,25 @@ class SessionStore:
                                ' ORDER BY id LIMIT ?', (sid, int(limit))).fetchall()
         return [dict(r) for r in rows]
 
+    def claim_deliveries(self, recipient, limit=4):
+        """Giành các biên nhận `pending` của một phiên để bơm vào transcript — **một lần**.
+
+        `UPDATE … WHERE state='pending'` là chỗ chốt chống bơm hai lần: hàng nào đã bị
+        người khác giành thì `rowcount == 0` và không nằm trong kết quả. Đọc và đổi nằm
+        trong **một** transaction, nên không có cửa sổ nào để hai nhịp cùng thấy một hàng.
+        """
+        claimed = []
+        with self.db:
+            rows = self.db.execute(
+                "SELECT * FROM child_deliveries WHERE recipient=? AND state='pending'"
+                ' ORDER BY id LIMIT ?', (recipient, int(limit))).fetchall()
+            for row in rows:
+                cursor = self.db.execute("UPDATE child_deliveries SET state='injected', injected=?"
+                                         " WHERE id=? AND state='pending'", (time.time(), row['id']))
+                if cursor.rowcount == 1:
+                    claimed.append(dict(row))
+        return claimed
+
     def mark_delivered(self, delivery_id, state='injected', skip_reason=None):
         """Chuyển `pending` → `injected`/`skipped` trong một transaction; trả hàng sau khi đổi."""
         if state not in ('injected', 'skipped'):
@@ -399,8 +418,16 @@ class SessionStore:
 
     def child_delivery_receipts(self, child_id):
         """Biên nhận gọn để nhét vào dict kết quả/event: `{recipient,state,chars,truncated}`."""
-        return [{'recipient': r['recipient'], 'state': r['state'], 'chars': r['chars'],
-                 'truncated': bool(r['truncated'])} for r in self.deliveries_of(child_id)]
+        receipts = []
+        for row in self.deliveries_of(child_id):
+            receipt = {'recipient': row['recipient'], 'state': row['state'],
+                       'chars': row['chars'], 'truncated': bool(row['truncated'])}
+            if row['state'] == 'skipped' and row['skip_reason']:
+                # Lý do bỏ qua phải tới được người đọc: "không giao" mà im lặng thì không
+                # phân biệt được với "giao rồi".
+                receipt['reason'] = row['skip_reason']
+            receipts.append(receipt)
+        return receipts
 
     # ------------------------------------------------------------------
     # Sổ duyệt plan (vòng 20 §4.1) + điểm đánh giá P1–P8 (§5)

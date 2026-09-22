@@ -125,6 +125,10 @@ PEER_WAIT_CLAMPED_CODE = 'PEER_WAIT_CLAMPED'
 # 8 000 ký tự là 96 000 ký tự, vượt xa trần 20 000 của một tool result. Mục sau khi hết ngân
 # sách vẫn có mặt trong `done` (kèm `truncated: True`), chỉ phần chữ là không còn.
 PEER_WAIT_RESULT_CHARS = 16_000
+# T11 — trần địa chỉ giao hàng trong MỘT lời gọi `delegate_task`. Bốn là đủ cho các
+# đường ống thật (main + ba chuyên gia) và vẫn giữ kết quả tool nhỏ; hơn nữa là lỗi
+# tool rõ ràng, không cắt im lặng.
+PEER_DELIVER_MAX = 4
 
 # --- Công tắc vận hành của mesh (T5/T10/T13) -----------------------------------------------
 # Đọc env mỗi lần hỏi, không đọc một lần lúc nạp: một tiến trình harness sống lâu, nên đổi
