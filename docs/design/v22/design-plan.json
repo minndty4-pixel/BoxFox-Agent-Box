@@ -1,0 +1,94 @@
+{
+  "title": "BoxFox vòng 22 — mockup giao diện cho bản plan (bảng Sub-agents theo turn, bằng chứng sống, tệp đính kèm)",
+  "summary": "Ba mặt giao diện mà bản plan vòng 22 sẽ dựng: (1) bảng Sub-agents tách theo TỪNG turn, kèm trạng thái con đang chờ bạn và khoảnh khắc nhận kết quả; (2) khối câu trả lời cuối mang BẰNG CHỨNG SỐNG với nhãn ba trạng thái; (3) đường tệp đính kèm đi tới box — popover render dạng overlay và chip hiện đường dẫn thật. Mỗi phần có một phương án khuyến nghị và các phương án thay thế.",
+  "sections": [
+    {
+      "title": "Sub-agents tab: one collapsible table per turn",
+      "key": "turns-panel",
+      "description": "Per-turn blocks with their own child table, an empty turn, a waiting-for column and an all-turns toggle.",
+      "variations": [
+        {
+          "title": "Per turn - turn 3 has no children (empty, not inherited)",
+          "key": "per-turn",
+          "html_link": "turns-panel-per-turn.html",
+          "is_recommended": true
+        },
+        {
+          "title": "Per turn - two children running, one waiting for peer review",
+          "key": "two-running",
+          "html_link": "turns-panel-two-running.html",
+          "is_recommended": false
+        },
+        {
+          "title": "All turns toggle on - history grouped by turn, no merged rows",
+          "key": "all-turns",
+          "html_link": "turns-panel-all-turns.html",
+          "is_recommended": false
+        }
+      ]
+    },
+    {
+      "title": "Chat timeline: child waiting for a peer, and the delivery receipt",
+      "key": "turns-waiting",
+      "description": "Child chip while it waits for a peer, and the receipt both parent and peer see when the result lands.",
+      "variations": [
+        {
+          "title": "Waiting for review - max 4 min, progress banked, what main will receive",
+          "key": "child-waits-peer",
+          "html_link": "turns-waiting-child-waits-peer.html",
+          "is_recommended": true
+        },
+        {
+          "title": "Peer result delivered - receipt visible to parent and peer",
+          "key": "delivery-receipt",
+          "html_link": "turns-waiting-delivery-receipt.html",
+          "is_recommended": false
+        }
+      ]
+    },
+    {
+      "title": "Final answer carrying living proof (three-state badge + evidence list)",
+      "key": "evidence-badge",
+      "description": "Final-answer block: three-state evidence badge, receipt line, and the evidence list behind it.",
+      "variations": [
+        {
+          "title": "Verified — full evidence list (recommended)",
+          "key": "verified",
+          "html_link": "evidence-badge-verified.html",
+          "is_recommended": true
+        },
+        {
+          "title": "Warn — answer delivered, marked unverified",
+          "key": "warn-unverified",
+          "html_link": "evidence-badge-warn.html",
+          "is_recommended": false
+        },
+        {
+          "title": "Partial — not measurable, turn cut by the step budget",
+          "key": "partial",
+          "html_link": "evidence-badge-partial.html",
+          "is_recommended": false
+        }
+      ]
+    },
+    {
+      "title": "Composer attachments that survive the box",
+      "key": "attachments",
+      "description": "The `+` menu drawn as a hit-testable overlay, and a chip row carrying real box paths and upload state.",
+      "variations": [
+        {
+          "title": "Popover as overlay — menu renders above the toolbar",
+          "key": "popover-overlay",
+          "html_link": "attachments-popover-overlay.html",
+          "is_recommended": true
+        },
+        {
+          "title": "Chip row — real box paths and uploading/uploaded/failed states",
+          "key": "chip-row",
+          "html_link": "attachments-chip-row.html",
+          "is_recommended": false
+        }
+      ]
+    }
+  ]
+}

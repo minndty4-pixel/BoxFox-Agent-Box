@@ -1,0 +1,50 @@
+{
+  "title": "Sub-agents tab scoped per turn + the waiting-for-a-peer chat state",
+  "summary": "Two surfaces, five files, all on the existing dark BoxFox console shell (sidebar, chat column, right-hand workspace panel) using the product's own tokens (#0a0a0a bg, #121212 panel, #262626 line, zinc text, blue #3b82f6 brand, emerald/amber/red status chips) so the mockups drop straight onto SubagentInspectorPanel.tsx and HarnessStepView.tsx. Section turns-panel replaces today's single flat SPECIALISTS PIPELINE table with one collapsible block per turn: the turn header carries the prompt excerpt, the turn's own steps count, duration and status, and the block body carries that turn's child table (role, goal, steps used, tools executed, status, waiting-for). The recommended variation shows turn 3 (a 2-step, 3-second '2+2' answer) with an explicit empty state, which is the bug from r21_perTurn_03: the previous turn's failed child must not leak into a turn that delegated nothing. Two alternatives cover the busiest real state (two children running, one of them blocked waiting for a peer) and the 'All turns' aggregate that keeps history reachable without merging rows. Section turns-waiting puts the same states on the chat timeline: a child chip that says what it is waiting for, the wall-clock ceiling, the progress it has already banked and what the parent will receive, then the delivery receipt shown to both parent and peer when the peer result lands. Filenames are prefixed with the section key; each file is self-contained, no network requests, and reflows to a stacked single column under ~1100px so the tables stay readable when narrow.",
+  "sections": [
+    {
+      "title": "Sub-agents tab: one collapsible table per turn",
+      "key": "turns-panel",
+      "description": "Per-turn blocks with their own child table, an empty turn, a waiting-for column and an all-turns toggle.",
+      "variations": [
+        {
+          "title": "Per turn - turn 3 has no children (empty, not inherited)",
+          "key": "per-turn",
+          "html_link": "turns-panel-per-turn.html",
+          "is_recommended": true
+        },
+        {
+          "title": "Per turn - two children running, one waiting for peer review",
+          "key": "two-running",
+          "html_link": "turns-panel-two-running.html",
+          "is_recommended": false
+        },
+        {
+          "title": "All turns toggle on - history grouped by turn, no merged rows",
+          "key": "all-turns",
+          "html_link": "turns-panel-all-turns.html",
+          "is_recommended": false
+        }
+      ]
+    },
+    {
+      "title": "Chat timeline: child waiting for a peer, and the delivery receipt",
+      "key": "turns-waiting",
+      "description": "Child chip while it waits for a peer, and the receipt both parent and peer see when the result lands.",
+      "variations": [
+        {
+          "title": "Waiting for review - max 4 min, progress banked, what main will receive",
+          "key": "child-waits-peer",
+          "html_link": "turns-waiting-child-waits-peer.html",
+          "is_recommended": true
+        },
+        {
+          "title": "Peer result delivered - receipt visible to parent and peer",
+          "key": "delivery-receipt",
+          "html_link": "turns-waiting-delivery-receipt.html",
+          "is_recommended": false
+        }
+      ]
+    }
+  ]
+}
