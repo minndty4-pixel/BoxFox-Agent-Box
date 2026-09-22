@@ -136,7 +136,8 @@ Ba hệ quả của luật này:
 
 Chủ nhà chốt D-5: **giữ nguyên** luật BOX-1 (`<workspace>/.session-history/<sid8>/…`). Đổi tên nó — hoặc
 đổi `journal.jsonl`/`journal.md` — là phá dữ liệu đang có ở ba nơi cùng lúc: (a) các thư mục phiên +
-`INDEX.json` đã nằm đúng chỗ đó trong box (đo 2026-09-22: **8 thư mục phiên, 15 tệp, 128 KB**), (b) bản
+`INDEX.json` đã nằm đúng chỗ đó trong box (đo 2026-09-22: **8 → 9 thư mục phiên, 15 → 16 tệp, 128 → 140 KB
+chỉ trong một buổi** — con số tự tăng khi có phiên mới, nên đổi tên là mất dữ liệu đang sống), (b) bản
 đầy đủ ở `~/BoxFox/harness/sessions.sqlite` (bảng `journal`) tra theo id phiên, và (c) `backfill_history.DEFAULT_ROOT`
 = `/home/agent/workspace/.session-history`. Ca test chống đổi tên: `deploy/docker/tests/test_session_files.py`
 → `SessionHistoryKeptTest` — khoá cả ba nơi, kể cả `box-entrypoint.sh` (`chmod 0750` + `chown 1000:1000`).
