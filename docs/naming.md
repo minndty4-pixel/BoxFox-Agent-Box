@@ -118,7 +118,7 @@ byte** mọi tệp `vN-*.md` dưới `.plans` (đệ quy, bỏ tệp tạm) vào
 
 | Mã | Khuôn | Ai ép | Ghi chú |
 |---|---|---|---|
-| BOX-5 | `<workspace>/.plans-backups/<UTC>/` — `<UTC>` = `%Y-%m-%dT%H-%M-%SZ`, mỗi lần chạy một thư mục | `deploy/docker/migrate_plans.py` | Đổi chỗ bằng `--backup-dir`; không có cờ tắt |
+| BOX-5 | `<workspace>/.plans-backups/<UTC>/` — `<UTC>` = `%Y-%m-%dT%H-%M-%SZ`, mỗi lần chạy một thư mục | `deploy/docker/migrate_plans.py` | Đổi **chỗ** bằng `--backup-dir DIR` — bản sao vẫn vào `DIR/<UTC>/`, đổi chỗ chứ không đổi luật; không có cờ tắt |
 | BOX-5 | `<workspace>/.plans-backups/<UTC>/manifest.json` — `createdAt`, `root`, `fileCount`, `totalBytes`, `reason` (báo cáo dry-run của chính lần chạy đó), `files[]` với `relativePath` + `sizeBytes` + `sha256` | `deploy/docker/migrate_plans.py` | `sha256` để chứng minh bản sao là từng byte của bản gốc, không phải lời hứa |
 | BOX-5 | Bản sao giữ **đúng cây con** của `.plans` (`subplans/v2-x.md` → `<UTC>/subplans/v2-x.md`) | `deploy/docker/migrate_plans.py` | Khôi phục = `cp -a <UTC>/. <workspace>/.plans/` |
 
@@ -128,8 +128,9 @@ Ba hệ quả của luật này:
    sao thành những kế hoạch thứ hai; ngoài ra `<UTC>/v1-…` không có header nên còn sinh `mismatch`.
 2. **Không nằm trong `PROTECTED_PATHS`** (`deploy/docker/workspace_files.py`) — đây là rác đọc được và
    xoá được tay; chỉ `--delete-orphan` mới có cổng từ chối, còn bản sao thì `rm -rf` là xong.
-3. **Không đặt lại bộ đếm, không ghi đè:** mỗi lần chạy một thư mục mới; ghi hỏng thì cả thư mục vừa
-   tạo bị bỏ đi và `.plans` không đổi một byte (*hoặc có bản sao, hoặc không chạy*).
+3. **Không đặt lại bộ đếm, không ghi đè:** mỗi lần chạy một thư mục `<UTC>` mới — kể cả khi chỗ đã
+   được chỉ bằng `--backup-dir`; ghi hỏng thì cả thư mục vừa tạo bị bỏ đi và `.plans` không đổi một
+   byte (*hoặc có bản sao, hoặc không chạy*).
 
 ## 8. Vì sao `.session-history` KHÔNG đổi tên (D-5, đợt 22)
 

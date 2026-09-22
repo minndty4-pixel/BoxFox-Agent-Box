@@ -298,6 +298,10 @@ COPY capture.py /usr/local/bin/capture.py
 # tuyến qua `docker exec`). Thiếu hai tệp này thì `worker.py` trả `SESSION_OPS_UNAVAILABLE`.
 COPY session_files.py /usr/local/bin/session_files.py
 COPY session_ops.py /usr/local/bin/session_ops.py
+# Dọn `.uploaded_artifacts` (D-6, đợt 22): `session_ops.py` NHẬP tệp này (`import upload_files`),
+# nên thiếu dòng COPY dưới đây thì `session_ops.py` staged sẽ chết ngay lúc nhập — `worker.py`
+# trả `SESSION_OPS_UNAVAILABLE` cho MỌI op phiên. Trần 200 tệp / 500 MiB nằm trong tệp này.
+COPY upload_files.py /usr/local/bin/upload_files.py
 COPY workspace_files.py /usr/local/bin/workspace_files.py
 COPY browser_capture.py /usr/local/bin/browser_capture.py
 COPY inspect_element.py /usr/local/bin/inspect_element.py

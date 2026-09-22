@@ -162,12 +162,14 @@ Luật chạm tới workspace của đợt này:
 - `.plans-backups/` nằm **cạnh** `.plans`, không nằm trong nó: bộ đọc `plan_files.py` đi
   đệ quy trong `.plans` nên bản sao đặt trong đó sẽ thành những kế hoạch thứ hai.
   Tên thư mục là UTC (`%Y-%m-%dT%H-%M-%SZ`), mỗi lần chạy một thư mục mới, kèm
-  `manifest.json` giữ báo cáo dry-run của chính lần đó + `sha256` từng tệp.
+  `manifest.json` giữ báo cáo dry-run của chính lần đó + `sha256` từng tệp. `--backup-dir DIR`
+  đổi **chỗ** chứ không đổi **luật**: bản sao vẫn vào `DIR/<UTC>/`, nên hai lần chạy không bao giờ
+  ghi đè bản sao của nhau.
 - `.plans-backups` **không** nằm trong `PROTECTED_PATHS` (`workspace_files.py:85-87`):
   nó là rác đọc được và xoá tay được. `workspace_files.py` chỉ bảo vệ `.plans`, `.trash`,
   `.generated_artifacts`, `.session-history`, `.uploaded_artifacts` ở cấp 1.
-- Đọc `.plans` để biết đã staged chưa: `docker exec agentbox-box python3
-  /usr/local/bin/migrate_plans.py --help` phải in ra `--backup-dir` và `--delete-orphan`.
+- Kiểm tệp đã staged chưa: `docker exec agentbox-box python3 /usr/local/bin/migrate_plans.py
+  --help` phải in ra `--backup-dir` và `--delete-orphan`.
 
 Runbook (4 bước, chi tiết ở `docs/plan/v22-plans-migration-runbook.md`): sao lưu DB harness
 bằng `sqlite3` module (máy không có CLI `sqlite3`) → dry-run trong box → `--apply` (tự sao

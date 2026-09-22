@@ -39,8 +39,10 @@ docker exec agentbox-box python3 /usr/local/bin/migrate_plans.py --root /var/tmp
 docker exec agentbox-box sh -lc 'ls -l /var/tmp/plans-backups/*/ && python3 -c "import json,glob;print(json.load(open(glob.glob(\"/var/tmp/plans-backups/*/manifest.json\")[0]))[\"wrote\"])"'
 ```
 
-Bản sao mặc định nằm **cạnh** gốc `.plans` (`<gốc>/../.plans-backups/<UTC>/`), nên bản sao của bản sao
-là `/var/tmp/plans-backups/…`. Đổi chỗ bằng `--backup-dir`; **không** có cờ tắt sao lưu.
+Bản sao mặc định nằm **cạnh** gốc `.plans` (`<gốc>/../.plans-backups/<UTC>/`), nên bản sao của một bản
+sao dưới `/var/tmp/plans-copy` là `/var/tmp/.plans-backups/<UTC>/`. `--backup-dir DIR` đổi **chỗ** chứ
+không đổi **luật**: bản sao vẫn vào `DIR/<UTC>/` (đó là lý do dòng `ls` ở trên có `*/`); **không** có
+cờ tắt sao lưu.
 
 ## Nếu tệp chưa staged (image chưa build lại)
 

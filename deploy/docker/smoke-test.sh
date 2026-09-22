@@ -164,6 +164,19 @@ if DX "test -f $MIGRATE_HEAD"; then
 else
   bad "thiếu $MIGRATE_HEAD (chưa staged — xem khối COPY lớp 5 của Dockerfile)"
 fi
+UPLOAD_HEAD="/usr/local/bin/upload_files.py"
+# `session_ops.py` staged NHẬP tệp này (`import upload_files`), nên thiếu nó thì worker.py trả
+# SESSION_OPS_UNAVAILABLE cho mọi op phiên — bài này bắt đúng lỗi "quên COPY" của A11.
+if DX "test -f $UPLOAD_HEAD"; then
+  ok "upload_files.py đã staged vào /usr/local/bin"
+else
+  bad "thiếu $UPLOAD_HEAD (session_ops.py staged sẽ chết lúc import)"
+fi
+UPLOAD_IMPORT="$(DX 'cd /usr/local/bin && python3 -c "import upload_files; print(upload_files.UPLOAD_KEEP_MAX_FILES, upload_files.UPLOAD_KEEP_MAX_BYTES)"' 2>&1 || true)"
+case "$UPLOAD_IMPORT" in
+  "200 524288000") ok "upload_files.py nhập được: trần lưu trữ 200 tệp / 500 MiB" ;;
+  *) bad "không nhập được upload_files.py (chờ '200 524288000'): ${UPLOAD_IMPORT:-không có phản hồi}" ;;
+esac
 MIGRATE_HELP="$(DX "python3 $MIGRATE_HEAD --help 2>&1" || true)"
 case "$MIGRATE_HELP" in
   *--backup-dir*) ok "migrate_plans.py --help có --backup-dir" ;;

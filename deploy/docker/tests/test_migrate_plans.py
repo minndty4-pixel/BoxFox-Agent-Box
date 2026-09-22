@@ -277,16 +277,21 @@ class BackupBeforeApplyTest(_TempPlansRoot):
 
         self.assertEqual(report["wrote"], 2, "hai tệp mức một được chèn header")
         self.assertEqual(set(report["backedUp"]), backed_up, "bản sao đi ĐỆ QUY, bỏ tệp tạm")
-        self.assertEqual(report["backupDirectory"], str(self.backups))
-        manifest = json.loads((self.backups / "manifest.json").read_text(encoding="utf-8"))
+        # `--backup-dir` đổi CHỖ chứ không đổi LUẬT: bản sao vẫn nằm trong một thư mục con <UTC>,
+        # nên hai lần chạy không bao giờ ghi đè bản sao của nhau.
+        backup = Path(report["backupDirectory"])
+        self.assertEqual(backup.parent, self.backups)
+        self.assertTrue(backup.name.endswith("Z"), backup.name)
+        self.assertEqual(len(list(self.backups.iterdir())), 1, "mỗi lần chạy đúng MỘT thư mục bản sao")
+        manifest = json.loads((backup / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["fileCount"], 3)
         self.assertEqual(manifest["totalBytes"], sum(len(before[name]) for name in backed_up))
         for item in manifest["files"]:
             original = before[item["relativePath"]]
-            self.assertEqual((self.backups / item["relativePath"]).read_bytes(), original,
+            self.assertEqual((backup / item["relativePath"]).read_bytes(), original,
                              f"bản sao của {item['relativePath']} phải là TỪNG BYTE của bản gốc")
             self.assertEqual(item["sha256"], hashlib.sha256(original).hexdigest())
-            self.assertNotIn("<!-- boxfox-plan", (self.backups / item["relativePath"]).read_text(encoding="utf-8"),
+            self.assertNotIn("<!-- boxfox-plan", (backup / item["relativePath"]).read_text(encoding="utf-8"),
                              "bản sao là trạng thái TRƯỚC khi ghi")
         self.assertIn("<!-- boxfox-plan", first.read_text(encoding="utf-8"))
         # `reason` là báo cáo dry-run của CHÍNH lần chạy đó: đọc lại biết bản sao thuộc việc gì.
@@ -299,7 +304,7 @@ class BackupBeforeApplyTest(_TempPlansRoot):
 
         report = migrate.run(self.root, apply=False, backup_dir=self.backups)
 
-        self.assertFalse(self.backups.exists(), "dry-run không được tạo thư mục sao lưu")
+        self.assertFalse(self.backups.exists(), "dry-run không được tạo thư mục sao lưu (cả chỗ đã chỉ)")
         self.assertFalse((self.base / ".plans-backups").exists(), "cũng không tạo chỗ mặc định")
         self.assertEqual(report["backedUp"], [])
         self.assertIsNone(report["backupDirectory"])
@@ -311,6 +316,10 @@ class BackupBeforeApplyTest(_TempPlansRoot):
         self.assertEqual(default.parent, self.base / ".plans-backups")
         self.assertTrue(default.name.endswith("Z"), default.name)
         self.assertNotEqual(default.parent, self.root)
+        # Cùng một luật cho chỗ do người dùng chỉ: đổi CHỖ, không đổi LUẬT (một thư mục <UTC> mỗi lần).
+        explicit = migrate.default_backup_dir(self.root, self.backups)
+        self.assertEqual(explicit.parent, self.backups)
+        self.assertTrue(explicit.name.endswith("Z"), explicit.name)
 
     def test_a_backup_that_cannot_be_written_stops_the_run_and_changes_nothing(self) -> None:
         self.write("v5-itsdangerous-helper.md")
@@ -398,7 +407,7 @@ class DeleteOrphanGateTest(_TempPlansRoot):
         self.assertEqual(report["deleted"], 1)
         self.assertFalse(path.exists())
         self.assertIn("v1-test-plan.md", report["backedUp"], "tệp bị xoá vẫn còn trong bản sao")
-        manifest = json.loads((self.backups / "manifest.json").read_text(encoding="utf-8"))
+        manifest = json.loads((Path(report["backupDirectory"]) / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual([item["relativePath"] for item in manifest["files"]], ["v1-test-plan.md"])
         body = "# Kế hoạch\n\n## Milestones\n1. Việc.\n".encode("utf-8")
         self.assertEqual(manifest["files"][0]["sha256"], hashlib.sha256(body).hexdigest())

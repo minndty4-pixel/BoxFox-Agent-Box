@@ -12,8 +12,10 @@ An toàn là mặc định:
 
 - **Không có `--apply` thì không ghi một byte nào** (dry-run in ra kế hoạch rồi thoát).
 - **`--apply` luôn sao lưu trước**: mọi tệp `vN-*.md` dưới gốc (đệ quy, bỏ tệp tạm) được sao **từng
-  byte** vào `<gốc>/../.plans-backups/<UTC>/` (đổi chỗ bằng `--backup-dir`) kèm `manifest.json` giữ
-  báo cáo dry-run của chính lần chạy đó và `sha256` từng tệp. Không ghi được bản sao ⇒
+  byte** vào `<gốc>/../.plans-backups/<UTC>/` kèm `manifest.json` giữ báo cáo dry-run của chính lần
+  chạy đó và `sha256` từng tệp. `--backup-dir` đổi **chỗ** chứ không đổi **luật**: bản sao vẫn nằm
+  trong một thư mục con `<UTC>` của chỗ đó, nên hai lần chạy không bao giờ ghi đè bản sao của nhau.
+  Không ghi được bản sao ⇒
   `MigrationError` (exit 2) và **không byte nào** của `.plans` bị sửa — *hoặc có bản sao, hoặc không
   chạy*. Không có cờ tắt: "sao lưu trước khi áp dụng" là chốt của chủ nhà (D-2), không phải tuỳ chọn.
   Vì sao bản sao nằm **ngoài** `.plans`: bộ đọc `plan_files.py` đi đệ quy trong `.plans` và sẽ nhặt
@@ -227,9 +229,15 @@ def utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def default_backup_dir(root) -> Path:
-    """`<gốc>/../.plans-backups/<UTC>/` — cạnh `.plans`, KHÔNG nằm trong nó (xem docstring đầu)."""
-    return Path(root).resolve().parent / BACKUP_PARENT_NAME / utc_stamp()
+def default_backup_dir(root, base=None) -> Path:
+    """`<chỗ>/<UTC>/` — mặc định `<chỗ>` = `<gốc>/../.plans-backups`, cạnh `.plans` (xem docstring đầu).
+
+    `--backup-dir` đổi **chỗ**, không đổi **luật**: bản sao vẫn nằm trong một thư mục con `<UTC>`, nên
+    hai lần chạy khác nhau không bao giờ ghi đè bản sao của nhau. Cùng một luật với `.plans` (không bao
+    giờ ghi đè đích đã có): một bản sao cũ không được biến mất vì một lần chạy sau.
+    """
+    parent = Path(base) if base else Path(root).resolve().parent / BACKUP_PARENT_NAME
+    return parent / utc_stamp()
 
 
 def backup_sources(root: Path):
@@ -406,7 +414,7 @@ def run(root: Path, *, apply=False, merges=(), renumber=False, backup_dir=None,
     # Bản sao TRƯỚC mọi lần ghi. Không có gì để ghi thì không tạo thư mục rác: một lần `--apply`
     # vô hại không nên để lại dấu vết.
     if not plan["nothingToDo"]:
-        backup = write_backup(root, backup_dir or default_backup_dir(root), plan)
+        backup = write_backup(root, default_backup_dir(root, backup_dir), plan)
         plan["backedUp"] = [item["relativePath"] for item in backup["files"]]
         plan["backupDirectory"] = backup["directory"]
         plan["backupManifest"] = backup["manifest"]
@@ -458,7 +466,8 @@ def main(argv=None) -> int:
     parser.add_argument("--renumber-lone", action="store_true",
                         help="nhóm chỉ có một bản thì đổi về v1-… (đổi đường dẫn — mặc định tắt)")
     parser.add_argument("--backup-dir", default=None, metavar="THƯ_MỤC",
-                        help="chỗ ghi bản sao trước khi ghi (mặc định <gốc>/../.plans-backups/<UTC>)")
+                        help="chỗ ghi bản sao trước khi ghi (mặc định <gốc>/../.plans-backups); "
+                             "mỗi lần chạy một thư mục con <UTC>, không bao giờ ghi đè bản cũ")
     parser.add_argument("--delete-orphan", action="append", default=[], metavar="ĐƯỜNG_DẪN_TƯƠNG_ĐỐI",
                         help="xoá một kế hoạch thử (lặp được); TỪ CHỐI nếu có bản ghi P: giữ nó")
     parser.add_argument("--sessions-root", default=DEFAULT_SESSIONS_ROOT,
