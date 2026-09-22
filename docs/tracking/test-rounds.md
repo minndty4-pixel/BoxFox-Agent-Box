@@ -1514,3 +1514,187 @@ b4f26ca6e8c44f458cceb5ba86e87e34   failed      1    3        984       None     
 - Ghi nhận: hai lượt sống chết vì lý do môi trường — `UPSTREAM_HTTP_429` ("This target is cooling down after a provider limit")
   ở phiên `b4f26ca6…` và `62146c6e…` — không liên quan mã đợt này; phiên `e94f1af0…` `failed` ở lượt UI còn giữ nguyên trong
   bảng để đối chiếu.
+
+## Vòng 22 — đợt 3 (bằng chứng sống): cổng bằng chứng ở câu trả lời cuối, dò box, hàng `E:` trong nhật ký, huy hiệu ba trạng thái (2026-09-22, đêm)
+
+- Phạm vi (đợt 3 của kế hoạch `docs/plan/v22-boxfox-plan.md` §5 — 25 việc, 6 pha; bản thi công có mã việc nằm ở
+  `/code/.plans/v1-evidence-proof.md`, P1.1–P6.3): (P1) danh tính lượt, nhật ký mang `turn`/`step`, hằng số và
+  công tắc, bằng chứng sinh **tại gốc** mỗi lần ghi tệp, dọn rác thư mục bằng chứng; (P2) đọc lượt —
+  `TurnProfile`/`classify_turn`, `assess`/`claim_paths`/`missing_reason`, `repair_message`; (P3) chèn cổng sau
+  câu trả lời cuối, dò box bằng một lệnh cố định, sửa câu trả lời có trần, ghim hàng `E:` và số vào `turn.end`,
+  nhóm `gate` trong `runtime-info`, trần độ dài câu trả lời; (P4) giao diện ba trạng thái; (P5) eval kéo S4 ra
+  khỏi `not_measured`; (P6) sổ sách (`bug-register.md` §6.25, `owner-decisions.md` D-8, mục này).
+- Cách chạy: router 3101 + harness 3102 (**khởi động lại trên mã mới**) + Vite 3100 + box `agentbox-box` đang chạy;
+  ảnh box **không** dựng lại. Lượt sống qua API (`POST /api/agent/sessions/{sid}/turns`) và qua giao diện
+  (agent-browser 0.21.2, phiên `v22dot3`), xem trước đã đăng ký `localhost:3100`. Model: OpenCode Free
+  `muse-spark-1.3-contributor-free`. Công tắc duy nhất để tắt cổng: `BOXFOX_EVIDENCE_GATE=off` (mặc định `warn`).
+- Kết quả: **P1.1–P6.3 xong**; cổng chạy **sống** trên lượt thật, giao diện ba trạng thái đo được bằng DOM, và
+  **S4 đo được lần đầu** kể từ vòng 21. Hai khoảng trống ghi nhận chứ không giấu: (a) khẳng định **thuần văn**
+  (không đường dẫn, không lệnh) vẫn ngoài tầm cổng — món nợ đã ghi ở §6.25; (b) mảnh bằng chứng `kind='command'`
+  không mang mã thoát nên hàng `E:` ghi `exit None`, còn giao diện đọc mã thoát và thời lượng từ cặp
+  `tool_start`/`tool_end` của chính lượt (Phần C).
+
+### Phần A — Cổng bằng chứng chạy sống trên lượt thật (P2.1–P2.3, P3.1–P3.6)
+
+- Đường đi của cổng: cuối lượt, `run_turn` dựng `TurnProfile` từ **chính event của lượt** (tool nào đã chạy, tham
+  số, tệp đã ghi, mảnh bằng chứng đã sinh), chấm theo bảng §2.1 và luật R1–R5 (`assess`), rồi hoặc ghim hàng `E:`
+  (chỉ đọc), hoặc mở **một** vòng sửa câu trả lời có trần `EVIDENCE_REPAIR_MAX_TOKENS = 2048` /
+  `EVIDENCE_REPAIR_TIMEOUT_SECONDS = 60` (bỏ khi còn dưới `EVIDENCE_REPAIR_MIN_REMAINING_SECONDS = 20` giây).
+  Chế độ `warn` **không** sửa văn của model; `not_measurable` (thiếu dữ liệu) không bao giờ bị chấm thành
+  `insufficient`. Tiến trình 3102 phải **khởi động lại** mới có nhóm `gate`: trước khi khởi động lại,
+  `runtime-info` trả `KeyError: 'gate'` dù mã đã nằm trong cây làm việc — báo cáo P4 vì thế ghi "chưa dựng
+  `gate`" ở một thời điểm, không phải thiếu mã.
+- Số của cổng đi vào **một** chỗ: `turn.end` mang thêm `gateMode`, `evidenceVerdict`, `evidenceChecked`,
+  `evidenceMissing`, `evidenceRepair`, `changedFiles`, `artifacts`. Đo sống — phiên
+  `b9b47d6f06404ead938048c2ab746a7b` trên harness 3102 đã khởi động lại, hai lượt liền nhau:
+
+```text
+lượt 1  turn_end {status: completed, gateMode: warn, evidenceVerdict: sufficient, evidenceChecked: 3,
+        evidenceMissing: 0, evidenceRepair: false, changedFiles: 1, artifacts: 3}
+        assistant.evidence {checked: 3, missing: [], changedFiles: ["src/app.py"], journalSeq: 51}
+        hàng E:b9b47d6f-51  "lượt 1: đã kiểm chứng — 3 mảnh bằng chứng"
+lượt 2  notice EVIDENCE_INSUFFICIENT {verdict: insufficient,
+        missing: [{reason: change_without_verification, detail: "src/app.py"}], evidenceJournalSeq: 52}
+        turn_end {status: completed, gateMode: warn, evidenceVerdict: insufficient, evidenceChecked: 1,
+        evidenceMissing: 1, evidenceRepair: false, changedFiles: 1, artifacts: 1}
+        hàng E:b9b47d6f-52  "lượt 2: chưa kiểm chứng — 1 mảnh bằng chứng; thiếu: change_without_verification"
+```
+
+- Lượt 2 là ca đúng ý đồ: model ghi `src/app.py` rồi **tự** nói "chưa chạy kiểm thử nên chưa thể nói đã kiểm thử
+  đầy đủ"; cổng vẫn ghim nhãn vì *tệp đã đổi mà không có lệnh nào kiểm lại* — nhãn đo hành vi của lượt, không
+  đo lời lẽ. Vòng sửa câu trả lời không bật trong hai lượt này (`evidenceRepair: false`); nhánh sửa có ca riêng
+  trong `test_evidence_gate.py` / `test_evidence_gate_runtime.py`.
+- Mặt đọc `runtime-info` (P3.5) đã sống trên tiến trình mới — DEV đọc trạng thái THẬT của cổng, không chép tay:
+
+```text
+{"evidenceMode": "warn", "modes": ["off", "warn", "enforce"], "default": "warn", "repairMaxTokens": 2048,
+ "repairTimeoutSeconds": 60, "repairMinRemainingSeconds": 20, "probeTimeoutSeconds": 20,
+ "probeMaxFiles": 200, "maxArtifacts": 20}
+```
+
+- Dò box (P3.2) là **một** lệnh shell cố định, chỉ nội suy mốc thời gian của lượt và trần số tệp; nó loại
+  `.generated_artifacts/` và `.session-history/`, chạy tối đa `EVIDENCE_PROBE_TIMEOUT_SECONDS = 20` giây, cắt ở
+  `EVIDENCE_PROBE_MAX_FILES = 200` tệp, và ghi cả đầu ra thô thành một mảnh bằng chứng — văn của model không bao
+  giờ được nội suy vào lệnh.
+
+### Phần B — Bằng chứng tại gốc, danh tính lượt, dọn rác (P1.1–P1.5)
+
+- **P1.4 (đã đẩy ở `c82d9d2`)** — mỗi lần `file_write`/`file_edit_block` ghi tệp, box trả về `diff` và `numbers`
+  (`sha256Before`/`sha256After`, `added`, `removed`, `lines`, `bytes`) kèm `artifact` là đường dẫn diff trong
+  `.generated_artifacts/captures/evidence/<sid8>/`. Đo sống: `Written src/app.py` ⇒ artifact
+  `.generated_artifacts/captures/evidence/b9b47d6f/b9b47d6f_000_app.py.diff`, `sha256After ba1a531f581d…`, `+2 −0`,
+  `32 B`; lần sửa thứ hai ghi `…_000_app.py-2.diff`, `sha256After af626eb7a9c3…`, `+4 −0`, `66 B`.
+- **P1.5** — `prune_captures` quét mỗi `EVIDENCE_PRUNE_EVERY = 20` lượt ghi và **chỉ** xoá tệp cũ trong thư mục
+  captures; hỏng thì ghi `EVIDENCE_PRUNE_DEGRADED` chứ không làm đỏ lượt. Nghiệm thu:
+  `.venv/bin/python -m pytest backend/tests/unit -q -k "prune or retention"` ⇒ **1 passed, 1073 deselected in 0,58 s**.
+- **P1.1** — số lượt lấy từ SQL trên `events` (`_turn_index`), không tin `sessions.turn_count` (trường cũ mặc định
+  0, và `store.events()` cắt ở 500 hàng); hai nguồn lệch nhau thì ghi `turn.index_drift` (`TURN_INDEX_DRIFT`) rồi
+  vẫn đi tiếp. Lỗi `NameError` do chính bản sửa này gây ra trong `wrap_up_diagnosis` (`turn.wrapup_failed` ⇒
+  `TURN_FAILED_NAMEERROR`) đã sửa trong cùng đợt.
+- **P1.2** — mọi hàng nhật ký mang `turn`/`step` (kể cả hàng `E:`); hàng `E:`/`F:` **không** thuộc nhóm brief nào.
+- **Hồi quy do hàng `E:` và cách chữa**: khối ký ức 6 nhóm vẫn in đủ tiêu đề kể cả khi lượt chỉ có hàng ngoài
+  nhóm, nên đệm vào system prompt một khối rỗng ⇒ `test_harness_runtime.py::test_multiturn_restart_and_isolation`
+  và `test_write_plan.py::test_an_ambiguous_refusal_leaves_a_one_shot_ticket` đỏ khi cổng bật (`warn`), xanh khi
+  `off`. Chữa: `BRIEF_EMPTY_LINE` + `journal.brief_has_items()`, và `session_journal.brief()` trả chuỗi rỗng khi
+  không nhóm nào có việc. Ca mới: `test_session_journal.py::test_rows_that_belong_to_no_group_leave_the_memory_block_empty`.
+
+### Phần C — Giao diện ba trạng thái (P4.1–P4.5)
+
+- **Huy hiệu ba trạng thái thay nhãn `done` viết tay** ở dòng tên model: `đã kiểm chứng` (xanh), `chưa kiểm chứng`
+  (vàng), `chưa đo được` (khi cổng không đo được lượt). DOM mang **hai** thuộc tính: `data-evidence-badge` (trạng
+  thái đang hiện) và `data-evidence-verdict` (verdict thật của backend, **chỉ có** khi lượt thật sự mang trường
+  `evidence`). Nhờ vậy đọc máy được "chưa đo" khác "đo rồi và thiếu".
+- **Khối `Bằng chứng`** trong câu trả lời cuối gom mảnh từ năm nguồn (khử trùng theo đường dẫn): `changedFiles`,
+  media của lượt, `result.artifact`, hàng `E:` trong nhật ký, `assistant.evidence.artifacts[]`. Mục con:
+  `Lệnh đã chạy` (kèm `exit` và thời lượng), `Tệp và ảnh của lượt`, `Khẳng định chưa có bằng chứng` — nhóm rỗng
+  **vẫn hiện** kèm câu giải thích, để người đọc biết lượt đã được chấm.
+- **Dòng receipt** giữ nguyên các số cũ và thêm hai số mới: `N bằng chứng`, `M khẳng định chưa kiểm`. Lượt cũ
+  (không mang trường `evidence`) **không** được thêm số nào — vẫn `3 commands  1 failed` như ảnh vòng trước.
+- **Bấm mở được**: ảnh/ghi hình mở lightbox như cũ; tệp bằng chứng gọi `showTab('files', { path })` nên mở thẳng
+  trong panel Files — **kể cả** đường dẫn ẩn dưới `.generated_artifacts/`.
+- Đo bằng DOM trên xem trước đã đăng ký (`localhost:3100`, phiên `b9b47d6f…`): hai huy hiệu
+  `verified:sufficient` và `unverified:insufficient`; phiên cũ `60b3c095…` có **9** huy hiệu `unverified` và
+  **không** huy hiệu nào mang `data-evidence-verdict` (đúng luật "lượt cũ không mặc định xanh").
+
+### Phần D — Eval kéo S4 ra khỏi `not_measured` (P5.1–P5.3)
+
+- `scripts/eval/rushed_index.py` đọc thẳng số của cổng trên `turn.end` (`data.evidenceVerdict`,
+  `data.evidenceMissing`). Luật trung thực giữ nguyên: lượt **không** có khoá thì không vào mẫu (không tính là 0);
+  danh sách tool ghi lấy từ chính `evidence_gate.WRITE_TOOLS`/`PLAN_TOOLS` để hai bên không lệch.
+- Đo sống: `python3 scripts/eval/rushed_index.py --json` ⇒ S4 `measured`, `value = 0,5` ("2 lượt đã đo (cửa sổ log
+  có 2 lượt), 1 lượt bị gắn cờ"), ngưỡng nâng `enforce` in ngay trong `note`: **≥ 20 PHIÊN có số VÀ tỉ lệ báo
+  động sai < 10 %**. Trước khi thi công, cùng log đó cho `S4 = not_measured`. **S1/S5 vẫn `not_measured`** (không
+  có nguồn số nào thay thế), `S2/S3/S6/S7/S8/S9` là `measured`/`measured_proxy` như cũ.
+
+### Phần E — Số đo kiểm thử của đợt
+
+- Backend, cả bộ unit trên cây làm việc cuối: `.venv/bin/python -m pytest backend/tests/unit -q` ⇒
+  **1 failed, 1073 passed in 173,87 s** — ca đỏ duy nhất là `test_terminal_tools.py::test_terminal_exec_echo`, đỏ vì
+  môi trường (`bash: Write-Output: command not found`, box không có PowerShell), không liên quan mã đợt này. Hai ca
+  từng đỏ vì hàng `E:` (Phần B) nay xanh. Nhóm cổng: `test_evidence_gate.py` **28 passed**, `test_evidence_gate_runtime.py`
+  **13 passed**; nhóm bị đụng bởi hàng `E:`: `test_session_journal.py` **7 passed**,
+  `test_harness_runtime.py` **17 passed**, `test_write_plan.py` **19 passed**, `test_eval_setup.py` **56 passed**;
+  `-k "prune or retention"` **1 passed / 1073 deselected**.
+- Giao diện: `npx vitest run src/components/chat/HarnessStepView.evidence.test.tsx
+  src/store/harnessChatStore.journal.test.ts src/components/chat/HarnessStepView.test.tsx` ⇒ **3 tệp, 41 ca đạt**;
+  cả bộ giao diện (do phiên build P4 chạy hai lần) ⇒ **122 tệp / 1012 ca đạt, 0 đỏ**; `tsc -b --noEmit` ⇒ **exit 0**.
+- Ảnh chụp phía trên lấy bằng agent-browser 0.21.2 (bản cài trên máy này không nằm trong hai bản skill mô tả; đã
+  đối chiếu `--help` thấy đủ `open`/`click`/`eval`/`screenshot`).
+
+### Phần F — Bằng chứng sống của đợt, khẳng định cũ bị đổi, ghi nhận
+
+- Lượt sống trên harness 3102 (mã mới, cổng mặc định `warn`), phiên `b9b47d6f06404ead938048c2ab746a7b`:
+  lượt 1 `sufficient` · lượt 2 `insufficient`. Bản thô: `/var/tmp/v22/p35live.json`, `/var/tmp/v22/p35live2.json`.
+  Lượt sống phía P4 (harness 3112, cổng `warn`): phiên `8d9cc2f099e74da594347b1289f8da8d`, bốn lượt, có cả
+  `sufficient` và `insufficient` + `missing=[change_without_verification]`.
+- Ảnh (đường dẫn tuyệt đối theo đúng nghiệm thu của kế hoạch):
+  `/code/.generated_artifacts/images/p35_02_verified_turn.png` (lượt **đã kiểm chứng**: huy hiệu xanh, `4 bằng
+  chứng`, `Lệnh đã chạy` có `exit 0 · 110ms`, nhóm "khẳng định chưa có bằng chứng" rỗng nhưng vẫn hiện),
+  `/code/.generated_artifacts/images/p35_01_session_top.png` (lượt **chưa kiểm chứng**: huy hiệu vàng, notice,
+  hai hàng tệp), `/code/.generated_artifacts/images/p35_06_narrow.png` (900 px: mọi khối xuống dòng gọn, chip lý
+  do `tệp đã đổi nhưng không có lệnh nào kiểm lại` + mã `change_without_verification`),
+  `/code/.generated_artifacts/images/p35_05_legacy_turn.png` (lượt **cũ**: `chưa kiểm chứng` +
+  `lượt trước vòng 23 — không có số đo bằng chứng`, giữ nguyên receipt `3 commands  1 failed`, không có khối
+  bằng chứng), `/code/.generated_artifacts/images/p35_03_open_in_files.png` (bấm mở tệp bằng chứng trong panel
+  Files) và `/code/.generated_artifacts/images/p35_04_open_hidden_diff.png` (mở được cả diff ẩn dưới
+  `.generated_artifacts/…`). Cùng chuỗi này ở phiên P4: `/code/.generated_artifacts/images/p4_02_session_open.png`,
+  `p4_03_verified_turn.png`, `p4_05_legacy_no_evidence.png`, `p4_06_narrow_verified.png`,
+  `p4_07_preview_public.png`, `p4_04_open_in_files.png`, `p4_08_diff_in_files.png`.
+- **Các khẳng định cũ bị đổi (đọc ảnh vòng 21/22 phải hiểu đúng, kẻo thành "hồi quy giả")**:
+  1. Chỗ nhãn `done` viết tay cạnh tên model giờ là **huy hiệu ba trạng thái**. Ảnh cũ (`images/t17ui_*.png`,
+     `foundation_e2e_04_answer.png`…) vẫn đúng với thời điểm chụp; lượt cũ **không** thành `đã kiểm chứng` mà
+     mang `chưa kiểm chứng` kèm câu "lượt trước vòng 23 — không có số đo bằng chứng".
+  2. Dòng receipt lượt cũ giữ nguyên số cũ (`3 commands  1 failed`); hai số `N bằng chứng` / `M khẳng định chưa
+     kiểm` chỉ xuất hiện ở lượt có trường `evidence`.
+  3. Văn của model **không bị sửa** khi thiếu bằng chứng ở chế độ `warn` — cổng chỉ ghim nhãn và hàng `E:`;
+     nhánh sửa câu trả lời là nhánh riêng, có trần, và lượt sống ở đây không đi qua nó.
+  4. Khối "Bằng chứng" và hai số receipt là **mới**, không phải lỗi hiển thị của ảnh cũ.
+- Ghi nhận môi trường: phiên agent-browser `v22dot2-test` của vòng hậu kiểm trước còn kẹt (daemon pid 271659) —
+  không đụng tới; dấu vết do vòng kiểm thử để lại trong `.plans/` và `.uploaded_artifacts/` được giữ nguyên và
+  báo lại, không xoá. Thư mục `docs/tracking/images/` vẫn không tồn tại dù các mục cũ trỏ `images/…` — đã ghi
+  thành phát hiện riêng (`d8b08e2b-749b-4c8f-a060-4350a99d3c42`).
+
+### Đợt kiểm thử độc lập (cùng PR) — bốn vòng rà soát: sáu lỗi mesh (BUG-53…BUG-58) và hai lỗi giao diện
+
+Diff `main...vorflux/v22-peer-mesh` được rà soát độc lập theo hợp đồng tám mục (phân loại thay đổi, ca bám đúng
+phạm vi, chạy trên hệ thống thật, không chạy lại tính năng cũ không bị sửa). Bốn vòng rà soát liên tiếp tìm ra sáu
+lỗi trong mã mesh của đợt 2 — tất cả đã sửa và đo lại, chi tiết ở `bug-register.md` §6.25:
+
+- **BUG-53** — nhả slot con hai lần ⇒ `global_child_slots._value = 11` trong khi trần là 8; chữa bằng
+  `child_slot_holders` + `release_child_slot` (chỉ nhả khi đúng người giữ).
+- **BUG-54** — `CancelledError` thoát khỏi `wait_for` mà **không** trả permit của cha.
+- **BUG-55** — lỗi khi giao hàng chặn luôn event đóng sổ con; chữa bằng `child.delivery_failed`.
+- **BUG-56** — khối "chi phí theo lượt" thực ra tính cả **phiên**: `peer_turn_cost` bỏ qua tham số lượt và `children_summary`
+  không lọc `parent_turn` (7 chỗ gọi).
+- **BUG-57** — một lần chờ bị huỷ để lại `waiting_for`/`waiting_since` trên hàng sổ con (và cờ đánh thức sống sang lượt
+  sau): `child_wait(sid, [], None)` trong `finally`.
+- **BUG-58** — thiếu `notify_peer_delivery(target)` nhánh `main`, biên nhận không tỉnh người chờ.
+- **Hai lỗi giao diện** (vòng hậu kiểm đợt 2, nay ở `0509e17`): nhãn chờ bị cắt trong cột 256 px
+  (`đa… · lưới an toàn còn 4:58`) — chữa bằng `flex-wrap` + `gap-x-1 gap-y-0.5`; và lý do bỏ giao đọc không đủ khi
+  bị cắt — chữa bằng `title={line.text}` trên hai hàng `child-delivers-to` / `child-receipt`.
+- **BUG-59** (lỗi mới, lộ ra khi P1.4 cần số bước để đặt tên mảnh bằng chứng; sửa ở `c82d9d2`) — hai route capture/record
+  của box đọc `step`/`toolCallId` từ lâu nhưng harness **chưa bao giờ gửi**, nên tên tệp ảnh/ghi hình rơi về `000`; chữa
+  bằng `executor.box_identity` (test: `test_worker_evidence.py`, 10 ca).
+- Ghi nhận: **BUG-51** vẫn `CHƯA SỬA` (nợ có ý thức, đã thành phát hiện riêng
+  `bb865553-5358-4f06-9f40-7ed37c249cf8`), và **BUG-44** — lỗi mở đầu của đợt này — nay `ĐÃ SỬA`, kèm món nợ
+  "khẳng định thuần văn vẫn ngoài tầm cổng".
