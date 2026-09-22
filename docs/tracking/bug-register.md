@@ -945,3 +945,57 @@ bên 9Router — bỏ đi thì mất đối chiếu mà hành vi không đổi.
 **Đính chính số của chính bản ghi này.** Ngưỡng 70 % cũ ghi sai ở §6.20: đúng là **697 132** cho cửa sổ
 1 000 000 (`int((1 000 000 − 4 096) × 0,7)`) và **20 070** cho cửa sổ 32 768 — không phải 697 232 và 20 270. Con số
 ngưỡng **mới** (301 200 / 86 732 / 20 070) và mọi bằng chứng sống không đổi.
+
+### 6.22 Vòng 21 — năm việc chủ nhà giao: bốn lỗi đo sống và một lỗi giao diện (chưa sửa, đã lên kế hoạch)
+
+Vòng 21 không sửa mã sản phẩm (đợt này chỉ đo và lên kế hoạch). Năm lỗi dưới đây **đã đo sống**, mỗi lỗi
+trỏ thẳng tới phần sửa trong `docs/plan/v21-boxfox-plan.md`; nhật ký đầy đủ ở
+`docs/tracking/test-rounds.md` § *Vòng 21*.
+
+**BUG-39 — mức Trung bình — menu `+` đủ mục trong DOM nhưng bị `overflow-hidden` cắt, người dùng thấy "chưa có upload".**
+Khi menu đang mở, `document.elementFromPoint` tại tâm mục `Tải lên hình ảnh` (`itemRect [290,642,226,45]`) trả về khung
+chat ⇒ mục không phải phần tử trên cùng, tức không vẽ ra. Tổ tiên cắt là `flex min-w-0 items-center gap-1.5 overflow-hidden`
+(`frontend/src/components/panels/ChatInputBar.tsx:268`) trong khi popover đặt `absolute bottom-full`
+(`frontend/src/components/chat/AttachmentPicker.tsx:159`). Lặp lại được ở cả địa chỉ công khai lẫn `localhost:3100`.
+Sửa theo `A1` (bỏ `overflow-hidden` hoặc render bằng portal, không chữa bằng `z-index`).
+
+**BUG-40 — mức Cao — nội dung tệp đính kèm không bao giờ tới box; agent chỉ nhận cái tên.**
+Chỉ ảnh được đọc bằng `FileReader` thành `dataUrl` (`AttachmentPicker.tsx:56-68`); tệp thường chỉ giữ `name`/`size`
+(`:69-77`) và lúc gửi trở thành chuỗi `` `[Attached Files: ${…}]` `` (`ChatInputBar.tsx:113-115`). Đo sống: event `user` của
+phiên `0ef73471c38d4c63a593755345213dcf` đúng bằng phần text cộng `\n\n[Attached Files: probe-upload.txt]`, không nội dung
+và không đường dẫn; sau lượt `docker exec agentbox-box ls .uploaded_artifacts` **rỗng** và
+`find /home/agent/workspace -name '*probe-upload*'` **không có**. Agent phải tự đi tìm, kết luận "tệp không tồn tại".
+Đường ống nhận tệp đã có sẵn nhưng **chưa có đường nào gọi từ ô soạn tin** (panel Workspace Files đã gọi nó —
+`frontend/src/hooks/useWorkspaceFiles.ts:473`): `POST /__box/file/upload` (`deploy/docker/ide-proxy.py:540-568`),
+`workspace_files.write_upload` (`deploy/docker/workspace_files.py:743-754`), client `frontend/src/lib/workspace/http.ts:70-87`,
+thư mục đích tạo lúc boot (`deploy/docker/box-entrypoint.sh:15-24`); luật tên RULE-5 (`docs/naming.md:24`) **chưa có code
+nào cấp số** — kế hoạch `A2–A6` giao việc cấp số cho phía box.
+
+**BUG-41 — mức Trung bình — `TURN_EMPTY_RESPONSE` đánh `failed` cả lượt dù model đã làm việc, không thử lại, không trả phần đã làm.**
+Phiên `0ef73471…` chết ở bước 5: `error {code: TURN_EMPTY_RESPONSE}` với `thought` đã có nhưng không có text và không có
+tool call; người dùng mất trọn lượt, không có câu trả lời một phần. Sửa theo `B6` (một lượt thử lại có ép công cụ, hết cách
+mới `failed`), cùng họ với lỗi C2 đã sửa ở đợt 20.
+
+**BUG-42 — mức Cao — con chạm `DEADLINE` (10 bước/120 s) thì mất trắng phần đã làm, cha chỉ nhận `failed`.**
+Phiên con `ea9486495da646d7aac4ccd4214ea8ed` (`delegate_task role=explore`) chạy 10/10 bước, 33 tool call, hết 120 s ⇒
+`DEADLINE: the turn ran out of time before an answer was produced`, `answerChars = 0`; cha nhận `status=failed` và phải nói
+với người dùng là "không có bằng chứng nào". Cùng mã lỗi `DEADLINE` như ảnh chủ nhà gửi (`Error code: DEADLINE`,
+`Worked for 180s`); lượt gốc trong ảnh là chủ nhà báo, vòng này không tái hiện được (phiên gốc đã bị dọn khỏi store) —
+vòng này tái hiện được cùng mã lỗi ở **agent con** (120 s). Trần bước
+cũng đánh `failed` một việc đã xong (`failures.py:52`). Sửa theo `B2–B4`: tách mã `STEP_BUDGET_EXHAUSTED` /
+`DEADLINE_EXCEEDED`, **trả `partial` có nội dung thay vì `failed`**, nâng ngân sách con lên 24 bước/240 s, và ghim `X:`
+blocker để lần sau biết đã mất gì.
+
+**BUG-43 — mức Trung bình — bảng Sub-agents không theo turn: con của turn trước hiện ở turn sau.**
+Đo sống: lượt 2 sinh con `ea948649…`; lượt 3 hỏi `2+2` (xong trong 3 s, không gọi tool nào) mà bảng vẫn ghi
+`SPECIALISTS PIPELINE · 1 TOTAL · Explore Specialist FAILED · 33 tools executed`
+(`/code/.generated_artifacts/images/r21_perTurn_03_turn3_with_stale_child.png`). Gốc: `childrenMap` dựng từ **mọi** event
+`child` của phiên (`frontend/src/components/panels/SubagentInspectorPanel.tsx:162-196`, render `:347`/`:361`) và store không
+cắt theo turn (`frontend/src/store/harnessChatStore.ts:294`); event `child` cũng **không mang `turn`/`step`**
+(`backend/src/agentbox/agent_core/runtime.py:2523-2530`, `:2564`) nên giao diện không có dữ liệu để phân. Sửa theo `E1–E3`.
+
+**Ghi nhận đúng, không phải lỗi.** (1) Trần mặc định 16 bước **không** chặn việc vừa phải: lượt đọc hai tệp + grep + viết
+báo cáo + đọc lại xong ở **bước 8** (phiên `dddebffb…`). (2) `muse-spark-1.2-contributor-free` và
+`muse-spark-1.3-contributor-free` của OpenCode Free đều chạy được (`status: passed`, có usage), nên không có việc "thiếu model".
+(3) Địa chỉ xem trước công khai chỉ để **xem**: harness chỉ nhận `Origin` loopback
+(`backend/src/agentbox/api/server.py:119-139`), nên mọi lượt chạy phải đi qua `localhost:3100` — đúng thiết kế, không phải lỗi.

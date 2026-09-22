@@ -1004,3 +1004,103 @@ khai **1 000 000** trong bảng cửa sổ của router (OpenRouter công bố �
 3. Dải identity mơ hồ `0,5 ≤ j < 0,75`: từ chối một lần (khuyến nghị) hay gộp luôn.
 4. Ngưỡng cứng độ dài plan: từ chối khi > 150 000 ký tự (khuyến nghị) hay chỉ cảnh báo.
 5. Gốc thư mục theo phiên: `.session-history` (khuyến nghị) hay `.sessions/`.
+
+## Vòng 21 — năm việc chủ nhà giao: upload trong dấu `+`, trần bước, sub-agent nhìn nhau, bằng chứng sống, bảng theo turn (2026-09-22, sáng)
+
+- Phạm vi: (1) gửi nguyên nội dung một tệp Markdown dưới dạng text để kiểm chứng khả năng chạy, chất lượng
+  output plan và hành vi gọi sub-agent; (2) trần `maxSteps` 16 cùng hai lỗi quanh trần bước/hạn chót;
+  (3) kiến trúc để sub-agent nhìn thấy nhau và bàn giao có định tuyến; (4) bằng chứng sống gắn vào câu trả lời cuối;
+  (5) bảng Sub-agents phải theo từng turn. Model chính: OpenCode Free `muse-spark-1.2/1.3-contributor-free`.
+- Cách chạy: router 3101 + harness 3102 + Vite 3100 do phiên này khởi động; box `agentbox-box` đang chạy;
+  ba lượt qua API (`/tmp/run_turn.py`, log `/tmp/runA.txt`, `/tmp/runB.txt`, `/tmp/runD.txt`) và ba lượt qua giao diện
+  (agent-browser 0.21.2). Xem trước công khai: `https://wc91p7pgg7ed.preview.us1.vorflux.com` (chỉ để xem;
+  lớt chạy bị chặn vì `Origin` của harness chỉ nhận loopback — `backend/src/agentbox/api/server.py:119-139`).
+- Kết quả: **5/5 việc có kết luận đo được**; **4 lỗi mới** (BUG-39 … BUG-42) và **1 lỗi giao diện** (BUG-43);
+  kế hoạch sáu phần A–F ở `docs/plan/v21-boxfox-plan.md` (+ bản tóm tắt cùng chỗ).
+
+### Phần A — gửi tệp qua dấu `+`
+
+- Menu có đủ bốn mục trong DOM nhưng **bị cắt**: với menu đang mở, `document.elementFromPoint` tại tâm mục
+  `Tải lên hình ảnh` (`itemRect [290,642,226,45]`) trả về khung chat ⇒ mục không phải phần tử trên cùng.
+  Tổ tiên cắt là `flex min-w-0 items-center gap-1.5 overflow-hidden` (`ChatInputBar.tsx:268`) trong khi popover
+  đặt `absolute bottom-full` (`AttachmentPicker.tsx:159`). Lặp lại được ở **cả** địa chỉ công khai lẫn `localhost:3100`.
+- Gửi thật một tệp `probe-upload.txt` (đã dán nhãn vào input ẩn, vì menu không bấm được): chip hiện tên,
+  lượt chạy tạo phiên `0ef73471c38d4c63a593755345213dcf`, và event `user` **đúng bằng** phần text cộng
+  `\n\n[Attached Files: probe-upload.txt]` — **không nội dung, không đường dẫn**.
+- Sau lượt: `docker exec agentbox-box ls .uploaded_artifacts` **rỗng**, `find /home/agent/workspace -name '*probe-upload*'`
+  **không có**. Agent tự đi tìm, kết luận "tệp không tồn tại", rồi lượt chết bằng `TURN_EMPTY_RESPONSE`.
+- Đường ống đã có sẵn nhưng chưa ai gọi: `POST /__box/file/upload` (`deploy/docker/ide-proxy.py:540-568`),
+  `workspace_files.write_upload` (`deploy/docker/workspace_files.py:743-754`), client
+  `frontend/src/lib/workspace/http.ts:70-87`, thư mục `.uploaded_artifacts` tạo lúc boot
+  (`deploy/docker/box-entrypoint.sh:15-24`), luật tên RULE-5 **chưa có code nào cấp số** (`docs/naming.md:24`).
+
+### Phần B — gửi nguyên nội dung Markdown và chất lượng plan
+
+- Lượt 1 (dán 2 770 byte, `muse-spark-1.3-contributor-free`, phiên `67bdfd4bd6fa4398bd0273e62dd2acc0`):
+  `write_plan` bị từ chối **bốn lần** (`PLAN_QUALITY_REJECTED: missing (verification-section)`;
+  `missing (verification-command)`; `PLAN_EVAL_REJECTED: (steps-unanchored) chỉ 4/11 bước có lệnh…`;
+  `(plan-no-steps)`) rồi mới nhận ở lần thứ năm: `.plans/v1-boxfox-5-upgrades.md` 4 643 byte,
+  `levels {P1:1, P2..P8:2}`, kèm `ui_intent` mở tab Plan. Lượt xong ở **bước 6**, `completed`,
+  `contextEstimate 24001`, **không gọi sub-agent nào**.
+- Plan sinh ra vẫn sai sự thật ở ba chỗ: bịa tên hằng `DEFAULT_MAX_STEPS` (thật là `MAX_STEPS_DEFAULT`),
+  bịa `turnId`/`deadlineMs`, và tự nhận trong mục *Sources / Citations* rằng các số 40 bước / 10 MB / 120 s
+  là "giá trị tự chọn", không có nguồn.
+- Lượt 2 (delegation, `muse-spark-1.2-contributor-free`, phiên `b66559fa8e2743a79e7b1d079fecc881`):
+  cha gọi `delegate_task role=explore` (con `391cbed2…`, 8 bước, 7 tool) rồi `role=review`
+  (con `d79a2112…`, 8 bước, 7 tool), xong ở bước 3. Con `explore` tìm `ChatInputBar.tsx` khi mã nguồn chưa
+  được chép vào box nên kết luận "tệp không tồn tại"; con `review` **sửa lại** khi mã đã có. Đây là bằng chứng
+  sống cho thấy hôm nay chỉ có cha làm trung gian: con không đọc được việc của con khác, chỉ đọc lại sau khi cha
+  giao việc mới.
+
+### Phần C — trần bước và hạn chót
+
+- Việc vừa phải (đọc 2 tệp + grep + viết báo cáo + đọc lại, phiên `dddebffb887a4f6ca814c1514367d38d`),
+  chạy với **đúng mặc định** `{"maxSteps":16,"deadlineSeconds":180}`: xong ở **bước 8**, `completed`,
+  `contextEstimate 28235`. Không chạm trần.
+- Việc của con (`delegate_task role=explore`, phiên `ea9486495da646d7aac4ccd4214ea8ed`): chạy **10/10 bước**,
+  33 tool call, hết **120 s** ⇒ `DEADLINE: the turn ran out of time before an answer was produced`,
+  `answerChars = 0`, cha nhận `status=failed`. **Toàn bộ chín bước đã làm bị vứt**, không có đường trả về phần dở.
+  Cùng mã lỗi `DEADLINE` như ảnh chủ nhà gửi (`Error code: DEADLINE`, `Worked for 180s`). Chủ nhà báo ở lượt gốc;
+  vòng này **không tái hiện được băng đỏ ở lượt gốc** (phiên gốc cũ đã bị dọn khỏi store) — tái hiện được **cùng mã lỗi**
+  ở agent con (120 s) và thấy cha vẫn báo lỗi đó cho người dùng trong dòng `last_error`.
+- Lỗi thứ ba, đo được trong chính lượt gửi tệp: `TURN_EMPTY_RESPONSE: the model finished without a usable answer
+  (no text, no tool call)` tại bước 5 — model đã có `thought` nhưng không có text/tool call, lượt bị đánh `failed`,
+  **không thử lại**, người dùng mất cả lượt.
+
+### Phần D — kiến trúc sub-agent (đọc mã, không sửa)
+
+- Mỗi cha chỉ có một đường sinh con và chạy tuần tự (`runtime.py:2531-2534`); `child_slots` là `Semaphore(3)`
+  **toàn tiến trình** (`runtime.py:967`) nên hai cha tranh nhau ba slot; tool trong một bước cũng tuần tự
+  (`runtime.py:1730-1741`).
+- Con không có tool để đọc/đợi/nhắn bạn: tập tool là frozenset theo vai (`roles.py:7-11`, gán `:148-158`,
+  giao với cha `:163-165`), `session_search` chỉ orchestrator và **khoá theo sid của chính nó**
+  (`roles.py:159-160`, `runtime.py:1944-1945`, `:1966-1967`), con không hỏi được người dùng (`runtime.py:1991-1995`).
+- `store.events()` trả tối đa 500 hàng (`memory/session_store.py:136-139`); `child` event không mang `turn`/`step`
+  (`runtime.py:2523-2530`, `:2564`) nên giao diện không thể phân turn dù muốn.
+
+### Phần E — bằng chứng sống và bảng Sub-agents theo turn
+
+- Không có cổng nào cho câu trả lời cuối: chỉ kiểm "có text và `finish_reason` hợp lệ" (`runtime.py:1696`) rồi
+  phát thẳng (`:1712-1713`); cổng duy nhất đang chạy là cho **plan** (`runtime.py:2195`, `:2213`).
+  Giao diện ghim badge `done` **vô điều kiện** (`HarnessStepView.tsx:1534-1537`) và store bỏ luôn
+  `session.journal` mà backend đã trả (`harnessChatStore.ts:285-338`; `api/server.py:285-293`).
+- Bảng Sub-agents sai theo turn, đo sống: lượt 2 sinh con `ea948649…`; **lượt 3** hỏi `2+2` (xong trong 3 s,
+  không gọi tool nào) mà bảng vẫn ghi `SPECIALISTS PIPELINE · 1 TOTAL · Explore Specialist FAILED · 33 tools executed`.
+  Gốc: `childrenMap` dựng từ mọi event `child` của phiên (`SubagentInspectorPanel.tsx:162-196`, render `:347`/`:361`)
+  và store không cắt theo turn (`harnessChatStore.ts:294`).
+
+### Kiểm chứng model (chủ nhà hỏi)
+
+- `muse-spark-1.2-contributor-free` và `muse-spark-1.3-contributor-free`: **cả hai chạy được** — test qua router
+  đều `status: passed` (usage trả về), giao diện hiện đủ chín model `-free` trong tab "Single Models".
+  Không có báo cáo thiếu model.
+
+### Bằng chứng của vòng
+
+- Ảnh: `images/r21_preview_01_public_url.png`, `images/r21_upload_05_clipped.png`,
+  `images/r21_local_02_menu_clipped.png`, `images/r21_local_03_chip.png`, `images/r21_local_04_sent.png`
+  (bong bóng chat chứa `[Attached Files: probe-upload.txt]`), `images/r21_model_01_muse13_selected.png`,
+  `images/r21_perTurn_02_subagents_after_turn2.png`, `images/r21_perTurn_03_turn3_with_stale_child.png`.
+- Log: `/tmp/runA.txt`, `/tmp/runB.txt`, `/tmp/runD.txt`; phiên `67bdfd4b…`, `b66559fa…`, `dddebffb…`,
+  `0ef73471…`, con `ea948649…`.
+- Kế hoạch: `docs/plan/v21-boxfox-plan.md` (sáu phần A–F), tóm tắt `docs/plan/v21-boxfox-plan-summary.md`.
