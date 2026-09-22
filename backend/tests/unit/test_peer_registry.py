@@ -1,8 +1,11 @@
-"""Sổ con, biên nhận giao hàng và bộ đếm lượt (vòng 22, T1).
+"""Sổ con, biên nhận giao hàng, bộ đếm lượt và toạ độ (lượt, bước) của con (vòng 22, T1+T3).
 
 Bộ kiểm này cố ý mở **DB theo schema CŨ** (đúng ba bảng của bản trước) để chứng minh di trú chỉ
-ghi thêm: hàng cũ đọc được, bảng mới có mặt, và mở lần thứ hai không đổi gì.
+ghi thêm: hàng cũ đọc được, bảng mới có mặt, và mở lần thứ hai không đổi gì. Phần cuối kiểm
+việc cha ghi sổ con ngay lúc sinh con, với cặp (lượt, bước) khớp cả hai event `child`.
 """
+import asyncio
+import json
 import sqlite3
 import time
 
@@ -135,4 +138,89 @@ def test_xoa_phien_thi_so_con_di_theo(tmp_path):
     assert store.child(child) is None
     assert store.deliveries_of(child) == []
     assert store.db.execute('SELECT COUNT(*) AS n FROM child_deliveries').fetchone()['n'] == 0
+    store.close()
+
+
+# --------------------------------------------------------------------------- #
+# T3 — cha ghi sổ con NGAY khi sinh con; cặp (lượt, bước) nằm trong cả hai event
+# --------------------------------------------------------------------------- #
+
+def answer(text='done', calls=None):
+    return {'choices': [{'message': {'content': text, **({'tool_calls': calls} if calls else {})},
+                         'finish_reason': 'tool_calls' if calls else 'stop'}],
+            'usage': {'prompt_tokens': 10, 'completion_tokens': 2}}
+
+
+def call(name, args, cid='c1'):
+    return {'id': cid, 'type': 'function', 'function': {'name': name, 'arguments': json.dumps(args)}}
+
+
+class FixtureModel:
+    def __init__(self, responses):
+        self.responses = iter(responses)
+
+    async def complete(self, messages, tools, route, max_tokens=4096, on_thought=None, on_content=None):
+        return next(self.responses)
+
+
+class FixtureExecutor:
+    async def execute(self, name, args, sid):
+        return {'content': 'observed fixture result'}
+
+    async def cleanup(self, sid):
+        return None
+
+
+def run_parent_with_a_delegation_on_turn_two(tmp_path):
+    """Lượt 1 không giao việc, lượt 2 mới giao: toạ độ lượt của con phải là 2, không phải 1."""
+    from agentbox.agent_core.runtime import HarnessRuntime
+
+    store = SessionStore(tmp_path / 'sessions.db')
+    model = FixtureModel([answer('lượt một xong'),
+                          answer(calls=[call('delegate_task', {'role': 'research', 'goal': 'tra cứu'})]),
+                          answer('con trả lời'),
+                          answer('cha chốt')])
+    runtime = HarnessRuntime(store, FixtureExecutor(), model)
+    sid = runtime.create({'skills': [], 'subagents': [{'id': 'research', 'enabled': True}]})['id']
+
+    async def run():
+        await runtime.submit(sid, 'lượt một')
+        await runtime.tasks[sid]
+        await runtime.submit(sid, 'lượt hai')
+        await runtime.tasks[sid]
+
+    asyncio.run(run())
+    child_events = [event['data'] for event in store.events(sid) if event['type'] == 'child']
+    return store, sid, child_events
+
+
+def test_hai_event_child_mang_dung_luot_va_buoc_cua_cha(tmp_path):
+    store, sid, child_events = run_parent_with_a_delegation_on_turn_two(tmp_path)
+    started, finished = child_events[0], child_events[-1]
+
+    assert (started['status'], started['turn'], started['step']) == ('started', 2, 1)
+    assert (finished['turn'], finished['step']) == (2, 1), \
+        'cả hai event mang cùng toạ độ: lượt 2 của CHA, bước 1'
+    assert started['sessionId'] == finished['sessionId']
+    assert started['deliverTo'] == [] and started['wait'] is True, \
+        'T6/T11 điền nghĩa; T3 chỉ mang trường đi'
+    assert finished['status'] == 'completed' and finished['stepsUsed'] >= 1
+    assert finished['answerChars'] == len('con trả lời')
+    assert isinstance(finished['wallMs'], int) and finished['wallMs'] >= 0
+    store.close()
+
+
+def test_hang_so_con_khop_voi_hai_event_child(tmp_path):
+    store, sid, child_events = run_parent_with_a_delegation_on_turn_two(tmp_path)
+    started, finished = child_events[0], child_events[-1]
+
+    assert store.children_of(sid, turn=1) == [], 'lượt 1 không giao việc ⇒ không có hàng sổ con nào'
+    rows = store.children_of(sid, turn=2)
+    assert len(rows) == 1
+    row = rows[0]
+    assert (row['session_id'], row['parent_id'], row['role']) == (started['sessionId'], sid, 'research')
+    assert row['status'] == finished['status'] == 'completed'
+    assert row['spawn_step'] == 1 and row['steps_used'] == finished['stepsUsed']
+    assert row['answer_chars'] == finished['answerChars']
+    assert row['finished'] is not None and store.live_children(sid) == [], 'con đã đóng, không còn sống'
     store.close()

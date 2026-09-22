@@ -1022,6 +1022,10 @@ class HarnessRuntime(RuntimeCommands):
         # một chiều và sống qua lần khởi động lại harness; dict này chỉ là bản đọc nhanh cho
         # event/log của lượt đang chạy.
         self.active_turn = {}
+        # T3 — sessionId -> số BƯỚC đang mở của lượt. Cha ghi sổ con bằng cặp (lượt, bước)
+        # ngay lúc sinh con; cặp đó đã nằm trong event `turn_start`/`turn_end` nhưng không
+        # nằm trong RAM, nên `delegate` cần bản đọc nhanh này.
+        self.active_step = {}
         # sessionId -> đã gọi op `session_ensure` trong box (A1). Thư mục phiên sinh ở LẦN GHI đầu
         # tiên của phiên, nhưng một tiến trình harness chỉ trả MỘT `docker exec` cho việc đó; lượt
         # sau đọc lại set này. Không nhớ khi box chưa trả lời — hỏng thì lượt kế thử lại.
@@ -1901,6 +1905,7 @@ class HarnessRuntime(RuntimeCommands):
                                     'contextEstimate': estimate_tokens(messages, tools)}
                     self.store.emit(sid, 'turn_start', turn_payload)
                     turn['step'] = steps_used
+                    self.active_step[sid] = steps_used
                     # Retry policy (failures.retry_advice owns the rules): a dropped socket, a
                     # restarted router, an empty stream OR a provider asking us to slow down
                     # (429 / ``Retry-After``) gets another attempt inside this turn's budget.
@@ -2253,6 +2258,7 @@ class HarnessRuntime(RuntimeCommands):
             for record in self.pending_for(sid):
                 self.settle(record, record['defaultChoice'], 'cancelled', 'session_cancelled', None)
             self.active_messages.pop(sid, None)
+            self.active_step.pop(sid, None)
             await self.executor.cleanup(sid)
 
     async def dispatch(self, session, name, args, call_id=None):
@@ -3029,15 +3035,35 @@ class HarnessRuntime(RuntimeCommands):
         echo_goal, echo_context, echo_prompt = (bound_child_text(goal, CHILD_ECHO_MAX_CHARS)[0],
                                                 bound_child_text(context_data, CHILD_ECHO_MAX_CHARS)[0],
                                                 bound_child_text(child_prompt, CHILD_ECHO_MAX_CHARS)[0])
-        self.store.emit(session['id'], 'child', {
+        # T3 — hàng sổ con (T1) vào DB NGAY khi con được sinh, TRƯỚC event `child`: `peer_read`
+        # (T8) và `await_children` (T9) đọc sổ, nên một con chỉ có trong event là một con không
+        # tồn tại với chúng. Cặp (lượt, bước) là toạ độ của CHA — giao diện tách bảng theo lượt
+        # bằng chính nó (BUG-43/D-9).
+        parent_id = session['id']
+        turn = self.active_turn.get(parent_id) or 0
+        step = self.active_step.get(parent_id) or 0
+        # `deliverTo` (T11) và `wait` (T6) do hai việc sau định nghĩa; T3 chỉ nhận, cắt
+        # biên và mang chúng vào payload, để hai việc đó không phải đổi hình dạng event.
+        raw_targets = args.get('deliverTo')
+        deliver_to = ([str(item)[:64] for item in raw_targets][:8]
+                      if isinstance(raw_targets, list) else [])
+        wait = bool(args.get('wait', True))
+        self.store.child_start(child['id'], parent_id, turn, step, role, echo_goal)
+        self.store.emit(parent_id, 'child', {
             'sessionId': child['id'],
             'role': role,
             'status': 'started',
+            'turn': turn,
+            'step': step,
+            'deliverTo': deliver_to,
+            'wait': wait,
             'goal': echo_goal,
             'context': echo_context,
             'prompt': echo_prompt,
         })
         async with self.child_slots:
+            # T3 — `wallMs` đo đúng thời gian CON chạy, không tính lúc xếp hàng chờ slot.
+            child_started = time.time()
             task = self.start(child['id'], child_prompt)
             try:
                 answer = await task
@@ -3069,6 +3095,7 @@ class HarnessRuntime(RuntimeCommands):
         summary, truncated = bound_child_text(answer_text, CHILD_ANSWER_MAX_CHARS)
         diag = f"\n[Diagnostic: status={status}; error={last_error or 'none'}; tools_run={tools_run}]" if status != 'completed' else ""
         result = {'sessionId': child['id'], 'role': role, 'status': status,
+                  'turn': turn, 'step': step, 'deliverTo': deliver_to,
                   'goal': echo_goal, 'context': echo_context, 'prompt': echo_prompt,
                   'summary': summary + diag, 'answerChars': len(answer_text), 'truncated': truncated,
                   'is_error': status != 'completed', 'last_error': last_error, 'tools_run': tools_run}
@@ -3083,5 +3110,21 @@ class HarnessRuntime(RuntimeCommands):
                 result['diagnosis'] = True
                 result['stuckReason'] = partial_reason
                 result['is_error'] = False
+        # T3 — đóng hàng sổ con bằng số THẬT của chính con: bước đã tiêu và token đầu ra đọc
+        # từ `turn_end` CUỐI của con (một con chạy đúng MỘT lượt, nên đó là số luỹ kế của cả
+        # lượt), số ký tự của câu trả lời CHƯA cắt, và thời gian chạy. Sổ này là nguồn cho
+        # `peer_read` (T8), `await_children` (T9) và cho chẩn đoán của cha.
+        child_end = next((event['data'] for event in reversed(child_events)
+                          if event['type'] == 'turn_end'), {})
+        steps_used = child_end.get('stepsUsed') or child_end.get('step')
+        output_tokens = child_end.get('outputTokens')
+        wall_ms = round((time.time() - child_started) * 1000)
+        final_reason = result.get('reason') or last_error
+        self.store.child_finish(child['id'], status, reason=final_reason, steps_used=steps_used,
+                                output_tokens=output_tokens, answer_chars=len(answer_text))
+        result.update({'stepsUsed': steps_used, 'outputTokens': output_tokens,
+                       'answerChars': len(answer_text), 'wallMs': wall_ms})
+        if final_reason and 'reason' not in result:
+            result['reason'] = final_reason
         self.store.emit(session['id'], 'child', result)
         return result
