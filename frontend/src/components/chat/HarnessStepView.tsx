@@ -350,9 +350,22 @@ export function formatMediaLabel(media: Pick<ToolMedia, 'mime' | 'dimensions' | 
   return parts.join(' · ')
 }
 
+/**
+ * P4.3 (soát vòng kiểm độc lập) — MỘT khuôn đường dẫn cho mọi mảnh bằng chứng.
+ *
+ * Box báo tệp theo hai khuôn khác nhau: `computer_screen_capture` trả đường dẫn TUYỆT ĐỐI
+ * (`/home/agent/workspace/.generated_artifacts/…`), còn `file_write` và mảnh cổng ghim trong hàng
+ * `E:` trả đường dẫn TƯƠNG ĐỐI trong workspace. Danh sách bằng chứng khử trùng theo đường dẫn, nên
+ * hai khuôn của CÙNG một tệp thành hai dòng: một ảnh chụp hiện hai lần và bộ đếm `N bằng chứng`
+ * phồng lên so với số mảnh thật. Chuẩn hoá về khuôn tương đối — khuôn mà panel Files và mọi mảnh
+ * cổng đang dùng.
+ */
+export function workspacePath(path: string): string {
+  return path.replace(/^\/home\/agent\/workspace\//, '')
+}
+
 function boxMediaUrl(artifactPath: string): string {
-  const relPath = artifactPath.replace(/^\/home\/agent\/workspace\//, '')
-  return `/__box/file/media?path=${encodeURIComponent(relPath)}`
+  return `/__box/file/media?path=${encodeURIComponent(workspacePath(artifactPath))}`
 }
 
 /**
@@ -767,7 +780,8 @@ export function collectTurnArtifacts(
   const seen = new Set<string>()
   const media = opts?.media ?? turnMediaOf(turn)
   const facts = opts?.facts
-  const mediaOf = (path: string) => media.find((m) => m.artifactPath === path) ?? null
+  const mediaOf = (path: string) =>
+    media.find((m) => m.artifactPath && workspacePath(m.artifactPath) === workspacePath(path)) ?? null
   const push = (artifact: {
     path: string
     media: ToolMedia | null
@@ -776,12 +790,16 @@ export function collectTurnArtifacts(
     sha256?: string | null
     bytes?: number | null
   }) => {
-    if (!artifact.path || seen.has(artifact.path)) return
-    seen.add(artifact.path)
+    // Khử trùng theo đường dẫn ĐÃ CHUẨN HOÁ: payload ảnh của box là đường dẫn tuyệt đối, mảnh cổng
+    // ghim là đường dẫn tương đối — so thô thì cùng một ảnh hiện hai dòng (`workspacePath`).
+    const path = workspacePath(artifact.path)
+    if (!path || seen.has(path)) return
+    seen.add(path)
     // Số đo ghép từ hai nguồn thật: payload công cụ (`facts`) và mảnh cổng ghim vào event.
-    const fact = facts?.get(artifact.path) ?? null
+    const fact = facts?.get(path) ?? facts?.get(artifact.path) ?? null
     items.push({
       ...artifact,
+      path,
       sha256: artifact.sha256 ?? fact?.sha256 ?? null,
       bytes: artifact.bytes ?? fact?.bytes ?? null,
       added: fact?.added ?? null,

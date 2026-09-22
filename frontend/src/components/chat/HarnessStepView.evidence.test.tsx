@@ -145,6 +145,66 @@ describe('HarnessStepView — cổng bằng chứng (P4)', () => {
     expect(diffRow).toContain('22 B')
   })
 
+/**
+ * Cùng một ảnh chụp, hai khuôn đường dẫn: payload của box (`computer_screen_capture`) báo TUYỆT ĐỐI,
+ * còn mảnh cổng ghim vào event và hàng `E:` báo TƯƠNG ĐỐI trong workspace. Ca này là bản sao thu nhỏ
+ * của một lượt thật (phiên `5d896abf`): trước khi chuẩn hoá, danh sách hiện ảnh hai lần và biên nhận
+ * nói `4 bằng chứng` cho ba mảnh thật.
+ */
+const CAPTURE_ABS = '/home/agent/workspace/.generated_artifacts/captures/screen/sid8/sid8_1_screen.png'
+const CAPTURE_REL = '.generated_artifacts/captures/screen/sid8/sid8_1_screen.png'
+
+const captureToolEvents = () => [
+  ev('tool_start', { id: 'c1', name: 'computer_screen_capture', args: {} }, 1500),
+  ev(
+    'tool_end',
+    {
+      id: 'c1',
+      name: 'computer_screen_capture',
+      args: {},
+      result: {
+        content: 'Sandbox screenshot 1280x800',
+        artifact: CAPTURE_ABS,
+        mime: 'image/png',
+        dimensions: [1280, 800],
+      },
+    },
+    1500.4,
+  ),
+]
+
+  it('ảnh chụp có hai khuôn đường dẫn ⇒ MỘT dòng, ảnh vẫn mở được bằng lightbox', () => {
+    const host = render([
+      userTurn,
+      ...captureToolEvents(),
+      finalAssistant({
+        verdict: 'sufficient',
+        turn: 1,
+        mode: 'warn',
+        checked: 2,
+        missing: [],
+        changedFiles: ['frontend/src/Round3Probe.tsx'],
+        artifacts: [
+          { kind: 'image', path: CAPTURE_REL, step: 1, tool: 'computer_screen_capture' },
+          { kind: 'diff', path: DIFF_PATH, step: 2, tool: 'file_write', changed: 'frontend/src/Round3Probe.tsx' },
+        ],
+      }),
+    ])
+
+    const rows = [...host.querySelectorAll('[data-artifact-path]')]
+    expect(rows.map((row) => row.getAttribute('data-artifact-path'))).toEqual([
+      'frontend/src/Round3Probe.tsx',
+      CAPTURE_REL,
+      DIFF_PATH,
+    ])
+    // Dòng ảnh giữ được media (payload là nguồn duy nhất có `src`), nên phải còn nút Zoom.
+    const imageRow = rows.find((row) => row.getAttribute('data-artifact-path') === CAPTURE_REL)
+    expect(imageRow?.querySelector('[data-artifact-open="media"]')).toBeTruthy()
+    expect(imageRow?.querySelector('[data-artifact-open="files"]')).toBeNull()
+    // Biên nhận đếm đúng số mảnh đang hiện, không phồng theo số nguồn.
+    expect(host.querySelector('[data-evidence-toggle="true"]')?.textContent).toContain('3 bằng chứng')
+  })
+
   it('insufficient ⇒ nhãn vàng + lý do dịch sang tiếng người + mục `data-evidence-missing`', () => {
     const host = render([
       userTurn,
