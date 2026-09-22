@@ -211,6 +211,56 @@ def test_custom_template_never_executes_or_reparses(registry, argument):
         assert registry.resolve('/literal-task ' + argument).prompt == 'Inspect: ' + argument
 
 
+ATTACHMENT_ROW = {'name': 'báo cáo.md', 'path': '.uploaded_artifacts/7.md', 'sizeBytes': 12288}
+BLOCK_HEADER = '[Tệp đính kèm đã lưu trong box]'
+
+
+def test_command_child_receives_the_attachment_block(registry):
+    """A7 (soát F3): tệp đính kèm phải tới được MÔ HÌNH LÀM VIỆC — phiên con của lệnh.
+
+    Triệu chứng BUG-40 là mô hình không có đường đọc tệp; trên đường command/skill mô hình làm
+    việc thật là con, nên khối đường dẫn phải nằm trong thân của CON, không chỉ trong bản lưu
+    của phiên cha.
+    """
+    async def run():
+        model = Model()
+        runtime = HarnessRuntime(registry.store, Executor(), model, registry.catalog)
+        parent = runtime.create({'skills': []})
+        await runtime.submit(parent['id'], '/plan Inspect the system',
+                             attachments=[ATTACHMENT_ROW], invocation_id='invocation-a7')
+        await runtime.tasks[parent['id']]
+        children = registry.store.db.execute('SELECT id FROM sessions WHERE parent_id=?',
+                                             (parent['id'],)).fetchall()
+        child = registry.store.get(children[0]['id'])
+        stored = json.dumps(child['messages'], ensure_ascii=False)
+        assert BLOCK_HEADER in stored
+        assert '- /home/agent/workspace/.uploaded_artifacts/7.md (báo cáo.md, 12 KB)' in stored
+        seen = json.dumps(model.requests, ensure_ascii=False)
+        assert BLOCK_HEADER in seen, 'thân gửi mô hình của con cũng mang khối'
+        assert '/home/agent/workspace/.uploaded_artifacts/7.md' in seen
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('row,code', [
+    ({'name': 'x', 'path': '../etc/passwd', 'sizeBytes': 1}, 'ATTACHMENTS_INVALID'),
+    ({'name': 'x', 'path': '.uploaded_artifacts/9.md', 'sizeBytes': float('inf')}, 'ATTACHMENTS_INVALID'),
+    ({'name': 'x', 'path': '.uploaded_artifacts/9.md', 'sizeBytes': 10 ** 400}, 'ATTACHMENTS_INVALID'),
+])
+def test_a_refused_file_list_leaves_no_admission_row(registry, row, code):
+    """Soát F8: danh sách tệp sai là 400 TRƯỚC khi ghi hàng admission — không hàng `running` mắc kẹt."""
+    async def run():
+        runtime = HarnessRuntime(registry.store, Executor(), Model(), registry.catalog)
+        parent = runtime.create({'skills': []})
+        with pytest.raises(ValueError, match=code):
+            await runtime.submit(parent['id'], '/plan task', invocation_id='invocation-bad',
+                                 attachments=[row])
+        rows = registry.store.db.execute('SELECT id FROM command_invocations WHERE session_id=?',
+                                         (parent['id'],)).fetchall()
+        assert [one['id'] for one in rows] == [], 'lượt bị từ chối không để lại hàng admission'
+        assert runtime.store.get(parent['id'])['status'] != 'running'
+    asyncio.run(run())
+
+
 def test_command_child_inherits_the_session_time_budget(registry):
     """Con của lệnh phải có cùng ngân sách thời gian với phiên, không phải mặc định 180 giây.
 

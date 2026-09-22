@@ -2539,6 +2539,37 @@ class HarnessRuntime(RuntimeCommands):
         self.settle(record, choice, status, 'user', (note or '').strip() or None)
         return {'status': 'resolved', 'decisionId': decision_id, 'choice': choice, 'outcome': status}
 
+    async def registration_or_refuse(self, session, sid, slug, args, declared):
+        """MỘT đường đăng ký kế hoạch: từ chối ở đâu cũng để lại dòng nhật ký hệ thống + vé.
+
+        Bất biến "một lần từ chối = một dòng `plan.registration.rejected` + một vé `F:`" phải
+        đúng ở MỌI chỗ gọi, không chỉ chỗ đầu: `write_plan` gọi hàm này lần nữa khi số phiên bản
+        vừa bị chiếm giữa hai bước (`PLAN_VERSION_TAKEN`), và lần gọi đó cũng có thể bị từ chối.
+        """
+        try:
+            return await self.plan_registration_for(session, slug, args, declared)
+        except plan_registry.PlanRegistrationError as exc:
+            # "Log nhật ký hệ thống cho mọi lần từ chối" (§B4): một dòng cho mỗi lần luật §3.2–§4.3
+            # chặn, kèm mã máy đọc được — câu trả cho model là một dòng, nhưng DEV cần con số.
+            system_log.write('plan.registration.rejected', level='warn', code=exc.code,
+                             message=exc.message, session_id=sid, slug=slug,
+                             identity=exc.fields.get('identity'), fields=exc.fields)
+            ticket = exc.fields.get('ambiguity_ticket')
+            if isinstance(ticket, dict):
+                # D-3: lời từ chối để lại một VÉ trên hàng dữ kiện (`F:`) — cố ý KHÔNG phải `P:`:
+                # bản bị từ chối không có tệp nào để giữ, nên vé không được lọt vào cổng xoá `P:`
+                # của `migrate_plans.py --delete-orphan`. Câu dưới là đường duy nhất nói cho model
+                # biết nó được gửi lại nguyên văn (khối ký ức `brief()` chỉ có sáu nhóm, không có
+                # nhóm `fact` — xem bàn giao C4).
+                await session_journal.append(
+                    self.executor, self.store, sid, 'fact',
+                    f"PLAN_IDENTITY_AMBIGUOUS: slug «{slug}» giống "
+                    f"{float(ticket.get('score') or 0):.0%} nhóm «{ticket.get('matchedIdentity') or ''}» "
+                    'nên harness không tự đoán; gửi lại NGUYÊN VĂN để nhận là kế hoạch mới '
+                    '(vé dùng được đúng một lần).',
+                    data={plan_registry.AMBIGUITY_TICKET_KEY: ticket}, status='info')
+            raise
+
     async def plan_registration_for(self, session, slug, args, declared):
         """B2 — chọn identity/version/parent từ chỉ mục box TRƯỚC khi ghi (§3.2–§3.4 + R1/R3).
 
@@ -2604,29 +2635,7 @@ class HarnessRuntime(RuntimeCommands):
         check_plan_quality(markdown)
         title = plan_title(args.get('title'), markdown, slug)
         declared = plan_header.parse_plan_header(markdown)
-        try:
-            registration = await self.plan_registration_for(session, slug, args, declared)
-        except plan_registry.PlanRegistrationError as exc:
-            # "Log nhật ký hệ thống cho mọi lần từ chối" (§B4): một dòng cho mỗi lần luật §3.2–§4.3
-            # chặn, kèm mã máy đọc được — câu trả cho model là một dòng, nhưng DEV cần con số.
-            system_log.write('plan.registration.rejected', level='warn', code=exc.code,
-                             message=exc.message, session_id=sid, slug=slug,
-                             identity=exc.fields.get('identity'), fields=exc.fields)
-            ticket = exc.fields.get('ambiguity_ticket')
-            if isinstance(ticket, dict):
-                # D-3: lời từ chối để lại một VÉ trên hàng dữ kiện (`F:`) — cố ý KHÔNG phải `P:`:
-                # bản bị từ chối không có tệp nào để giữ, nên vé không được lọt vào cổng xoá `P:`
-                # của `migrate_plans.py --delete-orphan`. Câu dưới là đường duy nhất nói cho model
-                # biết nó được gửi lại nguyên văn (khối ký ức `brief()` chỉ có sáu nhóm, không có
-                # nhóm `fact` — xem bàn giao C4).
-                await session_journal.append(
-                    self.executor, self.store, sid, 'fact',
-                    f"PLAN_IDENTITY_AMBIGUOUS: slug «{slug}» giống "
-                    f"{float(ticket.get('score') or 0):.0%} nhóm «{ticket.get('matchedIdentity') or ''}» "
-                    'nên harness không tự đoán; gửi lại NGUYÊN VĂN để nhận là kế hoạch mới '
-                    '(vé dùng được đúng một lần).',
-                    data={plan_registry.AMBIGUITY_TICKET_KEY: ticket}, status='info')
-            raise
+        registration = await self.registration_or_refuse(session, sid, slug, args, declared)
         for note in registration.notes:
             # `PLAN_IDENTITY_FORCED_NEW`: model khai `relatesTo: "none"` ở dải j ≥ 0.75 nên harness
             # vẫn ghi thành identity mới — chủ dự án thấy việc này trong nhật ký hệ thống.
@@ -2641,7 +2650,7 @@ class HarnessRuntime(RuntimeCommands):
             if self.version_taken(written) and not registration.degraded:
                 # Đua ghi hiếm gặp: chỉ mục vừa cũ đi giữa hai bước. Đọc lại đúng MỘT lần rồi ghi lại;
                 # vẫn kẹt thì thôi — `PLAN_WRITE_CONFLICT` để lần ghi sau tự chọn lại số.
-                registration = await self.plan_registration_for(session, slug, args, declared)
+                registration = await self.registration_or_refuse(session, sid, slug, args, declared)
                 if registration.degraded:
                     raise ValueError('PLAN_WRITE_CONFLICT: the box index became unreadable and the '
                                      'version is already taken; nothing was recorded')

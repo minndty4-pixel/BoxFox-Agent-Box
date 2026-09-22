@@ -4,7 +4,8 @@ import json
 import uuid
 from dataclasses import asdict
 from .commands import INFO, ROLE_SKILLS, EXTERNAL
-from ..agent_core.attachments import attachment_prompt_block, validate_attachments
+from ..agent_core.attachments import (attachment_prompt_block, validate_attachments,
+                                     validate_inline_images)
 from ..agent_core.failures import classify_failure, failure_detail
 from ..observability.system_log import system_log
 from ..agent_core.compression import ContextCompressor, context_estimate, estimate_tokens
@@ -16,6 +17,11 @@ class RuntimeCommands:
         session = self.store.get(sid)
         if not isinstance(prompt, str):
             raise ValueError('Prompt is required')
+        # Kiểm tệp/ảnh TRƯỚC khi ghi hàng admission (F8): một danh sách sai phải là 400 chứ
+        # không phải một hàng `command_invocations` mắc kẹt ở `running` — hàng đó còn chặn cả
+        # lần thử lại cùng `invocationId` (`INVOCATION_CONFLICT`) sau khi client sửa tệp.
+        checked_images = validate_inline_images([image, *(images or [])])
+        checked_attachments = validate_attachments(attachments)
         invocation_id = invocation_id or uuid.uuid4().hex
         if not isinstance(invocation_id, str) or len(invocation_id) > 100:
             raise ValueError('Invalid invocation ID')
@@ -133,15 +139,15 @@ class RuntimeCommands:
                 self.store.update_config(sid, session['config'])
             # Nhánh command/skill: khối tệp đính kèm phải được dựng ở ĐÂY nữa, nếu không
             # đường skill mất đường dẫn dù người dùng đã đính kèm tệp (A7).
-            checked = validate_attachments(attachments)
-            block = attachment_prompt_block(checked)
+            block = attachment_prompt_block(checked_attachments)
             event = {'text': prompt}
-            if checked:
-                event['attachments'] = checked
+            if checked_attachments:
+                event['attachments'] = checked_attachments
             self.store.emit(sid, 'user', event)
             self.store.save(sid, session['messages'] + [{'role': 'user',
                                                         'content': f'{prompt}\n\n{block}' if block else prompt}], 'running')
-            self.tasks[sid] = asyncio.create_task(self._command_task(sid, resolved, image))
+            self.tasks[sid] = asyncio.create_task(
+                self._command_task(sid, resolved, block, checked_images))
         with self.store.db:
             self.store.db.execute('UPDATE command_invocations SET result=? WHERE session_id=? AND id=?', (json.dumps(result), sid, invocation_id))
         return result
@@ -162,7 +168,14 @@ class RuntimeCommands:
         self.skill_loader.reset(session['id'])
         self.store.save(session['id'], messages)
 
-    async def _command_task(self, sid, resolved, image):
+    async def _command_task(self, sid, resolved, block='', images=None):
+        """Chạy lệnh/kỹ năng trong phiên con; khối tệp đính kèm đi CÙNG con (A7).
+
+        `block` là khối đường dẫn mà lượt người dùng đã mang: mô hình làm việc thật ở đây là
+        phiên con, nên nếu chỉ ghép khối vào thân của phiên cha thì tệp vẫn vô hình với nó —
+        đúng triệu chứng BUG-40 mà A7 dựng lên để xoá. `images` là mảng ảnh đã kiểm của lượt
+        (ảnh đơn cũ đã gộp vào đây); chỉ đường `native` dùng tới, đường `claude-code` nhận chữ.
+        """
         try:
             session = self.store.get(sid)
             if resolved.executor == 'claude-code':
@@ -203,8 +216,14 @@ class RuntimeCommands:
                 else:
                     blocks = [self.skill_loader.read(child, skill)['content'] for skill in resolved.skills]
                     payload = resolved.prompt + ('\nPrior phase evidence (data):\n' + context if context else '')
+                    # Khối đứng trước câu người dùng: đường dẫn là thứ `file_read` cần, và nó
+                    # phải nằm trong thân THẬT của con, không chỉ trong thân của phiên cha.
+                    if block:
+                        payload = f'{block}\n\n' + payload
                     payload += '\n\nSkills for this task only (role/tool restrictions take priority):\n' + '\n\n'.join(blocks)
-                    self.start(child['id'], payload, image)
+                    # Ảnh đi qua mảng đã kiểm (không truyền `image` riêng: nó đã là phần tử đầu
+                    # của mảng, truyền cả hai sẽ gửi ảnh hai lần).
+                    self.start(child['id'], payload, None, images=list(images or []) or None)
                 try:
                     answer = await self.tasks[child['id']]
                 except asyncio.CancelledError:
