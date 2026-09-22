@@ -335,3 +335,36 @@ def test_con_wait_false_hong_thi_cha_doc_duoc_ly_do(tmp_path):
     assert store.child(finished['sessionId'])['reason'] == finished['reason']
     assert blockers(store, sid) == [], 'con tự chết vì lỗi của nó ⇒ không phải việc của người dọn'
     store.close()
+
+def test_con_tu_xong_cung_cong_token_ca_chuoi_buoc(tmp_path):
+    """Con `wait=false` TỰ xong: bộ số đóng sổ là số của cả chuỗi bước, không chỉ bước cuối.
+
+    `close_detached_child` là đường đóng sổ của MỌI con `wait=false` (T6) — đường mà lượt sống
+    đi qua. Bước cuối không `outputTokens` (chẩn đoán `partial` hoặc lỗi) làm bản cũ ghi `None`,
+    và `childTokens` của lượt cha (T13) đếm thiếu toàn bộ phần con đã tiêu.
+    """
+    store, runtime, _model, sid = build(tmp_path, [])
+    child = store.create({'skills': []}, role='testing', parent_id=sid)['id']
+    store.child_start(child, sid, 1, 1, 'testing', goal=GOAL_A)
+    store.save(child, [], 'completed')
+    store.emit(child, 'turn_end', {'turn': 1, 'step': 1, 'stepsUsed': 1, 'outputTokens': 7})
+    store.emit(child, 'turn_end', {'turn': 1, 'step': 2, 'stepsUsed': 2, 'outputTokens': 5})
+    store.emit(child, 'turn_end', {'turn': 1, 'step': 3, 'stepsUsed': 3, 'status': 'partial'})
+
+    async def run():
+        task = asyncio.ensure_future(asyncio.sleep(0))
+        await task
+        runtime.close_detached_child(sid, child, 'testing', 1, 1, GOAL_A, task, ())
+        return task
+
+    asyncio.run(run())
+
+    row = store.child(child)
+    assert row['status'] == 'completed'
+    assert row['steps_used'] == 3 and row['output_tokens'] == 12, \
+        'ba bước, tổng token 7 + 5; bước chẩn đoán cuối không mang usage'
+    finished = [event for event in child_events(store, sid) if event['status'] != 'started'][-1]
+    assert finished['status'] == 'completed' and finished.get('detached') is True
+    assert finished['stepsUsed'] == 3 and finished['outputTokens'] == 12
+    store.close()
+

@@ -310,6 +310,36 @@ def test_phien_khai_co_mesh_thi_duoc_ghi_lai_kem_notice(tmp_path):
     store.close()
 
 
+def test_token_cua_con_cong_ca_chuoi_buoc_khong_chi_buoc_cuoi(tmp_path):
+    """Con chạy nhiều bước: token của lượt cha là TỔNG các bước, không phải token bước cuối.
+
+    Bước cuối của con có thể là chẩn đoán (`partial`) hoặc lỗi — hai đường đó KHÔNG mang
+    `outputTokens`. Bản cũ đọc riêng `turn_end` cuối nên ghi `None` (hoặc chỉ token của một
+    bước): lượt sống 2026-09-22 (`3647fe8e…`) có con `review` chạy 9 bước mà hàng sổ con ghi
+    `output_tokens = None`, và `childTokens` của cha báo 0. Đo được thì phải ghi được.
+    """
+    store, runtime, session = build(tmp_path, [
+        answer(calls=[call('delegate_task', {'role': 'testing', 'goal': GOAL, 'wait': True}, 'c1')]),
+        answer('xong'),
+    ], child_answers=[
+        answer(calls=[call('file_read', {'path': 'a.md'}, 'c9')], usage={'prompt_tokens': 5, 'completion_tokens': 7}),
+        answer(calls=[call('file_read', {'path': 'b.md'}, 'c10')], usage={'prompt_tokens': 5, 'completion_tokens': 5}),
+        # Bước cuối không có khối `usage` — đúng hình dạng của một bước chẩn đoán/lỗi.
+        {'choices': [{'message': {'content': 'con xong'}, 'finish_reason': 'stop'}]},
+    ])
+    run_turn(runtime, session['id'])
+
+    summary = runtime.store.children_summary(session['id'])
+    assert summary['completed'] == 1 and summary['failed'] == 0
+    assert summary['childSteps'] == 3, 'ba bước của con'
+    assert summary['childTokens'] == 12, 'token của CẢ ba bước'
+
+    finish = next(event['data'] for event in reversed(store.events(session['id']))
+                  if event['type'] == 'finish')
+    assert finish['childSteps'] == 3 and finish['childTokens'] == 12
+    store.close()
+
+
 def test_phien_khai_tran_cho_thap_hon_thi_ton_trong(tmp_path):
     store, runtime, session = build(tmp_path, values={'peerWaitMax': 30})
     assert session['config']['peerWaitMax'] == 30

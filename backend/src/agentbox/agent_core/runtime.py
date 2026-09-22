@@ -1476,8 +1476,15 @@ class HarnessRuntime(RuntimeCommands):
                 events = self.store.events(child_id)
                 end = next((event['data'] for event in reversed(events)
                             if event['type'] == 'turn_end'), {})
-                steps_used = end.get('stepsUsed') or end.get('step')
-                output_tokens = end.get('outputTokens')
+                # T3/T13 — bộ số của con đọc CẢ CHUỖI `turn_end`, không chỉ bước cuối:
+                # `stepsUsed` là số luỹ kế của lượt (lấy `max`), `outputTokens` là của TỪNG
+                # BƯỚC (cộng). Bước cuối của một con kết thúc bằng chẩn đoán (`partial`) hay
+                # bằng lỗi KHÔNG mang `outputTokens`, nên bản cũ ghi `None` và lượt cha đếm
+                # thiếu toàn bộ phần con đã tiêu. Luồng trống thì lùi về `turn_end` cuối.
+                steps_used, output_tokens = self.store.child_usage_from_events(child_id)
+                if not steps_used and not output_tokens:
+                    steps_used = end.get('stepsUsed') or end.get('step')
+                    output_tokens = end.get('outputTokens')
                 answers = [event['data'].get('text') or '' for event in events
                            if event['type'] == 'assistant' and event['data'].get('final')]
                 answer_chars = len(answers[-1]) if answers else 0
@@ -3980,13 +3987,19 @@ class HarnessRuntime(RuntimeCommands):
                 result['stuckReason'] = partial_reason
                 result['is_error'] = False
         # T3 — đóng hàng sổ con bằng số THẬT của chính con: bước đã tiêu và token đầu ra đọc
-        # từ `turn_end` CUỐI của con (một con chạy đúng MỘT lượt, nên đó là số luỹ kế của cả
-        # lượt), số ký tự của câu trả lời CHƯA cắt, và thời gian chạy. Sổ này là nguồn cho
-        # `peer_read` (T8), `await_children` (T9) và cho chẩn đoán của cha.
+        # từ CẢ CHUỖI `turn_end` của con, số ký tự của câu trả lời CHƯA cắt, và thời gian
+        # chạy. Sổ này là nguồn cho `peer_read` (T8), `await_children` (T9) và cho chẩn đoán
+        # của cha.
+        #
+        # `stepsUsed` là số luỹ kế của lượt (lấy `max`), còn `outputTokens` là của TỪNG BƯỚC
+        # (cộng) — xem `child_usage_from_events`. Đọc riêng `turn_end` cuối là đếm thiếu ngay
+        # cả khi con chạy trọn vẹn nhiều bước, và ra `None` khi bước cuối là chẩn đoán/lỗi.
         child_end = next((event['data'] for event in reversed(child_events)
                           if event['type'] == 'turn_end'), {})
-        steps_used = child_end.get('stepsUsed') or child_end.get('step')
-        output_tokens = child_end.get('outputTokens')
+        steps_used, output_tokens = self.store.child_usage_from_events(child['id'])
+        if not steps_used and not output_tokens:
+            steps_used = child_end.get('stepsUsed') or child_end.get('step')
+            output_tokens = child_end.get('outputTokens')
         wall_ms = round((time.time() - child_started) * 1000)
         final_reason = result.get('reason') or last_error
         self.store.child_finish(child['id'], status, reason=final_reason, steps_used=steps_used,
