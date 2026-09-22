@@ -33,6 +33,17 @@ function render(node: ReactNode): HTMLElement {
   return host
 }
 
+function click(el: Element | null) {
+  act(() => {
+    el?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+}
+
+/** R2 (yêu cầu 5): lượt đã xong thì khối hoạt động đang gấp — mở ra rồi mới đọc hàng bên trong. */
+function openActivity(host: HTMLElement) {
+  click(host.querySelector('[data-activity-toggle="true"]'))
+}
+
 afterEach(() => {
   for (const root of roots) act(() => root.unmount())
   roots = []
@@ -52,10 +63,14 @@ describe('HarnessStepView — notice thử lại', () => {
         error={null}
       />,
     )
+    openActivity(host)
+
     const notice = host.querySelector('[data-timeline="notice"]') as HTMLElement | null
     expect(notice).toBeTruthy()
     expect(notice?.getAttribute('data-notice-code')).toBe('UPSTREAM_RETRY')
     expect(notice?.textContent).toContain('đang thử lại')
+    // Hàng thông báo là một hàng CỦA khối hoạt động (yêu cầu 5), không phải một cây riêng.
+    expect(notice!.closest('[data-activity="true"]')).not.toBeNull()
   })
 
   it('bỏ văn bản đang stream của lần thử hỏng, không dán vào câu trả lời mới', () => {
@@ -73,9 +88,12 @@ describe('HarnessStepView — notice thử lại', () => {
         error={null}
       />,
     )
+    openActivity(host)
+
     const text = (host.textContent ?? '').replace(/\s+/g, ' ')
     expect(text).toContain('Xin chào, đây là kế hoạch mới.')
-    // Phần đã phát trước khi thử lại không được còn trên màn hình.
+    // Phần đã phát trước khi thử lại không được còn trên màn hình — và đây phải là số 0 THẬT
+    // (khối đã mở), không phải số 0 vì hàng bị khối gấp giấu đi.
     expect(text).not.toContain('Kế hoạch chi tiết cho')
     expect(host.querySelectorAll('[data-timeline="assistant-text"]').length).toBe(0)
   })

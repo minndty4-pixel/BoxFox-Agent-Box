@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import browser_capture
 import capture
+import session_files
 from capture import CaptureError
 
 
@@ -522,6 +523,176 @@ class FrameExtentsTest(unittest.TestCase):
             result = capture.frame_extents("0x1")
         self.assertIsNone(result)
         self.assertNotEqual(result, {"left": 0, "right": 0, "top": 0, "bottom": 0})
+
+
+# ===========================================================================
+# Đợt 20 — đường dẫn theo phiên, chỉ mục ảnh, khử trùng lặp, dọn dẹp (P2)
+# ===========================================================================
+SESSION = "ab12cd34" + "e" * 24
+SID8 = "ab12cd34"
+
+
+class SessionCaptureTest(unittest.TestCase):
+    """Ảnh của một phiên nằm trong `captures/<kind>/<sid8>/` với tên `<sid8>_<step>_<slug>.<ext>`."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name) / "captures"
+        self._patches = [
+            patch.object(capture, "CAPTURE_ROOT", self.root),
+            patch.object(capture, "RECORDS_ROOT", self.root / "records"),
+            patch.object(capture, "WORKSPACE_ROOT", Path(self._tmp.name)),
+            patch.object(session_files, "WORKSPACE_ROOT", Path(self._tmp.name)),
+            patch.object(capture, "screen_size", return_value=(1280, 800)),
+            patch.object(capture, "_check_size"),
+            patch.object(capture, "_run_import", side_effect=self._write_file),
+            patch.object(capture, "ensure_desktop_size", return_value=None),
+        ]
+        for item in self._patches:
+            item.start()
+        capture._DEDUP.clear()
+        capture._RECENT_CAPTURE_PATHS.clear()
+        self._writes = capture._WRITES_SINCE_EVICT
+        capture._WRITES_SINCE_EVICT = 0
+
+    def tearDown(self) -> None:
+        capture._WRITES_SINCE_EVICT = self._writes
+        for item in reversed(self._patches):
+            item.stop()
+        self._tmp.cleanup()
+
+    def _write_file(self, selector: str, window_id: str, path: str, fmt: str) -> None:
+        Path(path).write_bytes(b"png-bytes-" + path.encode("utf-8"))
+
+    def _shoot(self, session=None, step=None, fmt: str = "png") -> dict:
+        return capture.dispatch_capture({"kind": "screen", "format": fmt}, "file",
+                                        session=session, step=step)
+
+    def test_session_path_uses_sid8_step_and_slug(self) -> None:
+        result = self._shoot(session=SESSION, step=3)
+        self.assertEqual(Path(result["path"]).parent, self.root / "screen" / SID8)
+        self.assertEqual(Path(result["path"]).name, f"{SID8}_003_screen.png")
+        self.assertEqual(capture._new_path("window", "window-0x1", "png", session=SESSION, step=12).name,
+                         f"{SID8}_012_window-0x1.png")
+        # Không biết bước → `000`, không bao giờ để tên rỗng hay số thập phân.
+        self.assertEqual(capture._new_path("screen", "screen", "png", session=SESSION).name,
+                         f"{SID8}_000_screen.png")
+
+    def test_without_session_the_old_flat_name_is_kept_and_opens(self) -> None:
+        result = self._shoot()
+        path = Path(result["path"])
+        self.assertEqual(path.parent, self.root / "screen")
+        self.assertRegex(path.name, r"^\d{13}-screen\.png$")
+        self.assertEqual(path.read_bytes(), b"png-bytes-" + str(path).encode("utf-8"))
+        self.assertFalse((self.root / SID8).exists())
+
+    def test_index_line_carries_sha256_bytes_and_step(self) -> None:
+        self._shoot(session=SESSION, step=7)
+        rows = session_files.capture_index_rows(self.root, SESSION)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["segment"] if False else rows[0]["step"], 7)
+        self.assertEqual(rows[0]["dedup"], "new")
+        self.assertEqual(rows[0]["media"], "image")
+        self.assertEqual(rows[0]["sha256"], capture._sha256(Path(rows[0]["path"])))
+        self.assertEqual(rows[0]["bytes"], Path(rows[0]["path"]).stat().st_size)
+        self.assertEqual(rows[0]["sid8"], SID8)
+        self.assertEqual(rows[0]["relPath"], str(Path("captures") / "screen" / SID8 / f"{SID8}_007_screen.png"))
+
+    def test_duplicate_content_keeps_one_file_and_points_at_the_old_one(self) -> None:
+        with patch.object(capture, "_run_import", side_effect=lambda s, w, path, f: Path(path).write_bytes(b"same")):
+            first = self._shoot(session=SESSION, step=3)
+            second = self._shoot(session=SESSION, step=3)
+        files = sorted(entry.name for entry in (self.root / "screen" / SID8).iterdir())
+        self.assertEqual(files, [f"{SID8}_003_screen.png"])
+        self.assertEqual(second["path"], first["path"])
+        self.assertEqual(second["deduplicateOf"], first["relPath"])
+        rows = session_files.capture_index_rows(self.root, SESSION)
+        self.assertEqual([row["dedup"] for row in rows], ["new", "duplicate"])
+        self.assertEqual(rows[1]["duplicateOf"], rows[0]["relPath"])
+        self.assertEqual(Path(rows[0]["path"]).read_bytes(), b"same")
+
+    def test_every_capture_write_counts_towards_one_eviction_pass(self) -> None:
+        self.assertEqual(capture.CAPTURE_EVICT_EVERY, 20)
+        with patch.object(capture, "_prune_captures") as prune:
+            for _ in range(capture.CAPTURE_EVICT_EVERY - 1):
+                capture._note_capture_write()
+            prune.assert_not_called()
+            capture._note_capture_write()
+        prune.assert_called_once()
+
+    def test_prune_route_reports_or_refuses_clearly(self) -> None:
+        report = capture.dispatch_captures_prune()
+        self.assertIn("removedFiles", report)
+        with patch.object(capture, "_session_files", None):
+            with self.assertRaises(CaptureError) as caught:
+                capture.dispatch_captures_prune()
+        self.assertEqual(caught.exception.status_code, 503)
+
+
+class SessionRecordTest(unittest.TestCase):
+    """Bản ghi hình theo phiên: tên file `<sid8>_<step>_<slug>.mp4` và một dòng chỉ mục khi xong."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name) / "captures"
+        self._patches = [
+            patch.object(capture, "CAPTURE_ROOT", self.root),
+            patch.object(capture, "RECORDS_ROOT", self.root / "records"),
+            patch.object(capture, "WORKSPACE_ROOT", Path(self._tmp.name)),
+            patch.object(session_files, "WORKSPACE_ROOT", Path(self._tmp.name)),
+        ]
+        for item in self._patches:
+            item.start()
+
+    def tearDown(self) -> None:
+        for item in reversed(self._patches):
+            item.stop()
+        self._tmp.cleanup()
+
+    def _start(self, session=None, step=None) -> tuple[dict, dict]:
+        proc = MagicMock()
+        proc.pid = 4242
+        registered: dict = {}
+        with patch.object(capture, "_count_active_records", return_value=0), \
+             patch.object(capture, "screen_size", return_value=(1280, 800)), \
+             patch.object(capture, "_check_size"), \
+             patch.object(capture, "_spawn_ffmpeg", return_value=proc), \
+             patch.object(capture, "_new_record_id", return_value="rec-test"), \
+             patch.object(capture, "_register", side_effect=lambda rid, entry: registered.update(entry)), \
+             patch.object(capture, "ensure_desktop_size", return_value=None):
+            result = capture.dispatch_record_start({"kind": "screen"}, session=session, step=step)
+        return result, registered
+
+    def test_record_path_and_entry_carry_session_and_step(self) -> None:
+        result, entry = self._start(session=SESSION, step=4)
+        self.assertEqual(Path(result["path"]).name, f"{SID8}_004_screen.mp4")
+        self.assertEqual(Path(result["path"]).parent, self.root / "screen" / SID8)
+        self.assertEqual(entry["session"], SESSION)
+        self.assertEqual(entry["step"], 4)
+        self.assertEqual(entry["toolCallId"], None)
+
+    def test_record_without_session_keeps_the_flat_name(self) -> None:
+        result, entry = self._start()
+        self.assertEqual(Path(result["path"]).parent, self.root / "screen")
+        self.assertRegex(Path(result["path"]).name, r"^\d{13}-screen\.mp4$")
+        self.assertIsNone(entry["session"])
+
+    def test_finished_record_writes_one_index_line(self) -> None:
+        _, entry = self._start(session=SESSION, step=9)
+        item = {"recordingId": "rec-test", "kind": "screen", "path": str(self.root / "screen" / SID8 / "x.mp4"),
+                "durationSec": 3.5, "sizeBytes": 1234, "finished": True}
+        capture._index_record(item, entry)
+        rows = session_files.capture_index_rows(self.root, SESSION)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["media"], "video")
+        self.assertEqual(rows[0]["durationSec"], 3.5)
+        self.assertEqual(rows[0]["bytes"], 1234)
+        self.assertEqual(rows[0]["step"], 9)
+
+    def test_record_without_session_writes_no_index(self) -> None:
+        _, entry = self._start()
+        capture._index_record({"recordingId": "rec-test", "path": "/tmp/x.mp4"}, entry)
+        self.assertEqual(session_files.capture_index_rows(self.root, SESSION), [])
 
 
 if __name__ == "__main__":

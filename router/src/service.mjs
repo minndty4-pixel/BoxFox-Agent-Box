@@ -82,6 +82,33 @@ function modelPrice({ previous, found, provider, at }) {
 function today() {
   return new Date().toISOString().slice(0, 10);
 }
+/** Một cửa sổ ngữ cảnh hợp lệ (số nguyên dương) hoặc `null`. */
+function positiveWindow(value) {
+  return Number.isInteger(value) && value > 0 ? value : null;
+}
+/**
+ * Số nhà cung cấp đã công bố cho một dòng model — payload, luật của adapter, hoặc
+ * số đã ghi lại trước đó trong `contextWindowReported`.
+ *
+ * Dòng đang giữ một lời khai tay thì chính `contextWindow` là số người dùng nhập,
+ * nên nó không được coi là số nhà cung cấp: adapter "echo" số đó lại (deepseek,
+ * openai) không biến nó thành lời của nhà cung cấp — chỉ `contextWindowReported`
+ * mới nói được nhà cung cấp đã nói gì. Nhờ vậy `clear` trả dòng về đúng số nhà
+ * cung cấp thay vì dựng lại chính số vừa xoá dưới nhãn `reported`.
+ */
+function providerPublishedWindow(model = {}, fromProvider = null) {
+  const recorded = positiveWindow(model?.contextWindowReported);
+  if (recorded !== null) return recorded;
+  const inUse = positiveWindow(model?.contextWindow);
+  const rule = positiveWindow(fromProvider?.contextWindow);
+  const source = model?.contextWindowSource ?? null;
+  if (source === 'documented' || source === 'manual') {
+    // Số đang dùng đến từ bảng tên/người dùng; chỉ nhận luật adapter khi nó
+    // thật sự khác số đang dùng (nếu không, đó chỉ là bản echo của chính nó).
+    return rule !== null && rule !== inUse ? rule : null;
+  }
+  return rule ?? inUse;
+}
 
 export class ProviderService {
   constructor({ store, providers }) {
@@ -123,15 +150,28 @@ export class ProviderService {
           modified = true;
         }
         // BUG-4/R2: every stored model record carries contextWindow,
-        // thinkingType and defaultThinking. Nothing is guessed from the model
-        // name here: an adapter may re-derive its own metadata from provider
-        // rules, otherwise the row keeps whatever the provider payload said
-        // (unknown rows normalize to contextWindow null / thinkingType 'none' /
-        // thinkingLevels []).
+        // thinkingType and defaultThinking. The context window itself is decided
+        // by the shipped name table (`context-window.mjs`) and the provider's own
+        // number travels beside it: an adapter may re-derive metadata from
+        // provider rules, a row the user declared keeps its number, and an
+        // unknown row keeps what the payload said (or null — never a guess).
         const fromProvider = typeof provider?.thinkingMetadata === 'function' ? provider.thinkingMetadata(m) : null;
-        const normalized = modelThinking(fromProvider ? { ...m, ...fromProvider } : m);
+        const manualNumber = m.contextWindowSource === 'manual' ? m.contextWindow : null;
+        const normalized = modelThinking({
+          ...m,
+          ...(fromProvider || {}),
+          declaredContextWindow: manualNumber,
+          reportedContextWindow: providerPublishedWindow(m, fromProvider),
+        });
         const levels = Array.isArray(m.thinkingLevels) ? m.thinkingLevels.join(',') : null;
-        if (m.contextWindow !== normalized.contextWindow || m.thinkingType !== normalized.thinkingType || m.defaultThinking !== normalized.defaultThinking || levels !== normalized.thinkingLevels.join(',')) {
+        if (
+          m.contextWindow !== normalized.contextWindow ||
+          m.contextWindowSource !== normalized.contextWindowSource ||
+          m.contextWindowReported !== normalized.contextWindowReported ||
+          m.thinkingType !== normalized.thinkingType ||
+          m.defaultThinking !== normalized.defaultThinking ||
+          levels !== normalized.thinkingLevels.join(',')
+        ) {
           Object.assign(m, normalized);
           modified = true;
         }
@@ -257,8 +297,63 @@ export class ProviderService {
           thinkingLevels: values.customModel.capabilities?.reasoning ? manualThinkingLevels(this.providers[c.providerId]) : [],
           thinkingType: values.customModel.capabilities?.reasoning ? 'effort' : 'none',
           contextWindow: Number.isInteger(values.customModel.contextWindow) && values.customModel.contextWindow > 0 ? values.customModel.contextWindow : null,
+          // A number typed in the form is the user's own declaration, so the row
+          // says so — that is what keeps the name table from overwriting it later.
+          contextWindowSource: Number.isInteger(values.customModel.contextWindow) && values.customModel.contextWindow > 0 ? 'manual' : null,
+          contextWindowReported: null,
           defaultThinking: null,
         });
+      }
+    }
+    // Cửa sổ ngữ cảnh người dùng tự khai cho MỘT model đã có trên connection —
+    // đúng khuôn khối `modelPricing` dưới đây, và vì cùng một lý do: bảng tên phủ
+    // họ V4/V4.1, nhưng một model lạ (hoặc một bảng đã cũ) vẫn cần một đường để
+    // người dùng nói đúng số. Không nhét vào `customModel` vì khối đó chỉ áp khi
+    // TẠO dòng mới: một model đã dò được từ nhà cung cấp không có đường nào khác.
+    if (values.modelContextWindow && typeof values.modelContextWindow === 'object') {
+      const requested = values.modelContextWindow;
+      const modelId = typeof requested.modelId === 'string' ? requested.modelId : '';
+      const model = c.models.find(m => m.id === modelId);
+      assert(model, 'Add the model id first, then set a context window.', 'MODEL_NOT_FOUND', 404);
+      if (requested.clear === true) {
+        // Xoá lời khai tay để bảng tên (hoặc số nhà cung cấp) quay lại trả lời.
+        // Số nhà cung cấp đã công bố phải được nhặt ra TRƯỚC khi xoá dòng: để
+        // nguyên `contextWindow` cũ rồi dò lại thì chính số người dùng vừa khai
+        // quay lại dưới nhãn `reported`, và một dòng ngoài bảng tên vĩnh viễn
+        // không xoá được lời khai của mình.
+        const provider = this.providers[c.providerId];
+        const published = providerPublishedWindow(model);
+        delete model.contextWindowSource;
+        delete model.contextWindowReported;
+        delete model.contextWindow;
+        const fromProvider = typeof provider?.thinkingMetadata === 'function' ? provider.thinkingMetadata(model) : null;
+        Object.assign(model, modelThinking({
+          ...model,
+          ...(fromProvider || {}),
+          declaredContextWindow: null,
+          reportedContextWindow: published,
+        }));
+      } else {
+        const value = requested.contextWindow;
+        assert(
+          Number.isInteger(value) && value > 0 && value <= 2_000_000,
+          'Enter a whole number of tokens (1–2000000).',
+          'INVALID_CONTEXT_WINDOW',
+          400,
+        );
+        // Số nhà cung cấp (nếu có) được giữ lại trước khi số tay thay chỗ nó —
+        // đúng C3 "giữ `contextWindowReported` nếu có" — nếu không thì `clear`
+        // không còn gì để trả dòng về, và số nhà cung cấp mất khỏi bản ghi.
+        const provider = this.providers[c.providerId];
+        const fromProvider = typeof provider?.thinkingMetadata === 'function' ? provider.thinkingMetadata(model) : null;
+        const published = providerPublishedWindow(model, fromProvider);
+        model.contextWindow = value;
+        model.contextWindowSource = 'manual';
+        // CONTRACT: `contextWindowReported` chỉ có mặt khi nó KHÁC số đang dùng.
+        // Khai tay đúng bằng số nhà cung cấp thì không còn gì "ở bên cạnh" để báo —
+        // trước đây nhánh này gán thẳng `published`, nên một dòng có thể tự báo hai
+        // lần cùng một số (lỗi b18-review #5).
+        model.contextWindowReported = published !== null && published !== value ? published : null;
       }
     }
     // Giá người dùng tự đặt cho một model. Khối `customModel` ở trên đã chạy
@@ -392,8 +487,14 @@ export class ProviderService {
           ...before, ...m, id: m.id, name: m.name || m.id, enabled: before?.enabled ?? m.enabled ?? true,
           source: m.source || 'live', stale: Boolean(m.stale),
           // BUG-4/R2: the payload (or the adapter's provider rules) owns the
-          // metadata; a previous row only fills gaps the payload left.
-          ...modelThinking({ ...before, ...m }),
+          // metadata; a previous row only fills gaps the payload left. A number
+          // the user declared is not a gap the payload may fill.
+          ...modelThinking({
+            ...before,
+            ...m,
+            declaredContextWindow: before?.contextWindowSource === 'manual' ? before.contextWindow : null,
+            reportedContextWindow: m.contextWindow ?? before?.contextWindowReported ?? null,
+          }),
           capabilities: { streaming: 'reported', tools: 'unknown', vision: 'unknown', reasoning: 'unknown', ...m.capabilities },
         };
         // Giá của dòng sau khi dò lại: giá tay người dùng đặt luôn thắng, rồi mới
@@ -570,7 +671,7 @@ export class ProviderService {
   }
   publicModels(key = null) {
     // BUG-4/R2: model records exported to clients carry the shared metadata.
-    const described = m => ({ contextWindow: m.contextWindow ?? null, thinkingType: m.thinkingType ?? 'none', defaultThinking: m.defaultThinking ?? null, thinkingLevels: Array.isArray(m.thinkingLevels) ? m.thinkingLevels : [] });
+    const described = m => ({ contextWindow: m.contextWindow ?? null, contextWindowSource: m.contextWindowSource ?? null, contextWindowReported: m.contextWindowReported ?? null, thinkingType: m.thinkingType ?? 'none', defaultThinking: m.defaultThinking ?? null, thinkingLevels: Array.isArray(m.thinkingLevels) ? m.thinkingLevels : [] });
     const direct = this.store.list('connection').flatMap(c => c.models.filter(m => this.validTarget({ connectionId: c.id, modelId: m.id })).map(m => ({ id: `${c.id}/${m.id}`, object: 'model', owned_by: c.providerId, name: m.name, ...described(m) })));
     const aliases = this.store.list('alias').filter(a => a.enabled && a.targets.some(t => this.validTarget(t))).map(a => ({ id: a.name, object: 'model', owned_by: 'boxfox' }));
     return [...direct, ...aliases].filter(m => !key || !key.allowedModels.length || key.allowedModels.includes(m.id));

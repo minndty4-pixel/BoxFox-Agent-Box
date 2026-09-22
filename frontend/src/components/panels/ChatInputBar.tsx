@@ -10,6 +10,7 @@ import {
 } from 'lucide-react'
 import { useAgentStore } from '../../store/agentStore'
 import { useUiStore } from '../../store/uiStore'
+import { readingColumnClass } from '../../lib/readingColumn'
 import { useComposerStore } from '../../store/composerStore'
 import { useT } from '../../i18n/context'
 import { useCompactComposer } from '../../hooks/useCompactComposer'
@@ -65,6 +66,7 @@ export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
   const sendCommand = useAgentStore((s) => s.sendCommand)
   const agentBusy = useAgentStore((s) => s.isBusy)
   const isBusy = router?.isBusy ?? agentBusy
+  const workspaceHidden = useUiStore((s) => s.workspaceHidden)
   const autopilotEnabled = useUiStore((s) => s.autopilotEnabled)
   const setAutopilotEnabled = useUiStore((s) => s.setAutopilotEnabled)
   const pendingElements = useComposerStore((s) => s.pendingElements)
@@ -167,7 +169,12 @@ export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
 
   return (
     <div ref={barRef} className="border-t border-line bg-panel p-3 select-none">
-      <div className="relative rounded-xl border border-line bg-panel2/70 p-2.5 shadow-xs transition-all focus-within:border-zinc-500 focus-within:ring-1 focus-within:ring-zinc-600/40">
+      {/* Hộp soạn tin gom theo cột đọc khi bảng Workspace ẩn; thanh ngoài
+          (`border-t border-line bg-panel p-3`) vẫn chạy hết bề rộng. */}
+      <div
+        data-testid="chat-input-bar"
+        className={`relative rounded-xl border border-line bg-panel2/70 p-2.5 shadow-xs transition-all focus-within:border-zinc-500 focus-within:ring-1 focus-within:ring-zinc-600/40 ${readingColumnClass(workspaceHidden)}`}
+      >
         {slash.popup}
         {/* Attached files chips */}
         {attachments.length > 0 && (

@@ -142,8 +142,16 @@ export function createRouterServer({ service, engine, oauth, frontendDir = null,
         durationMs: Date.now() - started, stream, code: safe.code, httpStatus: safe.status,
         contentChars: content.length, toolCalls: toolCalls.size,
       });
-      if (res.headersSent) { await write({ ...errorEnvelope(e), boxfox: meta }).catch(() => {}); res.end(); }
-      else json(res, safe.status, errorEnvelope(e));
+      if (res.headersSent) {
+        // The stream aborted after HTTP 200, so the status can no longer change: the error
+        // has to travel in-band. The frame comes first, then the `[DONE]` terminator, so an
+        // OpenAI-compatible client raises on the error frame instead of reading a body that
+        // ended without a terminator as a finished answer, and never a fabricated
+        // finish_reason (9Router `open-sse/utils/streamHelpers.js:128-158`).
+        await write({ ...errorEnvelope(e), boxfox: meta }).catch(() => {});
+        await write('[DONE]').catch(() => {});
+        res.end();
+      } else json(res, safe.status, errorEnvelope(e));
     } finally { release(); }
   }
   /**

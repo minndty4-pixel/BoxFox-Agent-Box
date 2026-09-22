@@ -15,14 +15,42 @@ import {
   Shield,
   ArrowRight,
   ArrowLeft,
+  CircleCheck,
+  GitBranch,
+  TriangleAlert,
 } from 'lucide-react'
 import { useAgentStore } from '../../store/agentStore'
 import { useUiStore } from '../../store/uiStore'
 import { PlainText } from '../ui'
 import { MarkdownRenderer } from '../chat/MarkdownRenderer'
 import { usePlanFiles } from '../../hooks/usePlanFiles'
-import { useT } from '../../i18n/context'
+import { useT, type TKey } from '../../i18n/context'
+import { planRejection, planStamp } from '../../lib/plans'
+import type { PlanReviewState } from '../../lib/plans'
+import { PlanEvalCard } from './PlanEvalCard'
 import type { DiffLine } from '../../types/agent'
+
+/** Chip trạng thái duyệt thật: nguồn là sổ duyệt của harness, không phải vị trí trong dropdown. */
+const STATE_LABELS: Record<PlanReviewState, TKey> = {
+  none: 'plan.state.none',
+  draft: 'plan.state.draft',
+  submitted: 'plan.state.submitted',
+  approved: 'plan.state.approved',
+  changes_requested: 'plan.state.changes_requested',
+  unknown: 'plan.state.unknown',
+}
+
+const STATE_CHIP_BASE =
+  'inline-flex items-center gap-1 rounded px-1.5 py-px text-[10px] font-semibold tracking-wide'
+
+const STATE_CHIP_CLASSES: Record<PlanReviewState, string> = {
+  approved: 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/40',
+  changes_requested: 'bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/40',
+  submitted: 'border border-line bg-panel2 text-muted',
+  draft: 'border border-line bg-panel2 text-muted',
+  none: 'border border-line bg-panel2 text-muted',
+  unknown: 'border border-line bg-panel2 text-muted',
+}
 
 export function PlanPanel() {
   const t = useT()
@@ -50,9 +78,46 @@ export function PlanPanel() {
   const versionItems = (selectedPlan?.versions ?? []).map((v) => ({
     key: v.version,
     label: `${v.label} (${v.status})`,
+    /**
+     * Dòng thứ hai: cha–con khai trong **header của chính file đó** (`declaredParent`), đúng như mock
+     * trạng thái (f). Chỉ file có header (`headerStatus === 'ok'`) mới được nói; file legacy/mismatch
+     * thì để trống thay vì đoán `Parent: none` — cùng luật "không bịa" như thẻ P1–P8.
+     */
+    parent:
+      v.headerStatus === 'ok'
+        ? v.declaredParent == null
+          ? t('plan.parentNone')
+          : `${t('plan.parentRowLabel')} v${v.declaredParent}`
+        : null,
     isCurrent: v.version === planFiles.selection?.version,
     onSelect: () => planFiles.selectVersion(v.version),
   }))
+
+  /**
+   * Chuỗi cha–con của bản đang xem. Nguồn 1: bản chấm P2 (`evaluation.parentVersion`) khi có. Nguồn 2:
+   * header của file (`declaredParent`) — cần cho trạng thái (f), vì mock yêu cầu thấy `Bản trước: vN`
+   * ngay cả khi bản đó chưa được chấm P1–P8 (mọi bản hôm nay đều `evaluation: null`).
+   */
+  const headerParent =
+    selectedFileVersion?.headerStatus === 'ok' ? selectedFileVersion.declaredParent ?? null : null
+  const lineageVersion = planFiles.evaluation?.parentVersion ?? headerParent
+
+  /**
+   * Quyết định còn hiệu lực. Bản bị sửa sau khi duyệt (`reviewStale`) thì chuẩn thuận cũ KHÔNG còn
+   * tính — nút quay về nhãn trung tính để người dùng không tưởng kế hoạch đang được phép chạy.
+   */
+  const reviewInForce = planFiles.reviewStale ? null : planFiles.selectedReview
+  const approvedInForce = reviewInForce?.decision === 'approved'
+  const changesRequestedInForce = reviewInForce?.decision === 'changes_requested'
+  const reviewVersion = planFiles.selectedReview?.version ?? planFiles.selection?.version ?? null
+  const reviewStamp = [
+    reviewVersion === null ? null : `v${reviewVersion}`,
+    planStamp(planFiles.selectedReview?.decidedAt),
+  ]
+    .filter(Boolean)
+    .join(' · ')
+  /** Câu từ chối của lần ghi bị cổng cứng chặn (mã + số đo + cách sửa), hoặc `null`. */
+  const rejection = planRejection(planFiles.evaluation, t)
 
   const targetIdentity = typeof planTarget?.identity === 'string' ? planTarget.identity : null
   const targetVersion = typeof planTarget?.version === 'number' ? planTarget.version : undefined
@@ -229,13 +294,43 @@ export function PlanPanel() {
                       item.isCurrent ? 'bg-panel font-medium text-fg' : 'text-muted hover:bg-panel hover:text-fg'
                     }`}
                   >
-                    <span>{item.label}</span>
-                    {item.isCurrent && <Check className="size-3 text-brand" />}
+                    <span className="flex min-w-0 flex-col">
+                      <span className="truncate">{item.label}</span>
+                      {item.parent && (
+                        <span className="truncate font-mono text-[10px] text-muted">{item.parent}</span>
+                      )}
+                    </span>
+                    {item.isCurrent && <Check className="size-3 shrink-0 text-brand" />}
                   </button>
                 ))}
               </div>
             )}
           </div>
+
+          {/* Trạng thái duyệt THẬT (sổ duyệt của harness) — đứng cạnh nhãn version mà box gán theo
+              vị trí, nên hai từ vựng cùng hiện mà không trộn vào nhau. */}
+          {planFiles.document && (
+            <>
+              <span
+                data-component-id="plan-state-chip"
+                data-testid="plan-state-chip"
+                title={t('plan.state.title')}
+                className={`${STATE_CHIP_BASE} ${STATE_CHIP_CLASSES[planFiles.planState]}`}
+              >
+                {t(STATE_LABELS[planFiles.planState])}
+              </span>
+              {planFiles.reviewStale && (
+                <span
+                  data-component-id="plan-state-stale"
+                  data-testid="plan-state-stale"
+                  title={t('plan.state.staleTitle')}
+                  className={`${STATE_CHIP_BASE} bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/40`}
+                >
+                  {t('plan.state.stale')}
+                </span>
+              )}
+            </>
+          )}
 
           {/* Plan | Diff Toggle */}
           <div className="flex items-center rounded-md border border-line bg-panel2 p-0.5">
@@ -292,16 +387,14 @@ export function PlanPanel() {
               onClick={handleRequestChanges}
               disabled={planFiles.reviewStatus === 'saving'}
               className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${
-                planFiles.selectedReview?.decision === 'changes_requested'
+                changesRequestedInForce
                   ? 'border-amber-500/40 bg-amber-500/15 text-amber-300'
                   : 'border-line text-muted hover:bg-panel2 hover:text-fg'
               }`}
             >
               <ArrowLeft className="size-3" />
               <span>
-                {planFiles.selectedReview?.decision === 'changes_requested'
-                  ? t('plan.changesRequestedStored')
-                  : t('plan.requestChanges')}
+                {changesRequestedInForce ? t('plan.changesRequestedStored') : t('plan.requestChanges')}
               </span>
             </button>
           )}
@@ -313,7 +406,7 @@ export function PlanPanel() {
             onClick={handleApprove}
             disabled={mode === 'ACT' || planFiles.reviewStatus === 'saving'}
             className={`flex items-center gap-1.5 rounded-md px-3.5 py-1 text-xs font-semibold transition shadow-xs cursor-pointer disabled:cursor-not-allowed ${
-              mode === 'ACT' || planFiles.selectedReview?.decision === 'approved'
+              mode === 'ACT' || approvedInForce
                 ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
                 : 'bg-zinc-100 text-zinc-900 hover:bg-white active:scale-98'
             }`}
@@ -322,13 +415,98 @@ export function PlanPanel() {
             <span>
               {mode === 'ACT'
                 ? 'Approved (ACT)'
-                : planFiles.selectedReview?.decision === 'approved'
+                : approvedInForce
                   ? t('plan.approvedStored')
                   : t('plan.approvePlan')}
             </span>
           </button>
         </div>
       </div>
+
+      {/* Bản đã bị sửa sau khi duyệt: chuẩn thuận cũ không còn áp dụng, agent phải xin lại. */}
+      {planFiles.reviewStale && (
+        <div
+          data-component-id="plan-review-stale"
+          data-testid="plan-review-stale"
+          className="flex items-start gap-2 border-b border-line bg-amber-500/10 px-4 py-1.5 text-xs text-amber-300"
+        >
+          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+          <span className="min-w-0 flex-1">
+            <span className="font-semibold">{t('plan.staleReview.title')}</span>
+            <span className="text-muted">{t('plan.staleReview.body')}</span>
+          </span>
+          {reviewStamp && (
+            <span className="shrink-0 font-mono text-[10px] text-muted">{reviewStamp}</span>
+          )}
+        </div>
+      )}
+
+      {/* Lần ghi bị cổng cứng chặn: mã từ chối + số đo + cách sửa, chỉ hiện đúng một lần ở đây. */}
+      {rejection && (
+        <div
+          data-component-id="plan-eval-rejected"
+          data-testid="plan-eval-rejected"
+          className="flex items-start gap-2 border-b border-line bg-rose-500/5 px-4 py-1.5 text-xs text-rose-400"
+        >
+          <Shield className="mt-0.5 size-3.5 shrink-0" />
+          <span className="min-w-0 flex-1 leading-relaxed">
+            <b className="font-semibold">
+              {rejection.version === null
+                ? t('plan.eval.rejectedTitleGeneric')
+                : t('plan.eval.rejectedTitle', { version: rejection.version })}
+            </b>{' '}
+            <span className="font-mono text-[11px]">
+              {rejection.prefix}: ({rejection.code})
+            </span>
+            <br />
+            <span className="text-muted">
+              {[rejection.measure, rejection.remedy].filter(Boolean).join(' — ')}
+            </span>
+          </span>
+          {rejection.stamp && (
+            <span className="shrink-0 font-mono text-[10px] text-muted">{rejection.stamp}</span>
+          )}
+        </div>
+      )}
+
+      {/* Quyết định đang có hiệu lực, đọc từ sổ duyệt chứ không từ `.reviews` của box. */}
+      {reviewInForce && (
+        <div
+          data-component-id="plan-review-strip"
+          data-testid="plan-review-strip"
+          className={`flex items-center gap-2 border-b border-line bg-panel2/40 px-4 py-1.5 text-xs ${
+            approvedInForce ? 'text-emerald-400' : 'text-amber-300'
+          }`}
+        >
+          {approvedInForce ? (
+            <CircleCheck className="size-3.5 shrink-0" />
+          ) : (
+            <Shield className="size-3.5 shrink-0" />
+          )}
+          <span className="shrink-0 font-semibold">
+            {approvedInForce ? t('plan.state.approved') : t('plan.state.changes_requested')}
+          </span>
+          {reviewInForce.note.trim() ? (
+            <span className="truncate italic text-fg">“{reviewInForce.note.trim()}”</span>
+          ) : (
+            <span className="truncate text-muted">{t('plan.reviewStoredNote')}</span>
+          )}
+          {reviewStamp && (
+            <span className="ml-auto shrink-0 font-mono text-[10px] text-muted">{reviewStamp}</span>
+          )}
+        </div>
+      )}
+
+      {/* Quyết định đã vào sổ harness nhưng chưa chuyển được sang box — nói thật, không im lặng. */}
+      {planFiles.reviewForwarded === false && (
+        <div
+          data-testid="plan-review-not-forwarded"
+          className="flex items-start gap-2 border-b border-line bg-amber-500/10 px-4 py-1.5 text-xs text-amber-300"
+        >
+          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+          <span className="min-w-0 flex-1">{t('plan.notForwarded')}</span>
+        </div>
+      )}
 
       {/* Sub-tabs: Overview | Detailed Plan (when in Plan view) */}
       {planViewMode === 'plan' && (
@@ -375,7 +553,21 @@ export function PlanPanel() {
         </div>
       )}
 
-      {/* Lỗi ghi quyết định duyệt kế hoạch (route container chưa có → 404/400). */}
+      {/* Không đọc được sổ duyệt (route chưa có / thiếu quyền / mất mạng): nói đúng thế, không
+          rơi về nhãn "đã duyệt" theo vị trí như trước. */}
+      {planFiles.statusError && (
+        <div
+          data-testid="plan-status-error"
+          className="flex items-center gap-2 border-b border-line bg-panel2/40 px-4 py-1.5 text-xs text-rose-400"
+        >
+          <Shield className="size-3.5 shrink-0" />
+          <span className="truncate">
+            {t('plan.statusError')}: {planFiles.statusError}
+          </span>
+        </div>
+      )}
+
+      {/* Lỗi ghi quyết định duyệt kế hoạch (route harness chưa có → 404/400). */}
       {planFiles.reviewStatus === 'error' && planFiles.reviewError && (
         <div
           data-testid="plan-review-error"
@@ -466,6 +658,15 @@ export function PlanPanel() {
                       </>
                     )}
                   </p>
+                  {/* Bản trước: chuỗi cha–con của bản đang xem — bản chấm P2 nếu có, còn không thì lấy
+                      thẳng header của file (`declaredParent`) như mock trạng thái (f). */}
+                  {lineageVersion != null && (
+                    <p className="mt-1 flex items-center gap-1.5 text-[11px] text-muted">
+                      <GitBranch className="size-3 shrink-0" />
+                      <span>{t('plan.parentVersion')}</span>
+                      <span className="font-mono text-fg">v{lineageVersion}</span>
+                    </p>
+                  )}
                 </div>
 
                 {/* Overview Highlights Card */}
@@ -512,6 +713,16 @@ export function PlanPanel() {
                     </>
                   )}
                 </div>
+
+                {/* Đánh giá P1–P8 của chính bản đang xem. Bản cũ chưa từng được chấm thì thẻ này tự
+                    thu về một dòng nhắc mờ (xem `PlanEvalCard`), không khung rỗng. */}
+                {planFiles.document && (
+                  <PlanEvalCard
+                    evaluation={planFiles.evaluation}
+                    indexAvailable={planFiles.indexAvailable}
+                    identity={planFiles.document.identity}
+                  />
+                )}
 
                 {/* Compact Steps List */}
                 {currentPlan?.steps && currentPlan.steps.length > 0 && (

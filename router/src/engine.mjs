@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { RouterError, assert, safeError } from './errors.mjs';
+import { RouterError, assert, requestScopedClientError, safeError } from './errors.mjs';
 import { normalizeUsage, reportedCost } from './usage.mjs';
 import { costFromUsage } from './pricing.mjs';
 
@@ -140,7 +140,12 @@ export class RouterEngine {
           lastError = safe;
           const current = this.store.get('connection', connection.id);
           if (current && current.revision === connection.revision && !combined.aborted) {
-            const isFatalConnection = safe.code === 'AUTH' || safe.code === 'UNAVAILABLE' || safe.status === 502 || safe.status === 503 || safe.status === 504;
+            // A request-scoped 4xx (400 context overflow, 422 unsupported parameter, 403-like
+            // policy on one input) says nothing about the credential, so it must not mark the
+            // account failed or expire its auth: the same connection still serves the next
+            // request (9Router `open-sse/services/accountFallback.js:48-60`).
+            const isFatalConnection = (safe.code === 'AUTH' || safe.code === 'UNAVAILABLE' || safe.status === 502 || safe.status === 503 || safe.status === 504)
+              && !requestScopedClientError(safe);
             if (isFatalConnection) {
               current.inferenceState = 'failed';
               current.error = safe.message;
@@ -148,6 +153,11 @@ export class RouterEngine {
               this.store.put('connection', current);
             }
           }
+          // Only a rate limit takes the target out of rotation, and every adapter raises that
+          // code as 429 (a provider's own quota/rate-limit wording keeps its rule, as it does
+          // upstream). A request-scoped 4xx is not retryable, so it is handed back to the
+          // caller below without a strike or a cooldown
+          // (9Router `open-sse/services/accountFallback.js:48-60`).
           if (safe.code === 'RATE_LIMIT') {
             const strikeKey = `${connection.id}/${model.id}`;
             const prior = this.rateLimitStrikes.get(strikeKey);

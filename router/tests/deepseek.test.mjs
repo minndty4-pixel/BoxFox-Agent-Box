@@ -14,7 +14,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createProviders } from '../src/providers/index.mjs';
-import { DEEPSEEK_THINKING_LEVELS } from '../src/providers/deepseek.mjs';
+import { DEEPSEEK_THINKING_LEVELS, deepseekCapabilities } from '../src/providers/deepseek.mjs';
 import { RouterStore } from '../src/store.mjs';
 import { ProviderService } from '../src/service.mjs';
 
@@ -56,11 +56,50 @@ test('DeepSeek discovers the documented level set, default and capabilities', as
     assert.deepEqual(model.thinkingLevels, [...DEEPSEEK_THINKING_LEVELS], `${model.id} publishes none/low/high/max only`);
     assert.deepEqual(model.thinkingLevels, ['none', 'low', 'high', 'max']);
     assert.equal(model.defaultThinking, 'high', 'the documented default effort is high');
-    assert.equal(model.contextWindow, null, 'the payload carries no context length, so none is invented');
+    // Tên nằm trong bảng tài liệu của BoxFox (họ V4/V4.1). Payload `/models` của
+    // tài khoản DeepSeek chính chủ không nói gì về cửa sổ ngữ cảnh, nên số của
+    // bảng là câu trả lời, và không có số đối chiếu nào để giữ bên cạnh.
+    assert.equal(model.contextWindow, 1_000_000, 'the name is in the shipped table, so the table answers');
+    assert.equal(model.contextWindowSource, 'documented', 'and the row says where the number came from');
+    assert.equal(model.contextWindowReported, null, 'the payload published nothing to compare against');
     assert.equal(model.capabilities.tools, 'reported');
   }
   assert.equal(models[0].capabilities.vision, 'reported', 'flash reads images (documented and probed)');
   assert.equal(models[1].capabilities.vision, 'unsupported', 'v4-pro answers image requests with a wrong answer, not an error');
+});
+
+// 9Router v0.5.81 scopes DeepSeek vision to the ids that really take image input: the
+// V4 vision releases (dotted v4.* and the ids listed one by one, `deepseek-flash` among
+// them) read images, and the non-dotted V4 ids accept an image block and ignore it, so
+// they must not carry the badge. Before this rule the adapter answered "vision" for any
+// id without `pro` in it, which claimed image input for `deepseek-v4-flash` and for the
+// V3 chat/reasoner rows (`open-sse/providers/capabilities.js:116-127`, `:380-389`).
+test('vision stays with the V4 vision releases and is never claimed for a text-only id', async () => {
+  for (const id of ['deepseek-flash', 'DeepSeek-V4.1-Flash', 'deepseek-v4.1-flash', 'deepseek-v4-flash-vision-exp', 'deepseek-v4.2-flash'])
+    assert.equal(deepseekCapabilities({ id }).vision, 'reported', `${id} reads images`);
+  for (const id of ['deepseek-v4-pro', 'deepseek-v4-pro-max', 'deepseek-v4-pro-none', 'deepseek-v4-flash', 'deepseek-chat', 'deepseek-reasoner', 'deepseek-r1'])
+    assert.equal(deepseekCapabilities({ id }).vision, 'unsupported', `${id} accepts image blocks and ignores them, or takes text only`);
+  assert.equal(deepseekCapabilities({}).vision, 'unsupported', 'an id-less record claims nothing');
+});
+
+test('the /models mapping carries the vision rule to a discovered row', async () => {
+  const data = [{ id: 'deepseek-v4.1-flash' }, { id: 'deepseek-v4-flash' }].map(entry => ({ ...entry, object: 'model', owned_by: 'deepseek' }));
+  const adapter = createProviders({ fetchImpl: async url => (url.includes('/models') ? json({ object: 'list', data }) : completion()) }).deepseek;
+  const { models } = await adapter.discover({ connection, credentials });
+  assert.deepEqual(models.map(m => m.capabilities.vision), ['reported', 'unsupported']);
+  assert.equal(models[0].contextWindow, 1_000_000, 'the discovered row still takes the documented window');
+});
+
+test('an id outside the shipped table keeps the provider number — or none at all', async () => {
+  // Ca canh cho họ DeepSeek CŨ: `deepseek-r1` thật sự nhỏ hơn 1M, nên bảng không
+  // được phủ lên nó. Payload ở đây không có số ⇒ `null` + không nguồn, đúng như
+  // trước đợt này; khi nhà cung cấp có số thì số đó là câu trả lời (`reported`).
+  const data = [{ id: 'deepseek-r1', object: 'model', owned_by: 'deepseek' }];
+  const adapter = createProviders({ fetchImpl: async url => (url.includes('/models') ? json({ object: 'list', data }) : completion()) }).deepseek;
+  const { models } = await adapter.discover({ connection, credentials });
+  assert.equal(models[0].contextWindow, null, 'a name the table does not know keeps the payload’s answer');
+  assert.equal(models[0].contextWindowSource, null);
+  assert.equal(models[0].contextWindowReported, null);
 });
 
 test('the shared OpenAI-compatible adapter keeps its own list', async () => {

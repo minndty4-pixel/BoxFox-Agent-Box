@@ -15,6 +15,13 @@ export interface Harness {
   mainModel: string
   modelWarning?: string
   subagents: SubagentConfig[]
+  // Ba trường dưới là tuỳ chọn: record cũ trong `boxfox_harness_v0` thiếu trường vẫn nạp được,
+  // và thiếu trường nghĩa là engine tự quyết (16 bước / 180 giây / đủ công cụ) — không bịa số ở client.
+  maxSteps?: number
+  deadlineSeconds?: number
+  tools?: string[]
+  // Bản sao nhớ bản gốc để dòng tóm tắt nói được nó từ đâu ra; xoá bản gốc thì trường này được gỡ.
+  duplicatedFrom?: { id: string; name: string }
   createdAt?: string
   updatedAt?: string
 }

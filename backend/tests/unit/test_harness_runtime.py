@@ -45,6 +45,28 @@ class FixtureExecutor:
         self.cleaned.append(sid)
 
 
+def test_first_turn_ensures_the_session_dir_once(tmp_path):
+    """A1: op `session_ensure` chạy ở LƯỢT ĐẦU (thư mục phiên sinh ở lần ghi đầu tiên) và đúng một
+    lần cho mỗi phiên — lượt sau không trả thêm một `docker exec` không cần thiết.
+    """
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        executor = FixtureExecutor()
+        client = FixtureModel([answer('xong'), answer('xong lần hai')])
+        runtime = HarnessRuntime(store, executor, client)
+        s = runtime.create({'skills': []}, role='plan')
+        await runtime.start(s['id'], 'Lượt một')
+        ensures = [args for name, args, _ in executor.calls if name == 'session_ensure']
+        assert len(ensures) == 1, 'lượt đầu phải gọi op tạo thư mục phiên'
+        assert ensures[0] == {'session': s['id'], 'role': 'plan', 'parent': None, 'goal': None}, \
+            'session.json phải nói được sid8 nào là phiên nào (và vai gì)'
+        await runtime.start(s['id'], 'Lượt hai')
+        assert [name for name, _, _ in executor.calls].count('session_ensure') == 1, \
+            'cùng một phiên: một lần ensure cho cả tiến trình'
+        store.close()
+    asyncio.run(run())
+
+
 def test_multiturn_restart_and_isolation(tmp_path):
     async def run():
         store = SessionStore(tmp_path / 'sessions.db')
@@ -97,7 +119,9 @@ def test_denied_tool_and_malformed_args_never_execute(tmp_path):
         runtime = HarnessRuntime(store, executor, client)
         s = runtime.create({'skills': []}, role='review')
         await runtime.start(s['id'], 'Inspect')
-        assert not executor.calls
+        # `session_ensure` (A1) là op hạ tầng duy nhất được phép chạm executor ở đây: nó dọn thư mục
+        # phiên lúc bắt đầu lượt, không phải một công cụ. Phép kiểm này nói về CÔNG CỤ.
+        assert [name for name, _, _ in executor.calls if name != 'session_ensure'] == []
         results = [m for m in store.get(s['id'])['messages'] if m['role'] == 'tool']
         assert all('error' in m['content'] for m in results)
         store.close()
@@ -122,6 +146,11 @@ def test_stop_busy_and_resume_no_replayed_tool(tmp_path):
         entered = asyncio.Event()
         class Waiting(FixtureExecutor):
             async def execute(self, name, args, sid):
+                # A1: `session_ensure` chạy ở đầu lượt và phải trả NGAY — nếu nó cũng treo thì lượt
+                # không bao giờ tới được công cụ đang chờ, và phép kiểm này không còn nói về ca
+                # "công cụ đang chạy thì bị stop".
+                if name == 'session_ensure':
+                    return {'ok': True, 'session': sid}
                 entered.set()
                 await asyncio.Event().wait()
         executor = Waiting()
@@ -153,7 +182,7 @@ def test_compaction_keeps_pairs_goal_and_prefix():
                 {'role': 'assistant', 'content': 'result ' + 'y' * 1200}])
         messages.append({'role': 'user', 'content': 'LATEST GOAL'})
         original = copy.deepcopy(messages)
-        async def summary(history):
+        async def summary(history, max_tokens=None):
             return answer('Goal: previous work. Evidence: six tool results. Outstanding: latest task.')
         result, event = await ContextCompressor(7000).compact(messages, [], summary)
         assert event['kind'] == 'summary'

@@ -20,6 +20,7 @@ import {
   ChevronDown,
   FolderOpen,
   BrainCircuit,
+  PanelRight,
 } from 'lucide-react'
 import { useT } from './i18n/context'
 import { useAgentStore } from './store/agentStore'
@@ -43,6 +44,7 @@ import { PullRequestsPanel } from './components/panels/PullRequestsPanel'
 import { WorkspaceFilesPanel } from './components/panels/workspace/WorkspaceFilesPanel'
 import { SystemLogPanel } from './components/panels/SystemLogPanel'
 import { BoxControls } from './components/shell/BoxControls'
+import { IconButton } from './components/ui'
 import { SettingsModal } from './components/settings/SettingsModal'
 import { CompletionEmailNotice } from './components/CompletionEmailNotice'
 import { SearchSessionsModal } from './components/shell/SearchSessionsModal'
@@ -146,6 +148,13 @@ export default function App() {
   // Dưới ~768px cột chat phải chiếm trọn bề ngang: cột chat 120px ở 390px là
   // không dùng được (BUG-23). Sidebar tự thu về thanh biểu tượng ở <1024px.
   const compactLayout = isCompactViewport(useViewportWidth())
+  // Công tắc bảng Workspace (Kế hoạch E2): bảng Workspace và màn Máy là CÙNG một
+  // cột phải, nên ẩn bảng = ẩn cột đó. Cột chat giãn hết bề ngang và nội dung đọc
+  // gom vào cột 768 px (việc của `ChatPanel`). `splitRatio` KHÔNG bị đụng: hiện
+  // lại là về đúng tỉ lệ cũ.
+  const workspaceHidden = useUiStore((s) => s.workspaceHidden)
+  const toggleWorkspace = useUiStore((s) => s.toggleWorkspace)
+  const paneHidden = workspaceHidden || compactLayout
 
   const containerRef = useRef<HTMLDivElement>(null)
   const showModeSwitch = proposal !== null
@@ -158,6 +167,15 @@ export default function App() {
   const pendingIntents = useUiStore((s) => s.pendingIntents)
   const intentCountFor = (tab: PanelTabId) =>
     pendingIntents.filter((intent) => intent.tab === tab).length
+  // Tên các view đang xếp hàng, theo đúng nhãn menu "Open Workspace" — dùng cho
+  // tên đọc của công tắc (trùng tab thì chỉ kể một lần).
+  const queuedViewLabels = [
+    ...new Set(
+      pendingIntents.map(
+        (intent) => AVAILABLE_PANEL_TABS.find((tab) => tab.id === intent.tab)?.label ?? intent.tab,
+      ),
+    ),
+  ].join(', ')
 
   function renderActiveTab() {
     if (showModeSwitch && activeTab === 'plan') {
@@ -208,6 +226,13 @@ export default function App() {
           taskEpoch={taskEpoch}
           budget={budget}
           context={context}
+          // Công tắc bảng Workspace (Kế hoạch E2): tên đọc nêu cả số view đang xếp
+          // hàng và tên của chúng, để huy hiệu không chỉ là một con số.
+          workspaceHidden={workspaceHidden}
+          workspaceToggleDisabled={compactLayout}
+          hiddenIntentCount={pendingIntents.length}
+          queuedViewLabel={queuedViewLabels}
+          onToggleWorkspace={toggleWorkspace}
         />
 
         <div ref={containerRef} className="flex min-h-0 flex-1">
@@ -217,8 +242,9 @@ export default function App() {
               giờ vượt viewport và không còn bị overflow-hidden cắt panel
               còn lại. */}
           <div
+            data-testid="chat-column"
             className="flex min-h-0 min-w-0 flex-col overflow-hidden border-r border-line"
-            style={compactLayout
+            style={paneHidden
               ? { flex: '1 1 0%', width: 'auto' }
               : { flex: `${splitRatio} 0 0%`, width: `${splitRatio * 100}%` }}
           >
@@ -227,12 +253,14 @@ export default function App() {
             </div>
           </div>
 
-          {!compactLayout && <Resizer containerRef={containerRef} />}
+          {!paneHidden && <Resizer containerRef={containerRef} />}
 
           {/* Right Column — VS Code-style Workspace Tabs (cùng lý do min-w-0 như trên).
-              Ở chế độ hẹp (<768px) panel phải tạm ẩn để cột chat đủ rộng. */}
-          {!compactLayout && (
+              Ẩn khi màn hẹp (<768px) HOẶC khi người dùng tắt công tắc bảng
+              Workspace; cả thanh tab lẫn tab đang chọn đều nằm trong cột này. */}
+          {!paneHidden && (
           <div
+            data-testid="workspace-pane"
             className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-panel"
             style={{ flex: `${1 - splitRatio} 0 0%`, width: `${(1 - splitRatio) * 100}%` }}
           >
@@ -375,19 +403,42 @@ function TopBar({
   taskEpoch,
   budget,
   context,
+  workspaceHidden,
+  workspaceToggleDisabled,
+  hiddenIntentCount,
+  queuedViewLabel,
+  onToggleWorkspace,
 }: {
   title: string
   mode: string
   taskEpoch: number
   budget: { steps: number; tokens: number; costUsd: number; capUsd: number }
   context: { integrity_floor: string; confidentiality_ceiling: string }
+  /** Bảng Workspace (cùng cột với màn Máy) đang bị người dùng ẩn. */
+  workspaceHidden: boolean
+  /** Màn hẹp (<768px): bảng không đủ chỗ, nút bị `disabled` kèm lý do. */
+  workspaceToggleDisabled: boolean
+  /** Số ý định tự mở tab đang xếp hàng vì bảng đang ẩn. */
+  hiddenIntentCount: number
+  /** Tên các view đang xếp hàng, ví dụ `Plan Document`. */
+  queuedViewLabel: string
+  onToggleWorkspace: () => void
 }) {
+  const t = useT()
   const [addMenuOpen, setAddMenuOpen] = useState(false)
   const addMenuRef = useRef<HTMLDivElement>(null)
-  const openTab = useUiStore((s) => s.openTab)
   const openTabs = useUiStore((s) => s.openTabs)
-  // Chọn tab từ menu này cũng là người dùng tự chọn → ghim tab đó.
-  const pinTab = useUiStore((s) => s.pinTab)
+  // Chọn tab từ menu này là người dùng tự bấm một thứ cần bảng ⇒ `showTab` vừa
+  // hiện bảng, vừa ghim, vừa mở (Kế hoạch E2, việc 5/6).
+  const showTab = useUiStore((s) => s.showTab)
+
+  const toggleLabel = workspaceToggleDisabled
+    ? t('shell.workspaceUnavailable')
+    : workspaceHidden
+      ? hiddenIntentCount > 0
+        ? `${t('shell.showWorkspacePane')} · ${t('shell.queuedViews', { n: hiddenIntentCount })}${queuedViewLabel ? `: ${queuedViewLabel}` : ''}`
+        : t('shell.showWorkspacePane')
+      : t('shell.hideWorkspacePane')
 
   // Close add tab popup menu when clicking outside
   useEffect(() => {
@@ -431,6 +482,33 @@ function TopBar({
 
       {/* Right: Open Workspace Button, Machine Controls & Security Labels */}
       <div className="flex items-center gap-2.5">
+        {/* Công tắc bảng Workspace (Kế hoạch E2) — đứng ngay trước cụm điều khiển
+            box, đúng chỗ mũi tên trong ảnh 3083.png. Glyph `PanelRight` là hình
+            trong ảnh 3081.png: rect chia dọc, nửa phải là bảng.
+            `aria-pressed` = bảng đang hiện VÀ nút còn dùng được; ở màn hẹp nút
+            KHÔNG biến mất (một control tự ẩn đi là nói dối về trạng thái), nó
+            `disabled` kèm lý do trong `title`. */}
+        <IconButton
+          variant="pill"
+          active={!workspaceHidden && !workspaceToggleDisabled}
+          label={toggleLabel}
+          onClick={onToggleWorkspace}
+          disabled={workspaceToggleDisabled}
+          className="relative"
+          testId="workspace-toggle"
+        >
+          <PanelRight className="size-3.5" />
+          {hiddenIntentCount > 0 && workspaceHidden && (
+            <span
+              data-testid="workspace-toggle-badge"
+              aria-hidden="true"
+              className="absolute -top-1.5 -right-1.5 flex size-4 items-center justify-center rounded-full bg-amber-500/20 font-mono text-[9px] font-bold text-amber-300 ring-2 ring-panel"
+            >
+              {hiddenIntentCount}
+            </span>
+          )}
+        </IconButton>
+
         {/* Open Workspace Dropdown Button */}
         <div className="relative inline-block" ref={addMenuRef}>
           <button
@@ -462,8 +540,8 @@ function TopBar({
                       key={tabItem.id}
                       type="button"
                       onClick={() => {
-                        pinTab(tabItem.id)
-                        openTab(tabItem.id)
+                        // Người dùng bấm menu ⇒ ý định của họ: hiện bảng + ghim + mở.
+                        showTab(tabItem.id)
                         setAddMenuOpen(false)
                       }}
                       className={`flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-xs transition cursor-pointer ${isAlreadyOpen

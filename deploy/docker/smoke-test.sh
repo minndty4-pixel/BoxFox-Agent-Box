@@ -123,6 +123,7 @@ else
 fi
 
 head "10) Workspace có đủ thư mục plan và API chỉ-đọc"
+PLAN_SECRET="${BOXFOX_API_KEY:-boxfox-local-dev-token}"
 WORKSPACE_DIRS='.generated_artifacts .plans .session-history .skills .trimmed-tool-output .uploaded_artifacts .virtual_views'
 if DX "for d in $WORKSPACE_DIRS; do [ -d /home/agent/workspace/\$d ] && [ ! -L /home/agent/workspace/\$d ] && [ \"\$(stat -c '%u:%g:%a' /home/agent/workspace/\$d)\" = '1000:1000:750' ] || exit 1; done"; then
   ok "bảy thư mục workspace là thư mục thường của agent:agent với mode 0750"
@@ -139,35 +140,93 @@ if DX '[ "$(find /home/agent/workspace/.plans -maxdepth 1 -type f -printf "%f\\n
 else
   bad ".plans không chỉ có plan khởi đầu trên volume fresh"
 fi
-if docker exec -i "$CONTAINER" python3 - <<'PY'
+
+# 10b) Nhật ký phiên (đợt 20): bốn op phải chạy được **trong box** qua đúng mặt CLI mà
+#      `worker.py` dùng. Bài này bắt hai lỗi đã xảy ra thật: tệp chưa được staged vào
+#      `/usr/local/bin` (Dockerfile thiếu COPY) và op ghi file hỏng âm thầm mà lượt vẫn
+#      "thành công". Ghi bằng user `agent` để kiểm luôn quyền của `.session-history` 0750.
+SMOKE_SID="0011223344556677"
+SMOKE_JOURNAL() { MSYS_NO_PATHCONV=1 docker exec -i --user agent "$CONTAINER" \
+  python3 /usr/local/bin/session_ops.py 2>/dev/null; }
+HEAD_NOTE="thiếu /usr/local/bin/session_ops.py hoặc /usr/local/bin/session_files.py (chưa staged)"
+if DX 'test -f /usr/local/bin/session_ops.py && test -f /usr/local/bin/session_files.py'; then
+  ok "session_ops.py và session_files.py đã staged vào /usr/local/bin"
+else
+  bad "$HEAD_NOTE"
+fi
+ENSURE="$(printf '{"name":"session_ensure","args":{"session":"%s"}}' "$SMOKE_SID" | SMOKE_JOURNAL)"
+case "$ENSURE" in
+  *'"ok": true'*) ok "session_ensure tạo thư mục .session-history/$SMOKE_SID" ;;
+  *) bad "session_ensure hỏng: ${ENSURE:-không có phản hồi}" ;;
+esac
+JOURNAL="$(printf '{"name":"journal_append","args":{"session":"%s","kind":"task","text":"smoke-test"}}' "$SMOKE_SID" | SMOKE_JOURNAL)"
+case "$JOURNAL" in
+  *'"ok": true'*) ok "journal_append nối một dòng JSONL có mã bản ghi" ;;
+  *) bad "journal_append hỏng: ${JOURNAL:-không có phản hồi}" ;;
+esac
+CHECKPOINT="$(printf '{"name":"checkpoint_write","args":{"session":"%s","messages":[{"role":"user","content":"trước nén"}],"numbers":{"beforeEstimate":1234}}}' "$SMOKE_SID" | SMOKE_JOURNAL)"
+case "$CHECKPOINT" in
+  *'"checkpointNumber": 1'*) ok "checkpoint_write ghi cặp ck-*.json + ck-*.md có số đo" ;;
+  *) bad "checkpoint_write hỏng: ${CHECKPOINT:-không có phản hồi}" ;;
+esac
+PRUNE="$(printf '{"name":"captures_prune","args":{"dryRun":true}}' | SMOKE_JOURNAL)"
+case "$PRUNE" in
+  *'"ok": true'*) ok "captures_prune (dryRun) trả về được số liệu thay vì ném" ;;
+  *) bad "captures_prune hỏng: ${PRUNE:-không có phản hồi}" ;;
+esac
+# Dọn phần vừa ghi: bài 10 khẳng định `.session-history` rỗng trên volume fresh, nên bài
+# này phải để lại đúng trạng thái đó (chạy smoke-test lần hai vẫn phải xanh).
+DX "rm -rf /home/agent/workspace/.session-history/$SMOKE_SID" >/dev/null 2>&1
+
+if docker exec -i "$CONTAINER" env SECRET="$PLAN_SECRET" python3 - <<'PY'
 import json
+import os
+import urllib.error
 import urllib.request
 
-request = urllib.request.Request(
-    "http://127.0.0.1:8081/__box/plans",
-    headers={"Origin": "http://localhost:3100"},
-)
-with urllib.request.urlopen(request) as response:
-    assert response.headers["Cache-Control"] == "no-store"
-    plans = json.load(response)["plans"]
-assert plans == [
-    {
-        "identity": "plan-browser-demo",
-        "relativeDirectory": "",
-        "slug": "plan-browser-demo",
-        "versions": [plans[0]["versions"][0]],
-    }
-]
-request = urllib.request.Request(
-    "http://127.0.0.1:8081/__box/plans/content?identity=plan-browser-demo&version=1",
-    headers={"Origin": "http://localhost:3100"},
-)
-with urllib.request.urlopen(request) as response:
-    content = json.load(response)
+ORIGIN = {"Origin": "http://localhost:3100"}
+
+
+def get(path, headers=ORIGIN):
+    with urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:8081" + path, headers=headers)) as response:
+        assert response.headers["Cache-Control"] == "no-store", path
+        return json.load(response)
+
+
+manifest = get("/__box/plans")
+plans = manifest["plans"]
+# So từng trường thay vì cả dict: payload chỉ-đọc được phép CỘNG THÊM trường
+# (`review` từ vòng 19, `headerStatus`/`headerVersion`/… từ vòng 20) mà không
+# làm bài kiểm này đỏ oan. Tên/đường dẫn/thứ tự version mới là hợp đồng.
+assert len(plans) == 1, plans
+plan = plans[0]
+assert (plan["identity"], plan["relativeDirectory"], plan["slug"]) == ("plan-browser-demo", "", "plan-browser-demo"), plan
+assert [(item["version"], item["label"]) for item in plan["versions"]] == [(1, "v1")], plan
+assert manifest["ignoredCount"] == 0, manifest
+assert manifest["warnings"] == [], manifest
+version = plan["versions"][0]
+# File cũ không có khối `boxfox-plan` phải đọc là `legacy` và KHÔNG kèm cảnh báo
+# (người dùng không phải đi sửa tay mọi file cũ).
+assert version["headerStatus"] == "legacy", version
+assert version["headerVersion"] is None and version["headerIdentity"] is None, version
+assert version["declaredParent"] is None and version["declaredSlug"] is None, version
+assert version["status"] == "approved", version
+
+content = get("/__box/plans/content?identity=plan-browser-demo&version=1")
 assert "# Kế hoạch kiểm chứng trình duyệt plan" in content["markdown"]
+
+# Chỉ mục cho harness: THIẾU khoá → 401 và KHÔNG trả dữ liệu; có khoá → y hệt payload app đọc.
+try:
+    urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:8081/__box/plans/index"))
+    raise AssertionError("chỉ mục plan phải đòi X-BoxFox-Api-Key")
+except urllib.error.HTTPError as error:
+    assert error.code == 401, error.code
+    assert b"plan-browser-demo" not in error.read(), "401 không được rò dữ liệu plan"
+index = get("/__box/plans/index", {"X-BoxFox-Api-Key": os.environ["SECRET"]})
+assert index == manifest, index
 PY
 then
-  ok "API plan tìm và đọc được plan khởi đầu thật"
+  ok "API plan tìm và đọc plan khởi đầu thật, file cũ đọc legacy, chỉ mục cần khoá"
 else
   bad "API plan không trả đúng plan khởi đầu"
 fi
@@ -177,6 +236,8 @@ docker exec --user agent "$CONTAINER" sh -eu -c '
   cp /opt/agentbox/test-fixtures/plans/v2-plan-browser-demo.md /home/agent/workspace/.plans/
   printf "%s\n" "# Tóm tắt" > /home/agent/workspace/.plans/v3-plan-browser-demo-summary.md
   printf "%s\n" "# Sai" > /home/agent/workspace/.plans/v01-plan-browser-demo.md
+  mkdir -p /home/agent/workspace/.plans/subplans
+  printf "%s\n" "<!-- boxfox-plan" "Version: v1" "Identity: subplans/header-demo" "Parent: none" "-->" "" "# Kế hoạch có header" > /home/agent/workspace/.plans/subplans/v1-header-demo.md
 '
 
 PASS_11=1
@@ -195,6 +256,13 @@ assert [(item["version"], item["label"], item["status"]) for item in plan["versi
     (2, "v2", "draft"),
     (1, "v1", "approved"),
 ], plan
+# Nhóm lồng nhau có khối header khớp tên file → đọc `ok`, và vẫn nằm đúng nhóm theo TÊN FILE.
+nested = manifest["plans"][1]
+assert nested["identity"] == "subplans/header-demo", nested
+assert nested["relativeDirectory"] == "subplans" and nested["slug"] == "header-demo", nested
+assert [(item["headerStatus"], item["headerVersion"], item["headerIdentity"]) for item in nested["versions"]] == [
+    ("ok", 1, "subplans/header-demo"),
+], nested
 with urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:8081/__box/plans/content?identity=plan-browser-demo&version=2", headers=headers)) as response:
     content = json.load(response)
 assert content["label"] == "v2", content
@@ -208,9 +276,10 @@ if [ "$PASS_11" = "1" ] && docker exec --user agent "$CONTAINER" sh -eu -c '
   rm /home/agent/workspace/.plans/v2-plan-browser-demo.md
   rm /home/agent/workspace/.plans/v3-plan-browser-demo-summary.md
   rm /home/agent/workspace/.plans/v01-plan-browser-demo.md
+  rm -r /home/agent/workspace/.plans/subplans
   test "$(find /home/agent/workspace/.plans -maxdepth 1 -type f -printf "%f\n" | sort)" = "v1-plan-browser-demo.md"
 '; then
-  ok "API gom/sắp version đúng, bỏ summary bình thường và cleanup chỉ giữ v1"
+  ok "API gom/sắp version đúng, đọc header ok, bỏ summary bình thường và cleanup chỉ giữ v1"
 else
   bad "API plan không xử lý đúng version, summary, file sai quy tắc hoặc cleanup"
 fi

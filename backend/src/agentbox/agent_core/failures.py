@@ -40,9 +40,11 @@ KNOWN_PREFIXES = (
     'SETUP_REQUIRED',
     'CHILD_FAILED',
     'PLAN_QUALITY_REJECTED',
+    'PLAN_EVAL_REJECTED',      # đợt 20 §5: cổng cứng P1/P2/P4/P7/P8 của thang điểm P1–P8
     'PLAN_INVALID',
     'PLAN_SLUG_INVALID',
     'PLAN_WRITE_FAILED',
+    'PLAN_WRITE_CONFLICT',     # hai người ghi cùng số version: đọc lại chỉ mục một lần rồi thôi
     'DECISION_UNAVAILABLE',
     'DECISION_INVALID',
     'DECISION_NOT_FOUND',

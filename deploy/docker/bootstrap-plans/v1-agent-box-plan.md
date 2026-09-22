@@ -1,3 +1,10 @@
+<!-- boxfox-plan
+Version: v1
+Identity: agent-box-plan
+Parent: none
+Slug: agent-box-plan
+-->
+
 # Kế hoạch xây dựng Agent Box — AI Computer tự host có kiểm soát luồng dữ liệu
 
 **Loại tài liệu:** kế hoạch đồ án tốt nghiệp + lộ trình sản phẩm

@@ -87,7 +87,7 @@ Chi tiết: `docs/tracking/findings-round4.md`.
 |---|---|---|
 | Nợ-1 | Dựng lại ảnh container để các tệp mới nằm trong image | ĐÃ XONG — `docker compose build` xong, `agentbox-sandbox:latest` (manifest `sha256:cf06992844d6…`), ba tệp trong ảnh khớp hash repo (`ide-proxy.py a7a83b02…`, `plan_files.py de901085…`, `workspace_files.py fc391ce1…`) |
 | Nợ-2 | Xác thực `/claude-code` bằng CLI thật | CHƯA LÀM ĐƯỢC trong môi trường này — box không có binary `claude` và không có thông tin đăng nhập; chỉ xác minh được nhánh `SETUP_REQUIRED` |
-| Nợ-3 | Nén context tự động theo ngưỡng token | CHƯA KÍCH HOẠT ĐƯỢC — model khai báo cửa sổ ~1.000.000 token; chỉ kiểm chứng nhánh nén gọi tay |
+| Nợ-3 | Nén context tự động theo ngưỡng token | **ĐÃ XONG vòng 19** — ngưỡng nay là `min(phần trăm, trần byte 301 200)` nên chạm được: đo sống hai lần nén tự động `summary` khi ngữ cảnh vượt ngưỡng, xem §6.20 |
 
 ## 5. Việc còn lại của BUG-25
 
@@ -608,3 +608,340 @@ hiện, model trả tiền không hiện).
 `CONTRACT.md` giữ nguyên lời hứa "cạnh `input` là tổng đầu vào" bằng cách nói thẳng ra, thay vì để người đọc tự
 suy từ công thức. **Sau `2a0075c`:** router **156 pass / 0 fail**; frontend **738 pass / 4 fail** (đúng bộ đỏ có
 sẵn: 3 ca `Sidebar.test.tsx` + 1 ca `workspace/index.test.ts`); `tsc -b --noEmit` mã 0.
+
+### 6.16 Vòng 18 — hai lỗi chủ sở hữu báo: cửa sổ ngữ cảnh 64 000 do đoán theo tên, và bản ghi màn hình không xem được
+
+**P1 (vừa) — cùng một câu hỏi "cửa sổ ngữ cảnh của model này là bao nhiêu" có BA câu trả lời khác nhau.**
+Chủ sở hữu báo thanh ngữ cảnh in `37.5k / 64.0k (59%) est.` cho một model DeepSeek trong khi nhà cung cấp công bố
+1M. Đo trên máy này (2026-09-21) cho thấy cả ba tầng đều tự đoán theo tên, và không tầng nào hỏi tầng kia:
+
+| Tầng | Chỗ đoán | Số nó đoán cho họ DeepSeek V4 |
+| --- | --- | --- |
+| Router | `router/src/providers/common.mjs:143` đọc `context_length`/`context_window`/`top_provider.context_length`/`max_context_length`; payload `/models` của DeepSeek chỉ có `{id, object, owned_by}` | không có gì → `deepseek.mjs:92` công bố `contextWindow: null` |
+| Harness | bảng tên trong `backend/src/agentbox/agent_core/runtime.py:592-599` (`deepseek`/`qwen` → 64 000) | **64 000** |
+| Giao diện | `frontend/src/components/panels/ContextUsageBar.tsx:144` (`deepseek`/`qwen` → `64_000`) | **64 000**, in kèm `est.` |
+
+Chuỗi truyền: `/api/router/state` mang `null` → `backend/src/agentbox/api/server.py:176-177` chỉ chép giá trị khi
+truthy nên không chép gì → harness rơi vào bảng tên → `config['contextWindow'] = 64000` → giao diện in `64.0k`.
+Nghịch lý: chính vì số 64 000 được gắn nhãn `est.` nên trông như đã có nguồn, trong khi đó là con số duy nhất
+không ai công bố.
+*Quyết định của chủ sở hữu (đã chốt, không hỏi lại):* với một dòng model **đã biết**, bảng tên thắng; số nhà cung
+cấp vẫn được giữ bên cạnh ở `contextWindowReported` để đối chiếu; những dòng cũ (`deepseek-r1` 64 000,
+`v3.2` 163 840) **không** vào bảng, giữ nguyên số nhà cung cấp.
+*Sau khi sửa:* một bảng duy nhất `router/src/context-window.mjs` (`CONTEXT_WINDOW_TABLE_AS_OF = '2026-09-21'`, bảy
+dòng V4/V4.1, regex họ `^deepseek-(?:v4(?:\.1)?-)?(?:flash|pro)(?:-|$)`) và ba nguồn có tên
+`'manual' | 'documented' | 'reported' | null`; bảng tên Python trong harness **bị xoá**;
+`resolve_context_window()` trả về **cặp** `(số, nguồn)` và sàn an toàn của harness (128 000) mang nhãn `'fallback'`;
+`ContextUsageBar` bỏ hẳn phép đoán theo tên; đường khai tay `PATCH /api/router/state`
+`{modelContextWindow:{modelId,contextWindow,clear?}}` cho người dùng chỉnh bất cứ dòng nào. Phiên cũ được lành lúc
+harness khởi động (`HarnessRuntime.heal_context_windows`, gắn vào `app.on_startup`), chỉ bỏ qua phiên có
+`contextWindowSource == 'manual'`.
+*Số đo sống sau khi sửa* (router và harness khởi động lại, 2026-09-21):
+`/api/router/state` → `deepseek-flash` = **1000000 / documented / reported null**; TokenHarbor `deepseek-v4.1-flash`
+= **1000000 / documented / reported 1048576**; OpenRouter `deepseek/deepseek-v3.2` = **163840 / reported** (dòng cũ
+không có bảng, giữ đúng số nhà cung cấp). `/v1/models` (61 dòng) đọc đúng cùng bộ số. Phiên mới tạo với
+`deepseek-flash`: `config.contextWindow == 1000000`, `contextWindowSource == 'documented'` (trước đợt này:
+`64000`, không có nguồn); phiên khai tay `32768`: `32768 / manual`.
+Đợt đầu của phép lành ghi lại: trong 50 phiên lưu sẵn, **4 phiên còn `64000`** và **22 phiên ở 1048576** (Gemini
+công bố 1048576) đều thành `(số, nguồn)`; lần khởi động thứ hai **đổi 0 dòng** (phép lành là idempotent).
+Ghi chú trung thực: hai phiên rất cũ khai `30000` và `250000` **trước** đợt này không có trường nguồn, nên phép lành
+coi chúng như số không nhãn và đưa về số của định tuyến — từ đợt này trở đi mọi lời khai tay đều mang nhãn `manual`
+và được bảo vệ. Ba tầng cùng đọc một số: router **174 ca / 0 đỏ** (`router/tests/context-window.test.mjs` 16 ca
+mới, đỏ trước khi sửa: `1000000 !== 32768`, `Missing expected exception: 0 không phải một cửa sổ`), harness
+**543 đạt** (`test_context_window_heal.py` 4 ca mới), giao diện `ContextUsageBar.test.tsx` **19 đạt** (4 ca mới đỏ
+trước khi sửa: `7 failed | 12 passed`).
+
+**P2 (vừa) — bản ghi màn hình `.mp4` hiện thành `<img>`.** `frontend/src/components/panels/ChatPanel.tsx:678-684`
+render `<MediaLightboxModal src caption sourceUrl />` mà **quên `type`**, và
+`frontend/src/components/chat/MediaLightboxModal.tsx:36` mặc định `type = 'image'`. Hậu quả: tệp `.mp4` rơi vào
+nhánh `<img>` nên khung xem chỉ hiện alt text (`Sandbox Screen Recording`), đúng như ảnh chủ sở hữu gửi.
+Cùng một giá trị sai đó còn làm **hai** chỗ khác: nút `Download` lưu `.mp4` thành `boxfox-image-capture-<ts>.png`
+(`:137-145`), và thanh tua chỉ hiện khi `type === 'video'` (`:300`). Người gọi thứ ba là
+`frontend/src/components/panels/RouterTestChat.tsx:126` cũng thiếu `type`, tức lỗi có ba cửa chứ không một.
+Vận chuyển thì đúng: `HTTP/1.0 200 OK`, `Content-Type: video/mp4`, `Accept-Ranges: bytes`, byte-range trả
+`HTTP/1.0 206 Partial Content Content-Range: bytes 0-1023/7438731`; tệp là H.264 Constrained Baseline,
+yuv420p, 1280×800, 15 fps. Trước đợt này **không có ca kiểm thử nào** cho khung xem.
+*Sau khi sửa:* `type` là trường **bắt buộc** của `LightboxMediaProps` (xoá giá trị mặc định), nên `tsc` chỉ ra mọi
+cửa quên truyền; tên tệp tải về lấy đuôi thật của đường dẫn trước, rồi mới tới `type` (`downloadExtension()`);
+và một bản ghi không nhận được `stop` sạch vẫn mở được, nói thẳng thời lượng chưa biết
+(`Duration unknown — this recording did not stop cleanly`) thay vì coi như tệp ảnh.
+*Trạng thái:* **ĐÃ SỬA trong mã**; phép kiểm sống (mở một bản ghi thật trong khung xem, đọc thẻ `<video>` và tên
+tệp tải về) nằm ở phần nghiệm thu cuối vòng — ghi lại kết quả ở `test-rounds.md`.
+
+### 6.17 Vòng 18 (tiếp) — bốn yêu cầu còn lại của chủ sở hữu: ba lỗi thật, hai lỗi đã sửa cùng lượt
+
+**P3 (vừa) — tab Instructions chỉ là hình vẽ.** Settings → Instructions là tiêu đề, phụ đề và **một `<textarea>`
+không kiểm soát** (không `value`, không `onChange`, không ai đọc giá trị). Gõ chữ thì chữ nằm đó, đổi tab là mất, và
+**không đường nào ghi** trường `instructions` mà harness đã biết đọc và ghép vào system message
+(`runtime.py:842-847`, khối `=== OWNER-CONFIGURED DIRECTIVES ===`). Nói cách khác: cả hai đầu đã sẵn sàng, chỉ thiếu
+đúng khúc nối.
+*Sau khi sửa:* `owner_settings.py` (một document + `revision`, `REVISION_CONFLICT` khi lệch, lưu chuỗi nguyên văn),
+hai route `GET/PUT /api/agent/owner-settings`, `ownerSettingsStore` + `InstructionsTab.tsx` có kiểm soát, bộ đếm
+`{{n}} / 12.000 ký tự` chuyển màu ở 11 000 và ở mốc cắt, chip `UNSAVED CHANGES`, biên nhận `Saved … · revision n`,
+trạng thái lỗi giữ nguyên bản nháp và ghi `NOT SAVED` chứ không bao giờ nói "đã lưu", bốn ví dụ chèn tại con trỏ, một
+câu hỏi chặn mất dữ liệu khi Esc/đổi tab, và sổ phiên ghi `instructionsChars` để chat cũ nói thẳng
+`not recorded for this chat`. Mốc 12 000 ký tự có **một** nguồn: `INSTRUCTIONS_MAX_CHARS` trong
+`backend/src/agentbox/agent_core/limits.py`, dùng ở cả route lẫn `runtime.py`, và một ca backend so hai nơi với nhau.
+*Đo sống:* `GET /api/agent/owner-settings` → `{"instructions":"","revision":0}`; `PUT` với revision cũ → **409
+`REVISION_CONFLICT: reload owner settings`**; một phiên thật tạo bằng thân request mới lặp lại `instructions` và
+đuôi system message đúng khối trên.
+
+**P4 (vừa) — ô `Model` của sổ harness ghi giá trị router không định tuyến được.** Ô này ghi id trần hoặc tên hiển
+thị, trong khi `router/src/engine.mjs:14-24` chỉ nhận tên alias hoặc chuỗi có `/`. Đo sống hôm nay với khoá harness:
+`{"model":"deepseek-v4-pro"}` → **HTTP 404 `MODEL_NOT_FOUND`** và `{"model":"Claude 3.7 Sonnet"}` → **404** y hệt,
+còn `7ee21256-8675-4ee3-a802-fcedbed8b7ef/deepseek-flash` → **200**. Nghĩa là một harness "đã lưu" vẫn có thể chết ở
+lượt đầu, và lỗi hiện ra như lỗi nhà cung cấp.
+*Sau khi sửa:* ô `Model` lấy danh mục **sống** từ `providerStore` và chỉ ghi hai dạng chạy được
+(`model:<connectionId>:<modelId>` / `alias:<id>`), có hàm thuần `isRoutableModel()` dùng ở **cả** store (từ chối giá
+trị không định tuyến) **và** editor, ô bị khoá kèm lý do khi danh mục chưa nạp. Bản mẫu giữ `mainModel: 'default'` và
+mô tả của chúng được sửa cho khớp trạng thái thật, thay vì khôi phục tên seam cũ (những tên đó cũng 404).
+*Kèm theo:* editor có `Steps per turn` (1–60) và `Turn deadline` (5–600) kèm câu nói trần của vai trò con, khối
+`Tool access` đếm từ `runtime-info` (nhóm `Questions & approvals` luôn bật) cùng câu luật "chỉ được lấy công cụ đi"
+(engine trả `Tool not permitted for this role`), khối `Retries` **chỉ-đọc** nói rõ ba số đó sống ở `failures.py`, và
+`HarnessFlowVisualizer` in đúng danh sách công cụ của registry — **năm** cái tên chưa từng tồn tại
+(`file_multi_replace`, `diagram_generate`, `dir_list`, `git_diff`, `read_url_content`) đã biến mất.
+
+**P5 (thấp–vừa) — thang tự nối lại của màn Máy dừng sau 4 lượt, và cách trả nợ cũ là hai nút bấm.**
+`lib/vnc/state.ts` có `VNC_MAX_ATTEMPTS = 4`; hết trần thì giao diện hiện khối hổ phách `NO FRAME AVAILABLE` cùng
+`Retry connection`, buộc chủ sở hữu bấm tay trong khi lý do hỏng (mất mạng, `timeout`, socket đóng) tự khỏi được.
+Trần đó là **cố ý**: mỗi lượt hỏng trình duyệt ghi một dòng đỏ WebSocket không tắt được, nên trả nợ bằng cách bỏ trần
+sẽ biến một tab bỏ quên thành máy bơm nhật ký.
+*Sau khi sửa:* bỏ trần, giữ thang `3 → 8 → 20` và **giữ mãi nấc 20 s**; `exhausted` chỉ còn nghĩa "lý do này không
+tự khỏi" (`mixedContent`, `insecureContext`, `unsupported`, `security`, `credentials`, `disabled`, `skipped`) — sáu
+lý do đó không thử lại vì thử lại là vô nghĩa. Món nợ nhật ký được trả bằng `visibilitychange` trong `useVncScreen`:
+tab bị ẩn thì **không** hẹn giờ và **không** mở socket, quay lại thì hẹn lại từ nấc 3 s — nên trần thực tế là khoảng
+một lượt mỗi 25 giây khi panel đang mở và tab đang hiện, và bằng **0** khi tab bị ẩn. Giao diện bỏ cả hai nút
+`Retry connection`, thay bằng lớp phủ mờ `Connecting to desktop…` + `Attempt n · Auto-retry in Xs` + thanh tiến trình
+2 px, chỉ hiện từ lượt 6 mới có link "How to start the box"; nhánh lý do không tự khỏi giữ thẻ tĩnh, và một dải
+`Reconnected · live frame resumed` hiện 4 giây khi khung hình trở lại.
+*Kèm theo:* công tắc bảng Workspace (một `IconButton` `PanelRight`) — trước vòng này **không có** điều khiển bố cục
+nào trong mã (`Layout:` mà chủ sở hữu thấy nằm trong iframe code-server, không phải sản phẩm); bảng ẩn thì cột chat
+giãn hết, ý định mở tab của agent **xếp hàng** thay vì mất, và nội dung đọc gom vào cột 768 px ở giữa. Số đo điểm
+ảnh ở góc khung hình bị xoá — con số đó là kích thước đã **thương lượng** (`lib/vnc/fit.ts:153` đặt
+`rfb.resizeSession = true`), nên nó chỉ còn trong ngăn kéo `Details`, nơi có nhãn và ngữ cảnh.
+
+### 6.18 Vòng soát mã độc lập đợt 18 (7 phát hiện + 1 câu hỏi) — ĐÃ SỬA (`074a8ae`)
+
+Vòng soát đọc trọn diff `a061f03..fc51864` trên ba tầng (router, harness, giao diện), mở lại bản ghi phiên thật ở
+chế độ chỉ-đọc và dựng script riêng trong `/var/tmp` để tái hiện — không sửa tệp nào trong repo. Kết luận: `RISK SCORE 4`,
+`OVERALL RISK Medium`, ngưỡng 7, `VERDICT Ship with mitigations`. Bảy phát hiện dưới đây đã sửa hết; mỗi cái có ca kiểm
+chứng riêng, và cận trên `2 000 000` mà vòng soát ghi là "chưa đo" nay cũng có ca.
+
+**R1 (vừa) — bản ghi bị cắt ngang vẫn không có đường mở, vì bản sửa nằm ngoài commit được soát.** `fc51864` giữ
+`HarnessStepView.tsx` trả `null` cho MỌI hàng `tool_end` có `args.action === 'start'`, mà tệp của chủ sở hữu
+(`1789929795687-screen.mp4`, phiên `bb0c66e24f68446fb5152b3e7739dcc2`, seq 39458) chỉ tồn tại dưới dạng một hàng
+`start`: lượt chết vì DEADLINE trước khi kịp chạy `stop`, và trong cả DB không có hàng `stop` nào cho đường dẫn đó
+(12 sự kiện `computer_screen_record`, hai tệp chưa từng `stop`). Bản sửa nằm trong cây làm việc nhưng chưa được commit,
+nên **bản được soát** vẫn không đạt D3.
+*Sau khi sửa:* `extractToolMedia(event, { allowStartMedia })` + một memo `startAllowedSeqs` trong `TurnBlock` chỉ cho
+hàng `start` đi qua khi **không** hàng nào khác trong cùng lượt nói về chính tệp ấy, và nhiều hàng `start` cùng một tệp
+thì chỉ hàng đầu tiên được hiện — nên một bản ghi đã đóng vẫn đúng một player. Hai ca mới trong
+`HarnessStepView.media.test.tsx`.
+
+**R2 (thấp–vừa) — nút [👁 View] trong chat im lặng khi bảng Workspace đang ẩn.** `ReferencedFilesList` →
+`uiStore.selectFile` → `openTab('files')`, mà `openTab` **cố ý** không chạm `workspaceHidden`; bấm View lúc bảng ẩn thì
+không hiện gì, và tab Files đổi ngầm để lần sau người dùng nhìn thấy một trạng thái mình không hề chọn. Kế hoạch E2 đã
+liệt kê bốn điểm gọi cần đi qua `showTab`; điểm này bị bỏ sót.
+*Sau khi sửa:* `selectFile` đi qua `showTab('files')` (hiện bảng + ghim tab + kích hoạt). Ba ca mới trong
+`uiStore.workspace.test.ts`, gồm ca hàng đợi đóng băng của tab khác được xả đúng luật cũ-trước.
+
+**R3 (thấp) — một nút vặn đã đặt thì không xoá được.** `setHarnessTuning` bỏ qua mọi giá trị `undefined`, trong khi
+trình sửa ghi `undefined` khi ô nhập bị xoá trống — nên đặt `Steps per turn` = 20, xoá ô, lưu: số 20 ở lại và ô tự điền
+lại 20; placeholder "mặc định của engine" không bao giờ quay lại được.
+*Sau khi sửa:* `null` là tín hiệu **XOÁ** (xoá hẳn khoá, không gán `undefined`, nên `in`/`Object.keys` cũng sạch), còn
+thiếu khoá/`undefined` vẫn là "không đụng tới"; trình sửa gửi `null` cho ô trống và cho trường hợp bật lại đủ bộ công cụ.
+Ba ca mới trong `harnessStore.workspace.test.ts`.
+
+**R4 (thấp) — một bản ghi phiên không có nhãn nguồn bị đọc thành `reported`.** `ContextUsageBar` coi nhãn thiếu là
+`reported`, nên bốn phiên cũ giữ `contextWindow 128000` không nguồn (route `{}` nên bản vá lúc khởi động bỏ qua) hiện
+`128.0k` **trần trụi** — không `est.`, không tooltip — trong khi trước đợt 18 con số ấy ít ra còn mang dấu ước lượng.
+*Sau khi sửa:* nhãn thiếu (hoặc lạ) đọc là `fallback`, nên số hiện kèm `est.` và tooltip nói thẳng chưa có nguồn; câu
+chữ của `fallbackHint` được viết lại cho đúng cả hai ca ("harness đang giữ {{tokens}} token, không phải số nhà cung cấp
+báo"), và `reported` thật thì vẫn không `est.`/không tooltip. Một ca mới trong `ContextUsageBar.test.tsx`.
+
+**R5 (thấp) — `contextWindowReported` có thể bằng chính số đang dùng.** Nhánh PATCH đặt số tay gán thẳng
+`model.contextWindowReported = published`, không kiểm lại luật "chỉ khi khác" mà `resolveContextWindow` và hai nhánh
+kia đã theo (`router/CONTRACT.md`). Tái hiện trong script riêng: gieo `1048576` rồi `PATCH` đúng `1048576` → dòng
+`{contextWindow: 1048576, source: 'manual', contextWindowReported: 1048576}`.
+*Sau khi sửa:* chỉ giữ số nhà cung cấp khi nó **khác** số đang dùng. Một ca mới trong `context-window.test.mjs`, kèm
+nửa đối chứng (hai số khác nhau thì số nhà cung cấp vẫn ở lại).
+
+**R6 (thấp, câu hỏi mở) — `for_engine()` không có người gọi ở production.** Tab Instructions hứa tài liệu áp cho phiên
+MỚI, nhưng chỉ đường giao diện gửi chỉ dẫn kèm yêu cầu; một phiên tạo từ script/lịch chạy không nhận được gì dù tài
+liệu đã lưu.
+*Sau khi sửa:* route tạo phiên đọc tài liệu đang lưu khi yêu cầu **không** mang `instructions` (cắt bằng đúng trần
+`INSTRUCTIONS_MAX_CHARS`), chỉ dẫn client gửi kèm vẫn thắng, tài liệu rỗng thì hành vi cũ giữ nguyên. Engine không đổi
+luật: nó vẫn chỉ đọc `values['instructions']`. Một ca route mới trong `test_owner_settings.py`.
+
+**R7 (nit) — ghi chú nguồn gốc tự mâu thuẫn với chính dòng của nó.** `CONTEXT_WINDOW_TABLE_SOURCE_NOTES` ghi
+`deepseek-v4-flash` "OpenRouter, published 1310720" trong khi dòng đó là `1_000_000`; đọc lại `/api/v1/models` của
+OpenRouter hôm nay: **mọi** dòng V4/V4.1 công bố **1048576**, riêng `deepseek-v4-flash-0731` và alias
+`~deepseek/deepseek-v4-flash-latest` công bố **1310720** trong khi `top_provider.context_length` của chính chúng là
+1048576. Ghi chú nay nói đúng phép đo, đúng dòng lệch, và nói rõ dòng bảng là **quyết định của cả họ** chứ không phải
+phép đo từng build — số nhà cung cấp vẫn nhìn thấy được ở `contextWindowReported` thay vì trốn trong ghi chú.
+
+**Còn để ngỏ (không phải lỗi trong mã):** đường tải thật của tệp `.mp4` chưa `stop` chỉ đo được từ trong máy ảo agent
+(thư mục capture không nhìn thấy từ máy này) — thuộc phần kiểm chứng sống của đợt; và kết luận `Ship with mitigations`
+của vòng soát dựa trên diff, không dựa trên việc chạy lại bộ kiểm thử.
+
+### 6.19 Vòng 19 — OpenCode Free không dùng được: bốn cổng của bậc miễn phí (đồng bộ 9Router v0.5.81)
+
+**Triệu chứng đo được.** Bậc miễn phí của OpenCode từ chối gần như mọi thứ: `POST /zen/v1/responses` trả `403` với
+`{"type":"FreeTierError","message":"OpenCode's free tier can only be used from within OpenCode"}`. Adapter trong cây lúc
+đó gửi `User-Agent: opencode` (không số), không gửi tool nào cho đường Responses, mint `x-opencode-session` bằng
+`randomUUID()` (`ses_<32 hex>`), và tôn trọng `stream:false` của người gọi — **cả bốn** điều đó đều là cổng chặn.
+
+**Nguyên nhân, đo từng biến một** (`Authorization: Bearer public`, 2026-09-21, cùng một payload nền):
+
+| Dạng yêu cầu | Kết quả |
+|---|---|
+| `User-Agent: opencode` (không số) | **403 FreeTierError** |
+| `User-Agent: opencode/1.18.31` | 200 |
+| `tools: []` | **403 FreeTierError** |
+| 2 tool mồi `bash` + `read` (description `This tool is currently unavailable and must not be used.`) | 200 |
+| `stream: false` | **403 FreeTierError** |
+| `stream: true` | 200 |
+| `x-opencode-session: ses_<32 hex>` (uuid) | **403 FreeTierError** |
+| `x-opencode-session: ses_<12 hex><14 base62>` | 200 |
+| `reasoning_effort: "high"` trong body | **400** `invalid_request_error` (param `reasoning_effort`) |
+| `reasoning: {effort:'high', summary:'auto'}` | 200 |
+| `reasoning.effort: 'none'` | **400** |
+| item `reasoning` cũ replay lại | bị từ chối ở tài khoản khác / khi `store:false` |
+| kết quả tool mang ảnh, gộp vào `function_call_output` dạng mảng | 200 nhưng **câu trả lời rỗng** |
+| kết quả tool mang ảnh, tách thành lượt người dùng riêng | 200, **đọc đúng màu ảnh 4/4** |
+
+`GET /zen/v1/models` trả 200 với 74 dòng; **8 id** chạy được không cần khoá (`muse-spark-1.2-contributor-free`,
+`muse-spark-1.3-contributor-free`, `jev-1.13-free`, `deepseek-v4-flash-free`, `mimo-v2.5-free`,
+`ling-3.0-flash-fin-free`, `nemotron-3-ultra-free`, `nemotron-3.5-lightning-free`); các id **không** có hậu tố `-free`
+(`muse-spark-1.2`, `muse-spark-1.3`) trả **401 `AuthError: Missing API key`**, nên chúng được khám phá nhưng để **tắt**.
+
+**Sau khi sửa** (`router/src/providers/opencode.mjs`): UA có phiên bản (nhận UA hợp lệ của người gọi, còn lại dùng
+`opencode/1.18.31`); **luôn** `stream:true` ở phía thượng nguồn rồi tự gộp khi người gọi cần bản không-stream; hai tool mồi
+luôn đi kèm bộ tool của người gọi (không nhân đôi nếu người gọi đã gửi); phiên `ses_<12hex><14base62>` **dùng lại theo
+danh tính cuộc trò chuyện** (6 giờ, trần 200 phiên; có `session_id` trong body thì dịch từ đó) vì quota tính theo phiên —
+mint phiên mới mỗi request chính là cách tự tạo `429`; `x-opencode-request` suy từ phiên + lượt người dùng cuối nên thử
+lại một lượt dùng lại một id; `reasoning_effort` được dịch thành `reasoning.effort` (`none`/`auto` thì bỏ hẳn khối
+`reasoning`); item `reasoning` cũ và `encrypted_content` bị lọc khỏi `input`; ảnh trong kết quả tool tách thành lượt người
+dùng riêng; lỗi được phân biệt rõ (`403` dạng client-shape → `AUTH` không thử lại, `429` → `RATE_LIMIT` có thử lại, lỗi
+giữa luồng sau `200` thì ném lỗi thay vì kết thúc như thành công). Hợp đồng dây được ghi ở `router/CONTRACT.md`.
+
+**Đo sống sau khi sửa** (qua chính adapter, `fetch` thật): khám phá 74 dòng/8 id bật; lượt gọi tool thật **1,1 s**
+(`finish=tool_calls`, usage 659 in/87 out); lượt có ảnh trong kết quả tool trả lời đúng nội dung ảnh (**5,4 s**); người gọi
+`stream:false` nhận câu trả lời thật (**7,6 s**). `router/tests/opencode.test.mjs` thêm **15 ca**; toàn bộ router
+**193/193 đạt**.
+
+**Nguồn để đối chiếu:** 9Router v0.5.81 (`/var/tmp/9router`, commit `a8c9d38`) — mục *"OpenCode / OpenCode Go: resolve 403
+FreeTierError and 429 rate limits with canonical session format, valid User-Agent, and stable upstream session reuse;
+force stream and declare `forceStream` for free-tier SSE aggregation; cloak decoy tools, normalize Muse Free tool choice,
+and strip prior reasoning items on Responses models"*. Bản clone đã `git fetch` lại: **không có commit mới hơn**.
+
+### 6.20 Vòng 19 — nén ngữ cảnh: ngưỡng 70 % không bao giờ chạm tới, và bốn thứ đi kèm (port HERMES/PI)
+
+**Triệu chứng đo được.** Một nhiệm vụ dài không bao giờ được nén: `ContextCompressor(config['contextWindow'])` lấy
+`output_reserve = min(4096, window // 4)`, rồi ngưỡng `int((window - reserve) * 0.7)`. Trên cửa sổ 1 000 000 token mà
+model khai, ngưỡng là **697 132 token** (`int((1 000 000 − 4 096) × 0,7)`), trong khi trần thật của một request chỉ là **900 KiB** thân bài
+(`ROUTER_BODY_BUDGET`) ≈ **307 000 token ước lượng**. Nghĩa là `shrink_request_to_budget` cắt văn bản/ý nghĩ/đối
+số/phương tiện trước khi ngưỡng kịp chạm, log `model.request_trimmed` ở mức warn và **không có checkpoint**, rồi các
+lượt sau bị từ chối `UPSTREAM_HTTP_413`. Ba lỗi đi kèm: bộ nén gọi ở đầu **mỗi** bước nên một bản tóm tắt hỏng đốt một
+lượt tóm tắt mỗi bước (không có chống-thrash); trần tóm tắt cứng `max_tokens=2048` trong khi bản tóm tắt chỉ được nhận
+khi `finish_reason == 'stop'` (nên nhiệm vụ dài nhận `Incomplete summary`); và phép đo ngữ cảnh chia 3 byte/token thay
+vì đọc hoá đơn thật của router.
+
+**Đã port (v1, giữ nguyên hình dạng)** — `backend/src/agentbox/agent_core/compression.py` (252 → 559 dòng),
+`limits.py`, `runtime.py`, `skills/runtime_commands.py`:
+
+| Việc | Ngưỡng / luật mới | Nguồn đối chiếu |
+|---|---|---|
+| P1 ngưỡng tuyệt đối đặt được | `threshold = min(threshold_tokens or percent, byte_threshold)` | HERMES `_derive_trigger` :2433, `_apply_threshold_tokens_cap` :2518, `resolve_model_threshold` :1807 |
+| P2 trần theo BYTE | `byte_threshold = ROUTER_BODY_BUDGET // 3 - 6000` = **301 200** token | đo sống 2026-09-20: body 1 060 902 B, `messages` 1 043 364 B |
+| P3 đo bằng hoá đơn thật | `usage_reading()` + `context_estimate(messages, tools, usage)` | PI `estimateContextTokens` :217-245 |
+| P4 tỉa nhiều lượt | khử trùng lặp md5 trước, rồi mỗi kết quả cũ thành một dòng (`PRUNE_MIN_CHARS = 200`) | HERMES `_prune_old_tool_results` :3045, `_dedupe_tool_results` :2920 |
+| P5 đuôi theo ngân sách token | `min(20 % ngân sách, 25 000)`, sàn 8 message | HERMES `LEAN_TAIL_CAP_TOKENS` :842, `_MAX_TAIL_MESSAGE_FLOOR` :1060 |
+| P6 trần tóm tắt co theo độ lớn | `min(8192, max(2048, 2 % của before))` | PI `maxTokens = min(0.8*reserve, …)` :684 |
+| D chống-thrash | hỏng/vô hiệu thì im lặng **300 s** | HERMES `_ANTI_THRASH_RECOVERY_SECONDS` :2501 |
+| E xác nhận tiến bộ | nén xong mà vẫn ≥ 95 % ngưỡng ⇒ cờ `ineffective` | HERMES `compression_made_progress` :403-427 |
+| Banner | nói thẳng công cụ vẫn hoạt động bình thường | HERMES `SUMMARY_PREFIX` :199-239 |
+
+**Không port (có lý do):** `_effective_threshold_percent` (70 → 75 % cho cửa sổ < 512k — cửa sổ lớn đã bị trần byte
+chặn trước), micro-compaction, lưu phiên con/theo dòng, `tail_mode="lean"`, khoá lại chữ ký suy luận, đuổi ảnh gửi đi,
+23 mẫu regex `overflow` của PI.
+
+**Ngưỡng trước/sau theo cửa sổ thật:**
+
+| Cửa sổ khai | Ngưỡng cũ (70 % cứng) | Ngưỡng mới | Ghi chú |
+|---|---|---|---|
+| 1 000 000 | 697 132 | **301 200** | trần byte thắng; nay nằm dưới mốc `UPSTREAM_HTTP_413` |
+| 128 000 | 86 732 | 86 732 | không đổi (trần byte ở trên) |
+| 32 768 | 20 070 | 20 070 | không đổi (trần byte ở trên); đo sống: nén tự động ở 20 408 và 21 127 |
+
+**Bằng chứng sống** (harness chạy mã mới, `deepseek-flash`, cửa sổ khai tay 32 768 để ngưỡng chạm được trong ngân sách):
+phiên `b2cfba9a245b4e84bb06f0ae468f6192` sinh **hai** sự kiện `compression` `{"kind":"summary","beforeEstimate":20408,
+"afterEstimate":16267}` và `{"beforeEstimate":21127,"afterEstimate":13869}`, hai checkpoint `reason=summary` (id 13, 14)
+được ghi **trước** khi thay danh sách, và lượt kế tiếp mở bằng 15 message thay vì 24. Cửa sổ khai tay đã được xoá lại
+(`deepseek-flash` về `1000000 / documented`, `muse-spark-1.2-contributor-free` về `null`).
+
+**Ghi chú trung thực — cửa sổ quá nhỏ vẫn từ chối thật.** Khai 8 192 thì lượt chết `CONTEXT_LIMIT: current turn/tools
+exceed the context budget` (prompt hệ thống + schema công cụ không lọt nổi ngân sách 6 144); khai 32 768 rồi đổ một kết
+quả công cụ ~33 000 token trong một lượt thì chết `CONTEXT_LIMIT: summary did not reduce context enough`. Cả hai là
+nhánh fail-closed có chủ đích (bản gốc còn nguyên), không phải lỗi mới — và cũng là lý do ngưỡng byte phải khác ngưỡng
+phần trăm chứ không thay thế nó.
+
+**Nguồn để đối chiếu:** HERMES `agent/context_compressor.py` (5 367 dòng) tại commit `ea0c2b82`; PI monorepo
+`packages/coding-agent/src/core/compaction/compaction.ts`. Không có mã nào chép nguyên: mọi hằng số ở trên đều được
+đo lại trong BoxFox trước khi chốt.
+
+### 6.21 Vòng soát mã độc lập đợt 19 (4 phát hiện) — ba sửa, một ghi nhận có chủ đích
+
+Vòng soát mã độc lập (`r19-review`, dải `00b7a8a..374a70a`) kết luận **"Ship with mitigations"**, điểm rủi ro **4/10**
+(mức Trung bình), và đề nghị (a): sửa hai phát hiện F1 + F3 trước lượt kiểm chứng cuối. Cả ba phát hiện có mã đều đã
+sửa trong đợt này, mỗi bản sửa kèm một bài test khoá lại; F4 ghi nhận là quyết định có chủ đích, không sửa.
+
+**F1 — mức Cao — đuôi nguyên văn có thể co về 0.** `tail_cut` trả chỉ số đuôi theo ngân sách token, rồi vòng
+"không để kết quả công cụ mồ côi" tiến `cut` qua loạt `role == 'tool'` liền nhau cho tới khi gặp hàng gọi. Khi
+transcript **kết thúc** bằng một loạt song song dài hơn `tail_budget` (BoxFox cho tới **16** lời gọi một bước, và
+lượt nén chạy ở đầu **mỗi** bước — `runtime.py:1101-1108`), vòng đó chạm `len(result)`, bản gộp thay mọi thứ sau
+tiền tố hệ thống và model nhận `[system, summary]`: không còn lượt người dùng nào lẫn kết quả mới nhất, mà phiên thì
+đã bị lưu ở dạng đã gộp. Bằng chứng của vòng soát: `collapse_mech.py` cửa sổ 32 768, 45 157 token → `out_len=2` cho
+`batch=8` và `batch=9` (một loạt 7 thì thoát, vì thân kết quả nhỏ hơn ngân sách đuôi).
+
+Bản sửa: hàm mới `keep_tail(messages, cut)` (`compression.py:180-199`) — khi `cut` đã chạm cuối danh sách thì lùi về
+`len − MAX_TAIL_MESSAGE_FLOOR` rồi lùi tiếp qua các hàng `tool`, nên đuôi bắt đầu ở hàng gọi và **cả loạt** được giữ
+cùng nhau; gọi ở **cả hai** nhánh (`compression.py:479` cho đường thường, `:486` cho nhánh nhiệm-vụ-một-lời-nhắc).
+Sau bản sửa, chính bài đo của vòng soát in `out_len=11` cho `batch=8` và `12` cho `batch=9`. Bài test khoá:
+`test_the_fold_never_takes_the_whole_tail_of_a_parallel_batch` (`test_compression_port.py:297`) — kiểm cả hàm
+`keep_tail` lẫn kết quả `compact` (cặp gọi/kết quả không rời nhau, kết quả mới nhất còn nguyên văn, `len(result) > 2`);
+đã xác nhận bài này **đỏ** khi trả `keep_tail` về hành vi cũ (`cut == len` → `IndexError`) và **xanh** sau khi sửa.
+
+**F2 — mức Trung bình — `compact()` có thể trả bản sao y nguyên và báo một lần nén chưa hề xảy ra.** Ngưỡng khởi động
+đo bằng số có neo hoá đơn (`context_estimate` với `usage` thật), còn hai phép kiểm sau đo bằng ước lượng thô. Khi nhà
+cung cấp đếm nhiều token hơn `bytes/3` cho cùng nội dung, hàm vào vòng tỉa rồi thoát sớm, trả `deepcopy` không đổi kèm
+event `{'kind':'prune', …, 'pruned':0}`; `runtime.py:1110` đối chiếu **danh tính** nên ghi thêm một checkpoint trùng,
+lưu lại phiên và phát event `compression` mà giao diện hiện thành `Context compacted: …`.
+
+Bản sửa: hai nhánh thoát sớm của vòng tỉa (`compression.py:498` và `:528`) nay trả **chính danh sách cũ** và `None`
+khi `pruned <= 0` — đúng hợp đồng no-op mà nhánh `cut <= 1` đã dùng từ trước, nên người gọi không thấy khác danh tính,
+không checkpoint trùng, không event. Phần chia đôi thước đo vẫn giữ nguyên có chủ đích: khi `pruned > 0` thì event
+vẫn mang hai con số thô và việc tỉa là thật. Bài test khoá:
+`test_a_usage_trigger_with_nothing_to_prune_is_a_no_op` (`test_compression_port.py:165`) — cũng đã xác nhận đỏ/xanh
+theo cùng cách.
+
+**F3 — mức Trung bình — nhánh chat với `tools: []` không được nguỵ trang, và cú từ chối theo hình dạng bị xếp là lỗi
+khoá.** Bậc miễn phí của OpenCode từ chối payload không có công cụ (`403 FreeTierError`); đường tóm tắt của harness gọi
+`client.complete(history, [], route, …)` — tức `tools: []` — nên `/compact` trên một model opencode làm `engine.mjs`
+đặt `authState = 'expired'` và đưa **cả** nhà cung cấp ra khỏi vòng xoay, lượt chết với `NO_ROUTE`. Bản sửa:
+nhánh chat nay **luôn** gửi công cụ của người gọi cộng hai công cụ mồi còn thiếu, và `tool_choice: 'none'` khi người
+gọi không mang công cụ nào (`router/src/providers/opencode.mjs:668-672`), nên hình dạng BoxFox gửi không còn chạm
+cổng đó. Hai bài test mới trong `router/tests/opencode.test.mjs`
+("a chat model with no caller tools still carries the decoys", "a chat model keeps the caller's tools and gains the
+missing decoy") khoá cả hai chiều. Việc xếp `403` là lỗi khoá vẫn giữ: với bậc miễn phí đó là lệch hình dạng vĩnh
+viễn, thử lại không chữa được, và `requestScopedClientError` cố ý để `403` thuộc phạm vi tài khoản.
+
+**F4 — mức Thấp — ghi nhận, không sửa.** (1) `threshold_tokens` không có điểm gọi nào trong mã chạy, nhưng nó là bề
+mặt công khai có test (`test_the_threshold_can_be_an_absolute_number`) giữ đúng cửa vào "ngưỡng tuyệt đối" của bản
+port; (2) dòng `if (FORCE_AUTO_TOOL_CHOICE.includes(modelId)) requestBody.tool_choice = 'auto'` trong nhánh Responses
+là vô hại (nhánh đó vốn đã gửi `auto`), giữ lại làm bản đối chiếu có tên của danh sách `forceAutoToolChoiceModels`
+bên 9Router — bỏ đi thì mất đối chiếu mà hành vi không đổi.
+
+**Đính chính số của chính bản ghi này.** Ngưỡng 70 % cũ ghi sai ở §6.20: đúng là **697 132** cho cửa sổ
+1 000 000 (`int((1 000 000 − 4 096) × 0,7)`) và **20 070** cho cửa sổ 32 768 — không phải 697 232 và 20 270. Con số
+ngưỡng **mới** (301 200 / 86 732 / 20 070) và mọi bằng chứng sống không đổi.

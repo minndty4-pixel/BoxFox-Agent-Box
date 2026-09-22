@@ -63,6 +63,10 @@ class PlanFixtureExecutor:
 
     async def execute(self, name, args, sid):
         self.calls.append((name, args, sid))
+        if name in {'journal_append', 'session_ensure', 'checkpoint_write'}:
+            # A7 (đợt 20): một lần ghi plan còn ghim bản ghi `P:` — op nhật ký đi qua cùng executor,
+            # nên cổng chất lượng vẫn phải nói "chỉ có một lần ghi plan", không phải "một lời gọi".
+            return {'ok': True, 'id': (args.get('record') or {}).get('id'), 'seq': 1}
         return {'content': 'Written .plans/v1-x.md', 'version': 1, 'slug': args['slug'],
                 'relativePath': f".plans/v1-{args['slug']}.md",
                 'bytes': len(args['markdown'].encode('utf-8'))}
@@ -189,8 +193,12 @@ def test_a_compliant_plan_is_written_exactly_as_before_the_gate(tmp_path):
         sid = runtime.create({'skills': []})['id']
 
         await runtime.start(sid, 'Ghi plan')
-        assert len(executor.calls) == 1
-        name, args, _ = executor.calls[0]
+        assert [name for name, _, _ in executor.calls].count('write_plan') == 1, \
+            'cổng chất lượng không được gọi sandbox ghi plan hai lần'
+        # Bỏ op hạ tầng `session_ensure` (A1, dọn thư mục phiên ở đầu lượt) để phép kiểm dưới đây
+        # vẫn nói về ĐÚNG lời gọi công cụ `write_plan`.
+        tool_calls = [row for row in executor.calls if row[0] != 'session_ensure']
+        name, args, _ = tool_calls[0]
         assert (name, args['slug'], args['markdown']) == ('write_plan', 'workspace-plan', GOOD_PLAN)
         written = events_of(store, sid, 'plan_written')[0]['data']
         assert written == {'identity': 'workspace-plan', 'version': 1, 'slug': 'workspace-plan',

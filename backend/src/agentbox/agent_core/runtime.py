@@ -5,16 +5,22 @@ Original licenses and exact/adapted module provenance: ../vendor/manifest.json.
 import asyncio
 import copy
 import json
+import os
 from pathlib import Path
 import re
 import time
 import uuid
 import httpx
-from .compression import ContextCompressor, estimate_tokens
+from .compression import ContextCompressor, estimate_tokens, usage_reading
 from .failures import (RETRY_BUDGET_SECONDS, classify_failure, failure_detail, level_refusal,
                        log_safe_failure, retry_advice, stop_reason)
+from .limits import (CHILD_DEADLINE_SECONDS, CHILD_MAX_STEPS, DEADLINE_CLAMP_NOTICE_CODE,
+                     DEADLINE_DEFAULT_SECONDS, DEADLINE_MAX_SECONDS, DEADLINE_MIN_SECONDS,
+                     INSTRUCTIONS_MAX_CHARS, MAX_STEPS_DEFAULT, MAX_STEPS_MAX,
+                     ROUTER_BODY_BUDGET, TRUNCATED_OUTPUT_MAX_TOKENS, TRUNCATED_OUTPUT_NOTICE_CODE)
 from .plan_quality import check_plan_quality
 from .roles import ROLES, allowed_tools
+from . import journal, plan_eval, plan_header, plan_registry, session_journal
 from .tool_contracts import schemas_for
 from .web import WebTools
 from ..skills.catalog import SkillCatalog, DEFAULT_SKILLS
@@ -182,8 +188,6 @@ def bound_inline_media(messages, keep: int = MAX_INLINE_MEDIA,
             out[index] = {**messages[index], 'content': _text_only(messages[index]['content'])}
     return out, dropped
 
-
-ROUTER_BODY_BUDGET = 900 * 1024
 
 TRIMMED_TEXT_NOTE = ('\n[Older step trimmed so the request body fits the router; the full entry '
                      'stays in the transcript.]')
@@ -410,6 +414,37 @@ class RouterClient:
     def __init__(self, url='http://127.0.0.1:3101'):
         self.url = url.rstrip('/')
 
+    async def snapshot(self):
+        """Router state in one read, or None when the router does not answer.
+
+        `trust_env=False` is deliberate: a proxy in the environment must not decide
+        whether the local router is reachable.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=10, trust_env=False) as client:
+                response = await client.get(self.url + '/api/router/state', headers={'x-boxfox-admin': '1'})
+                if response.is_error:
+                    return None
+                return response.json()
+        except Exception:
+            return None
+
+    async def model_metadata_map(self):
+        """`{(connectionId, modelId): model record}` từ MỘT lần đọc snapshot.
+
+        Lượt sửa lúc khởi động cần record của mọi phiên đã lưu; đọc snapshot một
+        lần là khác biệt giữa một lời gọi router và N lời gọi.
+        """
+        snapshot = await self.snapshot()
+        if not snapshot:
+            return {}
+        result = {}
+        for connection in snapshot.get('connections', []) or []:
+            for model in connection.get('models', []) or []:
+                if connection.get('id') and model.get('id'):
+                    result[(connection.get('id'), model.get('id'))] = model
+        return result
+
     async def model_metadata(self, connection_id, model_id):
         """Read one model record from the router snapshot.
 
@@ -418,13 +453,8 @@ class RouterClient:
         """
         if not connection_id or not model_id:
             return None
-        try:
-            async with httpx.AsyncClient(timeout=10, trust_env=False) as client:
-                response = await client.get(self.url + '/api/router/state', headers={'x-boxfox-admin': '1'})
-                if response.is_error:
-                    return None
-                snapshot = response.json()
-        except Exception:
+        snapshot = await self.snapshot()
+        if not snapshot:
             return None
         for connection in snapshot.get('connections', []) or []:
             if connection.get('id') != connection_id:
@@ -569,34 +599,117 @@ def route_for(value):
     return {'model': value}
 
 
-def resolve_context_window(model_str='', requested=None, metadata=None):
-    """Resolve the context window. Priority: explicit request → router model metadata → name table.
+# Sàn an toàn của harness khi không nguồn nào trả lời. Router trả lời được cho mọi
+# model có trên máy (số nhà cung cấp công bố, hoặc bảng tên của chính router), nên
+# con số này chỉ dành cho tên mà cả hai đều không biết — và nó luôn mang nhãn
+# `'fallback'`, để giao diện nói đúng "sàn an toàn" thay vì "chưa rõ".
+#
+# 128 000 → 256 000 (đợt 20, đo sống 2026-09-21): hai dòng `nemotron-*-free` của
+# OpenCode không công bố cửa sổ (router trả `null`), nên sàn cũ 128 000 khiến
+# `compact()` gộp ở 86 732 token — trong khi chính router đọc được 1 000 000 cho
+# hai bản `:free` cùng model trên OpenRouter. Sàn mới 256 000 vẫn là con số CÓ NHÃN
+# `'fallback'` (không giả `documented`), và ngưỡng nén vẫn bị `COMPRESSION_MAX_TOKENS`
+# = 200 000 chặn trên, nên đổi sàn không làm cửa sổ lớn gộp muộn hơn 200 000 token.
+# Vẫn quy được về tay chủ nhà khi cần: khai cửa sổ theo phiên, hoặc
+# `BOXFOX_CONTEXT_WINDOW_LOCK=1` để không cho harness sửa lại cửa sổ đã khai.
+# A3 — hai tập `kind` của nhật ký: thứ agent tự viết, và thứ harness ghim. `plan` cần kết quả
+# `write_plan`, `checkpoint` là dấu vết của một lần nén; để model tự viết hai loại đó là mời nó
+# tạo mã giả (`P:`/`C:` trùng với bản do harness ghim).
+AGENT_JOURNAL_KINDS = ('task', 'step', 'decision', 'evidence', 'fact', 'blocker')
+HARNESS_ONLY_JOURNAL_KINDS = ('plan', 'checkpoint')
 
-    The name table is a last resort only: the router reads the true value from the
-    provider API (provider `/models`), so prefer that over guessing from the model name.
+FALLBACK_CONTEXT_WINDOW = 256000
+# Nhãn nguồn gốc của một cửa sổ ngữ cảnh (song song với bảng giá của router, và
+# đúng từ vựng `contextWindowSource` mà router công bố trên mỗi dòng model).
+CONTEXT_WINDOW_SOURCES = ('manual', 'documented', 'reported')
+# Nhãn mà NGƯỜI GỌI được phép khai khi đưa sẵn một con số: người dùng gõ tay
+# (`manual`), nhãn của router mà phiên con thừa hưởng, và sàn (`fallback`) —
+# phiên con của một phiên đang ở sàn phải giữ nguyên nhãn sàn đó.
+DECLARED_CONTEXT_WINDOW_SOURCES = CONTEXT_WINDOW_SOURCES + ('fallback',)
+
+
+# Biến môi trường khoá lượt sửa cửa sổ (N2). Người dùng đã tự khai cửa sổ cho mọi phiên
+# thì không muốn harness sửa lại lúc khởi động: `BOXFOX_CONTEXT_WINDOW_LOCK=1` tắt hẳn
+# `heal_context_windows` (trả 0, không ghi hàng nào, không phát event nào).
+CONTEXT_WINDOW_LOCK_ENV = 'BOXFOX_CONTEXT_WINDOW_LOCK'
+
+
+def context_window_locked(environ=None):
+    """`BOXFOX_CONTEXT_WINDOW_LOCK=1` → giữ nguyên mọi cửa sổ người dùng đã khai.
+
+    Đọc Ở THỜI ĐIỂM GỌI chứ không phải lúc import: cùng một tiến trình phải tôn trọng biến
+    của lần khởi động hiện tại, và test phải đặt được biến mà không import lại mô-đun.
+    Nhận `1` (đúng như tài liệu) cùng các cách viết thường gặp của cùng ý đó.
+    """
+    raw = (environ if environ is not None else os.environ).get(CONTEXT_WINDOW_LOCK_ENV)
+    return str(raw or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _journal_blocker(store, session_id, record, step=None):
+    """Ghim bản ghi `blocker` của trần bước vào NHẬT KÝ phiên — đúng một hàng (C1).
+
+    Lượt chạm trần bước để lại hai bề mặt của CÙNG một sự việc: hàng `events` kind `blocker`
+    (do `_run` phát, là bản bền cho UI) và hàng `journal` (`store.journal_add`, là bản cho
+    `journal_tail`/khối ký ức của làn A). Kế hoạch viết "đúng một hàng `blocker` trong nhật ký
+    phiên"; chữ ở `text` để người đọc, mọi con số nằm ở `payload` để máy lọc (`planPath`,
+    `diffPath`, `maxSteps`, `step`).
+
+    Ghi nhật ký là việc PHỤ: kho lưu trữ không có API này, hoặc ghi hỏng vì bất cứ lý do gì,
+    đều trả `None` — lượt đã hết ngân sách bước và người dùng vẫn phải thấy lý do thật
+    (`MAX_STEPS`), không phải một lỗi ghi nhật ký.
+    """
+    if store is None or not callable(getattr(store, 'journal_add', None)):
+        return None
+    numbers = {'step': step, 'maxSteps': record.get('maxSteps'),
+               'planPath': record.get('planPath'), 'diffPath': record.get('diffPath')}
+    try:
+        # Đi qua `session_journal.insert_row` chứ không gọi thẳng `store.journal_add`: bản ghi phải
+        # có mã `X:<sid8>-<seq>` như mọi bản ghi khác. Bản 0.1 ghi thẳng nên hàng này không có mã,
+        # và khối ký ức in ra `X:?` — đúng chỗ mà đợt này dựng lên để đọc được.
+        item, stored = session_journal.insert_row(
+            store, session_id, 'blocker',
+            'MAX_STEPS: the iteration budget cut this turn short — the work on disk may already '
+            'be done; see planPath/diffPath in this record',
+            numbers={key: value for key, value in numbers.items() if value is not None})
+        return stored if stored else None
+    except Exception:
+        return None
+
+
+def resolve_context_window(model_str='', requested=None, metadata=None, declared_source=None):
+    """Cửa sổ ngữ cảnh của phiên: trả về MỘT CẶP `(số token, nguồn gốc)`.
+
+    Thứ tự, một chiều và không nhập nhằng:
+
+    - `requested` (số do người gọi đưa vào — người dùng gửi, hoặc phiên con thừa
+      hưởng số của phiên cha): `(số đã kẹp, declared_source hoặc 'manual')`.
+    - metadata của router (`modelMetadata`): router đã áp thứ tự của nó rồi (người
+      dùng khai → bảng tên của router → số nhà cung cấp), nên harness đọc **số và
+      nhãn** của router, không đoán lại từ tên model; router cũ không có nhãn thì
+      đọc là `'reported'`.
+    - không có gì: sàn có nhãn (`FALLBACK_CONTEXT_WINDOW`, `'fallback'`).
+
+    Bảng đoán theo tên từng nằm ở đây (`gemini`→1M, `deepseek`→64000, …) đã bị xoá
+    có chủ đích: hai bảng cùng sống một lúc chính là cách harness, router và giao
+    diện nói ba số khác nhau về cùng một model.
     """
     if requested is not None:
         try:
-            val = int(requested)
-            if val > 0:
-                return min(2000000, max(4096, val))
+            value = int(requested)
         except (ValueError, TypeError):
-            pass
+            value = None
+        if value is not None and value > 0:
+            source = declared_source if declared_source in DECLARED_CONTEXT_WINDOW_SOURCES else 'manual'
+            return min(2000000, max(4096, value)), source
     if metadata:
         try:
             value = int((metadata or {}).get('contextWindow'))
-            if value > 0:
-                return min(2000000, max(4096, value))
         except (ValueError, TypeError, AttributeError):
-            pass
-    m = str(model_str or '').lower()
-    if 'gemini' in m:
-        return 1000000
-    if 'claude' in m:
-        return 200000
-    if 'deepseek' in m or 'qwen' in m:
-        return 64000
-    return 128000
+            value = None
+        if value is not None and value > 0:
+            source = (metadata or {}).get('contextWindowSource')
+            return min(2000000, max(4096, value)), (source if source in CONTEXT_WINDOW_SOURCES else 'reported')
+    return FALLBACK_CONTEXT_WINDOW, 'fallback'
 
 
 def resolve_thinking_level(requested, metadata=None):
@@ -658,6 +771,13 @@ PLAN_SLUG_RE = re.compile(rf'^{PLAN_SLUG}$')
 PLAN_MAX_SLUG = 60
 PLAN_MAX_BYTES = 1048576
 
+# C1 — tệp diff: bản này KHÔNG có nhánh nào sinh ra nó (đo 2026-09-21: tab Diff của
+# PlanPanel luôn rỗng), nên đường dẫn chỉ được coi là có thật khi chính phiên đã chạm một
+# tệp `.diff`/`.patch` trong `tool_end`. Quét có trần để bản ghi `blocker` không bao giờ
+# biến lượt hết ngân sách bước thành một truy vấn không đáy.
+DIFF_ARTIFACT_RE = re.compile(r'/?[A-Za-z0-9_.-]*(?:/[A-Za-z0-9_.-]+)*\.(?:diff|patch)\b')
+DIFF_ARTIFACT_EVENT_LIMIT = 40
+
 
 class DecisionError(Exception):
     """Route-level decision failure carrying the exact contract status and error-code prefix."""
@@ -694,6 +814,36 @@ def plan_identity(relative_path):
         return ''
     directory = match.group('directory').rstrip('/')
     return (directory + '/' if directory else '') + match.group('slug')
+
+
+# Cùng nguồn grammar với khối header và `plan_registry` — không có bản sao thứ ba của luật slug.
+PLAN_IDENTITY_TEXT_RE = re.compile(rf'^{plan_header.IDENTITY_PATTERN}$')
+
+
+def plan_approval_target(args, tool='request_approval'):
+    """`(identity, version)` của lượt xin duyệt kế hoạch, hoặc `(None, None)` khi không khai kế hoạch.
+
+    Hai tham số đi **cặp**: khai một nửa là lỗi tham số, không phải một lượt xin duyệt mơ hồ — ghi
+    một hàng duyệt cho một bản không có thật còn tệ hơn không ghi gì. Đây là đường nối giữa
+    `request_approval` và sổ duyệt `plan_reviews` (§4.1): người dùng duyệt trong chat và duyệt ở tab
+    Plan phải cho ra cùng một hàng, khác nhau đúng ở cột `source`.
+    """
+    args = args or {}
+    identity = str(args.get('planIdentity') or '').strip().strip('/')
+    version = args.get('planVersion')
+    if isinstance(version, str) and version.strip().isdigit():
+        version = int(version.strip())  # model hay gửi số dạng chuỗi; "2" là 2, "hai" thì không
+    if not identity and version is None:
+        return None, None
+    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+        raise ValueError(f'DECISION_INVALID: {tool} needs planIdentity and planVersion (int >= 1) together')
+    if not identity:
+        raise ValueError(f'DECISION_INVALID: {tool} needs planIdentity and planVersion (int >= 1) together')
+    if not PLAN_IDENTITY_TEXT_RE.match(identity):
+        raise ValueError('DECISION_INVALID: planIdentity must be lowercase dash-separated, optionally '
+                         'nested (for example "billing-plan" or "subplans/api"); it is the plan group '
+                         'the version belongs to, not the file name')
+    return identity, version
 
 
 # The child of `delegate_task` is a real session whose answer lands in the durable event stream AND in the
@@ -796,6 +946,19 @@ class HarnessRuntime(RuntimeCommands):
         self.commands = CommandRegistry(store, self.catalog)
         self.skill_loader = SkillLoader(self.catalog, store.emit)
         self.active_messages = {}
+        # sessionId -> đã gọi op `session_ensure` trong box (A1). Thư mục phiên sinh ở LẦN GHI đầu
+        # tiên của phiên, nhưng một tiến trình harness chỉ trả MỘT `docker exec` cho việc đó; lượt
+        # sau đọc lại set này. Không nhớ khi box chưa trả lời — hỏng thì lượt kế thử lại.
+        self.ensured_sessions = set()
+        # sessionId -> ContextCompressor. Sống cùng phiên (không bị bỏ ở `finally` của lượt) vì khoá
+        # chống-thrash là trạng thái của PHIÊN: một lượt tóm tắt hỏng ở lượt trước vẫn còn giá trị
+        # ngăn lượt sau đốt tiếp một lượt tóm tắt nữa. Bị thay khi cửa sổ ngữ cảnh đổi (config khác
+        # thì ngưỡng khác).
+        self.compressors = {}
+        # sessionId -> (số token, số message) mà router ĐÃ báo cho request gần nhất. Bộ nén neo vào
+        # con số thật này rồi chỉ ước lượng phần gửi sau nó (P3). Sống qua các lượt vì transcript
+        # chỉ dài thêm — chỉ bị bỏ khi một lần nén thay chính danh sách đó.
+        self.last_usage = {}
         self.tasks = {}
         # decisionId -> pending record; settled records are kept so a second answer is a real 409.
         self.pending = {}
@@ -805,6 +968,68 @@ class HarnessRuntime(RuntimeCommands):
         self.writer_lock = asyncio.Lock()
         # web_search / web_fetch run on the HOST: the box has no Internet (only loopback).
         self.web = WebTools()
+
+    async def heal_context_windows(self):
+        """Sửa cửa sổ ngữ cảnh của các phiên ĐÃ LƯU, trả về số phiên đã sửa.
+
+        Trước đợt 18 harness tự đoán cửa sổ theo tên model, nên mọi phiên DeepSeek/Qwen
+        đã lưu mang 64 000 trong khi model thật có 1M — con số sai vẫn nằm trong config
+        và `ContextCompressor` vẫn cắt transcript theo nó. Hàm này chạy một lần lúc khởi
+        động:
+
+        - đọc snapshot router MỘT lần (`model_metadata_map`), rồi tính lại đúng cặp
+          `(số, nguồn)` bằng chính `resolve_context_window` — không có quy tắc thứ hai;
+        - bỏ qua phiên không có `route.connectionId`/`route.modelId` (không có gì để đối chiếu);
+        - cửa sổ người dùng TỰ KHAI (`manual`) chỉ bị sửa khi nó NHỎ HƠN con số router công
+          bố cho đúng model đó, và mỗi lần sửa phát một event `context_window_healed`
+          `{from, to, modelId, source}`. Lý do, đo sống 2026-09-21: 12 phiên còn kẹt ở
+          32 768 ×9, 16 384 ×1, 8 192 ×2 — ngưỡng nén tương ứng 20 070 / 8 602 / 2 867
+          token, tức phiên bị gộp ở ~2 % cửa sổ thật (router ghi 1 000 000 cho
+          `deepseek-flash`), trong khi phiên `43a92d61` đã có request thật 29 908 token =
+          1,49× ngưỡng của chính nó. Con số LỚN HƠN người dùng khai thì giữ nguyên: hạ nó
+          xuống là cắt mất ngữ cảnh mà người dùng đã cố ý mở rộng;
+        - `BOXFOX_CONTEXT_WINDOW_LOCK=1` tắt hẳn lượt sửa này (người dùng muốn giữ nguyên
+          mọi con số đã khai);
+        - router không trả lời thì không sửa gì (lượt sửa lỗi không được đoán bừa);
+        - chỉ ghi khi cặp giá trị đổi, nên gọi lần hai trả 0 và không tạo write vô ích.
+        """
+        if context_window_locked():
+            return 0
+        configurations = self.store.all_configs()
+        if not configurations:
+            return 0
+        metadata_map = await self.client.model_metadata_map()
+        if not metadata_map:
+            return 0
+        healed = 0
+        for sid, config in configurations.items():
+            if not isinstance(config, dict):
+                continue
+            route = config.get('route') if isinstance(config.get('route'), dict) else {}
+            connection_id, model_id = route.get('connectionId'), route.get('modelId')
+            if not connection_id or not model_id:
+                continue
+            metadata = metadata_map.get((connection_id, model_id))
+            number, source = resolve_context_window(model_id, None, metadata)
+            current, declared = config.get('contextWindow'), config.get('contextWindowSource')
+            if current == number and declared == source:
+                continue
+            if declared == 'manual' and isinstance(current, (int, float)) and number <= current:
+                # Người dùng khai một cửa sổ LỚN HƠN con số router: đó là lựa chọn của họ.
+                continue
+            config['contextWindow'] = number
+            config['contextWindowSource'] = source
+            self.store.update_config(sid, config)
+            self.store.emit(sid, 'context_window_healed', {
+                'from': current,
+                'to': number,
+                'modelId': model_id,
+                # `source` của event chỉ nói con số mới đến từ đâu: bảng của router, hay sàn
+                # an toàn của harness khi router không có dòng nào cho model này.
+                'source': 'fallback' if source == 'fallback' else 'router',
+            })
+            healed += 1
+        return healed
 
     def create(self, values, parent_id=None, role='orchestrator', parent_tools=None):
         skills = values.get('skills', sorted(DEFAULT_SKILLS))
@@ -827,7 +1052,8 @@ class HarnessRuntime(RuntimeCommands):
 
         model_id_str = values.get('model') or values.get('modelId') or (route.get('modelId') if isinstance(route, dict) else '')
         model_metadata = values.get('modelMetadata') if isinstance(values.get('modelMetadata'), dict) else None
-        context_window = resolve_context_window(model_id_str, values.get('contextWindow'), model_metadata)
+        context_window, context_window_source = resolve_context_window(
+            model_id_str, values.get('contextWindow'), model_metadata, values.get('contextWindowSource'))
 
         # thinkingLevel: chỉ lưu mức mà model đã định tuyến công bố (THINKING_LEVEL_UNSUPPORTED
         # khi model có danh sách mức mà mức yêu cầu không nằm trong đó; drop khi model không
@@ -839,17 +1065,45 @@ class HarnessRuntime(RuntimeCommands):
             else:
                 route['thinkingLevel'] = thinking_level
 
+        # `tools` từ harness chỉ được THU HẸP bộ của vai trò: tên ngoài bộ bị bỏ, và vai trò
+        # con vẫn bị giao với bộ của cha (`parent_tools`) nên không đường nào nới ra. Không
+        # có luật này thì khối "Tool access" trên giao diện sẽ hứa điều engine từ chối bằng
+        # `Tool not permitted for this role`. Thiếu trường, hoặc không phải danh sách, thì
+        # giữ nguyên hành vi cũ — bộ đầy đủ của vai trò.
+        requested = values.get('tools')
+        allowed = allowed_tools(role, parent_tools)
+        # C1 — hạn chót: `deadlineSeconds` bị kẹp vào [5, 600] từ trước tới nay mà KHÔNG nói
+        # gì (đo sống 2026-09-21: người dùng đặt 900, engine chạy 600, không event/không log).
+        # Giữ nguyên luật kẹp, nhưng ghi lại sự thật: `deadlineClamped` vào config (để payload
+        # phiên trả được cờ này) và một notice `DEADLINE_CLAMPED` ngay sau khi phiên có id.
+        requested_deadline = int(values.get('deadlineSeconds', DEADLINE_DEFAULT_SECONDS))
+        deadline = min(DEADLINE_MAX_SECONDS, max(DEADLINE_MIN_SECONDS, requested_deadline))
         config = {'skills': list(dict.fromkeys(skills)), 'subagents': subagents, 'route': route,
-                  'maxSteps': min(60, max(1, int(values.get('maxSteps', 16)))),
-                  'deadlineSeconds': min(600, max(5, int(values.get('deadlineSeconds', 180)))),
+                  'maxSteps': min(MAX_STEPS_MAX, max(1, int(values.get('maxSteps', MAX_STEPS_DEFAULT)))),
+                  'deadlineSeconds': deadline,
                   'contextWindow': context_window,
-                  'tools': sorted(allowed_tools(role, parent_tools)),
-                  'instructions': str(values.get('instructions', ''))[:12000]}
+                  'contextWindowSource': context_window_source,
+                  'tools': sorted(set(requested) & set(allowed)) if isinstance(requested, list)
+                           else sorted(allowed),
+                  # Cắt bằng hằng số dùng chung: phía giao diện đọc đúng con số này từ
+                  # `limits.py` (qua `runtime-info`), không chép tay lại lần thứ hai.
+                  'instructions': str(values.get('instructions', ''))[:INSTRUCTIONS_MAX_CHARS]}
+        if deadline != requested_deadline:
+            config['deadlineClamped'] = True
         # Giữ metadata của model đã định tuyến: các lượt sau gửi route kèm
         # `thinkingLevel` (UI gửi ở mỗi lượt) và `start()` cần nó để đối chiếu.
         if model_metadata:
             config['modelMetadata'] = model_metadata
         session = self.store.create(config, role, parent_id)
+        if config.get('deadlineClamped'):
+            self.store.emit(session['id'], 'notice', {
+                'code': DEADLINE_CLAMP_NOTICE_CODE,
+                'requested': requested_deadline,
+                'applied': deadline,
+                'message': (f'{DEADLINE_CLAMP_NOTICE_CODE}: deadlineSeconds {requested_deadline} is outside '
+                            f'the engine range {DEADLINE_MIN_SECONDS}-{DEADLINE_MAX_SECONDS} s — this session '
+                            f'runs with {deadline} s'),
+            })
         role_instructions = ROLES[role].instructions if role in ROLES else ORCHESTRATOR_SOP_GUIDANCE
         prompt = (
             f"{get_agent_identity()}\n\n"
@@ -970,15 +1224,234 @@ class HarnessRuntime(RuntimeCommands):
         """`retry` / `retries` — the message is read by people, not parsed."""
         return 'retry' if count == 1 else 'retries'
 
+    def artifact_paths(self, sid):
+        """`(planPath, diffPath)` của một phiên — chỉ khi có BẰNG CHỨNG thật, không đoán.
+
+        Harness chạy trên HOST còn tệp nằm trong box (`/home/agent/workspace`, một volume
+        Docker), nên không có đường `Path.exists()` nào ở đây. Bằng chứng harness thật sự
+        có là chính event của phiên:
+
+        - `plan_written` chỉ được phát SAU khi sandbox xác nhận đường dẫn plan (xem
+          `write_plan` và `test_write_plan.py` — "never emitted unless the sandbox confirms
+          a real plan path"), nên `relativePath` của hàng MỚI NHẤT là một tệp có thật;
+        - tệp diff: không nhánh nào trong bản này sinh tệp diff (đo 2026-09-21: tab Diff
+          của PlanPanel luôn rỗng, `plan_files.py`/`worker.py` không có op diff), nên đường
+          dẫn chỉ được lấy khi chính phiên đã chạm một tệp `.diff`/`.patch` qua `tool_end`.
+          Không có bằng chứng thì trả `None` — bản ghi `blocker` bỏ hẳn khoá đó thay vì
+          bịa một đường dẫn trông hợp lý.
+        """
+        plan_path = None
+        row = self.store.db.execute(
+            "SELECT payload FROM events WHERE session_id=? AND kind='plan_written' ORDER BY seq DESC LIMIT 1",
+            (sid,)).fetchone()
+        if row is not None:
+            try:
+                candidate = json.loads(row['payload']).get('relativePath')
+            except (TypeError, ValueError):
+                candidate = None
+            if isinstance(candidate, str) and PLAN_PATH_RE.fullmatch(candidate):
+                plan_path = candidate
+        diff_path = None
+        rows = self.store.db.execute(
+            "SELECT payload FROM events WHERE session_id=? AND kind='tool_end' ORDER BY seq DESC LIMIT ?",
+            (sid, DIFF_ARTIFACT_EVENT_LIMIT))
+        for candidate_row in rows:
+            match = DIFF_ARTIFACT_RE.search(str(candidate_row['payload']))
+            if match:
+                diff_path = match.group(0)
+                break
+        return plan_path, diff_path
+
+    def blocker_record(self, sid, config=None):
+        """Bản ghi `blocker` (duy nhất) của một lượt chạm trần bước — C1.
+
+        Lượt chạy sống 2026-09-21 đã xong việc trên đĩa (plan `v5-…` 9 155 B, 4 tệp sửa,
+        `300 passed`) mà phiên vẫn `failed`, và không hàng nào nói "việc đã xong, chỉ có
+        lượt là chưa đóng". Bản ghi này là câu đó: `status: blocked`, `note: max-steps`,
+        kèm đường dẫn plan/diff khi có bằng chứng (xem `artifact_paths`).
+        """
+        record = {'kind': 'blocker', 'status': 'blocked', 'note': 'max-steps'}
+        if isinstance(config, dict) and isinstance(config.get('maxSteps'), int):
+            record['maxSteps'] = config['maxSteps']
+        plan_path, diff_path = self.artifact_paths(sid)
+        if plan_path:
+            record['planPath'] = plan_path
+        if diff_path:
+            record['diffPath'] = diff_path
+        return record
+
+    def session_metrics(self, sid):
+        """Ba số đo độ dài của một phiên + cờ kẹp hạn chót (N10 + C1).
+
+        Payload `GET /api/agent/sessions/{sid}` trả nguyên hàng `sessions` (trừ `messages`),
+        nên trước đợt này không có cách nào biết một phiên dài bao nhiêu mà không tải cả
+        transcript: đo sống 2026-09-21 — 150 phiên, trung vị 7 message / 17 942 B, nhưng
+        phiên lớn nhất 6 424 279 B (10 phiên > 921 600 B, cả 10 đều `failed`). Bốn khoá dưới
+        đây đọc từ chính hàng đã lưu:
+
+        - `messageCount` — độ dài mảng `messages` đã lưu;
+        - `contextEstimate` — ước lượng token của đúng transcript đó, cùng hàm `estimate_tokens`
+          mà event `turn_start` dùng nên hai con số khớp nhau;
+        - `compressionCount` — số hàng `events` kind `compression`, tức số lần bộ nén đã thay
+          transcript (phải đếm từ `events`: đo sống chỉ có 22 hàng `checkpoints` trên 12 phiên,
+          và không phải mọi lần nén đều để lại checkpoint);
+        - `deadlineClamped` — phiên này có bị kẹp `deadlineSeconds` lúc tạo không (C1).
+        """
+        session = self.store.get(sid)
+        config = session.get('config') if isinstance(session.get('config'), dict) else {}
+        messages = session.get('messages') if isinstance(session.get('messages'), list) else []
+        tools = schemas_for(config.get('tools') or [])
+        row = self.store.db.execute(
+            "SELECT COUNT(*) AS total FROM events WHERE session_id=? AND kind='compression'",
+            (sid,)).fetchone()
+        return {'messageCount': len(messages),
+                'contextEstimate': estimate_tokens(messages, tools),
+                'compressionCount': int(row['total']) if row is not None else 0,
+                'deadlineClamped': bool(config.get('deadlineClamped'))}
+
+    async def write_journal_checkpoint(self, sid, saved, compacted, event, config):
+        """A4 — bản đọc được của transcript trước nén ra `.session-history/<sid8>/`.
+
+        Bảng `checkpoints` giữ bản đầy đủ (SQLite); tầng file giữ bản người đọc được. Ba tính chất
+        của hàm này là cố ý, vì đo sống 2026-09-21 cho thấy chúng đã thiếu: (1) **không bao giờ** ném
+        — mọi lỗi thành một `notice` với mã `CHECKPOINT_FILE_FAILED`, lượt vẫn đi tiếp; (2) số đo đi
+        **cùng** bản ghi (số tin nhắn trước/sau, ước lượng token, cửa sổ, model) — 22 hàng checkpoint
+        cũ không có một con số nào nên phải mò sang `events.payload`; (3) trạng thái bản ghi nói thật
+        `degraded` khi vượt trần 8 MiB và file `.json` không được ghi.
+        """
+        numbers = {'messageCountBefore': len(saved) if isinstance(saved, list) else None,
+                   'messageCountAfter': len(compacted) if isinstance(compacted, list) else None,
+                   'beforeEstimate': event.get('beforeEstimate'),
+                   'afterEstimate': event.get('afterEstimate'),
+                   'contextWindow': config.get('contextWindow'),
+                   'modelId': (config.get('route') or {}).get('modelId'),
+                   'reason': event.get('kind'),
+                   'ineffective': event.get('ineffective')}
+        numbers = {key: value for key, value in numbers.items() if value is not None}
+        answer = await session_journal.write_checkpoint_file(
+            self.executor, self.store, sid, saved, numbers=numbers,
+            note=f"nén theo {event.get('kind')}")
+        before, after = numbers.get('messageCountBefore'), numbers.get('messageCountAfter')
+        text = (f"nén {before} → {after} tin nhắn" if isinstance(after, int)
+                else f"nén còn {after} tin nhắn")
+        status = 'recorded'
+        if answer is None:
+            # Cả op hỏng: `_safe` đã ghim `CHECKPOINT_FILE_FAILED`. Bản ghi phải nói ĐÚNG là
+            # không có bản đọc được — không đoán lý do (bản 0.1 luôn gán "chỉ có bản .md", câu
+            # đó chỉ đúng ở một ca: transcript vượt trần 8 MiB).
+            status = 'degraded'
+            text += ' (không ghi được bản đọc được trong box)'
+        elif answer.get('status') == 'degraded':
+            status = 'degraded'
+            text += f" ({answer.get('note') or 'chỉ có bản .md'})"
+        journal_part = answer.get('journal') if isinstance(answer, dict) else None
+        if isinstance(journal_part, dict) and journal_part.get('ok') is False:
+            # Cặp file đã ghi mà dòng `journal.jsonl` không: nói ra phần còn thiếu, và **không**
+            # hạ trạng thái của bản ghi xuống degraded (hàng SQLite vẫn vào, file vẫn có).
+            session_journal.note_gap(
+                self.store, sid, session_journal.JOURNAL_FAILED_CODE,
+                f"{session_journal.JOURNAL_FAILED_CODE}: dòng nhật ký trong box không ghi được "
+                f"({journal_part.get('error') or journal_part.get('code')}) — hàng SQLite và cặp "
+                "file checkpoint thì đã có", op='checkpoint_write')
+        # Dòng `journal.jsonl` của lần nén do CHÍNH op trong box ghi (cùng lượt với cặp file), nên
+        # ở đây chỉ còn hàng SQLite — dùng đúng mã box mint để hai bề mặt đọc ra một mã.
+        box_id = journal_part.get('id') if isinstance(journal_part, dict) else None
+        data = {}
+        for key in ('checkpointNumber', 'relPath', 'mdRelPath', 'messagesBytes', 'messageCount'):
+            value = (answer or {}).get(key)
+            if value is not None:
+                data[key] = value
+        session_journal.insert_row(self.store, sid, 'checkpoint', text, numbers=numbers,
+                                   status=status, record_id=box_id if isinstance(box_id, str) else None,
+                                   data=data or None)
+
+    def refresh_journal_brief(self, sid, messages):
+        """A5 — ghép khối ký ức vào system message (đầu mỗi lượt và ngay sau mỗi lần nén).
+
+        Vì sao vào **system message**: khối này là chỉ dẫn, không phải một lượt hội thoại — để nó
+        trôi vào lịch sử thì chính bộ nén sẽ cắt mất (đợt 19 đo được 86 % transcript bị gộp ở ca
+        `920946a7`). Hàm trả `True` khi có thay đổi thật, và `inject_brief` thay khối cũ nên gọi
+        nhiều lần không chồng khối.
+        """
+        if not isinstance(messages, list) or not messages:
+            return False
+        first = messages[0]
+        if not isinstance(first, dict) or first.get('role') != 'system':
+            return False
+        original = first.get('content') or ''
+        refreshed = session_journal.inject_brief(original, session_journal.brief(self.store, sid))
+        if refreshed == original:
+            return False
+        first['content'] = refreshed
+        self.store.save(sid, messages)
+        return True
+
+    def truncated_turn(self, sid):
+        """True khi lượt gần nhất của phiên này kết thúc bằng câu trả lời bị cắt ở trần output.
+
+        C2: `_run` phát notice `PROVIDER_OUTPUT_TRUNCATED` đúng khi đã thử lại một lần mà nhà
+        cung cấp vẫn cắt — đó là bản ghi BỀN duy nhất của sự thật này, nên `delegate` đọc nó
+        thay vì tin vào `sessions.status` (vẫn là `completed`).
+        """
+        row = self.store.db.execute(
+            "SELECT COUNT(*) AS total FROM events WHERE session_id=? AND kind='notice' AND payload LIKE ?",
+            (sid, f'%{TRUNCATED_OUTPUT_NOTICE_CODE}%')).fetchone()
+        return bool(row is not None and row['total'])
+
+    async def ensure_session_dir(self, session):
+        """A1 — gọi op `session_ensure` đúng **một lần** cho mỗi phiên trong vòng đời tiến trình.
+
+        Thư mục phiên sinh ở lần ghi đầu tiên (không lúc tạo phiên), và lượt đầu là lần ghi đầu
+        tiên — nhưng gọi op này ở *mỗi* lượt là trả thêm một `docker exec` vô ích. Vì vậy nhớ theo
+        `sid` trong `self.ensured_sessions`; **chỉ** nhớ khi box đã trả lời (executor hỏng/op lỗi thì
+        `ensure_session` trả `None` kèm notice `JOURNAL_DEGRADED`, và lượt sau thử lại).
+
+        `role`/`parent` lấy từ chính hàng phiên: `session.json` là bản đọc được ngoài DB, nên nó
+        phải nói được phiên này là phiên gốc hay phiên con của ai.
+        """
+        sid = session.get('id')
+        if not sid or sid in self.ensured_sessions:
+            return None
+        answer = await session_journal.ensure_session(self.executor, self.store, sid,
+                                                      role=session.get('role'),
+                                                      parent=session.get('parent_id'))
+        if answer is not None:
+            self.ensured_sessions.add(sid)
+        return answer
+
     async def _run(self, sid):
         session = self.store.get(sid)
         config, messages = session['config'], session['messages']
         self.active_messages[sid] = messages
         tools = schemas_for(config['tools'])
-        compressor = ContextCompressor(config['contextWindow'])
         loop_guard = AntiLoopGuard(threshold=3)
         started = time.time()
         steps_used = 0
+        # N6 — ranh giới LƯỢT trong dòng event. Đo sống 2026-09-21: `turn_start`/`turn_end`
+        # = 0 trên 74 994 hàng `events`, nên muốn đếm số lượt phải suy từ `user`/`finish` và
+        # không ai biết một bước dài bao nhiêu, ngưỡng nén lúc đó là bao nhiêu. Cặp event
+        # dưới đây đóng đúng MỘT lần cho mỗi bước, trên mọi đường ra (xong, hỏng, bị dừng).
+        turn = {'step': None}
+
+        def close_turn(status, finish_reason=None, tool_calls=0, usage=None):
+            """Đóng cặp `turn_start`/`turn_end` của bước đang mở, nếu có.
+
+            `contextEstimate` đọc tại đây (sau khi hàng assistant của bước đã vào transcript)
+            nên nó là ngữ cảnh mà bước KẾ TIẾP sẽ nhìn thấy — cùng phép đo với event `step`.
+            """
+            step_open = turn['step']
+            if step_open is None:
+                return
+            turn['step'] = None
+            payload = {'step': step_open, 'status': status,
+                       'finishReason': finish_reason, 'toolCalls': tool_calls,
+                       'contextEstimate': estimate_tokens(messages, tools)}
+            output_tokens = (usage or {}).get('completion_tokens') if isinstance(usage, dict) else None
+            if not isinstance(output_tokens, int) or isinstance(output_tokens, bool):
+                output_tokens = (usage or {}).get('output_tokens') if isinstance(usage, dict) else None
+            if isinstance(output_tokens, int) and not isinstance(output_tokens, bool):
+                payload['outputTokens'] = output_tokens
+            self.store.emit(sid, 'turn_end', payload)
         system_log.write('turn.start', session_id=sid, role=session.get('role'),
                          model=(config.get('route') or {}).get('modelId'),
                          connectionId=(config.get('route') or {}).get('connectionId'),
@@ -986,20 +1459,52 @@ class HarnessRuntime(RuntimeCommands):
                          deadlineSeconds=config.get('deadlineSeconds'),
                          contextEstimate=estimate_tokens(messages, tools),
                          messages=len(messages))
+        self.refresh_journal_brief(sid, messages)
         try:
+            # A1 — thư mục phiên (`<sid8>/session.json` + `checkpoints/`) sinh ở **lần ghi đầu tiên**,
+            # không lúc tạo phiên: một lỗi đĩa không được làm chết `POST /api/agent/sessions`. Lượt
+            # đầu của mỗi phiên chính là lần ghi đầu tiên, nên đây là chỗ gọi op `session_ensure` —
+            # trước mọi bản ghi nhật ký/checkpoint, để `session.json` nói được sid8 này là phiên nào
+            # ngay cả khi lượt đó chưa kịp ghi gì khác. Hỏng thì `session_journal` ghim notice và lượt
+            # đi tiếp. Đặt TRONG `try` này để một cú `stop()` rơi đúng vào lúc chờ box vẫn là
+            # `cancelled` (không để phiên mắc ở `running`); chỉ trả một `docker exec` cho mỗi phiên.
+            await self.ensure_session_dir(session)
             async with asyncio.timeout(config['deadlineSeconds']) as budget:
                 self.run_budget[sid] = budget
                 for step in range(config['maxSteps']):
-                    async def summarize(history):
-                        return await self.client.complete(history, [], config['route'], max_tokens=2048)
-                    compacted, event = await compressor.compact(messages, tools, summarize)
+                    async def summarize(history, max_tokens=None):
+                        return await self.client.complete(history, [], config['route'], max_tokens=max_tokens or 2048)
+                    compressor = self.compressors.get(sid)
+                    if compressor is None or compressor.context_window != config['contextWindow']:
+                        compressor = self.compressors[sid] = ContextCompressor(config['contextWindow'])
+                    compacted, event = await compressor.compact(messages, tools, summarize,
+                                                                usage=self.last_usage.get(sid))
                     if event:
                         if compacted is not messages:
-                            self.store.checkpoint(sid, messages, event['kind'])
+                            saved = messages
+                            # N4 — hàng checkpoint tự nói nó đo bằng gì (cửa sổ, ngưỡng, ước
+                            # lượng). Đường `/compact` đã ghi bốn số này từ đầu; đường tự động thì
+                            # chưa, nên 22 hàng sống chỉ có `id, session_id, messages, reason,
+                            # created` và muốn biết lần nén đó đo bằng gì phải mò sang `events`.
+                            self.store.checkpoint(sid, messages, event['kind'], {
+                                'before_estimate': event.get('beforeEstimate'),
+                                'after_estimate': event.get('afterEstimate'),
+                                'context_window': config.get('contextWindow'),
+                                'model_id': (config.get('route') or {}).get('modelId'),
+                            })
                             messages = compacted
                             self.active_messages[sid] = messages
                             self.skill_loader.reset(sid)
                             self.store.save(sid, messages)
+                            # Con số usage của request cũ mô tả danh sách CŨ: giữ lại thì lần đo sau
+                            # lấy một hóa đơn thật của một transcript khác (PI bỏ usage cũ sau mỗi
+                            # lần nén, compaction.ts:2393-2405).
+                            self.last_usage.pop(sid, None)
+                            # A4/A5 — bản đọc được của transcript trước nén ra file trong box, rồi
+                            # dựng lại khối ký ức: sau một lần nén, chính khối đó là thứ giữ lại
+                            # "phiên này đang ở đâu" mà không cần đọc lại bảng `checkpoints`.
+                            await self.write_journal_checkpoint(sid, saved, compacted, event, config)
+                            self.refresh_journal_brief(sid, messages)
                         self.store.emit(sid, 'compression', event)
                     self.store.emit(sid, 'step', {'iteration': step + 1, 'contextEstimate': estimate_tokens(messages, tools)})
                     # The router callback hands over the text accumulated so far (that is the shape
@@ -1033,6 +1538,19 @@ class HarnessRuntime(RuntimeCommands):
                         if new_text:
                             self.store.emit(sid, 'assistant_delta', {'text': new_text})
                     steps_used = step + 1
+                    # N6: mở lượt NÀY. `threshold` hỏi CHÍNH bộ nén đang chạy (cùng lớp
+                    # `ContextCompressor` đã cắt transcript) — ngưỡng chỉ có một định nghĩa,
+                    # không chép lại công thức ở đây. Lưới an toàn: bộ nén được dựng ngay đầu
+                    # mỗi bước nên nhánh dưới gần như không chạy.
+                    compressor = self.compressors.get(sid) or ContextCompressor(
+                        config.get('contextWindow') or FALLBACK_CONTEXT_WINDOW)
+                    turn_payload = {'step': steps_used,
+                                    'modelId': (config.get('route') or {}).get('modelId'),
+                                    'contextWindow': config.get('contextWindow'),
+                                    'threshold': compressor.threshold,
+                                    'contextEstimate': estimate_tokens(messages, tools)}
+                    self.store.emit(sid, 'turn_start', turn_payload)
+                    turn['step'] = steps_used
                     # Retry policy (failures.retry_advice owns the rules): a dropped socket, a
                     # restarted router, an empty stream OR a provider asking us to slow down
                     # (429 / ``Retry-After``) gets another attempt inside this turn's budget.
@@ -1125,11 +1643,57 @@ class HarnessRuntime(RuntimeCommands):
                                             f'{advice["maxRetries"]} in {advice["delay"]:.1f}s ({message})'),
                             })
                             await asyncio.sleep(advice['delay'])
+                    # P3 — usage của router là con số THẬT của đúng request vừa gửi, nên nó mô tả
+                    # `messages[:len(messages)]` tại đây (hàng assistant của câu trả lời này chưa
+                    # được thêm vào). Đo bằng ước lượng 3 byte/token lệch hẳn trên transcript nhiều
+                    # ảnh và nhiều chữ ký suy luận: đo sống 2026-09-20 (phiên `08f2483c`) ước lượng
+                    # 1 051 631 token cho một request router báo 358 771 token đầu vào.
+                    reading = usage_reading(response.get('usage'), len(messages))
+                    if reading:
+                        self.last_usage[sid] = reading
                     choice = response['choices'][0]
+                    # C2 — nhà cung cấp cắt ở trần output: `finishReason: length`, 0 tool call.
+                    # Đo sống 2026-09-21: phiên con `6bd868ad…` trả `outputTokens: 4096`,
+                    # `toolCalls: 0` → `TURN_EMPTY_RESPONSE`, KHÔNG thử lại lần nào, và phiên
+                    # cha đọc kết quả đó thành con `failed` — trong khi đây là lỗi TẠM THỜI của
+                    # nhà cung cấp: cùng câu hỏi, xin ít token hơn, là có câu trả lời. Thử lại
+                    # ĐÚNG MỘT lần với `TRUNCATED_OUTPUT_MAX_TOKENS` và KHÔNG gửi tool schema
+                    # (chính bộ tool là thứ vừa ngốn hết trần). Đây không phải lượt thử lại của
+                    # `retry_advice` (bộ đó lo lỗi mạng/429), nên không đụng vào nó.
+                    truncated_retry = False
+                    truncated_partial = False
+                    if not (choice['message'].get('tool_calls') or []) and choice.get('finish_reason') == 'length':
+                        _reset_stream()
+                        response = await self.client.complete(messages, [], config['route'],
+                                                              on_thought=handle_thought,
+                                                              on_content=handle_content,
+                                                              max_tokens=TRUNCATED_OUTPUT_MAX_TOKENS)
+                        reading = usage_reading(response.get('usage'), len(messages))
+                        if reading:
+                            self.last_usage[sid] = reading
+                        choice = response['choices'][0]
+                        truncated_retry = True
                     message = choice['message']
                     text, calls = message.get('content') or '', message.get('tool_calls') or []
                     thought = message.get('reasoning_content') or message.get('thought') or choice.get('reasoning_content') or ''
-                    if not calls and (choice.get('finish_reason') not in {'stop', 'end_turn'} or not text.strip()):
+                    if truncated_retry and not calls and (choice.get('finish_reason') == 'length' or not text.strip()):
+                        # Vẫn bị cắt sau khi đã xin ít token hơn: đây là SỰ THẬT của lượt này,
+                        # không phải lỗi hạ tầng. Nói ra bằng một notice BỀN — đó là bản ghi duy
+                        # nhất sống sót qua `store.save`, nên `delegate` đọc nó (xem
+                        # `truncated_turn`) để không báo với cha rằng con đã xong. Cờ
+                        # `truncated_partial` chỉ đổi ĐÚNG hai chỗ ở dưới: bỏ qua phép kiểm
+                        # "câu trả lời phải trọn vẹn" và ghi ranh giới lượt là `partial`. Hàng
+                        # `sessions` vẫn `completed` (giữ nguyên từ vựng trạng thái cũ); không
+                        # đường nào ở đây ghi `completed` cho một câu trả lời trọn vẹn.
+                        self.store.emit(sid, 'notice', {
+                            'code': TRUNCATED_OUTPUT_NOTICE_CODE,
+                            'partial': True,
+                            'outputTokens': (response.get('usage') or {}).get('completion_tokens'),
+                            'message': (f'{TRUNCATED_OUTPUT_NOTICE_CODE}: the provider stopped at the output '
+                                        f'cap twice — this turn only produced a partial answer'),
+                        })
+                        truncated_partial = True
+                    if not calls and not truncated_partial and (choice.get('finish_reason') not in {'stop', 'end_turn'} or not text.strip()):
                         raise ValueError('Model did not produce a complete non-empty final response')
                     # Ensure the same canonical IDs in assistant row and tool results.
                     calls = copy.deepcopy(calls)
@@ -1148,10 +1712,17 @@ class HarnessRuntime(RuntimeCommands):
                     if text:
                         self.store.emit(sid, 'assistant', {'text': text, 'thought': thought, 'final': not calls})
                     if not calls:
+                        # C2: `truncated_partial` chỉ bật khi lần thử lại thứ hai vẫn bị nhà cung
+                        # cấp cắt ở trần output. Hàng `sessions` vẫn `completed` (giữ nguyên từ
+                        # vựng trạng thái cũ), nhưng ranh giới lượt nói thẳng là `partial` và
+                        # `delegate` đọc notice bền của phiên con để trả `partial` cho cha.
+                        partial = truncated_partial
+                        close_turn('partial' if partial else 'completed', choice.get('finish_reason'), 0,
+                                   response.get('usage'))
                         self.store.save(sid, messages, 'completed')
                         self.store.emit(sid, 'finish', {'status': 'completed'})
                         system_log.write('turn.end', session_id=sid, status='completed', steps=steps_used,
-                                         textChars=len(text or ''),
+                                         textChars=len(text or ''), partial=partial,
                                          durationMs=(time.time() - started) * 1000)
                         return text
                     if len(calls) > 16:
@@ -1196,8 +1767,23 @@ class HarnessRuntime(RuntimeCommands):
                         messages.append({'role': 'tool', 'tool_call_id': call['id'], 'name': name, 'content': tool_content})
                         self.store.save(sid, messages)
                         self.store.emit(sid, 'tool_end', {'id': call['id'], 'name': name, 'args': args, 'result': safe})
+                    # N6 — đóng bước SAU khi mọi kết quả tool đã vào transcript, nên
+                    # `contextEstimate` của `turn_end` là ngữ cảnh mà bước kế tiếp thật sự gửi đi.
+                    close_turn('tool_calls', choice.get('finish_reason'), len(calls), response.get('usage'))
+                # C1 — hết ngân sách bước. Ghi ĐÚNG MỘT bản ghi bền nói rằng việc có thể đã xong
+                # trên đĩa còn lượt thì bị trần bước cắt (lượt chạy sống 2026-09-21: plan 9 155 B,
+                # 4 tệp sửa, `300 passed`, lượt vẫn `failed` mà không hàng nào nói vì sao). Hàng
+                # `events` kind `blocker` là bản bền cho UI; `_journal_blocker` ghim cùng sự việc
+                # vào bảng `journal` (nhật ký phiên) và trả về số thứ tự của hàng đó để event nối
+                # được sang nhật ký. Trạng thái phiên KHÔNG đổi vì việc này — vẫn `failed`.
+                blocker = self.blocker_record(sid, config)
+                journal_seq = _journal_blocker(self.store, sid, blocker, step=steps_used)
+                if journal_seq is not None:
+                    blocker['journalSeq'] = journal_seq
+                self.store.emit(sid, 'blocker', blocker)
                 raise ValueError('MAX_STEPS: iteration budget reached; work may be incomplete')
         except asyncio.CancelledError:
+            close_turn('cancelled')
             self.store.save(sid, messages, 'cancelled')
             self.store.emit(sid, 'finish', {'status': 'cancelled'})
             system_log.write('turn.end', session_id=sid, status='cancelled', steps=steps_used,
@@ -1205,6 +1791,7 @@ class HarnessRuntime(RuntimeCommands):
             raise
         except Exception as exc:
             code, error = classify_failure(exc)
+            close_turn('error')
             retries = getattr(exc, 'retry_attempts', 0)
             if retries:
                 error = (f'{error} [after {retries} {self.retry_noun(retries)} in '
@@ -1236,9 +1823,7 @@ class HarnessRuntime(RuntimeCommands):
                 raise PermissionError('Use an explicit CLI command; executor skills cannot run through native terminal tools')
             return self.skill_loader.read(session, args['id'], args.get('file_path', 'SKILL.md'), self.active_messages.get(sid))
         if name == 'session_search':
-            rows = self.store.db.execute('SELECT messages FROM checkpoints WHERE session_id=? ORDER BY id DESC LIMIT 20', (sid,))
-            hits = [m for r in rows for m in json.loads(r[0]) if args['query'].casefold() in str(m.get('content', '')).casefold()]
-            return {'messages': hits[-10:]}
+            return self.session_search(sid, args)
         if name == 'delegate_task':
             return await self.delegate(session, args)
         if name in {'web_search', 'web_fetch'}:
@@ -1247,10 +1832,154 @@ class HarnessRuntime(RuntimeCommands):
             raise PermissionError('Research browser access is read-only navigation/snapshot')
         if name == 'write_plan':
             return await self.write_plan(session, args)
+        if name == 'journal_write':
+            return await self.journal_write(sid, args)
+        if name == 'journal_brief':
+            return self.journal_brief(sid, args)
         if name in {'file_write', 'file_edit_block', 'terminal_exec'}:
             async with self.writer_lock:
                 return await self.executor.execute(name, args, sid)
         return await self.executor.execute(name, args, sid)
+
+    JOURNAL_ROUTE_LIMIT = 200
+
+    def journal_degraded(self, sid):
+        """True khi tầng file của nhật ký đã hỏng ít nhất một lần trong phiên này.
+
+        Sự thật bền duy nhất là `events` (một `notice` với mã `JOURNAL_DEGRADED` /
+        `CHECKPOINT_FILE_FAILED`), vì tầng file chính là chỗ có thể im lặng hỏng. Route đọc cờ này
+        thay vì suy đoán từ sự tồn tại của file — "có file" không có nghĩa là mọi lần ghi đều đã tới.
+        """
+        row = self.store.db.execute(
+            "SELECT COUNT(*) AS total FROM events WHERE session_id=? AND kind='notice' "
+            "AND (payload LIKE ? OR payload LIKE ?)",
+            (sid, f'%{session_journal.JOURNAL_FAILED_CODE}%', f'%{session_journal.CHECKPOINT_FAILED_CODE}%')
+        ).fetchone()
+        return bool(row is not None and row['total'])
+
+    def journal_records(self, sid, after=None, kind=None, limit=50):
+        """A9 — lô bản ghi nhật ký cho `GET /api/agent/sessions/{sid}/journal`.
+
+        `nextSeq` là con trỏ cho lần hỏi tiếp (`after=`), `more` nói còn bản ghi nữa; hàng SQLite là
+        nguồn, tầng file trong box chỉ là bản người đọc được (đợt này không vẽ gì ở UI).
+        """
+        self.store.get(sid)
+        size = max(1, min(self.JOURNAL_ROUTE_LIMIT, int(limit or 50)))
+        sql = 'SELECT * FROM journal WHERE session_id=?'
+        parameters = [sid]
+        if after is not None:
+            sql += ' AND seq>?'
+            parameters.append(int(after))
+        if kind:
+            sql += ' AND kind=?'
+            parameters.append(str(kind))
+        sql += ' ORDER BY seq LIMIT ?'
+        parameters.append(size + 1)  # +1 để biết còn bản ghi nữa mà không đếm thêm một lượt
+        rows = self.store.db.execute(sql, parameters).fetchall()
+        records = [dict(session_journal.record_view(dict(row)), seq=row['seq'],
+                        created=row['created'], kind=row['kind']) for row in rows[:size]]
+        return {'records': records,
+                'nextSeq': records[-1]['seq'] if records else int(after or 0),
+                'more': len(rows) > size,
+                'degraded': self.journal_degraded(sid)}
+
+    def journal_tasks(self, status=None, limit=50):
+        """A9 — `GET /api/agent/journal/tasks`: task nào thuộc phiên nào, trạng thái gì.
+
+        Đây là bản chiếu qua MỌI phiên của bảng `journal` (không phải `INDEX.json`): đường route
+        không phụ thuộc box đang chạy, nên vẫn trả lời được khi box tắt.
+        """
+        size = max(1, min(self.JOURNAL_ROUTE_LIMIT, int(limit or 50)))
+        # Lọc trạng thái ở Python, không bằng `payload LIKE`: payload là JSON do `json.dumps` sinh
+        # (có/không có dấu cách tuỳ chỗ ghi), nên một mẫu chuỗi sẽ lọc trượt trong im lặng. Đọc dư
+        # rồi cắt — trần đọc là 200 hàng, đủ cho màn hình tổng hợp.
+        tasks = []
+        for row in self.store.db.execute(
+                "SELECT * FROM journal WHERE kind='task' ORDER BY seq DESC LIMIT ?",
+                (self.JOURNAL_ROUTE_LIMIT,)):
+            item = dict(row)
+            record = session_journal.record_view(item)
+            if status and record['status'] != status:
+                continue
+            tasks.append({'id': record['id'], 'session': item['session_id'], 'sid8': str(item['session_id'])[:8],
+                          'kind': 'task', 'status': record['status'], 'text': record['text'],
+                          'created': item['created'], 'ts': record['ts'], 'refs': record.get('refs'),
+                          'evidence': record.get('evidence')})
+            if len(tasks) >= size:
+                break
+        return {'tasks': tasks}
+
+    def session_search(self, sid, args):
+        """A6 — tra lịch sử bền của phiên: **mọi** checkpoint + nhật ký + `events`, không chỉ 20 hàng mới.
+
+        Bản cũ chỉ đọc `LIMIT 20` checkpoint mới nhất, nên một từ chỉ có trong lần nén thứ 25 là
+        **không tìm thấy** — trong khi đó lại đúng là chỗ duy nhất còn giữ transcript trước nén
+        (đo sống 2026-09-21: 22 hàng `checkpoints` / 17 967 616 B trên 12 phiên, lớn nhất 3,1 MB).
+        Ba nguồn gộp lại, sắp theo thời gian, và nói thẳng khi phải cắt bớt:
+        `truncated` = có kết quả bị bỏ; `messages` giữ nguyên hình dạng cũ nên chỗ đọc cũ không đổi.
+        """
+        query = str((args or {}).get('query') or '').strip().casefold()
+        if not query:
+            raise ValueError('SESSION_SEARCH_EMPTY: query is required')
+        limit = int((args or {}).get('limit') or 10)
+        limit = max(1, min(50, limit))  # trần 50: kết quả tra là bản trích, không phải transcript
+        ceiling = max(limit * 10, 200)  # gom rộng rồi mới cắt — cắt lúc đang gom là cắt SAI đầu
+        hits, matched = [], 0
+
+        def add(ts, kind, text, ident=None, role=None, rank=0, order=0, **extra):
+            nonlocal matched
+            if query in str(text or '').casefold():
+                matched += 1
+                if len(hits) < ceiling:
+                    hits.append({'ts': ts, 'kind': kind, 'id': ident, 'role': role,
+                                 'text': str(text or '')[:2000], **extra,
+                                 # Khoá sắp xếp đầy đủ: ba nguồn được đọc theo ba khối, mà ba lần nén
+                                 # trong cùng một mili-giây là chuyện thường — chỉ so `ts` thì thứ tự
+                                 # "mới nhất" thành ra tuỳ thứ tự đọc. `rank` xếp khối, `order` xếp
+                                 # trong khối (số hàng tăng dần, độc lập nhau nên không so ngang).
+                                 '_key': (float(ts or 0), rank, order)})
+
+        for row in self.store.db.execute(
+                'SELECT id, created, messages, reason FROM checkpoints WHERE session_id=? ORDER BY id', (sid,)):
+            try:
+                stored = json.loads(row['messages'])
+            except (TypeError, ValueError):
+                continue
+            # KHÔNG bịa mã bản ghi cho kết quả từ bảng `checkpoints`: cột `id` của bảng này là một
+            # bộ đếm khác với số file `ck-<sid8>-NNN` (và khác cả hàng `journal`) — một mã
+            # `C:<sid8>-<n>` ở đây trỏ vào **không** bản ghi nào. Thay bằng hai trường nói đúng
+            # nguồn: `checkpointId` (hàng SQLite) và `source`.
+            for message in stored:
+                if message.get('role') == 'system':
+                    continue  # system message là chỉ dẫn, không phải lịch sử người dùng
+                add(row['created'], f"checkpoint:{row['reason']}", message.get('content'), None,
+                    message.get('role'), rank=0, order=row['id'],
+                    checkpointId=row['id'], source='checkpoint')
+        journal_cap = 500
+        journal_rows = self.store.journal_tail(sid, limit=journal_cap)
+        capped = ['journal'] if len(journal_rows) >= journal_cap else []
+        for row in journal_rows:
+            record = (row.get('payload') or {}).get('record') or {}
+            add(row.get('created'), 'journal:' + str(row.get('kind')),
+                record.get('text') or row.get('text'), record.get('id'), record.get('actor'),
+                rank=1, order=row.get('seq') or 0, source='journal')
+        for row in self.store.db.execute(
+                "SELECT seq, created, payload FROM events WHERE session_id=? ORDER BY seq", (sid,)):
+            add(row['created'], 'event', row['payload'], rank=2, order=row['seq'])
+
+        hits.sort(key=lambda item: item['_key'])
+        newest = hits[-limit:]
+        for item in newest:
+            item.pop('_key', None)
+        dropped = matched - len(newest)
+        return {'hits': newest,
+                # Nguồn bị đọc tới trần (`capped`) cũng là một dạng cắt bớt: nói ra cùng chỗ với
+                # `dropped`, nếu không thì "chỉ có 500 bản ghi đầu" bị đọc thành "chỉ có 500 bản ghi".
+                'capped': capped,
+                # Hình dạng cũ của `messages` (danh sách tin nhắn) vẫn đọc được: chỗ đọc cũ chỉ lấy
+                # `content`, nên giữ nguyên nó thay vì đổi sang khuôn `hit` mới.
+                'messages': [{'role': item['role'], 'content': item['text']} for item in newest],
+                'truncated': bool(dropped) or bool(capped), 'dropped': dropped}
 
     def pending_for(self, sid):
         """Unresolved decisions of one session, in request order."""
@@ -1278,12 +2007,20 @@ class HarnessRuntime(RuntimeCommands):
             if not reason:
                 raise ValueError('DECISION_INVALID: request_approval requires a reason')
             question = None
+        # §4.1: một lượt xin duyệt kế hoạch mang theo `planIdentity`/`planVersion` thì quyết định của
+        # người dùng vào thẳng sổ duyệt — cùng hai khoá mà `plan_registry.pending_submissions` đọc.
+        plan_id, plan_version = (None, None)
+        if kind == 'approval':
+            plan_id, plan_version = plan_approval_target(args, name)
         options = normalize_decision_options(args.get('options'), kind)
         decision_id = uuid.uuid4().hex[:16]
         record = {'decisionId': decision_id, 'sessionId': sid, 'kind': kind, 'options': options,
                   'deadline': decision_deadline(args, name), 'defaultChoice': 'reject',
                   'toolCallId': call_id, 'resolved': False, 'outcome': None,
                   'future': asyncio.get_running_loop().create_future()}
+        if plan_id:
+            record['planIdentity'] = plan_id
+            record['planVersion'] = plan_version
         self.pending[decision_id] = record
         self.prune_pending()
         self.store.save(sid, self.active_messages.get(sid, session['messages']), 'awaiting_decision')
@@ -1308,7 +2045,9 @@ class HarnessRuntime(RuntimeCommands):
         try:
             await asyncio.wait_for(asyncio.shield(record['future']), timeout=max(0.0, record['deadline'] - time.time()))
         except asyncio.TimeoutError:
-            self.settle(record, record['defaultChoice'], 'expired', 'timeout', None)
+            if self.settle(record, record['defaultChoice'], 'expired', 'timeout', None):
+                # A7: hết hạn là một cách chốt — nhật ký phải ghi cùng một khuôn như người bấm.
+                await self.pin_decision(record['sessionId'], record['outcome'])
         finally:
             if paused is not None:
                 try:
@@ -1325,6 +2064,9 @@ class HarnessRuntime(RuntimeCommands):
         record['outcome'] = {'decision': 'approved' if status == 'approved' else 'rejected',
                              'choice': choice, 'status': status, 'reason': reason, 'note': note,
                              'decisionId': record['decisionId'], 'message': DECISION_OUTCOME_MESSAGES[status]}
+        # §4.1: quyết định về một kế hoạch vào sổ duyệt TRƯỚC `decision_resolved`, để ai đọc sổ ngay
+        # sau sự kiện đó cũng thấy đúng trạng thái. Ghi hỏng không được làm hỏng lượt trả lời.
+        self.record_plan_decision(record, status, note)
         self.store.emit(record['sessionId'], 'decision_resolved', {
             'decisionId': record['decisionId'], 'choice': choice, 'status': status, 'note': note,
             'reason': reason, 'resolvedAt': round(time.time(), 3)})
@@ -1333,6 +2075,32 @@ class HarnessRuntime(RuntimeCommands):
         if reason != 'session_cancelled':
             self.resume(record['sessionId'])
         return True
+
+    def record_plan_decision(self, record, status, note):
+        """Duyệt kế hoạch trong chat vào sổ thật (§4.1): `request_approval` khai `planIdentity`/`planVersion`.
+
+        Chỉ ghi khi record mang **đủ** hai khoá — một lượt xin phép cũ (không nói tới kế hoạch nào)
+        không được sinh một hàng duyệt giả. `approved` chỉ khi người dùng thật sự đồng ý; mọi kết cục
+        khác (từ chối, hết hạn, huỷ phiên) đều là "chưa đồng ý", tức `changes_requested` của luật R1 —
+        và đó cũng là điều kiện để bản sửa bắt buộc phải khai cha.
+
+        Cột `source` là `'approval'` để phân biệt với `'plan-tab'`: hai đường vào cùng một sổ, không
+        đường nào ghi đè đường kia một cách âm thầm.
+        """
+        identity = str(record.get('planIdentity') or '').strip().strip('/')
+        version = record.get('planVersion')
+        if not identity or isinstance(version, bool) or not isinstance(version, int) or version < 1:
+            return None
+        decision = 'approved' if status == 'approved' else 'changes_requested'
+        try:
+            return self.store.record_plan_review(identity, version, decision, note=(note or ''),
+                                                 source='approval', session_id=record['sessionId'])
+        except Exception as exc:  # pragma: no cover - sổ duyệt không bao giờ được giết một quyết định
+            system_log.write('plan.review.store_failed', level='warn', code='PLAN_REVIEW_STORE_FAILED',
+                             message=f'không ghi được sổ duyệt cho {identity} v{version}: {exc}',
+                             session_id=record['sessionId'], identity=identity, version=version,
+                             decision=decision)
+            return None
 
     def resume(self, sid):
         """A blocked turn goes back to running as soon as an answer (or the timeout) lands."""
@@ -1369,8 +2137,48 @@ class HarnessRuntime(RuntimeCommands):
         self.settle(record, choice, status, 'user', (note or '').strip() or None)
         return {'status': 'resolved', 'decisionId': decision_id, 'choice': choice, 'outcome': status}
 
+    async def plan_registration_for(self, slug, args, declared):
+        """B2 — chọn identity/version/parent từ chỉ mục box TRƯỚC khi ghi (§3.2–§3.4 + R1/R3).
+
+        Sổ duyệt và các lượt xin duyệt đang treo được nạp sẵn cho **mọi** identity trong chỉ mục:
+        `group_state` cần chúng để biết nhóm đang `changes_requested` (R3) hay đã `approved` (R2),
+        còn tra theo từng identity ngay lúc đó thì không được (hàm thuần, một lượt, không I/O).
+
+        `RegistrationPlan.degraded` = không đọc được chỉ mục box. Chỗ gọi quay về hành vi cũ
+        (sandbox tự chọn số, không header) và `read_plan_index` đã ghi `PLAN_INDEX_UNAVAILABLE`
+        vào nhật ký hệ thống: thà mất tính năng còn hơn bịa số version.
+        """
+        index = await plan_registry.read_plan_index(self.executor)
+        reviews, submitted = {}, {}
+        if index is not None:
+            pending = list(getattr(self, 'pending', {}).values())
+            for group in index.groups:
+                reviews[group.identity] = self.store.plan_reviews_for(group.identity)
+                submitted[group.identity] = plan_registry.pending_submissions(pending, group.identity)
+        # Chỉ khối header đọc ra `ok` mới được coi là lời khai: một khối sai cú pháp không phải
+        # một con số để so, và P1 của bản chấm sẽ nói đúng điều đó thay vì đoán ý model.
+        ok_header = declared is not None and getattr(declared, 'status', '') == 'ok'
+        return plan_registry.plan_registration(
+            slug, index=index, reviews_by_identity=reviews, submitted_by_identity=submitted,
+            declared_identity=args.get('identity'), relates_to=args.get('relatesTo'),
+            declared_version=declared.version if ok_header else plan_registry.UNSET,
+            declared_parent=declared.parent if ok_header else plan_registry.UNSET)
+
     async def write_plan(self, session, args):
-        """write_plan: the sandbox picks the next free version and writes it; the host only reports it."""
+        """write_plan: harness chọn identity/version/parent, chấm P1–P8, rồi mới ghi (đợt 20 §3–§5).
+
+        Bốn bước, theo đúng thứ tự — mỗi bước có đường lui riêng:
+
+        1. `check_plan_quality` (P3) chạy trước tiên, nguyên luật và nguyên câu của bản cũ.
+        2. `plan_registry.plan_registration` chọn identity/version/parent. Chỉ mục box chết →
+           nhánh suy giảm: sandbox tự chọn số, không header, không chấm điểm (bản chấm cần số của
+           nhóm, mà số đó vừa không biết được — điền số sau khi ghi là bịa).
+        3. `plan_eval` chấm 8 chiều, lưu `plan_evaluations` **kể cả** bản bị từ chối
+           (`written: false` — bằng chứng vì sao không có file nào xuất hiện), phát `plan_evaluated`
+           đúng **một** lần cho mỗi bản. Cổng cứng trượt ⇒ dừng ở đây, sandbox không chạm đĩa.
+        4. Ghi qua sandbox với `version`/`directory` tường minh: box không tự tăng số nữa, nên
+           tên file trùng (`PLAN_VERSION_TAKEN`) được thử lại **một** lần với chỉ mục vừa đọc lại.
+        """
         sid = session['id']
         slug = plan_slug(args.get('slug'))
         markdown = args.get('markdown')
@@ -1380,14 +2188,56 @@ class HarnessRuntime(RuntimeCommands):
             raise ValueError('PLAN_INVALID: the plan exceeds the 1 MiB plan-file limit')
         # Structural gate BEFORE the sandbox writer runs: a rejected plan leaves no file behind and the model
         # gets one actionable line naming what is missing (plan_quality.py owns the rules).
+        # Cổng P3 của thang P1–P8 **cố ý** đứng sau cổng này (cùng luật, cùng câu, mã cũ
+        # `PLAN_QUALITY_REJECTED`), nên một kế hoạch hỏng cấu trúc không sinh `plan_evaluated` và không có
+        # hàng `plan_evaluations`: chặn trước khi tốn một lượt ghi đĩa là hành vi mong muốn. Vì vậy nhánh
+        # P3-0 trong `plan_eval` là lưới an toàn cho `write_plan` gọi từ nơi khác, không phải đường sống.
         check_plan_quality(markdown)
         title = plan_title(args.get('title'), markdown, slug)
+        declared = plan_header.parse_plan_header(markdown)
+        try:
+            registration = await self.plan_registration_for(slug, args, declared)
+        except plan_registry.PlanRegistrationError as exc:
+            # "Log nhật ký hệ thống cho mọi lần từ chối" (§B4): một dòng cho mỗi lần luật §3.2–§4.3
+            # chặn, kèm mã máy đọc được — câu trả cho model là một dòng, nhưng DEV cần con số.
+            system_log.write('plan.registration.rejected', level='warn', code=exc.code,
+                             message=exc.message, session_id=sid, slug=slug,
+                             identity=exc.fields.get('identity'), fields=exc.fields)
+            raise
+        for note in registration.notes:
+            # `PLAN_IDENTITY_FORCED_NEW`: model khai `relatesTo: "none"` ở dải j ≥ 0.75 nên harness
+            # vẫn ghi thành identity mới — chủ dự án thấy việc này trong nhật ký hệ thống.
+            system_log.write('plan.identity.forced_new', level='warn',
+                             code=plan_registry.IDENTITY_FORCED_NEW_CODE, message=note,
+                             session_id=sid, identity=registration.identity, slug=slug)
+        write_args, evaluation = self.plan_write_args(markdown, slug, title, registration)
+        if evaluation is not None and evaluation.rejected is not None:
+            self.emit_plan_rejection(sid, registration, evaluation)
         async with self.writer_lock:
-            written = await self.executor.execute('write_plan', {'slug': slug, 'markdown': markdown, 'title': title}, sid)
+            written = await self.executor.execute('write_plan', write_args, sid)
+            if self.version_taken(written) and not registration.degraded:
+                # Đua ghi hiếm gặp: chỉ mục vừa cũ đi giữa hai bước. Đọc lại đúng MỘT lần rồi ghi lại;
+                # vẫn kẹt thì thôi — `PLAN_WRITE_CONFLICT` để lần ghi sau tự chọn lại số.
+                registration = await self.plan_registration_for(slug, args, declared)
+                if registration.degraded:
+                    raise ValueError('PLAN_WRITE_CONFLICT: the box index became unreadable and the '
+                                     'version is already taken; nothing was recorded')
+                write_args, evaluation = self.plan_write_args(markdown, slug, title, registration)
+                if evaluation is not None and evaluation.rejected is not None:
+                    self.emit_plan_rejection(sid, registration, evaluation)
+                written = await self.executor.execute('write_plan', write_args, sid)
+                if self.version_taken(written):
+                    raise ValueError('PLAN_WRITE_CONFLICT: two writers picked the same version; '
+                                     'nothing was recorded')
         confirmed = PLAN_PATH_RE.fullmatch(str(written.get('relativePath') or ''))
         version = written.get('version')
         if not confirmed or isinstance(version, bool) or not isinstance(version, int) \
                 or int(confirmed.group('version')) != version:
+            # Lỗi của box nói rõ chuyện gì đã xảy ra (`is_error` + `error`); nuốt nó vào câu
+            # "không xác nhận được tệp" sẽ giấu mất nguyên nhân thật.
+            if isinstance(written, dict) and written.get('is_error'):
+                raise ValueError('PLAN_WRITE_FAILED: the sandbox refused the write: '
+                                 + str(written.get('error') or '')[:300])
             raise ValueError('PLAN_WRITE_FAILED: the sandbox did not confirm a plan file; nothing was recorded')
         # Never report a plan the sandbox does not have: identity comes from the confirmed path and must be
         # what the plan reader groups by (contract §1 + plan_files.py:315-321), i.e. bare `slug` / `dir/slug`.
@@ -1395,12 +2245,249 @@ class HarnessRuntime(RuntimeCommands):
         payload = {'identity': identity, 'version': version, 'slug': confirmed.group('slug'),
                    'relativePath': written['relativePath'], 'title': str(written.get('title') or title)[:120],
                    'bytes': int(written.get('bytes') or len(markdown.encode('utf-8')))}
+        if not registration.degraded:
+            # Hai trường hợp đồng bằng: ở nhánh suy giảm không có bản chấm, nên `parentVersion` và
+            # `headerSource` KHÔNG được bịa — chỉ ghi khi harness thật sự đã quyết hai giá trị đó.
+            payload['parentVersion'] = registration.parent
+            payload['headerSource'] = 'model' if (evaluation is not None
+                                                 and evaluation.measures.get('headerSource') == 'model') \
+                else 'synthesized'
+            payload['identityMatchedBy'] = registration.matched_by
+            payload['identityForcedNew'] = bool(registration.forced_new)
+            payload['state'] = registration.state
         self.store.emit(sid, 'plan_written', payload)
+        if evaluation is not None:
+            self.record_plan_evaluation(registration, evaluation.to_payload(written=True))
+            self.store.emit(sid, 'plan_evaluated', evaluation.to_payload(written=True))
         self.store.emit(sid, 'ui_intent', {'tab': 'plan', 'target': {'identity': identity, 'version': version},
                                            'reason': 'plan_written'})
-        return {'content': 'Plan written to ' + payload['relativePath'], 'version': version,
-                'relativePath': payload['relativePath'], 'slug': payload['slug'], 'title': payload['title'],
-                'bytes': payload['bytes']}
+        await self.pin_plan(sid, payload)
+        answer = {'content': 'Plan written to ' + payload['relativePath'], 'version': version,
+                  'relativePath': payload['relativePath'], 'slug': payload['slug'], 'title': payload['title'],
+                  'bytes': payload['bytes']}
+        if evaluation is not None:
+            # Một dòng cho model biết điểm, để nó tự sửa ở lần ghi sau thay vì đoán vì sao bị từ chối.
+            answer['rubric'] = evaluation.to_payload(written=True)
+        return answer
+
+    def plan_write_args(self, markdown, slug, title, registration):
+        """Dựng tham số cho op `write_plan` của box + bản chấm P1–P8 tương ứng (hoặc `None`).
+
+        Nhánh suy giảm (không đọc được chỉ mục) giữ **nguyên** markdown và để box tự chọn số: đó
+        đúng là hành vi trước vòng 20, và cũng là lý do không có bản chấm ở nhánh này — hợp đồng
+        `plan_evaluations` buộc mỗi hàng phải có `version` của nhóm, mà số đó lúc này chưa biết.
+
+        Nhánh thường ghép khối header do **harness** viết lên đầu markdown (`plan_header`), rồi
+        gửi `directory` + `version` tường minh: box không tự tăng số nữa.
+        """
+        args = {'slug': registration.slug or slug, 'title': title}
+        if registration.degraded:
+            args['markdown'] = markdown
+            return args, None
+        args.update({'directory': registration.directory, 'version': registration.version,
+                     'markdown': plan_header.build_plan_header(
+                         registration.version, registration.identity, registration.parent,
+                         registration.declared_slug) + markdown})
+        return args, self.evaluate_plan(markdown, registration)
+
+    @staticmethod
+    def version_taken(answer):
+        """Box báo tên file đã tồn tại? Worker không ném lỗi — nó trả `{'is_error': True, 'error': …}`."""
+        if not isinstance(answer, dict):
+            return False
+        return 'PLAN_VERSION_TAKEN' in str(answer.get('error') or '') or \
+            'PLAN_VERSION_TAKEN' in str(answer.get('code') or '')
+
+    def emit_plan_rejection(self, sid, registration, evaluation):
+        """Lưu + phát bản chấm của một lần ghi **bị cổng cứng chặn**, rồi mới raise câu từ chối.
+
+        Hai việc này đi cùng nhau và luôn theo thứ tự này: hàng `plan_evaluations` với
+        `written: false` là bằng chứng vì sao `.plans/` không có file nào mới, còn `plan_evaluated`
+        là thứ tab Plan đọc để hiện lý do. Raise sau cùng để sandbox không chạm đĩa.
+        """
+        payload = evaluation.to_payload(written=False)
+        self.record_plan_evaluation(registration, payload)
+        self.store.emit(sid, 'plan_evaluated', payload)
+        plan_eval.raise_if_rejected(evaluation)
+
+    def evaluate_plan(self, markdown, registration):
+        """B3/B4 — chấm P1–P8 cho một lần ghi, theo đúng thứ tự con trỏ của §5.
+
+        `markdown` là **bản model viết** (chưa ghép header của harness): P1 phải nhìn thấy khối
+        header mà model tự khai, còn P2 cần ghi chú mới nhất của người dùng khi nhóm đang chờ sửa.
+        """
+        return plan_eval.evaluate_plan(
+            markdown, identity=registration.identity, version=registration.version,
+            parent_version=registration.parent, state=registration.state,
+            matched_by=registration.matched_by, forced_new=registration.forced_new,
+            review_note=self.latest_review_note(registration.identity))
+
+    def latest_review_note(self, identity):
+        """Ghi chú mới nhất của lần "yêu cầu sửa" gần đây nhất cho `identity`, hoặc `''`.
+
+        Chỉ để đo `noteKeywords`/`noteKeywordsEchoed` (P5/P8 đọc chúng như số đo, không đổi mức):
+        điều kiện từ chối của R3 nằm ở `plan_registry`, không ở đây.
+        """
+        try:
+            rows = self.store.plan_reviews_for(identity)
+        except Exception:  # pragma: no cover - DB cũ chưa có bảng plan_reviews
+            return ''
+        for row in reversed(list(rows or ())):
+            if row.get('decision') == 'changes_requested' and (row.get('note') or '').strip():
+                return str(row['note']).strip()[:plan_registry.MAX_NOTE_CHARS]
+        return ''
+
+    def record_plan_evaluation(self, registration, payload):
+        """Lưu kết quả chấm vào `plan_evaluations` — `written: true|false` là một phần của bản ghi.
+
+        Bản ghi là **bản chấm mới nhất theo từng `(identity, version)`** (upsert, xem
+        `SessionStore.record_plan_evaluation`): một lượt bị từ chối rồi viết lại cùng version sẽ để lại
+        đúng một hàng, mang kết quả của lượt gần nhất. Đó là chủ ý — tab Plan hỏi "bản này đang thế nào",
+        không hỏi lịch sử chấm; muốn lịch sử thì `events kind='plan_evaluated'` giữ đủ mọi lượt.
+        """
+        try:
+            self.store.record_plan_evaluation(registration.identity, registration.version, payload,
+                                              payload.get('total') or 0, payload.get('verdict') or 'fail')
+        except Exception as exc:  # pragma: no cover - bảng điểm không bao giờ được làm hỏng lượt ghi
+            system_log.write('plan.eval.store_failed', level='warn', code='PLAN_EVAL_STORE_FAILED',
+                             message=f'{type(exc).__name__}: {exc}', identity=registration.identity,
+                             version=registration.version)
+
+    def open_task_refs(self, sid, limit=1):
+        """Mã của (các) bản ghi `T:` còn mở của phiên — để một bản kế hoạch trỏ về việc nó phục vụ.
+
+        Trả `[]` khi phiên chưa có bản ghi `task` nào (đường thường gặp trước khi agent gọi
+        `journal_write`): `refs` là **tham chiếu**, không phải chỗ bịa mã, nên không có thì để trống.
+        """
+        try:
+            rows = self.store.journal_tail(sid, limit=50, kinds=['task'])
+        except Exception:  # pragma: no cover - DB cũ chưa có bảng journal
+            return []
+        open_rows = [row for row in rows if (row.get('payload') or {}).get('record', {}).get('status')
+                     in {'open', 'doing'}]
+        return [row['payload']['record']['id'] for row in open_rows[-limit:]
+                if (row.get('payload') or {}).get('record', {}).get('id')]
+
+    async def journal_write(self, sid, args):
+        """A3 — công cụ `journal_write`: agent TỰ ghi một dòng ký ức, có kiểm tra trước khi ghi.
+
+        Ba chốt, theo đúng kế hoạch Phần A:
+
+        1. `journal.record` chạy TRƯỚC mọi thứ (kind hợp lệ, `text` ≤ 1000 ký tự, `refs`/`evidence`
+           đúng khuôn) — nên một lời gọi sai bị từ chối bằng một dòng chỉ đúng chỗ sai, và không để
+           lại hàng rác nào.
+        2. Hàng SQLite là bản mà `brief()` đọc, nên nó được ghi **trước**; tầng file trong box chỉ là
+           bản đọc thêm. Tầng file hỏng ⇒ vẫn có hàng, kèm `notice` `JOURNAL_DEGRADED` (do
+           `session_journal.append` ghim) và `recorded: false` trong câu trả lời — không bao giờ nói
+           "đã ghi ra file" khi chưa ghi.
+        3. `docs/naming.md` ghim trật tự mã: `P:`/`D:` do harness tự ghim, còn `T:`/`S:`/`E:`/`F:`/`X:`
+           là thứ agent tự viết. Phiên con không có công cụ này (cha ghi hộ bằng `X:` kèm refs).
+        """
+        kind = args.get('kind')
+        text = args.get('text')
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError('JOURNAL_INVALID: text must be a non-empty string')
+        if kind in HARNESS_ONLY_JOURNAL_KINDS:
+            # `plan` cần kết quả `write_plan` (`P:<identity>@v<n>`) và `checkpoint` là dấu vết của
+            # một lần nén — cả hai do harness ghim. Để model tự viết thì nhật ký có mã giả, và
+            # `kind='plan'` còn luôn hỏng vì thiếu tham số `plan` (schema cũ vẫn mời gọi nó).
+            raise ValueError(f"JOURNAL_INVALID: kind={kind!r} is recorded by the harness, not by this "
+                             f"tool; use one of {list(AGENT_JOURNAL_KINDS)}")
+        if not isinstance(kind, str) or kind not in AGENT_JOURNAL_KINDS:
+            raise ValueError(f"JOURNAL_INVALID: kind must be one of {list(AGENT_JOURNAL_KINDS)}")
+        # `status`, `refs`, `evidence` đi THẲNG vào bộ kiểm của `journal.record` — một giá trị sai
+        # kiểu bị từ chối ở đó, chứ ở đây không được phép lặng lẽ bỏ qua (đã suýt bỏ qua `refs` kiểu
+        # chuỗi, tức là một lời gọi sai vẫn ghi được hàng).
+        # `status` và `evidence` là trường CỦA BẢN GHI (không phải `data`): chúng vào thẳng
+        # khuôn của `journal.record` để bộ kiểm ở đó từ chối giá trị lạ, và để `brief()` xếp
+        # nhóm theo `status` đúng như thiết kế.
+        written = await session_journal.append(
+            self.executor, self.store, sid, kind, text.strip(),
+            status=args.get('status'), evidence=args.get('evidence'), refs=args.get('refs'))
+        # Mã lấy từ chính câu trả lời của `append` (`recordId`), KHÔNG mò lại hàng cuối: khi chèn
+        # hỏng, hàng cuối là bản ghi của lượt trước — trả mã đó ra là nhận vơ một bản ghi khác.
+        record_id = written.get('recordId') if isinstance(written, dict) else None
+        recorded = bool(written and written.get('ok') is not False)
+        if isinstance(written, dict) and written.get('rowMissing'):
+            # Dòng đã vào file trong box, hàng SQLite thì không: khối ký ức (`brief`) không thấy
+            # bản ghi này, nên `recorded` phải là false — và **không** trả mã nào, vì mã duy nhất
+            # đang có trên đời là của bản ghi khác.
+            return {'content': 'The box journal file kept this line, but the session journal row '
+                               'could not be written, so journal_brief will not show it. Nothing '
+                               'was lost from the turn; the line is in '
+                               '.session-history/<sid8>/journal.jsonl.',
+                    'id': None, 'kind': kind, 'recorded': False}
+        if written is None:
+            return {'content': f'Not recorded: the session journal row could not be written '
+                               f'(see the JOURNAL_DEGRADED notice). Nothing was lost from the '
+                               f'turn; try again later.',
+                    'id': None, 'kind': kind, 'recorded': False}
+        if not recorded and record_id:
+            # Hàng đã có, chỉ tầng file thiếu: nói đúng phần thiếu thay vì trả lỗi trơ.
+            return {'content': f'Recorded {record_id} in the session journal (the box file layer did not '
+                               f'answer; see the JOURNAL_DEGRADED notice).',
+                    'id': record_id, 'kind': kind, 'recorded': False}
+        return {'content': f'Recorded {record_id or kind} in the session journal.',
+                'id': record_id, 'kind': kind, 'recorded': recorded,
+                'brief': session_journal.brief(self.store, sid)}
+
+    def journal_brief(self, sid, args):
+        """A3 — công cụ `journal_brief`: khối ký ức của phiên, rỗng khi chưa có gì để nhớ."""
+        limit = args.get('limit')
+        try:
+            limit = max(1, min(200, int(limit))) if limit is not None else 60
+        except (TypeError, ValueError):
+            limit = 60
+        block = session_journal.brief(self.store, sid, limit=limit)
+        return {'content': block or 'The session journal is empty — nothing recorded yet.',
+                'empty': not block}
+
+    async def pin_plan(self, sid, payload):
+        """A7 — ghim bản ghi `P:<identity>@v<version>` sau khi sandbox đã xác nhận đường dẫn.
+
+        Vì sao mã của kế hoạch **không** theo phiên: cùng một slug ở hai phiên vẫn là cùng một bản
+        kế hoạch, `@v<n>` mới phân biệt hai bản. Nhờ vậy hỏi "kế hoạch này ra đời ở phiên nào, đã
+        duyệt chưa" trả lời được bằng cách tra nhật ký thay vì quét `.plans/` rồi đoán theo thời gian.
+        """
+        identity, version = payload.get('identity'), payload.get('version')
+        if not identity or not isinstance(version, int) or isinstance(version, bool):
+            return None  # không có gì để ghim: chỗ gọi đã kiểm đường dẫn, đây là chốt thứ hai
+        return await session_journal.append(
+            self.executor, self.store, sid, 'plan',
+            f"kế hoạch {identity} v{version} đã ghi ({payload.get('bytes')} B)",
+            plan={'identity': identity, 'version': version}, refs=self.open_task_refs(sid),
+            data={'identity': identity, 'version': version, 'slug': payload.get('slug'),
+                  'relativePath': payload.get('relativePath'), 'title': payload.get('title')},
+            status='draft')
+
+    async def pin_decision(self, sid, outcome):
+        """A7 — ghim bản ghi `D:` cho một quyết định đã chốt, kèm **lựa chọn** chứ không chỉ kết quả.
+
+        Phát hiện đợt 4: một lựa chọn `alternative` bị ghi thành `approved` trơ, nên đọc lại nhật ký
+        không biết người dùng đã chọn phương án nào. Bản ghi ở đây giữ `choice` + nhãn của phương án
+        đã chọn, và `alternatives` là các phương án còn lại — "chốt gì" trả lời được mà không mở UI.
+        """
+        if not isinstance(outcome, dict):
+            return None
+        record = self.pending.get(outcome.get('decisionId')) or {}
+        # Hai đường gọi khác nhau: route đưa kết quả của `resolve_decision` (`{status: 'resolved',
+        # choice, outcome}`), còn đường hết hạn đưa `record['outcome']` đã settle. Bản đã settle là
+        # bản đầy đủ nhất (có `note`, `reason`, `status`), nên nó thắng khi có.
+        outcome = {**(record.get('outcome') or {}), **outcome} if record.get('outcome') else outcome
+        options = record.get('options') or []
+        chosen = next((item for item in options if item.get('id') == outcome.get('choice')), None)
+        expired = outcome.get('status') == 'expired'
+        approved = outcome.get('decision') == 'approved'
+        status = 'approved' if approved else ('info' if expired else 'rejected')
+        label = (chosen or {}).get('label') or outcome.get('choice') or '?'
+        prefix = 'hết hạn, lấy mặc định' if expired else ('chốt' if approved else 'từ chối')
+        return await session_journal.append(
+            self.executor, self.store, sid, 'decision', f"{prefix}: {label}",
+            data={'decisionId': outcome.get('decisionId'), 'choice': outcome.get('choice'),
+                  'choiceLabel': (chosen or {}).get('label'), 'choiceKind': (chosen or {}).get('kind'),
+                  'status': outcome.get('status'), 'note': outcome.get('note'),
+                  'alternatives': [item.get('id') for item in options if item.get('id') != outcome.get('choice')]},
+            status=status)
 
     async def delegate(self, session, args):
         if session['role'] != 'orchestrator':
@@ -1415,8 +2502,11 @@ class HarnessRuntime(RuntimeCommands):
         config = session['config']
         child_route = route_for(configured.get('model')) or config['route']
         child = self.create({**child_route,
-            'skills': sorted(set(config['skills']) & ROLE_SKILLS[role]), 'maxSteps': min(10, config['maxSteps']),
-            'deadlineSeconds': min(120, config['deadlineSeconds']), 'contextWindow': config['contextWindow'],
+            'skills': sorted(set(config['skills']) & ROLE_SKILLS[role]),
+            'maxSteps': min(CHILD_MAX_STEPS, config['maxSteps']),
+            'deadlineSeconds': min(CHILD_DEADLINE_SECONDS, config['deadlineSeconds']),
+            'contextWindow': config['contextWindow'],
+            'contextWindowSource': config.get('contextWindowSource'),
             'instructions': configured.get('systemPromptAppended', '')},
             parent_id=session['id'], role=role, parent_tools=config['tools'])
         context_data = str(args.get('context', ''))[:16000] if args.get('context') else ''
@@ -1449,6 +2539,13 @@ class HarnessRuntime(RuntimeCommands):
         status = child_rec['status']
         child_events = self.store.events(child['id'])
         last_error = next((e['data'].get('message') for e in reversed(child_events) if e['type'] == 'error'), None)
+        # C2 — con bị nhà cung cấp cắt ở trần output: `_run` đã thử lại một lần rồi trả câu trả lời
+        # dở, và hàng `sessions` của con vẫn `completed` (giữ nguyên từ vựng trạng thái). Nên sự
+        # thật phải đọc từ notice BỀN của chính con, không đọc từ status — nếu không, cha sẽ nhận
+        # một "thành công" trong khi câu trả lời mới có một nửa.
+        if status == 'completed' and self.truncated_turn(child['id']):
+            status = 'partial'
+            last_error = last_error or TRUNCATED_OUTPUT_NOTICE_CODE
         last_error = bound_child_text(last_error, CHILD_ECHO_MAX_CHARS)[0] if last_error else None
         tools_run = [e['data'].get('name') for e in child_events if e['type'] == 'tool_start']
         # The child's answer is the only unbounded string a delegated run produces. Bound it in the payload
@@ -1460,5 +2557,9 @@ class HarnessRuntime(RuntimeCommands):
                   'goal': echo_goal, 'context': echo_context, 'prompt': echo_prompt,
                   'summary': summary + diag, 'answerChars': len(answer_text), 'truncated': truncated,
                   'is_error': status != 'completed', 'last_error': last_error, 'tools_run': tools_run}
+        if status == 'partial':
+            # Lý do ĐÚNG MÃ cho cha: đây là cắt ở trần output của nhà cung cấp, không phải một
+            # lượt con hỏng vì hạ tầng — hai ca này cần hai cách xử lý khác nhau ở cha.
+            result['reason'] = TRUNCATED_OUTPUT_NOTICE_CODE
         self.store.emit(session['id'], 'child', result)
         return result

@@ -22,6 +22,7 @@ import {
   anthropicMessageBody,
   estimateInputTokens,
   resetThoughtSignatures,
+  signatureFamily,
   thoughtSignatureFor,
 } from '../src/anthropic.mjs';
 
@@ -168,6 +169,50 @@ test('a Gemini thought signature survives the Anthropic tool round trip', () => 
     ],
   });
   assert.equal('thought_signature' in unsigned.messages[1].tool_calls[0], false);
+  resetThoughtSignatures();
+});
+
+test('a remembered signature is only replayed to the model family that produced it', () => {
+  // Antigravity serves Gemini and Claude models behind one API and each backend only
+  // accepts its own signatures: a Claude signature replayed to Gemini is a 400
+  // "Corrupted thought signature." (9Router v0.5.81, `signatureFamily()` in
+  // `open-sse/services/thoughtSignatureStore.js`). The family is read off the model id
+  // the client asked for, which is the same string on both sides of the round trip.
+  assert.equal(signatureFamily('conn/claude-sonnet-4-20250514'), 'claude');
+  assert.equal(signatureFamily('conn/gemini-2.5-pro'), 'gemini');
+  assert.equal(signatureFamily('conn/model'), 'conn/model', 'an id with no family keyword is its own family');
+  assert.equal(signatureFamily(''), null);
+  assert.equal(signatureFamily(undefined), null);
+
+  resetThoughtSignatures();
+  const answer = (model, id, signature) => {
+    const state = createAnthropicState({ id: `msg_${id}`, model, inputTokens: 5 });
+    for (const event of [
+      { type: 'delta', delta: { tool_calls: [{ index: 0, id, type: 'function', function: { name: 'lookup', arguments: '{}' }, thought_signature: signature }] } },
+      { type: 'finish', finishReason: 'tool_calls' },
+    ]) anthropicApply(state, event);
+  };
+  const replay = (model, id) => anthropicToOpenAI({
+    model,
+    max_tokens: 64,
+    messages: [
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: [{ type: 'tool_use', id, name: 'lookup', input: {} }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'done' }] },
+    ],
+  }).messages[1].tool_calls[0];
+
+  answer('conn/claude-sonnet-4-20250514', 'call_claude', 'sig-claude');
+  answer('conn/gemini-2.5-pro', 'call_gemini', 'sig-gemini');
+  assert.equal(replay('conn/claude-sonnet-4-20250514', 'call_claude').thought_signature, 'sig-claude', 'the producing family still gets its signature back');
+  assert.equal(replay('conn/gemini-2.5-pro', 'call_gemini').thought_signature, 'sig-gemini');
+  assert.equal('thought_signature' in replay('conn/gemini-2.5-pro', 'call_claude'), false, 'a Claude signature never travels to a Gemini model');
+  assert.equal('thought_signature' in replay('conn/claude-sonnet-4-20250514', 'call_gemini'), false, 'and a Gemini signature never travels to a Claude model');
+
+  // An entry with no family — a producer the ingress could not classify — stays usable
+  // for any model, the way 9Router keeps entries stored before families were recorded.
+  answer('', 'call_familyless', 'sig-any');
+  assert.equal(replay('conn/gemini-2.5-pro', 'call_familyless').thought_signature, 'sig-any');
   resetThoughtSignatures();
 });
 

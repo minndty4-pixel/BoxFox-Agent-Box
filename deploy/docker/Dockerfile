@@ -287,6 +287,11 @@ COPY box-firewall-rules.py /usr/local/bin/box-firewall-rules.py
 COPY ide-proxy.py /usr/local/bin/ide-proxy.py
 COPY plan_files.py /usr/local/bin/plan_files.py
 COPY capture.py /usr/local/bin/capture.py
+# Nhật ký phiên (đợt 20): `session_files.py` là nguồn duy nhất cho khung thư mục
+# `.session-history/<sid8>/…`, `session_ops.py` là mặt op cho `worker.py` (được gửi nội
+# tuyến qua `docker exec`). Thiếu hai tệp này thì `worker.py` trả `SESSION_OPS_UNAVAILABLE`.
+COPY session_files.py /usr/local/bin/session_files.py
+COPY session_ops.py /usr/local/bin/session_ops.py
 COPY workspace_files.py /usr/local/bin/workspace_files.py
 COPY browser_capture.py /usr/local/bin/browser_capture.py
 COPY inspect_element.py /usr/local/bin/inspect_element.py

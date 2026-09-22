@@ -34,6 +34,7 @@ import {
 import type { ChatMessage, ReferencedFile } from '../../types/ui'
 import { useAgentStore } from '../../store/agentStore'
 import { useUiStore } from '../../store/uiStore'
+import { readingColumnClass } from '../../lib/readingColumn'
 import { useRouterChatStore, type RouterChatSelection, type RouterChatTurn } from '../../store/routerChatStore'
 import { useProviderStore } from '../../store/providerStore'
 import { useT } from '../../i18n/context'
@@ -174,7 +175,12 @@ export function ChatPanel() {
   const messages = useAgentStore((s) => s.messages)
   const requests = useAgentStore((s) => s.requests)
   const proposal = useAgentStore((s) => s.proposal)
-  const openTab = useUiStore((s) => s.openTab)
+  // Vòng 18 (Kế hoạch E2, việc 6): bốn lối người dùng bấm trong chat phải THẤY bảng.
+  // `openTab` chỉ mở tab trong im lặng; khi bảng Workspace đang ẩn thì nó chỉ xếp hàng.
+  // `showTab` mới là đường "người dùng vừa bấm một thứ cần bảng": hiện bảng + ghim + mở.
+  const showTab = useUiStore((s) => s.showTab)
+  // Bảng Workspace ẩn ⇒ cột chat giãn hết, nội dung đọc gom vào cột 768 px (việc 7).
+  const workspaceHidden = useUiStore((s) => s.workspaceHidden)
   const chatScrollRef = useRef<HTMLDivElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const chatId = useAgentStore((s) => s.activeSessionId)
@@ -521,6 +527,12 @@ export function ChatPanel() {
         data-testid="chat-scroll"
         className="min-h-0 flex-1 overflow-y-auto p-5 space-y-6 select-text"
       >
+        {/* Cột đọc: bảng ẩn thì nội dung gom 768 px ở giữa; `h-full` giữ nguyên chỗ
+            neo của trạng thái rỗng/đang nạp (khối đó tự căn giữa theo `h-full`). */}
+        <div
+          data-testid="chat-reading-column"
+          className={`h-full space-y-6 ${readingColumnClass(workspaceHidden)}`}
+        >
         {showEmptyState && hydratingSession ? (
           <div
             data-testid="chat-session-loading"
@@ -559,8 +571,8 @@ export function ChatPanel() {
                   group.message.kind === 'permission_request' ? group.message.request_id : '',
                 )}
                 hasModeSwitch={proposal !== null && group.message.kind === 'mode_switch'}
-                onOpenPermission={() => openTab('decisions')}
-                onOpenModeSwitch={() => openTab('plan')}
+                onOpenPermission={() => showTab('decisions')}
+                onOpenModeSwitch={() => showTab('plan')}
                 onOpenLightbox={setLightboxMedia}
               />
             )
@@ -584,13 +596,13 @@ export function ChatPanel() {
             selection={selection}
             // Chip kế hoạch / sub-agent / quyết định trong transcript đều mở tab
             // tại chỗ — người dùng đọc chat không bị mất vị trí (giữ nguyên khung cuộn).
-            onOpenTab={(tab, target) => openTab(tab, target ?? null)}
+            onOpenTab={(tab, target) => showTab(tab, target ?? null)}
           />
         )}
         {/* Sub-agent Status Capsule — Theo dõi tiến độ sub-agent và mở SubagentInspectorPanel */}
         {harnessRun?.events.some(e => e.type === 'child') && (
           <div
-            onClick={() => openTab('subagents')}
+            onClick={() => showTab('subagents')}
             className="flex items-center justify-between gap-3 rounded-xl border border-brand/40 bg-brand/10 p-3 text-xs text-fg cursor-pointer hover:bg-brand/15 transition shadow-xs group"
           >
             <div className="flex items-center gap-2">
@@ -609,6 +621,7 @@ export function ChatPanel() {
         )}
 
         <div ref={messagesEndRef} />
+        </div>
 
       </div>
 
@@ -677,9 +690,12 @@ export function ChatPanel() {
       {/* Fullscreen Interactive Lightbox Modal */}
       {lightboxMedia && (
         <MediaLightboxModal
+          type={lightboxMedia.type}
           src={lightboxMedia.src}
+          poster={lightboxMedia.poster}
           caption={lightboxMedia.caption}
           sourceUrl={lightboxMedia.sourceUrl}
+          duration={lightboxMedia.duration}
           onClose={() => setLightboxMedia(null)}
         />
       )}
@@ -727,6 +743,7 @@ function ScreenshotsGroupCard({
             key={ss.id}
             onClick={() =>
               onOpenLightbox?.({
+                type: 'image',
                 src: ss.image_url,
                 caption: ss.caption,
                 sourceUrl: ss.source_url,
@@ -947,7 +964,8 @@ function formatBytes(bytes?: number) {
 /**
  * Khối hiển thị danh sách file tham chiếu / liên quan (Referenced Files).
  * - Hiển thị icon định dạng màu theo extension (.py, .ts, .md, .json...).
- * - Nút [👁 View]: Gọi `openTab('files')` và `selectFile(path)` để mở file tại panel Code Studio bên phải.
+ * - Nút [👁 View]: Gọi `selectFile(path)` — nó mở tab Files và HIỆN bảng Workspace
+ *   nếu bảng đang ẩn (`showTab`), để cú bấm không im lặng.
  * - Nút [⬇ Download]: Xuất file trực tiếp về máy tính người dùng.
  */
 function ReferencedFilesList({ files }: { files: ReferencedFile[] }) {
@@ -1164,7 +1182,7 @@ function RouterTurnBubble({ turn, snapshot, onOpenLightbox }: {
         <div className="max-w-[85%] rounded-2xl bg-panel2 border border-line px-4 py-3 text-xs leading-relaxed text-fg shadow-xs">
           {turn.imageUrl && (
             <div
-              onClick={() => onOpenLightbox?.({ src: turn.imageUrl!, caption: t('chat.attachedImage') })}
+              onClick={() => onOpenLightbox?.({ type: 'image', src: turn.imageUrl!, caption: t('chat.attachedImage') })}
               className="mb-2.5 max-w-sm cursor-pointer overflow-hidden rounded-xl border border-line/80 bg-panel hover:border-brand/60 transition shadow-xs group"
               title={t('chat.openImage')}
             >

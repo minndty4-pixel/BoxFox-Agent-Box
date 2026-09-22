@@ -3,7 +3,13 @@ import { createRoot } from 'react-dom/client'
 import { describe, expect, it, vi } from 'vitest'
 import { usePlanFiles } from './usePlanFiles'
 import type { PlanFilesState } from './usePlanFiles'
-import type { PlanDocument, PlanManifest, PlanRepository } from '../lib/plans'
+import type {
+  PlanDocument,
+  PlanManifest,
+  PlanRepository,
+  PlanStatusClient,
+  PlanStatusReport,
+} from '../lib/plans'
 
 const modifiedAt = '2026-08-27T00:00:00Z'
 
@@ -42,6 +48,25 @@ function documentFor(identity: string, version: number): PlanDocument {
   }
 }
 
+/**
+ * Sổ duyệt của harness là một đường mạng riêng; test ở file này chỉ quan tâm manifest/content nên
+ * bơm một bản giả tất định thay vì để `fetch` thật chạy.
+ */
+const statusClient: PlanStatusClient = {
+  read: async (identity, version) =>
+    ({
+      identity,
+      version,
+      state: 'draft',
+      stateVersion: version,
+      review: null,
+      reviewStale: false,
+      indexAvailable: true,
+      evaluation: null,
+    }) satisfies PlanStatusReport,
+  submitReview: async () => ({ review: null, forwarded: true }),
+}
+
 async function mount(repository: PlanRepository) {
   ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   const host = document.createElement('div')
@@ -50,7 +75,7 @@ async function mount(repository: PlanRepository) {
   let latest: PlanFilesState | null = null
 
   function Probe() {
-    latest = usePlanFiles(repository)
+    latest = usePlanFiles(repository, statusClient)
     return null
   }
 

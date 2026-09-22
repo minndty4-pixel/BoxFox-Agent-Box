@@ -24,7 +24,8 @@ from __future__ import annotations
 import re
 
 __all__ = ['REQUIRED_SECTIONS', 'PLAN_QUALITY_PREFIX', 'plan_quality_issues', 'plan_quality_message',
-           'check_plan_quality']
+           'check_plan_quality', 'sections', 'has_concrete_check', 'has_expected_result',
+           'claims_external_facts']
 
 PLAN_QUALITY_PREFIX = 'PLAN_QUALITY_REJECTED'
 
@@ -157,7 +158,7 @@ def _section_heading(line: str):
     return None
 
 
-def _sections(markdown: str):
+def sections(markdown: str):
     """[(heading, body)] for every section-opening line, in document order."""
     sections = []
     body = None
@@ -179,7 +180,7 @@ def _find(sections, keys):
     return None
 
 
-def _has_concrete_check(body: str) -> bool:
+def has_concrete_check(body: str) -> bool:
     """True when the section names a real command or check rather than a description of one."""
     return bool(_INLINE_CODE_RE.search(body) or _COMMAND_TOKEN_RE.search(body)
                 or _MARKER_LINE_RE.search(body) or _HTTP_CALL_RE.search(body)
@@ -187,25 +188,35 @@ def _has_concrete_check(body: str) -> bool:
                 or any(_FENCE_RE.match(line) for line in body.splitlines()))
 
 
-def _has_expected_result(body: str) -> bool:
+def has_expected_result(body: str) -> bool:
     """True when the section states what the check must produce."""
     lowered = body.lower()
     return any(marker in lowered for marker in _EXPECTED_MARKERS) or bool(_EXPECTED_RE.search(body))
 
 
-def _claims_external_facts(markdown: str) -> bool:
+def claims_external_facts(markdown: str) -> bool:
     return any(pattern.search(markdown or '') for pattern in _EXTERNAL_FACT_RES)
+
+
+# Bốn hàm trên được công khai ở vòng 20 (§5 của plan): `plan_eval.py` chấm P3 (structure), P4
+# (executability) và P6 (evidence) bằng đúng chúng, để luật cấu trúc chỉ có MỘT bản cài đặt —
+# bản trong `check_plan_quality()` mà mọi plan đã phải đi qua từ trước. Tên cũ có gạch dưới vẫn
+# là bí danh: nơi đang gọi chúng không phải đổi, và một bản sao thứ hai không thể mọc ra.
+_sections = sections
+_has_concrete_check = has_concrete_check
+_has_expected_result = has_expected_result
+_claims_external_facts = claims_external_facts
 
 
 def plan_quality_issues(markdown: str) -> list:
     """Ids of the requirements `markdown` fails, in the order of REQUIRED_SECTIONS; `[]` = accepted."""
     text = str(markdown or '')
-    sections = _sections(text)
+    found_sections = sections(text)
     issues = []
     for spec in REQUIRED_SECTIONS:
-        if spec['trigger'] == 'external_facts' and not _claims_external_facts(text):
+        if spec['trigger'] == 'external_facts' and not claims_external_facts(text):
             continue
-        found = _find(sections, spec['heading_keys'])
+        found = _find(found_sections, spec['heading_keys'])
         if not found:
             issues.append(spec['missing'][0])
             continue
@@ -214,9 +225,9 @@ def plan_quality_issues(markdown: str) -> list:
             issues.append(spec['missing'][0])
             continue
         if spec['id'] == 'verification':
-            if not _has_concrete_check(body):
+            if not has_concrete_check(body):
                 issues.append('verification-command')
-            if not _has_expected_result(body):
+            if not has_expected_result(body):
                 issues.append('verification-expected')
     return issues
 

@@ -2,6 +2,9 @@
  * Test cho máy trạng thái noVNC (logic thuần, không DOM).
  *
  * Vòng đời kết nối thật được test riêng ở `attempt.test.ts`.
+ *
+ * Chính sách ở đây là của Kế hoạch E1: thang thử lại KHÔNG còn trần lượt, chỉ
+ * giữ ở nấc cuối 20 s; `exhausted` chỉ còn dành cho lý do không thể tự khỏi.
  */
 import { describe, it, expect } from 'vitest'
 import {
@@ -9,7 +12,10 @@ import {
   initialVncState,
   reduceVnc,
   retryDelayMs,
-  VNC_MAX_ATTEMPTS,
+  VNC_HELP_AFTER_ATTEMPTS,
+  VNC_RETRY_DELAYS_MS,
+  VNC_RETRY_MAX_DELAY_MS,
+  type VncOfflineReason,
   type VncState,
 } from './state'
 
@@ -19,6 +25,12 @@ describe('initialVncState', () => {
     expect(initialVncState.attempt).toBe(1)
     expect(initialVncState.seq).toBe(0)
     expect(initialVncState.exhausted).toBe(false)
+  })
+})
+
+describe('thang thử lại', () => {
+  it('nấc cuối của thang đúng bằng VNC_RETRY_MAX_DELAY_MS (trần giữ mãi)', () => {
+    expect(VNC_RETRY_DELAYS_MS[VNC_RETRY_DELAYS_MS.length - 1]).toBe(VNC_RETRY_MAX_DELAY_MS)
   })
 })
 
@@ -51,19 +63,30 @@ describe('reduceVnc', () => {
     expect(retryDelayMs(state)).toBe(20000)
   })
 
-  it('tới lần thứ 4 thất bại → exhausted = true, retryDelayMs = null', () => {
+  it('thang 3 → 8 → 20 → 20 ở các lượt 1..5, KHÔNG bao giờ exhausted', () => {
     let state: VncState = initialVncState
-    for (let i = 0; i < VNC_MAX_ATTEMPTS; i++) {
+    const ladder: number[] = []
+    const exhaustedFlags: boolean[] = []
+    for (let i = 0; i < 5; i++) {
       state = reduceVnc(state, { type: 'timeout' })
-      if (i < VNC_MAX_ATTEMPTS - 1) {
-        state = reduceVnc(state, { type: 'connectStarted' })
-      }
+      ladder.push(retryDelayMs(state) as number)
+      exhaustedFlags.push(state.exhausted)
+      if (i < 4) state = reduceVnc(state, { type: 'connectStarted' })
     }
-    expect(state.exhausted).toBe(true)
-    expect(retryDelayMs(state)).toBeNull()
+    // Lượt 4 và 5 đều 20 s — nấc cuối được GIỮ, không rơi vào null.
+    expect(ladder).toEqual([3000, 8000, 20000, 20000, 20000])
+    expect(exhaustedFlags).toEqual([false, false, false, false, false])
+    // Và còn xa mới hết: lượt thứ 12 vẫn hẹn 20 s.
+    for (let i = 0; i < 7; i++) {
+      state = reduceVnc(state, { type: 'connectStarted' })
+      state = reduceVnc(state, { type: 'timeout' })
+    }
+    expect(state.attempt).toBe(12)
+    expect(state.exhausted).toBe(false)
+    expect(retryDelayMs(state)).toBe(20000)
   })
 
-  it('kênh đang live bị phía kia đóng → vẫn còn nguyên ngân sách 3 lượt thử lại (D-7)', () => {
+  it('kênh đang live bị phía kia đóng → thang bắt đầu lại từ 3 s ở lượt 1', () => {
     const live = reduceVnc(initialVncState, { type: 'connected' })
     const next = reduceVnc(live, { type: 'closed' })
     expect(next.phase).toBe('offline')
@@ -79,32 +102,80 @@ describe('reduceVnc', () => {
     expect(next).toBe(offline)
   })
 
-  it("failed: các lý do cấu hình/khả năng → exhausted = true, thử lại vô nghĩa", () => {
+  it("failed: 'error' (không nằm trong TERMINAL_REASONS) → thử lại được, không exhausted", () => {
+    const next = reduceVnc(initialVncState, { type: 'failed', reason: 'error' })
+    expect(next.phase).toBe('offline')
+    expect(next.reason).toBe('error')
+    expect(next.exhausted).toBe(false)
+    expect(retryDelayMs(next)).toBe(3000)
+  })
+
+  it('failed: cả 6 lý do cấu hình/khả năng → exhausted = true, retryDelayMs = null', () => {
     for (const reason of [
       'security',
       'credentials',
       'mixedContent',
       'insecureContext',
       'unsupported',
-    ] as const) {
+      'disabled',
+    ] as readonly VncOfflineReason[]) {
       const next = reduceVnc(initialVncState, { type: 'failed', reason })
       expect(next.phase).toBe('offline')
       expect(next.reason).toBe(reason)
       expect(next.exhausted).toBe(true)
+      expect(retryDelayMs(next)).toBeNull()
     }
   })
 
-  it("skip → offline/skipped, exhausted = true; manualRetry sau đó → connecting, attempt = 1, seq tăng", () => {
+  it("skip → offline/skipped, exhausted = true, không hẹn thử lại; manualRetry sau đó → connecting, attempt = 1, seq tăng", () => {
     const skipped = reduceVnc(initialVncState, { type: 'skip' })
     expect(skipped.phase).toBe('offline')
     expect(skipped.reason).toBe('skipped')
     expect(skipped.exhausted).toBe(true)
+    expect(retryDelayMs(skipped)).toBeNull()
 
     const retried = reduceVnc(skipped, { type: 'manualRetry' })
     expect(retried.phase).toBe('connecting')
     expect(retried.attempt).toBe(1)
     expect(retried.exhausted).toBe(false)
     expect(retried.seq).toBeGreaterThan(skipped.seq)
+    // Về nấc đầu: thất bại ngay sau khi thử tay thì chờ 3 s, không phải 20 s.
+    expect(retryDelayMs(reduceVnc(retried, { type: 'timeout' }))).toBe(3000)
+  })
+
+  it('connected đặt lại attempt = 1 nên thang về nấc 3 s', () => {
+    let state: VncState = initialVncState
+    state = reduceVnc(state, { type: 'timeout' })
+    state = reduceVnc(state, { type: 'connectStarted' })
+    state = reduceVnc(state, { type: 'timeout' })
+    expect(retryDelayMs(state)).toBe(8000)
+
+    const back = reduceVnc(reduceVnc(state, { type: 'connectStarted' }), { type: 'connected' })
+    expect(back.attempt).toBe(1)
+
+    const dropped = reduceVnc(back, { type: 'closed' })
+    expect(dropped.attempt).toBe(1)
+    expect(retryDelayMs(dropped)).toBe(3000)
+  })
+})
+
+describe('ngưỡng hiện link trợ giúp (VNC_HELP_AFTER_ATTEMPTS)', () => {
+  /** Đưa máy trạng thái tới đúng `attempt` bằng chuỗi timeout/connectStarted. */
+  function stateAtAttempt(attempt: number): VncState {
+    let state: VncState = initialVncState
+    while (state.attempt < attempt) {
+      state = reduceVnc(state, { type: 'timeout' })
+      state = reduceVnc(state, { type: 'connectStarted' })
+    }
+    return state
+  }
+
+  it('lượt 5 còn dưới ngưỡng, lượt 6 bằng đúng ngưỡng', () => {
+    expect(VNC_HELP_AFTER_ATTEMPTS).toBe(6)
+    expect(stateAtAttempt(5).attempt).toBe(5)
+    expect(stateAtAttempt(5).attempt < VNC_HELP_AFTER_ATTEMPTS).toBe(true)
+    expect(stateAtAttempt(6).attempt).toBe(6)
+    expect(stateAtAttempt(6).attempt >= VNC_HELP_AFTER_ATTEMPTS).toBe(true)
   })
 })
 

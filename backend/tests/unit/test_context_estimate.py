@@ -74,7 +74,7 @@ def test_a_one_prompt_mission_is_summarized_instead_of_failing():
     messages = _mission(20, payload=4096)
     seen = {}
 
-    async def summary(history):
+    async def summary(history, max_tokens=None):
         seen['history'] = history
         return {'choices': [{'message': {'content': 'Goal: CUA. Evidence: many captures.'}, 'finish_reason': 'stop'}]}
 
@@ -112,7 +112,7 @@ def test_pruning_an_old_capture_keeps_its_text_and_drops_the_image():
     messages = _mission(20, payload=4096)
     messages[-1]['content'][0]['text'] = '{"path": "/tmp/last.png", "width": 1280}'
 
-    async def summary(history):
+    async def summary(history, max_tokens=None):
         return {'choices': [{'message': {'content': 'Goal: CUA. Evidence: captures.'}, 'finish_reason': 'stop'}]}
 
     async def run():

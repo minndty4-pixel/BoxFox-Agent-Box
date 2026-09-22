@@ -70,7 +70,17 @@
 - `reason`: lý do gợi ý mở tab. **Hôm nay chỉ có hai giá trị được phát ra thật**: `plan_written` (khi agent ghi plan) và `decision_requested` (khi agent cần người dùng quyết định). Hai giá trị `file_selected` và `child_started` là **chỗ dành sẵn cho đợt sau** — chưa producer nào phát, nên đừng viết mã tiêu thụ dựa vào chúng; khi nào phát thật thì bổ sung vào đây trước.
 - Gợi ý cho UI, **không** phải mệnh lệnh: UI tự quyết định có mở hay không theo luật ở §3.
 
+### `plan_evaluated` (đợt 20)
+
+Phát sau khi harness chấm một bản kế hoạch theo thang điểm P1–P8 (`plan_eval.py`), trước khi
+`plan_written` được coi là "đã xong" ở phía UI.
+
+- `data`: `{identity, version, total, verdict, hardGate, gatesFailed, rubric, rejected}` —
+  `verdict ∈ {pass, pass_with_conditions, fail}`; một hard-gate trượt ⇒ `verdict = 'fail'` dù điểm còn.
+- Chỉ **một** sự kiện cho mỗi bản được chấm; bản bị từ chối không ghi file plan nào.
+
 ### Trạng thái phiên
+
 
 - Trong lúc chờ trả lời, `sessions.status = 'awaiting_decision'` (giá trị mới, nằm cạnh `running|completed|failed|cancelled|interrupted`).
 - Khi có trả lời, quay lại `running`; hết hạn thì lượt chạy tiếp tục với kết quả `rejected` (agent phải nói rõ là bị từ chối).
@@ -87,6 +97,37 @@
 - 409: `{"error": "DECISION_ALREADY_RESOLVED: ..."}`.
 - 400: `{"error": "DECISION_INVALID: ..."}` khi thiếu trường hoặc `choice` không nằm trong `options`.
 
+`POST /api/agent/plans/review`
+
+- Thân: `{identity, version, decision: 'approved'|'changes_requested', note}`.
+- 200: `{identity, version, decision, note, forwarded, review}` — `forwarded: false` khi box tắt;
+  quyết định **vẫn** được ghi vào sổ duyệt của harness (không bao giờ mất vì hạ tầng).
+- 400 khi thiếu `identity`/`version`/`decision` hoặc `decision` lạ.
+
+`GET /api/agent/plans/status?identity=<slug|dir/slug>&version=<n>`
+
+- 200: `{state, stateVersion, review, reviewStale, indexAvailable, identity, version, evaluation}`.
+- `state ∈ {draft, approved, changes_requested, superseded, none, unknown}`; `reviewStale: true` khi
+  bản trên box đã đổi kể từ lúc duyệt (so `sizeBytes`/`modifiedAt` đã ghim trong sổ).
+- `evaluation` (đợt 20): `null` hoặc `{identity, version, total, verdict, rubric: {P1..P8}, hardGate,
+  gatesFailed, layer, measures, evidence, warnings, evaluatedAt}`.
+
+`GET /api/agent/sessions/{sid}/journal?after=<seq>&kind=<k>&limit=`
+
+- 200: `{records, nextSeq, more, degraded}`; `records[]` mang `{seq, kind, id, status, text, data, ts}`.
+- `degraded: true` khi tầng file của nhật ký đã hỏng ít nhất một lần trong phiên (đọc từ `notice`
+  `JOURNAL_DEGRADED`/`CHECKPOINT_FILE_FAILED`).
+
+`GET /api/agent/journal/tasks?status=&limit=`
+
+- 200: `{tasks: [{id, session, sid8, status, text, created, ts, refs, evidence}]}` — đọc từ bảng
+  `journal` của harness, nên trả lời được cả khi box tắt.
+
+Payload `GET /api/agent/sessions/{sid}` cộng thêm (additive, chỗ đọc cũ không phải biết):
+
+- `sessionMetrics: {messageCount, contextEstimate, compressionCount, deadlineClamped}`;
+- `journal: {records, lastSeq, degraded}`.
+
 ### Container (`deploy/docker/ide-proxy.py` + `workspace_files.py`)
 
 Tất cả đều `POST`, JSON, cần `X-BoxFox-Api-Key`, trả 400 `{"error": "..."}` khi sai.
@@ -99,6 +140,11 @@ Tất cả đều `POST`, JSON, cần `X-BoxFox-Api-Key`, trả 400 `{"error": "
 | `/__box/files/move` | `{"path": "src/a.md", "destination": "docs"}` | `{"path": "src/a.md", "newPath": "docs/a.md"}` |
 | `/__box/files/delete` | `{"path": "src/a.md"}` | `{"path": "src/a.md", "trashPath": ".trash/1758300012-a.md"}` |
 | `/__box/plans/review` | `{"identity": "v1-pilot", "decision": "approved", "note": ""}` | `{"identity": "v1-pilot", "decision": "approved", "note": "", "updatedAt": 1758300012.5}` |
+| `/__box/captures/prune` | `{"session": "<32 hex>", "dryRun": true}` | `{"ok": true, "removedFiles": 0, "removedBytes": 0, "pinned": [...]}` |
+
+Ba route capture/record (`/__box/capture`, `/__box/record/start`) nhận thêm (tuỳ chọn)
+`session`, `step`, `toolCallId`: có `session` thì file vào `captures/<kind>/<sid8>/` với tên
+`<sid8>_<step3>_<slug>.<ext>`; không có thì giữ nguyên khuôn phẳng cũ (tương thích ngược).
 
 Luật chung cho các API ghi:
 

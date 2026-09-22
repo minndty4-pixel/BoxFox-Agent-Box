@@ -25,6 +25,7 @@ ide_proxy = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ide_proxy)
 
 ORIGIN_OK = "http://localhost:3100"
+SESSION_ID = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
 ORIGIN_BAD = "https://malicious.example"
 
 
@@ -111,16 +112,44 @@ class IdeProxyCaptureTest(unittest.TestCase):
 
     def test_capture_result_passthrough(self) -> None:
         result = {"ok": True, "path": "/tmp/x.png", "width": 800, "height": 600}
-        with patch.object(ide_proxy.capture, "dispatch_capture", return_value=result):
+        with patch.object(ide_proxy.capture, "dispatch_capture", return_value=result) as capture_call:
             status, body = self._status(
                 "/__box/capture", method="POST",
                 body={"target": {"kind": "screen"}}, headers={"Origin": ORIGIN_OK},
             )
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body), result)
+        # A3 (đợt 20): định danh phiên/bước/công cụ phải đi QUA proxy — thiếu mắt nối này thì
+        # ảnh mới vẫn rơi vào thư mục phẳng dù `capture.py` đã biết xếp theo phiên.
+        self.assertEqual(capture_call.call_args.kwargs,
+                         {"session": None, "step": None, "tool_call_id": None})
+
+    def test_capture_forwards_the_session_step_and_tool_call(self) -> None:
+        with patch.object(ide_proxy.capture, "dispatch_capture",
+                          return_value={"ok": True, "path": "/x.png"}) as capture_call:
+            status, _ = self._status(
+                "/__box/capture", method="POST",
+                body={"target": {"kind": "screen"}, "session": SESSION_ID, "step": 3,
+                      "toolCallId": "call-1"}, headers={"Origin": ORIGIN_OK},
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(capture_call.call_args.args[0], {"kind": "screen"})
+        self.assertEqual(capture_call.call_args.kwargs,
+                         {"session": SESSION_ID, "step": 3, "tool_call_id": "call-1"})
+
+    def test_record_start_forwards_the_session_too(self) -> None:
+        with patch.object(ide_proxy.capture, "dispatch_record_start",
+                          return_value={"recordingId": "r1"}) as started:
+            status, _ = self._status(
+                "/__box/record/start", method="POST",
+                body={"target": {"kind": "screen"}, "session": SESSION_ID}, headers={"Origin": ORIGIN_OK},
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(started.call_args.kwargs,
+                         {"session": SESSION_ID, "step": None, "tool_call_id": None})
 
     def test_capture_error_maps_to_status(self) -> None:
-        def raise_not_found(_target, _output="file"):
+        def raise_not_found(_target, _output="file", **_rest):
             raise ide_proxy.capture.CaptureError("Không tìm thấy", status_code=404)
         with patch.object(ide_proxy.capture, "dispatch_capture", side_effect=raise_not_found):
             status, body = self._status(
@@ -129,6 +158,27 @@ class IdeProxyCaptureTest(unittest.TestCase):
             )
         self.assertEqual(status, 404)
         self.assertEqual(json.loads(body), {"error": "Không tìm thấy"})
+
+    def test_prune_route_passes_the_session_and_dry_run(self) -> None:
+        """A8: dọn ảnh theo trần F2 — route cho người vận hành, mặc định chỉ xem trước."""
+        with patch.object(ide_proxy.capture, "dispatch_captures_prune",
+                          return_value={"ok": True, "removedFiles": 0}) as prune:
+            status, body = self._status(
+                "/__box/captures/prune", method="POST", body={}, headers={"Origin": ORIGIN_OK},
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {"ok": True, "removedFiles": 0})
+        self.assertEqual(prune.call_args.kwargs, {"session": None, "dry_run": False})
+
+        with patch.object(ide_proxy.capture, "dispatch_captures_prune",
+                          return_value={"ok": True}) as prune:
+            self._status("/__box/captures/prune", method="POST",
+                         body={"session": SESSION_ID, "dryRun": True}, headers={"Origin": ORIGIN_OK})
+        self.assertEqual(prune.call_args.kwargs, {"session": SESSION_ID, "dry_run": True})
+
+    def test_prune_route_rejects_get(self) -> None:
+        status, _ = self._status("/__box/captures/prune", headers={"Origin": ORIGIN_OK})
+        self.assertEqual(status, 405)
 
     def test_record_stop_requires_id(self) -> None:
         status, _ = self._status(

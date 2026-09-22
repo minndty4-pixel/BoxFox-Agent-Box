@@ -19,8 +19,8 @@
  * `ScreenState` là nhãn của kênh agent, gán nó cho một khung hình VNC không
  * liên quan là nói dối về nguồn gốc dữ liệu.
  */
-import { useEffect, useState } from 'react'
-import { ChevronDown, ChevronUp } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { ChevronDown, ChevronUp, Sparkles } from 'lucide-react'
 import { useAgentStore } from '../../store/agentStore'
 import { useComposerStore } from '../../store/composerStore'
 import { useT, type TKey } from '../../i18n/context'
@@ -28,7 +28,7 @@ import { useVncScreen } from '../../hooks/useVncScreen'
 import { useNow } from '../../hooks/useNow'
 import { useElementInspector } from '../../hooks/useElementInspector'
 import { retrySecondsLeft } from '../../lib/retry'
-import type { VncOfflineReason } from '../../lib/vnc/state'
+import { VNC_HELP_AFTER_ATTEMPTS, type VncOfflineReason } from '../../lib/vnc/state'
 import { PanelShell, Chip, StatusChip } from '../ui'
 import { IntegrityBadge, ConfidentialityBadge, LabelDot } from '../LabelDot'
 import { ElementInspectorOverlay } from '../sandbox/ElementInspectorOverlay'
@@ -54,6 +54,9 @@ const HAZARD_BORDER: React.CSSProperties = {
   backgroundImage:
     'repeating-linear-gradient(45deg, rgb(245 158 11 / 0.45) 0 8px, transparent 8px 16px)',
 }
+
+/** Bao lâu thì dải `Reconnected` tự tắt — đủ để đọc, không đủ để thành nhiễu. */
+const RECONNECTED_STRIP_MS = 4000
 
 function MockBrowser({ instruction }: { instruction: string }) {
   return (
@@ -227,57 +230,152 @@ function ConnectingCard({ url }: { url: string }) {
   )
 }
 
-function OfflineAlert({
-  url,
-  reason,
-  hasMockFrame,
-  onRetry,
-}: {
-  url: string
-  reason: VncOfflineReason | null
-  /** `false` ⇒ tuyệt đối không được nói "đang xem mô phỏng", vì chẳng có gì để xem. */
-  hasMockFrame: boolean
-  onRetry: () => void
-}) {
+/**
+ * Link "Cách bật box" — chữ gạch chân, KHÔNG nền, KHÔNG phải nút chính.
+ *
+ * Vẫn là `<button>` thật (không phải `<a>`) để bàn phím và trình đọc màn hình
+ * dùng được; nội dung mở ra chỉ là hướng dẫn, không phải một hành động khác.
+ * Dùng chung cho lớp phủ (từ lượt thứ `VNC_HELP_AFTER_ATTEMPTS`) và thẻ lý do
+ * không thể tự khỏi.
+ */
+function HowToStartBox() {
   const t = useT()
-  const [showHelp, setShowHelp] = useState(false)
+  const [open, setOpen] = useState(false)
   return (
-    <div
-      role="alert"
-      className="mb-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-amber-800 dark:text-amber-200"
-    >
-      <p className="text-[12px] font-bold uppercase tracking-wide">
-        {hasMockFrame ? t('screen.offlineTitle') : t('screen.noFrameTitle')}
-      </p>
-      <p className="mt-1 text-[11px] leading-relaxed">
-        {hasMockFrame ? t('screen.offlineBody') : t('screen.noFrameBody')}
-      </p>
-      {reason && <p className="mt-1 text-[11px] leading-relaxed">{t(OFFLINE_REASON_KEY[reason], { url })}</p>}
-      <div className="mt-2 flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          onClick={onRetry}
-          className="rounded-md bg-fg px-3 py-1.5 text-[11px] font-semibold text-bg"
-        >
-          {t('screen.retry')}
-        </button>
-        <button
-          type="button"
-          aria-expanded={showHelp}
-          onClick={() => setShowHelp((v: boolean) => !v)}
-          className="rounded-md border border-line px-3 py-1.5 text-[11px] font-semibold text-muted hover:text-fg"
-        >
-          {t('screen.howToStartBox')}
-        </button>
-      </div>
-      {showHelp && (
-        <div className="mt-2 rounded-md bg-panel2 p-2 text-[11px] text-muted">
+    <>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className="text-[11px] text-muted underline underline-offset-2 hover:text-fg"
+      >
+        {t('screen.howToStartBox')}
+      </button>
+      {open && (
+        <div className="rounded-md bg-panel2 p-2 text-[11px] text-muted">
           <p>{t('screen.howToStartBoxBody')}</p>
           <code className="mt-1 block rounded bg-panel px-2 py-1">
             cd deploy/docker &amp;&amp; docker compose up -d
           </code>
         </div>
       )}
+    </>
+  )
+}
+
+/**
+ * Lớp phủ "đang kết nối" (Kế hoạch E1) — thay cho khối hổ phách
+ * `NO FRAME AVAILABLE` cùng hai nút thủ công đã xoá.
+ *
+ * Thang thử lại giờ chạy mãi, nên không còn gì để bấm: người dùng chỉ cần thấy
+ * việc đang diễn ra và còn bao lâu. Lớp phủ nằm trong thân panel
+ * (`absolute inset-0` của một khung `relative`), nên nó KHÔNG bao giờ che thanh
+ * trên của panel — các nút Select Element / Details vẫn nguyên chỗ.
+ *
+ * Dòng đếm CỐ Ý không nằm trong vùng `aria-live`: chuỗi đổi mỗi giây, thông báo
+ * từng giây là làm phiền trình đọc màn hình. Chỉ tiêu đề có `role="status"`.
+ */
+function ConnectingOverlay({
+  attempt,
+  retryAtMs,
+  retryDelayMs,
+  now,
+}: {
+  attempt: number
+  retryAtMs: number | null
+  retryDelayMs: number | null
+  now: number
+}) {
+  const t = useT()
+  const seconds = retryAtMs !== null ? retrySecondsLeft(retryAtMs, now) : null
+  // Thanh 2 px chạy đúng khoảng nghỉ đang hẹn; transition 1 s khớp nhịp đồng hồ
+  // `useNow` nên thanh chạy mượt giữa hai nhịp.
+  const progress =
+    retryAtMs !== null && retryDelayMs
+      ? Math.min(1, Math.max(0, 1 - (retryAtMs - now) / retryDelayMs)) * 100
+      : 0
+
+  return (
+    <div
+      data-testid="machine-connecting-overlay"
+      className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/40 px-6 text-center backdrop-blur-xs animate-in fade-in duration-150"
+    >
+      {/* Mark BoxFox — đúng công thức ở header sidebar, chỉ đổi `rounded-md`
+          thành `rounded-lg`; `animate-pulse` ở đây nghĩa là "đang xử lý". */}
+      <span className="flex size-6 items-center justify-center rounded-lg bg-blue-600/10 text-blue-400 animate-pulse motion-reduce:animate-none">
+        <Sparkles className="size-3.5" />
+      </span>
+      <p role="status" className="text-[13px] font-semibold">
+        {t('screen.connectingDesktop')}
+      </p>
+      <p className="font-mono text-[11px] text-muted">
+        {t('screen.attemptLabel', { n: attempt })}
+        {seconds !== null && (
+          <>
+            {' · '}
+            {t('screen.retryCountdown', { seconds })}
+          </>
+        )}
+      </p>
+      <div aria-hidden="true" className="h-0.5 w-40 overflow-hidden rounded-full bg-white/10">
+        <div
+          className="h-full bg-brand transition-[width] duration-1000 ease-linear motion-reduce:transition-none"
+          style={{ width: `${progress}%` }}
+        />
+      </div>
+      <p className="text-[11px] text-muted">{t('screen.empty')}</p>
+      {/* Sau vài lượt hỏng thì mới đáng nhắc tới việc bật máy — trước đó là làm
+          ồn. Thang vẫn chạy tiếp phía sau link này. */}
+      {attempt >= VNC_HELP_AFTER_ATTEMPTS && (
+        <div className="mt-1">
+          <HowToStartBox />
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Nhánh lý do KHÔNG THỂ TỰ KHỎI (`mixedContent`, `insecureContext`,
+ * `unsupported`, `security`, `credentials`, `disabled`, `skipped`).
+ *
+ * Thẻ tĩnh: không vòng xoay, không đếm ngược, không nút thử lại — một lớp phủ
+ * quay mãi ở đây sẽ là lời nói dối, vì chẳng có lượt nào đang chạy. Câu lý do
+ * cụ thể nằm ở hàng `note` của `PanelShell`, không lặp lại ở đây.
+ */
+function TerminalReasonCard() {
+  const t = useT()
+  return (
+    <div
+      role="alert"
+      className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-amber-800 dark:text-amber-200"
+    >
+      <p className="text-[12px] font-bold uppercase tracking-wide">{t('screen.noFrameTitle')}</p>
+      <p className="mt-1 text-[11px] leading-relaxed">{t('screen.noFrameBody')}</p>
+      <div className="mt-2">
+        <HowToStartBox />
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Thông báo hổ phách khi CÓ khung mô phỏng để xem (đường demo VPI).
+ *
+ * Nhãn trung thực không bao giờ biến mất; so với bản cũ nó chỉ mất hai nút thủ
+ * công. Câu lý do vẫn in ở đây như trước, vì khung mô phỏng bên dưới trông y hệt
+ * một màn hình thật — người xem cần biết vì sao nó lại ở đó.
+ */
+function SimulatedOfflineNotice({ reason, url }: { reason: VncOfflineReason | null; url: string }) {
+  const t = useT()
+  return (
+    <div
+      role="alert"
+      className="mb-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-amber-800 dark:text-amber-200"
+    >
+      <p className="text-[12px] font-bold uppercase tracking-wide">{t('screen.offlineTitle')}</p>
+      <p className="mt-1 text-[11px] leading-relaxed">{t('screen.offlineBody')}</p>
+      {reason && <p className="mt-1 text-[11px] leading-relaxed">{t(OFFLINE_REASON_KEY[reason], { url })}</p>}
     </div>
   )
 }
@@ -305,6 +403,23 @@ export function SandboxScreenPanel() {
   useEffect(() => {
     if (!isLive && inspector.armed) inspector.disarm()
   }, [isLive, inspector.armed, inspector.disarm])
+
+  // Dải "Đã kết nối lại": CHỈ hiện khi kênh từng rớt rồi sống lại. Lần nối đầu
+  // tiên không phải sự kiện đáng báo — nếu báo, nó thành thông báo cho mọi lần
+  // mở tab. `wasOfflineRef` giữ "đã từng rớt"; đặt lại sau khi đã báo.
+  const [reconnected, setReconnected] = useState(false)
+  const wasOfflineRef = useRef(false)
+  useEffect(() => {
+    if (vnc.phase === 'offline') {
+      wasOfflineRef.current = true
+      return
+    }
+    if (vnc.phase !== 'live' || !wasOfflineRef.current) return
+    wasOfflineRef.current = false
+    setReconnected(true)
+    const id = setTimeout(() => setReconnected(false), RECONNECTED_STRIP_MS)
+    return () => clearTimeout(id)
+  }, [vnc.phase])
 
   // Khung sáng trên lớp phủ — chỉ vẽ khi ngăn kéo đang hiện MỘT KẾT QUẢ DOM
   // (có `screenBox` framebuffer sẵn); nhánh desktop không có toạ độ nào để
@@ -336,6 +451,10 @@ export function SandboxScreenPanel() {
         {t('screen.liveChip')}
       </StatusChip>
     ) : vnc.phase === 'connecting' ? (
+      <StatusChip tone="busy">{t('screen.connectingChip')}</StatusChip>
+    ) : !vnc.exhausted ? (
+      // Offline nhưng thang còn hẹn ⇒ panel ĐANG kết nối, không phải "hết khung
+      // hình". Chip `warn` ở đây là nói dối (Kế hoạch E1).
       <StatusChip tone="busy">{t('screen.connectingChip')}</StatusChip>
     ) : (
       <StatusChip tone="warn">
@@ -375,15 +494,8 @@ export function SandboxScreenPanel() {
           {detailsOpen ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
         </button>
       )}
-      {vnc.phase === 'offline' && (
-        <button
-          type="button"
-          onClick={vnc.retry}
-          className="rounded-md border border-line px-2 py-1 text-[11px] font-semibold text-muted hover:text-fg"
-        >
-          {t('screen.retry')}
-        </button>
-      )}
+      {/* KHÔNG còn nút "Thử kết nối lại" ở đây: thang thử lại chạy mãi, và nút
+          thủ công chỉ khiến người dùng tưởng panel đã bỏ cuộc (Kế hoạch E1). */}
     </div>
   )
 
@@ -394,7 +506,10 @@ export function SandboxScreenPanel() {
           ? t(OFFLINE_REASON_KEY[vnc.reason], { url: vnc.url })
           : undefined
 
-  const retrySeconds = vnc.retryAtMs !== null ? retrySecondsLeft(vnc.retryAtMs, now) : null
+  // Lớp phủ chỉ dành cho nhánh KHÔNG có khung mô phỏng: khi có khung mô phỏng
+  // thì đường demo VPI giữ nguyên nhãn trung thực của nó (Kế hoạch E1, điểm lệch
+  // #2 — container noVNC bị đỗ ra ngoài luồng nên không có "khung cũ dưới lớp mờ").
+  const showConnectingOverlay = screen === null && vnc.phase === 'offline' && !vnc.exhausted
 
   return (
     <PanelShell title={t('screen.title')} toolbar={toolbar} note={note}>
@@ -446,7 +561,9 @@ export function SandboxScreenPanel() {
           className={
             isLive
               ? 'flex min-h-0 flex-1 flex-col overflow-hidden'
-              : 'flex min-h-0 flex-1 flex-col overflow-auto px-2 py-2'
+              : // `relative` để lớp phủ "đang kết nối" phủ ĐÚNG thân panel này —
+                // thanh trên, thanh tab và footer không bị nó nuốt.
+                'relative flex min-h-0 flex-1 flex-col overflow-auto px-2 py-2'
           }
         >
           {/* Khung noVNC luôn được mount (không hidden/h-0) để scaleViewport đo đúng
@@ -475,28 +592,42 @@ export function SandboxScreenPanel() {
                 cùng chuỗi đó đã là `aria-label` của vùng `role="application"`
                 ở trên, nên trình đọc màn hình vẫn đọc được.
               */}
-              {/* Banner "đã lên nòng" — dải TUYỆT ĐỐI đè lên mép trên canvas
-                  (như thẻ kích thước khung hình ở dưới), KHÔNG nằm trong luồng
-                  flex. Đặt `shrink-0` trong luồng lại co kéo container noVNC ⇒
+              {/* Dải nhỏ ở mép trên canvas — MỘT khe, hai nội dung, không bao
+                  giờ hai dải chồng nhau: ưu tiên "Đã kết nối lại" (chỉ 4 giây),
+                  hết 4 giây thì dải "đã lên nòng" hiện lại nếu inspector còn bật.
+                  Cả hai đều TUYỆT ĐỐI, KHÔNG nằm trong luồng flex: đặt
+                  `shrink-0` trong luồng lại co kéo container noVNC ⇒
                   `rfb.resizeSession=true` đổi độ phân giải màn hình thật (trap
                   F-3, mục 12 — đúng lỗi review đã chỉ). `pointer-events-none`
                   để cú bấm vẫn tới lớp bắt của `ElementInspectorOverlay`. */}
-              {inspector.armed && (
+              {isLive && reconnected ? (
                 <div
                   role="status"
-                  className="pointer-events-none absolute inset-x-0 top-0 bg-brand/10 px-3 py-1.5 text-center text-[11px] font-medium text-brand"
+                  className="pointer-events-none absolute inset-x-0 top-0 bg-emerald-500/10 px-3 py-1.5 text-center text-[11px] font-medium text-emerald-400"
                 >
-                  {t('screen.inspector.armedBanner')}
+                  {t('screen.reconnected')}
                 </div>
+              ) : (
+                inspector.armed && (
+                  <div
+                    role="status"
+                    className="pointer-events-none absolute inset-x-0 top-0 bg-brand/10 px-3 py-1.5 text-center text-[11px] font-medium text-brand"
+                  >
+                    {t('screen.inspector.armedBanner')}
+                  </div>
+                )
               )}
-              {isLive && vnc.frameSize && !detailsOpen && (
-                <span className="pointer-events-none absolute bottom-2 right-2 rounded bg-black/60 px-1.5 py-0.5 text-[10px] text-slate-200">
-                  {t('screen.frameSize', {
-                    width: vnc.frameSize.width,
-                    height: vnc.frameSize.height,
-                  })}
-                </span>
-              )}
+              {/*
+                KHÔNG dựng lại thẻ số đo điểm ảnh ở góc dưới-phải (Kế hoạch E4).
+                Con số đó là kích thước ĐÃ THƯƠNG LƯỢNG với box, không phải hằng
+                số: `lib/vnc/fit.ts` đặt `rfb.resizeSession = true` nên hôm nay
+                là 875 × 723, sau một lần đổi cỡ panel là 1280 × 800 — cả hai
+                đều đúng, và nhãn "khung hình từ máy thật" không hứa một con số
+                cố định. Khi chưa live thì không có framebuffer nào để đo, nên
+                chỗ đúng của nó là ngăn kéo `Details` (chỉ render khi
+                `phase === 'live'`) — nơi nó vẫn còn, kèm nguồn khung hình.
+                Phần đọc số trong `useVncScreen` giờ chỉ nuôi ngăn kéo đó.
+              */}
               {/* Lớp phủ + ngăn kéo Element Selector (khung ④, F9/F10/F11) — thêm
                   làm ANH/EM tuyệt đối với div `containerRef` ở trên, theo đúng
                   khuôn của thẻ kích thước khung hình ngay phía trên: KHÔNG chạm
@@ -530,27 +661,28 @@ export function SandboxScreenPanel() {
               <ConnectingCard url={vnc.url} />
             ))}
 
-          {vnc.phase === 'offline' && (
-            <>
-              <OfflineAlert
-                url={vnc.url}
-                reason={vnc.reason}
-                hasMockFrame={screen !== null}
-                onRetry={vnc.retry}
-              />
-              {screen ? (
+          {vnc.phase === 'offline' &&
+            (screen ? (
+              // Đường demo: khung mô phỏng giữ nguyên nhãn trung thực, chỉ mất
+              // hai nút thủ công so với trước.
+              <>
+                <SimulatedOfflineNotice reason={vnc.reason} url={vnc.url} />
                 <SimulatedFrame screen={screen} hazard />
-              ) : (
-                <p className="text-center text-[12px] text-muted">{t('screen.empty')}</p>
-              )}
-            </>
-          )}
-
-          {retrySeconds !== null && (
-            <p className="mt-2 shrink-0 px-2 text-center text-[11px] text-muted">
-              {t('screen.retryCountdown', { seconds: retrySeconds })}
-            </p>
-          )}
+              </>
+            ) : showConnectingOverlay ? (
+              // Thang còn hẹn ⇒ lớp phủ "đang kết nối" phủ thân panel. Không còn
+              // khối `NO FRAME AVAILABLE` màu hổ phách, không còn nút thủ công,
+              // và cũng không còn khối đếm ngược rời ở đáy (nó nằm trong lớp phủ).
+              <ConnectingOverlay
+                attempt={vnc.attempt}
+                retryAtMs={vnc.retryAtMs}
+                retryDelayMs={vnc.retryDelayMs}
+                now={now}
+              />
+            ) : (
+              // Lý do không thể tự khỏi: thẻ tĩnh, và câu lý do đã ở hàng `note`.
+              <TerminalReasonCard />
+            ))}
         </div>
 
         {/* Footer cũ đã chuyển vào drawer Details khi live; chỉ giữ khi không live */}

@@ -9,29 +9,54 @@
  */
 import type { ReactNode } from 'react'
 
+/**
+ * Chuỗi lớp của `variant="ghost"` — GIỮ NGUYÊN VĂN bản cũ (Kế hoạch E2): mọi
+ * chỗ dùng đang có không được đổi một pixel nào.
+ */
+const ICON_BUTTON_GHOST_CLASS =
+  'inline-flex size-7 items-center justify-center rounded-md text-muted transition hover:bg-panel2 hover:text-fg'
+
+/**
+ * `variant="pill"` — cùng kích cỡ chữ/khoảng cách nhưng có viền và nền mờ, để
+ * đứng cạnh các pill có viền sẵn ở thanh trên (`+ Open Workspace`,
+ * `Machine: ON`) mà không thành hai lớp nền chọi nhau.
+ */
+const ICON_BUTTON_PILL_CLASS =
+  'inline-flex h-[26px] w-[28px] items-center justify-center rounded-md border border-line bg-panel2/60 text-muted transition hover:text-fg'
+
 export function IconButton({
   label,
   onClick,
   children,
   active = false,
+  variant = 'ghost',
+  disabled = false,
   className = '',
+  testId,
 }: {
   label: string
   onClick?: () => void
   children: ReactNode
   active?: boolean
+  /** `ghost` (mặc định, như cũ) hoặc `pill` cho thanh trên. */
+  variant?: 'ghost' | 'pill'
+  /** Nút bị chặn vì màn hình không đủ chỗ — `title`/`aria-label` nói lý do. */
+  disabled?: boolean
   className?: string
+  testId?: string
 }) {
+  const base = variant === 'pill' ? ICON_BUTTON_PILL_CLASS : ICON_BUTTON_GHOST_CLASS
+  const activeClass = variant === 'pill' ? 'bg-panel2 text-brand ring-1 ring-brand/40' : 'bg-panel2 text-fg'
   return (
     <button
       type="button"
       title={label}
+      data-testid={testId}
       aria-label={label}
       aria-pressed={active}
+      disabled={disabled}
       onClick={onClick}
-      className={`inline-flex size-7 items-center justify-center rounded-md text-muted transition hover:bg-panel2 hover:text-fg ${
-        active ? 'bg-panel2 text-fg' : ''
-      } ${className}`}
+      className={`${base} ${active ? activeClass : ''} ${className}${disabled ? ' cursor-not-allowed opacity-50' : ''}`}
     >
       {children}
     </button>

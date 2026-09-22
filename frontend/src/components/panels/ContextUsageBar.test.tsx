@@ -42,7 +42,12 @@ function render(node: React.ReactNode): HTMLElement {
   return host
 }
 
-function snapshotWith(contextWindow: number | null): ProviderSnapshot {
+function snapshotWith(
+  contextWindow: number | null,
+  model: Partial<{ id: string; name: string; contextWindowSource: string | null }> = {},
+): ProviderSnapshot {
+  const modelId = model.id ?? 'gemini-3.8-flash-high'
+  const modelName = model.name ?? 'Gemini 3.8 Flash'
   return {
     providers: [],
     connections: [
@@ -63,13 +68,14 @@ function snapshotWith(contextWindow: number | null): ProviderSnapshot {
         inferenceState: 'ready',
         models: [
           {
-            id: 'gemini-3.8-flash-high',
-            name: 'Gemini 3.8 Flash',
+            id: modelId,
+            name: modelName,
             enabled: true,
             source: 'live',
             thinkingLevels: ['low', 'medium', 'high'],
-            // Trường mới của router (BUG-4/R2) — frontend đọc thẳng giá trị này.
+            // Hai trường của router (BUG-4/R2 + vòng 18): số đang dùng và NHÃN NGUỒN.
             contextWindow,
+            contextWindowSource: model.contextWindowSource ?? null,
             capabilities: {},
           } as never,
         ],
@@ -84,18 +90,20 @@ function snapshotWith(contextWindow: number | null): ProviderSnapshot {
         id: 'alias-1',
         name: 'fast',
         enabled: true,
-        targets: [{ connectionId: 'conn-1', modelId: 'gemini-3.8-flash-high' }],
+        targets: [{ connectionId: 'conn-1', modelId }],
       } as never,
     ],
-    defaultRoute: { connectionId: 'conn-1', modelId: 'gemini-3.8-flash-high', aliasId: null },
+    defaultRoute: { connectionId: 'conn-1', modelId, aliasId: null },
     keys: [],
     usage: [],
     health: { status: 'ok', version: '0.1.0' },
   } as unknown as ProviderSnapshot
 }
 
-function seedRun(overrides: Partial<{ lastModelLabel: string; contextEstimate: number; status: string }> = {}) {
-  const { lastModelLabel = 'Gemini 3.8 Flash (High)', contextEstimate = 28_600, status = 'idle' } = overrides
+function seedRun(overrides: Partial<{ lastModelLabel: string; contextEstimate: number; status: string
+  contextWindow: number | null; contextWindowSource: string | null }> = {}) {
+  const { lastModelLabel = 'Gemini 3.8 Flash (High)', contextEstimate = 28_600, status = 'idle',
+          contextWindow = null, contextWindowSource = null } = overrides
   useHarnessChatStore.setState({
     sessions: {
       [SESSION_ID]: {
@@ -104,6 +112,9 @@ function seedRun(overrides: Partial<{ lastModelLabel: string; contextEstimate: n
         events: [{ seq: 1, type: 'step', data: { contextEstimate }, created: 1 }],
         error: null,
         lastModelLabel,
+        // `config` phiên: cặp (số, nguồn) mà harness đang thật sự nén theo.
+        contextWindow,
+        contextWindowSource,
       },
     },
   })
@@ -133,26 +144,38 @@ afterEach(() => {
 })
 
 describe('ContextUsageBar — nguồn cỡ context window (§D-U3)', () => {
-  it('ưu tiên số router báo, rồi bảng tĩnh, cuối cùng mới đoán theo tên', () => {
-    expect(resolveContextWindow(1_000_000, 'gemini-3.8-flash-high')).toEqual({ tokens: 1_000_000, source: 'router' })
-    expect(resolveContextWindow(0, 'gemini-3.8-flash-high')).toEqual({ tokens: 1_000_000, source: 'heuristic' })
-    expect(resolveContextWindow(null, 'claude-3.7-sonnet')).toEqual({ tokens: 200_000, source: 'catalog' })
-    expect(resolveContextWindow(null, 'Claude 3.7 Sonnet')).toEqual({ tokens: 200_000, source: 'catalog' })
-    expect(resolveContextWindow(null, 'vendor-gemini-x')).toEqual({ tokens: 1_000_000, source: 'heuristic' })
-    expect(resolveContextWindow(null, 'deepseek-v9')).toEqual({ tokens: 64_000, source: 'heuristic' })
+  it('ưu tiên số đang có hiệu lực trong phiên, rồi dòng router, rồi bảng tĩnh', () => {
+    // Bản ghi phiên thắng: đó là con số harness THẬT SỰ đang nén theo.
+    expect(resolveContextWindow({ tokens: 1_000_000, basis: 'documented' }, 'deepseek-v4-flash',
+      { contextWindow: 32_768, contextWindowSource: 'manual' })).toEqual({ tokens: 32_768, basis: 'manual', estimated: false })
+    expect(resolveContextWindow({ tokens: 1_000_000, basis: 'documented' }, 'deepseek-v4-flash',
+      { contextWindow: 128_000, contextWindowSource: 'fallback' })).toEqual({ tokens: 128_000, basis: 'fallback', estimated: true })
+    // Không có bản ghi phiên thì dòng router trả lời, kèm đúng nhãn nguồn của router.
+    expect(resolveContextWindow({ tokens: 1_048_576, basis: 'documented' }, 'deepseek-v4-flash'))
+      .toEqual({ tokens: 1_048_576, basis: 'documented', estimated: true })
+    expect(resolveContextWindow({ tokens: 1_000_000, basis: 'reported' }, 'gemini-3.8-flash-high'))
+      .toEqual({ tokens: 1_000_000, basis: 'reported', estimated: false })
+    // Danh mục tĩnh vẫn là phương án cuối, và vẫn phải ghi rõ là ước lượng.
+    expect(resolveContextWindow(null, 'claude-3.7-sonnet')).toEqual({ tokens: 200_000, basis: 'catalog', estimated: true })
+    expect(resolveContextWindow(null, 'Claude 3.7 Sonnet')).toEqual({ tokens: 200_000, basis: 'catalog', estimated: true })
   })
 
-  it('không đoán bừa: model lạ trả về unknown thay vì 128k mặc định', () => {
-    expect(resolveContextWindow(null, 'acme-mystery-model-v9')).toEqual({ tokens: null, source: 'unknown' })
-    expect(resolveContextWindow(null, null)).toEqual({ tokens: null, source: 'unknown' })
+  it('bảng đoán theo tên đã bị xoá: tên không nguồn nào biết trả về unknown', () => {
+    // Trước đợt 18: 'gemini'→1M, 'claude'→200k, 'deepseek'/'qwen'→64k. Đó là câu trả lời
+    // thứ tư cho cùng một câu hỏi, và là câu trả lời sai (harness nén ở 128 000).
+    expect(resolveContextWindow(null, 'vendor-gemini-x')).toEqual({ tokens: null, basis: 'unknown', estimated: false })
+    expect(resolveContextWindow(null, 'deepseek-v9')).toEqual({ tokens: null, basis: 'unknown', estimated: false })
+    expect(resolveContextWindow(null, 'acme-mystery-model-v9')).toEqual({ tokens: null, basis: 'unknown', estimated: false })
+    expect(resolveContextWindow(null, null)).toEqual({ tokens: null, basis: 'unknown', estimated: false })
   })
 
   it('đọc contextWindow từ snapshot router theo model, alias và nhãn harness', () => {
     const snapshot = snapshotWith(1_000_000)
-    expect(findRouterContextWindow(snapshot, { kind: 'model', connectionId: 'conn-1', modelId: 'gemini-3.8-flash-high' })).toBe(1_000_000)
-    expect(findRouterContextWindow(snapshot, { kind: 'alias', aliasId: 'alias-1' })).toBe(1_000_000)
+    expect(findRouterContextWindow(snapshot, { kind: 'model', connectionId: 'conn-1', modelId: 'gemini-3.8-flash-high' }))
+      .toEqual({ tokens: 1_000_000, basis: 'reported' })
+    expect(findRouterContextWindow(snapshot, { kind: 'alias', aliasId: 'alias-1' })).toEqual({ tokens: 1_000_000, basis: 'reported' })
     // Nhãn harness kèm hậu tố mức thinking vẫn phải khớp được.
-    expect(findRouterContextWindow(snapshot, null, 'Gemini 3.8 Flash (High)')).toBe(1_000_000)
+    expect(findRouterContextWindow(snapshot, null, 'Gemini 3.8 Flash (High)')).toEqual({ tokens: 1_000_000, basis: 'reported' })
     expect(findRouterContextWindow(snapshotWith(null), null, 'Gemini 3.8 Flash')).toBeNull()
     expect(findRouterContextWindow(null, null, 'Gemini 3.8 Flash')).toBeNull()
     expect(findRouterContextWindow(snapshot, null, 'model-không-có-trong-snapshot')).toBeNull()
@@ -201,6 +224,85 @@ describe('ContextUsageBar — nhãn hiển thị', () => {
     expect(limitLabelText(host)).toContain('est.')
     const label = host.querySelector('[data-testid="context-usage-label"]') as HTMLElement
     expect(label.getAttribute('title')).toContain('static catalog')
+  })
+
+  it('số của bảng BoxFox hiện kèm `est.` và tooltip nói rõ số ấy từ đâu', () => {
+    useProviderStore.setState({ snapshot: snapshotWith(1_048_576, { contextWindowSource: 'documented' }) })
+    useRouterChatStore.setState({ selection: { kind: 'model', connectionId: 'conn-1', modelId: 'gemini-3.8-flash-high' } })
+    seedRun()
+
+    const host = render(<ContextUsageBar />)
+    // Chữ `est.` nằm trong một `<span class="ml-1">` nên `textContent` không có dấu cách.
+    expect(limitLabelText(host)).toContain('28.6k / 1.0M (3%)')
+    expect(limitLabelText(host)).toContain('est.')
+    const label = host.querySelector('[data-testid="context-usage-label"]') as HTMLElement
+    expect(label.getAttribute('title')).toContain('BoxFox model table')
+    expect(label.getAttribute('title')).toContain('not from the provider')
+  })
+
+  it('nguồn sàn của phiên: hiện số ĐANG CÓ HIỆU LỰC thay vì `unknown`', () => {
+    // Đây là chỗ đóng vênh thứ hai: harness nén ở sàn 128 000 nhưng thanh cũ ghi
+    // "unknown" vì router không báo gì cho model lạ.
+    useProviderStore.setState({ snapshot: snapshotWith(null) })
+    seedRun({ lastModelLabel: 'acme-mystery-model-v9', contextWindow: 128_000, contextWindowSource: 'fallback' })
+
+    const host = render(<ContextUsageBar />)
+    expect(limitLabelText(host)).toContain('28.6k / 128k (22%)')
+    expect(limitLabelText(host)).toContain('est.')
+    expect(limitLabelText(host)).not.toContain('unknown')
+    const label = host.querySelector('[data-testid="context-usage-label"]') as HTMLElement
+    expect(label.getAttribute('title')).toContain('holding 128k tokens')
+    expect(label.getAttribute('title')).toContain('not a provider number')
+  })
+
+  /**
+   * Lỗi b18-review #4: bản ghi phiên CÓ số mà KHÔNG có nhãn nguồn (phiên cũ,
+   * `route: {}` nên bản vá lúc khởi động bỏ qua) từng được đọc là `reported` —
+   * tức số 128 000 của sàn hiện ra như thể nhà cung cấp báo, không `est.`, không
+   * tooltip. Chưa ai báo con số ấy, nên nó phải mang dấu ước lượng.
+   */
+  it('bản ghi phiên không có nhãn nguồn: KHÔNG được đọc là `reported`', () => {
+    useProviderStore.setState({ snapshot: snapshotWith(null) })
+    seedRun({ lastModelLabel: 'acme-mystery-model-v9', contextWindow: 128_000, contextWindowSource: null })
+
+    const host = render(<ContextUsageBar />)
+    expect(limitLabelText(host)).toContain('28.6k / 128k (22%)')
+    expect(limitLabelText(host)).toContain('est.')
+    const label = host.querySelector('[data-testid="context-usage-label"]') as HTMLElement
+    expect(label.getAttribute('title')).toContain('holding 128k tokens')
+
+    // Cùng lý do: một nhãn lạ cũng không được biến thành `reported`.
+    act(() => seedRun({ lastModelLabel: 'acme-mystery-model-v9', contextWindow: 262_144, contextWindowSource: 'something-else' }))
+    expect(resolveContextWindow(null, 'acme-mystery-model-v9', { contextWindow: 262_144, contextWindowSource: 'something-else' }))
+      .toEqual({ tokens: 262_144, basis: 'fallback', estimated: true })
+    // Nhưng nhãn `reported` thật thì giữ nguyên: không `est.`, không tooltip.
+    expect(resolveContextWindow(null, 'acme-mystery-model-v9', { contextWindow: 262_144, contextWindowSource: 'reported' }))
+      .toEqual({ tokens: 262_144, basis: 'reported', estimated: false })
+  })
+
+  it('người dùng tự khai (`manual`): không `est.`, tooltip nói số ấy do người dùng đặt', () => {
+    useProviderStore.setState({ snapshot: snapshotWith(1_048_576, { contextWindowSource: 'documented' }) })
+    seedRun({ contextWindow: 32_768, contextWindowSource: 'manual' })
+
+    const host = render(<ContextUsageBar />)
+    // Số người dùng khai thắng cả bảng tên 1M của router — đúng thứ tự mà harness áp.
+    expect(limitLabelText(host)).toBe('28.6k / 32.8k (87%)')
+    const label = host.querySelector('[data-testid="context-usage-label"]') as HTMLElement
+    expect(label.getAttribute('title')).toContain('You set this context window')
+    expect(label.querySelector('span.hidden')).toBeNull()
+  })
+
+  it('nhãn harness "<connection> · <model> (High)" khớp đúng dòng router', () => {
+    useProviderStore.setState({
+      snapshot: snapshotWith(1_048_576, { id: 'deepseek-flash', name: 'DeepSeek V4 Flash', contextWindowSource: 'documented' }),
+    })
+    seedRun({ lastModelLabel: 'DeepSeek · deepseek-flash (High)' })
+
+    const host = render(<ContextUsageBar />)
+    expect(limitLabelText(host)).toContain('28.6k / 1.0M (3%)')
+    expect(limitLabelText(host)).toContain('est.')
+    const label = host.querySelector('[data-testid="context-usage-label"]') as HTMLElement
+    expect(label.getAttribute('title')).toContain('BoxFox model table')
   })
 
   it('nhãn không còn phần tử bị ẩn theo breakpoint (lỗi cắt cụt ở 900px)', () => {
@@ -293,7 +395,9 @@ describe('ContextUsageBar — bố cục theo bề rộng KHUNG CHỨA, không t
 
   it('biến thể condensed/full chuyển theo container (`@lg:`), không theo viewport', () => {
     useProviderStore.setState({ snapshot: snapshotWith(null) })
-    seedRun({ lastModelLabel: 'acme-mystery-model-v9' })
+    // Nguồn danh mục tĩnh: đây là nguồn duy nhất ngoài router còn vẽ chữ `est.` — model
+    // không nguồn nào biết thì nhãn ghi thẳng `unknown`, không phải một con số ước lượng.
+    seedRun({ lastModelLabel: 'claude-3.7-sonnet' })
 
     const host = render(<ContextUsageBar />)
     // Thanh tiến trình: chỉ hiện ở bản đầy đủ → điều kiện phải là container.

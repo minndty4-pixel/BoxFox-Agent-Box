@@ -36,7 +36,9 @@ const SIGNATURE_LIMIT = 2000;
  * so the ingress remembers the signature under the tool call id it handed out
  * and re-attaches it when that id comes back in a tool_result round trip. This
  * mirrors 9Router's `open-sse/services/thoughtSignatureStore.js` (RAM tier).
- * Signatures are opaque and short-lived: one hour, newest 2000 kept.
+ * Signatures are opaque and short-lived: one hour, newest 2000 kept, and each entry
+ * remembers the model family that produced it — Antigravity serves Gemini and Claude
+ * behind one API and each backend rejects the other's signatures.
  *
  * Lifetime is this process only: a router restart between a tool call and its result
  * forgets the signature, and the replayed call then fails upstream — restart the box
@@ -45,22 +47,45 @@ const SIGNATURE_LIMIT = 2000;
  */
 const thoughtSignatures = new Map();
 
-function rememberSignature(id, signature) {
+/**
+ * Model family that produced / will consume a signature. Antigravity serves Gemini and Claude
+ * models behind the same API, and each backend only accepts its own signatures: a Claude
+ * signature replayed to Gemini fails with 400 "Corrupted thought signature." (and vice versa).
+ * Mirrors 9Router's `signatureFamily()` (`open-sse/services/thoughtSignatureStore.js:18`).
+ */
+export function signatureFamily(model) {
+  const m = typeof model === 'string' ? model.toLowerCase() : '';
+  if (!m) return null;
+  if (m.includes('claude')) return 'claude';
+  if (m.includes('gemini')) return 'gemini';
+  return m;
+}
+
+// Entries stored before families were recorded (no `family`) stay usable for any model
+// (9Router `open-sse/services/thoughtSignatureStore.js:27`).
+function isCompatible(entry, family) {
+  return !entry.family || !family || entry.family === family;
+}
+
+function rememberSignature(id, signature, model = null) {
   if (typeof id !== 'string' || !id || typeof signature !== 'string' || !signature) return;
   const now = Date.now();
   for (const [key, entry] of thoughtSignatures) if (entry.expiresAt <= now) thoughtSignatures.delete(key);
   thoughtSignatures.delete(id);
-  thoughtSignatures.set(id, { signature, expiresAt: now + SIGNATURE_TTL_MS });
+  thoughtSignatures.set(id, { signature, family: signatureFamily(model), expiresAt: now + SIGNATURE_TTL_MS });
   while (thoughtSignatures.size > SIGNATURE_LIMIT) thoughtSignatures.delete(thoughtSignatures.keys().next().value);
 }
 
-/** Remembered thought signature for a tool call id, or null once it expired. */
-export function thoughtSignatureFor(id) {
+/**
+ * Remembered thought signature for a tool call id, or null once it expired — or when the
+ * model asking for it belongs to another family than the model that produced the signature.
+ */
+export function thoughtSignatureFor(id, model = null) {
   if (typeof id !== 'string' || !id) return null;
   const entry = thoughtSignatures.get(id);
   if (!entry) return null;
   if (entry.expiresAt <= Date.now()) { thoughtSignatures.delete(id); return null; }
-  return entry.signature;
+  return isCompatible(entry, signatureFamily(model)) ? entry.signature : null;
 }
 
 /** Test seam: drop everything remembered (the store never leaks across runs). */
@@ -255,8 +280,10 @@ export function anthropicToOpenAI(body) {
         const id = typeof block.id === 'string' && block.id ? block.id : `toolu_${messages.length}_${toolCalls.length}`;
         // Gemini providers need their own opaque signature on a replayed call,
         // and Claude Code has nowhere to keep it: prefer whatever the client
-        // echoed, then the block itself, then what the ingress remembered.
-        const signature = block.thought_signature || thoughtSignatureFor(id) || clientSignature;
+        // echoed, then the block itself, then what the ingress remembered — but
+        // only a signature the model now being asked for can accept (a Claude
+        // signature replayed to Gemini is a 400 "Corrupted thought signature.").
+        const signature = block.thought_signature || thoughtSignatureFor(id, body.model) || clientSignature;
         toolCalls.push({
           id,
           type: 'function',
@@ -473,7 +500,10 @@ export function anthropicApply(state, event) {
     state.stopReason = anthropicStopReason(event.finishReason);
     ensureStarted(state, out);
     closeBlock(state, out);
-    for (const record of state.toolCalls.values()) if (record.signature) rememberSignature(record.id, record.signature);
+    // The signature is filed under the model that produced it, so a later round trip
+    // asking for another family never replays it (9Router `gemini-to-openai.js:25`
+    // stores with `state.model`, its request translators look up with the target model).
+    for (const record of state.toolCalls.values()) if (record.signature) rememberSignature(record.id, record.signature, state.model);
     // Tool blocks open here, once their id, name and arguments are complete (the
     // engine fragments all three across deltas), then release the buffered JSON
     // as a single input_json_delta immediately followed by content_block_stop.

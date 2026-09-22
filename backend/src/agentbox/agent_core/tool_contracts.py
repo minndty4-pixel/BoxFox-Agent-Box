@@ -45,6 +45,34 @@ SCHEMAS = [
     tool('skills_list', 'List enabled skills metadata; then load relevant full instructions with skill_view.', {}),
     tool('skill_view', 'Read a complete enabled skill or a linked UTF-8 file in its package. Scripts are not auto-executed.', {'id': STRING, 'file_path': STRING}, ['id']),
     tool('session_search', 'Search this session durable checkpoint history for a literal term.', {'query': STRING}, ['query']),
+    tool('journal_write',
+         'Write ONE durable line into this session journal (task, step, decision, evidence, fact, blocker). '
+         'Use it for the few facts a later turn must not lose: what you are doing (kind="task", status in '
+         'open/doing/done/blocked), what you found, which plan you are serving. Keep `text` under 1000 characters; '
+         'it is read back by journal_brief. `refs` are ids of OTHER records (e.g. "T:ab12cd34-1") that this line '
+         'belongs to — omit when you have none instead of inventing an id. Plan versions (`P:`) and compactions '
+         '(`C:`) are recorded by the harness, not by this tool.',
+         {'kind': {'type': 'string',
+                   'enum': ['task', 'step', 'decision', 'evidence', 'fact', 'blocker'],
+                   'description': 'The kind fixes which status values are valid.'},
+          'text': STRING,
+          'status': {'type': 'string',
+                     'description': 'Optional; the kind fixes the allowed values: task '
+                                    'open/doing/done/blocked, step doing/done/failed, decision '
+                                    'approved/rejected/info, evidence info, fact info/superseded, '
+                                    'blocker blocked/failed/resolved/done.'},
+          'refs': {'type': 'array', 'items': STRING},
+          'evidence': {'type': 'array', 'description': 'Verifiable pointers, not prose. Each item '
+                                                      'needs a `type` (file, command, url, image).',
+                       'items': {'type': 'object', 'properties': {
+                           'type': {'type': 'string', 'enum': ['file', 'command', 'url', 'image']},
+                           'path': STRING, 'line': {'type': 'integer'}, 'quote': STRING,
+                           'url': STRING, 'note': STRING}, 'required': ['type']}}},
+         ['kind', 'text']),
+    tool('journal_brief',
+         'Read back this session journal as a short memory block: open tasks, plans, decisions, evidence and '
+         'blockers, newest first. Call it at the start of a long job to see what earlier turns established.',
+         {'limit': {'type': 'integer', 'description': 'How many recent records to consider (default 60).'}}),
     tool('delegate_task',
          'Run one enabled specialist with isolated context. You MUST state the required RESULT SHAPE in `expect`: the '
          'deliverable plus the evidence you need back (sections, file:line, commands and their output, citations). The '
@@ -70,15 +98,22 @@ SCHEMAS = [
          ['role', 'goal']),
     tool('ask_user', 'Ask the user a question and BLOCK this turn until they answer. Give 2-5 options; the runtime always adds the approve/reject pair when you omit it. If nobody answers before the deadline (default 300 s) the answer is a rejection, so ask only when the answer changes what you do next.',
          {'question': STRING, 'options': DECISION_OPTIONS, 'deadlineSeconds': {'type': 'integer'}}, ['question', 'options']),
-    tool('request_approval', 'Ask the user to approve ONE concrete risky action (delete, overwrite, command outside the allowlist) BEFORE you run it, and BLOCK this turn until they answer. Default deadline 600 s; no answer means rejected, so never assume approval.',
-         {'action': STRING, 'reason': STRING, 'options': DECISION_OPTIONS, 'deadlineSeconds': {'type': 'integer'}}, ['action', 'reason']),
+    tool('request_approval', 'Ask the user to approve ONE concrete risky action (delete, overwrite, command outside the allowlist) BEFORE you run it, and BLOCK this turn until they answer. Default deadline 600 s; no answer means rejected, so never assume approval. When the thing you are asking about is a plan you just wrote, pass planIdentity (the plan group write_plan reported) and planVersion: the answer then lands in the plan review ledger as a real approval or a request for changes, instead of only being a chat message.',
+         {'action': STRING, 'reason': STRING, 'options': DECISION_OPTIONS, 'deadlineSeconds': {'type': 'integer'},
+          'planIdentity': STRING, 'planVersion': {'type': 'integer'}}, ['action', 'reason']),
     tool('write_plan',
          'Write a plan document into the workspace plan folder as the next free version vN-slug.md (never overwrites an '
          'existing version) and tell the UI. Use a lowercase dash-separated slug; the markdown is the real plan body. '
          'The harness refuses (PLAN_QUALITY_REJECTED, nothing written) a plan without a Verification / Acceptance '
          'criteria section naming at least one exact command or check plus its expected result, a Risks / Limitations '
-         'section, and — when the plan relies on external facts — a Sources / Citations section.',
-         {'slug': STRING, 'markdown': STRING, 'title': STRING}, ['slug', 'markdown']),
+         'section, and — when the plan relies on external facts — a Sources / Citations section. '
+         'The harness also scores every write on P1–P8 and returns the score: a revision of an existing plan must name '
+         'the version it revises (the harness tells you the number to write in the header block it generates). '
+         'Pass `identity` (e.g. "billing-plan", or "subplans/api" for a nested folder; it wins over `slug`) when you '
+         'know which plan group this belongs to, and `relatesTo` ("none", "<identity>", or "<identity>@vN") when the new '
+         'plan is a deliberate fork; without them the harness decides by slug similarity.',
+         {'slug': STRING, 'markdown': STRING, 'title': STRING, 'identity': STRING, 'relatesTo': STRING},
+         ['slug', 'markdown']),
 ]
 
 

@@ -58,11 +58,18 @@ GENERATED_DIR_NAME = ".generated_artifacts"
 TRASH_DIR_NAME = ".trash"
 HIDDEN_DIR_NAMES = frozenset({GENERATED_DIR_NAME, TRASH_DIR_NAME})
 
+try:  # nằm cùng thư mục khi staged vào `/usr/local/bin`; chuỗi dự phòng phải khớp y hệt
+    from session_files import SESSION_HISTORY_DIRNAME
+except ImportError:  # pragma: no cover - chỉ xảy ra khi tệp bị chép lẻ ra khỏi thư mục
+    SESSION_HISTORY_DIRNAME = ".session-history"
+
 # Mục cấp 1 không bao giờ được xoá / đổi tên / di chuyển (thư mục gốc workspace
 # tự nó bị chặn riêng vì không có segment nào để tách tên). `rename`/`move` phải
 # dùng cùng luật này, nếu không chúng có thể đổi tên hoặc chôn mục bảo vệ và phá
 # bất biến của mục đó (`.trash` biến mất khỏi vùng ẩn, `.plans` bị làm rỗng).
-PROTECTED_PATHS = frozenset({".plans", TRASH_DIR_NAME, GENERATED_DIR_NAME})
+# `.session-history` (đợt 20) vào danh sách này vì API file của người dùng không được
+# xoá nhật ký phiên: nó là bản ghi chỉ-ghi-thêm, mất là mất bằng chứng của chính lượt đó.
+PROTECTED_PATHS = frozenset({".plans", TRASH_DIR_NAME, GENERATED_DIR_NAME, SESSION_HISTORY_DIRNAME})
 
 # `touch` tạo file nhỏ (rỗng hoặc nội dung ngắn) chứ không phải đường upload thứ hai.
 # Giữ trần bằng MAX_FILE_SIZE để mọi file do `touch` tạo ra vẫn đọc được qua

@@ -5,11 +5,20 @@
  * một lượt kết nối, `src/hooks/useVncScreen.ts` nối hai thứ đó với React
  * (plan §4, quyết định D-1).
  *
- * Chính sách thử lại (D-7): 1 lần đầu + 3 lần tự thử lại, mỗi lần chờ tối đa
- * `VNC_CONNECT_TIMEOUT_MS`, khoảng nghỉ giữa các lần lấy từ
- * `VNC_RETRY_DELAYS_MS`. Hết lượt → `exhausted = true`, dừng và chờ người
- * dùng bấm "Thử kết nối lại". Không thử lại vô hạn vì mỗi lần thất bại
- * trình duyệt tự ghi một dòng đỏ WebSocket vào console (không tắt được).
+ * Chính sách thử lại (D-7, sửa ở Kế hoạch E1): thử MÃI, không còn trần lượt.
+ * Mỗi lượt chờ tối đa `VNC_CONNECT_TIMEOUT_MS`; khoảng nghỉ lấy từ
+ * `VNC_RETRY_DELAYS_MS` và GIỮ ở nấc cuối `VNC_RETRY_MAX_DELAY_MS` thay vì bỏ
+ * cuộc. `exhausted` giờ chỉ còn đúng một nghĩa: "lý do này không thể tự khỏi"
+ * — `TERMINAL_REASONS` (6 lý do cấu hình/khả năng) và `skipped`.
+ *
+ * Cái giá phải trả, ghi lại để người sau không tưởng là miễn phí: MỖI lượt
+ * hỏng, trình duyệt tự ghi một dòng đỏ WebSocket vào console và không có cách
+ * tắt. Trần 20 s chính là cái hãm tốc độ — nhanh nhất là khoảng một lượt mỗi
+ * 25 s (20 s nghỉ + 5 s chờ), và chỉ khi panel đang mở VÀ tab đang hiện;
+ * `useVncScreen.ts` dừng hẳn thang khi tab bị ẩn (0 lượt) — đó là cách trả món
+ * nợ console này.
+ *
+ * `manualRetry` (nếu có ai gọi) đặt lại thang về nấc đầu 3 s.
  */
 
 export type VncPhase = 'connecting' | 'live' | 'offline'
@@ -56,8 +65,10 @@ export type VncEvent =
 
 export const VNC_CONNECT_TIMEOUT_MS = 5000
 export const VNC_RETRY_DELAYS_MS = [3000, 8000, 20000]
-/** 1 lần đầu + 3 lần tự thử lại. */
-export const VNC_MAX_ATTEMPTS = 4
+/** Nấc nghỉ cuối, giữ mãi: nhịp chậm nhất là 20 s nghỉ + 5 s chờ = một lượt/25 s. */
+export const VNC_RETRY_MAX_DELAY_MS = 20000
+/** Từ lượt này trở đi, lớp phủ mới hiện link "How to start the box". */
+export const VNC_HELP_AFTER_ATTEMPTS = 6
 
 export const initialVncState: VncState = {
   phase: 'connecting',
@@ -103,23 +114,25 @@ export function reduceVnc(state: VncState, event: VncEvent): VncState {
 
     case 'timeout': {
       if (state.phase === 'offline') return state
+      // Hết trần lượt: không lý do nào ở đây là "không thể tự khỏi", nên thang
+      // cứ chạy tiếp ở nấc 20 s. Xem đầu tệp để biết giá phải trả ở console.
       return {
         ...state,
         phase: 'offline',
         reason: 'timeout',
-        exhausted: state.attempt >= VNC_MAX_ATTEMPTS,
+        exhausted: false,
       }
     }
 
     case 'closed': {
       if (state.phase === 'offline') return state
-      // Kênh đang live bị rơi ⇒ ngân sách thử lại tính lại từ đầu (`connected`
-      // đã đặt attempt = 1), nên vẫn còn đủ 3 lượt như D-7 hứa.
+      // Kênh đang live bị rơi ⇒ `connected` đã đặt attempt = 1 nên thang bắt
+      // đầu lại từ nấc 3 s.
       return {
         ...state,
         phase: 'offline',
         reason: 'closed',
-        exhausted: state.attempt >= VNC_MAX_ATTEMPTS,
+        exhausted: false,
       }
     }
 
@@ -127,13 +140,14 @@ export function reduceVnc(state: VncState, event: VncEvent): VncState {
       if (TERMINAL_REASONS.includes(event.reason)) {
         return { ...state, phase: 'offline', reason: event.reason, exhausted: true }
       }
-      // reason === 'error' — cư xử như `closed`
+      // reason === 'error' — cư xử như `closed`: thử lại được, không bao giờ
+      // `exhausted`.
       if (state.phase === 'offline') return state
       return {
         ...state,
         phase: 'offline',
         reason: event.reason,
-        exhausted: state.attempt >= VNC_MAX_ATTEMPTS,
+        exhausted: false,
       }
     }
 
@@ -158,5 +172,7 @@ export function reduceVnc(state: VncState, event: VncEvent): VncState {
 /** `null` nếu không ở trạng thái chờ thử lại tự động; ngược lại số ms cần chờ. */
 export function retryDelayMs(state: VncState): number | null {
   if (state.phase !== 'offline' || state.exhausted) return null
-  return VNC_RETRY_DELAYS_MS[state.attempt - 1] ?? null
+  // Kẹp chỉ số thay vì `?? null`: hết thang thì GIỮ nấc cuối, không bỏ cuộc.
+  const index = Math.min(state.attempt - 1, VNC_RETRY_DELAYS_MS.length - 1)
+  return VNC_RETRY_DELAYS_MS[Math.max(0, index)]
 }

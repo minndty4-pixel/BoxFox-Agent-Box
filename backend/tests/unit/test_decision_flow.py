@@ -339,7 +339,10 @@ def test_decision_tools_are_role_gated(tmp_path):
         assert runtime.pending_for(sid) == []
         assert events_of(store, sid, 'decision_requested') == []
         assert events_of(store, sid, 'ui_intent') == []
-        assert executor.calls == [], 'a gated tool must never reach the executor'
+        # `session_ensure` (A1) chạy ở đầu MỌI lượt (dọn `<sid8>/session.json` trong box) — nó không
+        # phải một công cụ, nên bỏ ra trước khi khẳng định "công cụ bị chặn không chạm executor".
+        assert [name for name, _, _ in executor.calls if name != 'session_ensure'] == [], \
+            'a gated tool must never reach the executor'
         failures = [result for result in tool_results(store, sid) if result.get('is_error')]
         assert failures and 'not permitted' in failures[0]['error']
         store.close()

@@ -1,0 +1,272 @@
+"""Duyệt kế hoạch trong chat phải vào sổ thật (§4.1): `request_approval` ↔ `plan_reviews`.
+
+Vì sao có tệp này: hai nguồn tài liệu trong repo (`api/server.py` mục "plan duyệt (vòng 20)" và
+`memory/session_store.py` mục "Sổ duyệt plan") đều mô tả đường ghi thứ hai — `settle()` ghi hàng
+`source='approval'` khi record mang `planIdentity`/`planVersion` — nhưng **không ai viết nó**, và
+không bài nào chạy `request_approval` cùng một version kế hoạch nên chỗ trống đó không lộ ra. Hệ quả
+đo được: `group_state` không bao giờ trả `'submitted'`, và đồng ý trong chat không bao giờ làm nhóm
+thành `approved` (nên bản sửa sau đó vẫn bị bắt khai cha theo luật R1).
+
+Ba kết cục phải phân biệt được: đồng ý → `approved`; từ chối → `changes_requested` + ghi chú; hết hạn
+→ `changes_requested` (chưa đồng ý thì không phải đồng ý).
+"""
+import asyncio
+import copy
+import json
+import time
+
+from agentbox.agent_core import plan_registry
+from agentbox.agent_core.runtime import HarnessRuntime, plan_approval_target
+from agentbox.memory.session_store import SessionStore
+
+IDENTITY = 'clinical-patient-record-lookup-research'
+
+
+def answer(text='done', calls=None, finish='stop'):
+    return {'choices': [{'message': {'content': text, **({'tool_calls': calls} if calls else {})},
+                         'finish_reason': 'tool_calls' if calls else finish}],
+            'usage': {'prompt_tokens': 10, 'completion_tokens': 2}}
+
+
+def call(name, args, cid='c1'):
+    return {'id': cid, 'type': 'function', 'function': {'name': name, 'arguments': json.dumps(args)}}
+
+
+class FixtureModel:
+    def __init__(self, responses):
+        self.responses = iter(responses)
+        self.requests = []
+
+    async def complete(self, messages, tools, route, max_tokens=4096, on_thought=None, on_content=None):
+        self.requests.append(copy.deepcopy((messages, tools, route)))
+        return next(self.responses)
+
+
+class FixtureExecutor:
+    def __init__(self):
+        self.calls = []
+
+    async def execute(self, name, args, sid):
+        self.calls.append((name, args, sid))
+        return {'content': 'observed fixture result'}
+
+    async def cleanup(self, sid):
+        pass
+
+
+async def blocked_session(runtime, store, prompt='Làm việc'):
+    sid = runtime.create({'skills': []})['id']
+    runtime.start(sid, prompt)
+    loop = asyncio.get_running_loop()
+    end = loop.time() + 5
+    while loop.time() < end:
+        if store.get(sid)['status'] == 'awaiting_decision':
+            return sid, runtime.pending_for(sid)[0]
+        await asyncio.sleep(0.01)
+    raise AssertionError('session never reached awaiting_decision; it is ' + store.get(sid)['status'])
+
+
+def approval_args(**extra):
+    args = {'action': 'apply v1 of the plan', 'reason': 'Kế hoạch đã viết xong, cần bạn duyệt',
+            'planIdentity': IDENTITY, 'planVersion': 1}
+    args.update(extra)
+    return args
+
+
+def versions_of(*numbers):
+    """Chỉ mục box tối thiểu mà `group_state` cần: version + đường dẫn tương đối."""
+    return tuple(plan_registry._entry_from_payload({'version': number,
+                                                    'relativePath': f'v{number}-{IDENTITY}.md',
+                                                    'sizeBytes': 1000, 'status': 'draft'})
+                 for number in numbers)
+
+
+def test_a_plan_approval_lands_in_the_ledger_with_its_source(tmp_path):
+    """Đồng ý trong chat ghi đúng một hàng `approved` với `source='approval'`."""
+
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        model = FixtureModel([
+            answer('Xin bạn duyệt', calls=[call('request_approval', approval_args())]),
+            answer('Cảm ơn, tôi đi tiếp.')])
+        runtime = HarnessRuntime(store, FixtureExecutor(), model)
+        sid, record = await blocked_session(runtime, store, 'Trình kế hoạch')
+
+        # Trong lúc chờ: lượt xin duyệt phải được tính là "đã trình" cho đúng version đó.
+        assert (record['planIdentity'], record['planVersion']) == (IDENTITY, 1)
+        assert plan_registry.pending_submissions(runtime.pending.values(), IDENTITY) == (1,)
+        state = plan_registry.group_state(versions_of(1), reviews=(),
+                                          submitted=plan_registry.pending_submissions(
+                                              runtime.pending.values(), IDENTITY))
+        assert state.state == 'submitted'
+        other = plan_registry.group_state(versions_of(1), reviews=(), submitted=())
+        assert other.state == 'draft', 'không có lượt chờ nào thì vẫn là draft'
+
+        assert runtime.resolve_decision(sid, record['decisionId'], 'approve', None)['outcome'] == 'approved'
+        assert await asyncio.wait_for(runtime.tasks[sid], 5) == 'Cảm ơn, tôi đi tiếp.'
+
+        row = store.plan_review(IDENTITY, 1)
+        assert row['decision'] == 'approved' and row['source'] == 'approval'
+        assert row['session_id'] == sid and row['note'] == ''
+        assert store.plan_reviews_for(IDENTITY) == [row], 'đúng MỘT hàng, không sinh hàng thứ hai'
+        state = plan_registry.group_state(versions_of(1), reviews=store.plan_reviews_for(IDENTITY),
+                                          submitted=())
+        assert state.state == 'approved', 'đồng ý trong chat phải mở khoá luật R1 cho bản sửa'
+        assert row['content_size'] is None, 'chat không đo được file nên không được bịa số đo'
+        store.close()
+
+    asyncio.run(run())
+
+
+def test_a_rejection_in_chat_is_a_request_for_changes_with_the_note(tmp_path):
+    """Từ chối trong chat = "yêu cầu sửa": hàng `changes_requested` mang đúng ghi chú người dùng gõ."""
+
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        model = FixtureModel([
+            answer('Xin bạn duyệt', calls=[call('request_approval', approval_args())]),
+            answer('Tôi sửa theo ghi chú.')])
+        runtime = HarnessRuntime(store, FixtureExecutor(), model)
+        sid, record = await blocked_session(runtime, store, 'Trình kế hoạch')
+
+        runtime.resolve_decision(sid, record['decisionId'], 'reject', 'Thiếu phần đo độ trễ')
+        await asyncio.wait_for(runtime.tasks[sid], 5)
+
+        row = store.plan_review(IDENTITY, 1)
+        assert row['decision'] == 'changes_requested' and row['note'] == 'Thiếu phần đo độ trễ'
+        assert row['source'] == 'approval' and row['session_id'] == sid
+        # R3 đọc chính hàng này: nhóm đang chờ sửa thì cùng chủ đề không được mở identity khác.
+        assert plan_registry.group_state(versions_of(1), reviews=store.plan_reviews_for(IDENTITY),
+                                         submitted=()).state == 'changes_requested'
+        store.close()
+
+    asyncio.run(run())
+
+
+def test_an_expired_approval_is_not_an_approval(tmp_path):
+    """Hết hạn: chưa ai đồng ý, nên sổ duyệt phải ghi "yêu cầu sửa" — không bao giờ ghi `approved`."""
+
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        model = FixtureModel([
+            answer('Xin bạn duyệt', calls=[call('request_approval', approval_args(deadlineSeconds=1))]),
+            answer('Không ai trả lời nên tôi dừng.')])
+        runtime = HarnessRuntime(store, FixtureExecutor(), model)
+        sid, record = await blocked_session(runtime, store, 'Trình kế hoạch')
+
+        assert await asyncio.wait_for(runtime.tasks[sid], 10) == 'Không ai trả lời nên tôi dừng.'
+        row = store.plan_review(IDENTITY, 1)
+        assert row['decision'] == 'changes_requested', 'hết hạn không được coi là đồng ý'
+        assert row['source'] == 'approval' and row['session_id'] == sid
+        store.close()
+
+    asyncio.run(run())
+
+
+def test_an_approval_that_never_named_a_plan_writes_nothing(tmp_path):
+    """Đường cũ (không khai kế hoạch) không được sinh một hàng duyệt giả."""
+
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        model = FixtureModel([
+            answer('Xin phép xoá', calls=[call('request_approval', {'action': 'rm -rf build',
+                                                                   'reason': 'Dọn thư mục build'})]),
+            answer('Không xoá gì.')])
+        runtime = HarnessRuntime(store, FixtureExecutor(), model)
+        sid, record = await blocked_session(runtime, store, 'Dọn dẹp')
+
+        assert 'planIdentity' not in record and 'planVersion' not in record
+        assert plan_registry.pending_submissions(runtime.pending.values(), IDENTITY) == ()
+        runtime.resolve_decision(sid, record['decisionId'], 'approve', None)
+        await asyncio.wait_for(runtime.tasks[sid], 5)
+        assert store.plan_reviews_for(IDENTITY) == [], 'không có kế hoạch nào thì không có hàng nào'
+        store.close()
+
+    asyncio.run(run())
+
+
+def test_the_target_is_all_or_nothing_and_must_be_a_plan_group():
+    """Hai tham số đi cặp, và `planIdentity` phải theo đúng grammar nhóm kế hoạch."""
+    assert plan_approval_target({}) == (None, None)
+    assert plan_approval_target({'planIdentity': '', 'planVersion': None}) == (None, None)
+    assert plan_approval_target({'planIdentity': 'subplans/api', 'planVersion': 2}) == ('subplans/api', 2)
+    assert plan_approval_target({'planIdentity': IDENTITY, 'planVersion': '3'}) == (IDENTITY, 3)
+
+    for bad in ({'planIdentity': IDENTITY}, {'planVersion': 1}, {'planIdentity': IDENTITY, 'planVersion': 0},
+                {'planIdentity': IDENTITY, 'planVersion': True}, {'planIdentity': IDENTITY, 'planVersion': 'v2'},
+                {'planIdentity': 'Clinical Lookup', 'planVersion': 1},
+                {'planIdentity': 'sub plans/api', 'planVersion': 1}):
+        try:
+            plan_approval_target(bad)
+        except ValueError as exc:
+            assert str(exc).startswith('DECISION_INVALID:'), str(exc)
+        else:
+            raise AssertionError('phải từ chối: ' + json.dumps(bad))
+    # Grammar ở đây là **cùng một** luật với `plan_identity_arg` của route `GET /plans/status`
+    # (`plan_header.IDENTITY_PATTERN`), nên không có luật thứ hai để lệch nhau: một chuỗi hợp lệ về
+    # grammar nhưng vô nghĩa (`v2-slug`) là việc của `plan_registry`, không phải của chỗ kiểm tham số.
+    # Dấu `/` thừa cũng được cắt như route làm, không phải lỗi.
+    assert plan_approval_target({'planIdentity': 'v2-lookup', 'planVersion': 2}) == ('v2-lookup', 2)
+    assert plan_approval_target({'planIdentity': '/subplans/api/', 'planVersion': 2}) == ('subplans/api', 2)
+
+
+def test_a_half_declared_plan_is_a_tool_error_not_a_silent_approval(tmp_path):
+    """Khai `planIdentity` mà quên số: lượt xin duyệt hỏng ngay, không có hàng duyệt nào được ghi."""
+
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        model = FixtureModel([
+            answer('Xin bạn duyệt', calls=[call('request_approval', {'action': 'apply the plan',
+                                                                     'reason': 'Cần duyệt',
+                                                                     'planIdentity': IDENTITY})]),
+            answer('Tôi hỏi lại cho đủ.')])
+        runtime = HarnessRuntime(store, FixtureExecutor(), model)
+        sid = runtime.create({'skills': []})['id']
+
+        assert await asyncio.wait_for(runtime.start(sid, 'Trình kế hoạch'), 5) == 'Tôi hỏi lại cho đủ.'
+        errors = [json.loads(message['content']) for message in store.get(sid)['messages']
+                  if message['role'] == 'tool' and json.loads(message['content']).get('is_error')]
+        assert errors and errors[0]['error'].startswith('DECISION_INVALID: request_approval needs '
+                                                        'planIdentity and planVersion')
+        assert store.get(sid)['status'] == 'completed', 'lỗi tham số không được treo lượt'
+        assert store.plan_reviews_for(IDENTITY) == [] and not runtime.pending_for(sid)
+        store.close()
+
+    asyncio.run(run())
+
+
+def test_the_ledger_write_never_blocks_the_decision(tmp_path):
+    """Sổ duyệt hỏng thì quyết định vẫn phải chốt — người dùng đã trả lời, không được treo lượt."""
+
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        model = FixtureModel([
+            answer('Xin bạn duyệt', calls=[call('request_approval', approval_args())]),
+            answer('Đi tiếp.')])
+        runtime = HarnessRuntime(store, FixtureExecutor(), model)
+        sid, record = await blocked_session(runtime, store, 'Trình kế hoạch')
+
+        def boom(*args, **kwargs):
+            raise RuntimeError('database is locked')
+
+        store.record_plan_review = boom
+        assert runtime.resolve_decision(sid, record['decisionId'], 'approve', None)['status'] == 'resolved'
+        assert await asyncio.wait_for(runtime.tasks[sid], 5) == 'Đi tiếp.'
+        assert record['outcome']['decision'] == 'approved'
+        store.close()
+
+    asyncio.run(run())
+
+
+def test_the_submitted_state_disappears_when_the_answer_arrives(tmp_path):
+    """`submitted` là trạng thái của một lượt CÒN TREO, không phải một hàng trong sổ."""
+    now = time.time()
+    record = {'kind': 'approval', 'resolved': False, 'planIdentity': IDENTITY, 'planVersion': 2}
+    assert plan_registry.pending_submissions([record], IDENTITY) == (2,)
+    record['resolved'] = True
+    assert plan_registry.pending_submissions([record], IDENTITY) == ()
+    assert plan_registry.pending_submissions([{'kind': 'approval', 'resolved': False,
+                                               'planIdentity': IDENTITY, 'planVersion': 0}], IDENTITY) == ()
+    assert plan_registry.pending_submissions([{'kind': 'question', 'resolved': False,
+                                               'planIdentity': IDENTITY, 'planVersion': 2}], IDENTITY) == ()
+    assert now > 0

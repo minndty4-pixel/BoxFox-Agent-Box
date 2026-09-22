@@ -63,7 +63,11 @@ class SandboxExecutor:
         if name == 'inspect_element':
             return await self.request('/__box/inspect-element', {'x': int(args['x']), 'y': int(args['y'])})
         if name == 'computer_screen_capture':
-            data = await self.request('/__box/capture', {'target': {'kind': 'screen'}, 'output': 'base64'})
+            # A3 (đợt 20): gửi kèm `session` để ảnh mới nằm ở `captures/screen/<sid8>/` thay vì
+            # đổ chung một thư mục phẳng (đo sống: 375 tệp / 113 MB, 123 tệp không payload nào
+            # nhắc tới nên không biết của phiên nào). Box không có `session` thì giữ khuôn cũ.
+            data = await self.request('/__box/capture', {'target': {'kind': 'screen'},
+                                                         'output': 'base64', 'session': session})
             raw = base64.b64decode(data.get('data', ''))
             dimensions = image_dimensions_from_bytes(raw)
             if not dimensions:
@@ -84,7 +88,9 @@ class SandboxExecutor:
             if action == 'start':
                 if rid:
                     raise ValueError('Recording already owned by this session; stop first')
-                data = await self.request('/__box/record/start', {'target': {'kind': 'screen'}})
+                # A3: ghi hình cũng theo phiên (xem `computer_screen_capture` ở trên).
+                data = await self.request('/__box/record/start', {'target': {'kind': 'screen'},
+                                                                'session': session})
                 self.recordings[session] = data['recordingId']
                 return data
             if action == 'stop':

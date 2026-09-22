@@ -6,7 +6,7 @@ from dataclasses import asdict
 from .commands import INFO, ROLE_SKILLS, EXTERNAL
 from ..agent_core.failures import classify_failure, failure_detail
 from ..observability.system_log import system_log
-from ..agent_core.compression import ContextCompressor, estimate_tokens
+from ..agent_core.compression import ContextCompressor, context_estimate, estimate_tokens
 
 
 class RuntimeCommands:
@@ -43,14 +43,51 @@ class RuntimeCommands:
                 self.store.save(sid, session['messages'], 'running')
                 async def compact():
                     try:
-                        async def summarize(history):
-                            return await self.client.complete(history, [], session['config']['route'], max_tokens=2048)
-                        messages, event = await ContextCompressor(session['config']['contextWindow']).compact(session['messages'], [], summarize, force=True)
+                        async def summarize(history, max_tokens=None):
+                            return await self.client.complete(history, [], session['config']['route'],
+                                                              max_tokens=max_tokens or 2048)
+                        # Ngưỡng của lượt này lấy từ chính phiên: `threshold_tokens` là trần byte quy
+                        # ra token (xem `ContextCompressor.__init__`). `/compact` là lệnh có ý thức của
+                        # người dùng nên đi thẳng qua ngưỡng, nhưng nó vẫn phải biết mình đang đo bằng
+                        # gì — trước đợt này ngưỡng 70 % cứng không bao giờ chạm tới trên cửa sổ 1M.
+                        compressor = ContextCompressor(session['config']['contextWindow'])
+                        usage = self.last_usage.get(sid)
+                        # Phần D — `/compact` không có gì để gộp vẫn phải trả SỐ, không phải một
+                        # event trống: 8/33 dòng `unchanged` sống chỉ có mỗi `kind`, nên đọc lại
+                        # không biết lượt đó đang đo bằng gì.
+                        before = context_estimate(session['messages'], [], usage)
+                        messages, event = await compressor.compact(session['messages'], [], summarize,
+                                                                   force=True, usage=usage)
+                        compact_event = dict(event or {})
+                        compact_event.setdefault('kind', 'manual_compact')
+                        compact_event.setdefault('beforeEstimate', before)
                         if messages is not session['messages']:
-                            self.store.checkpoint(sid, session['messages'], 'manual_compact')
+                            # N4 — hàng checkpoint phải tự nói được nó đo bằng gì. Đo trên máy chủ
+                            # nhà 2026-09-21: 22 hàng sống chỉ có `id, session_id, messages, reason,
+                            # created` — muốn biết cửa sổ/ngưỡng/ước lượng của lần nén đó phải mò
+                            # sang `events.payload`. Ghi ngay tại đây, cùng lượt với bản gốc.
+                            saved_messages = session['messages']
+                            self.store.checkpoint(sid, saved_messages, 'manual_compact', {
+                                'before_estimate': (event or {}).get('beforeEstimate', before),
+                                'after_estimate': (event or {}).get('afterEstimate'),
+                                'context_window': session['config'].get('contextWindow'),
+                                'model_id': (session['config'].get('route') or {}).get('modelId'),
+                            })
+                            # A4 — `/compact` cũng phải để lại **bản đọc được**: cặp
+                            # `ck-<sid8>-NNN.json/.md` cộng một dòng `C:` (bản 0.1 chỉ ghi hàng
+                            # SQLite, nên đường nén do người dùng gọi là đường duy nhất không có
+                            # bản mở được bằng mắt — đúng đường dễ bị hỏi "đã nén gì" nhất).
+                            await self.write_journal_checkpoint(sid, saved_messages, messages,
+                                                                compact_event, session['config'])
+                            # Hóa đơn cũ thuộc về transcript cũ.
+                            self.last_usage.pop(sid, None)
                         self.skill_loader.reset(sid)
                         self.store.save(sid, messages, 'completed')
-                        self.store.emit(sid, 'compression', event or {'kind': 'unchanged'})
+                        self.refresh_journal_brief(sid, messages)
+                        self.store.emit(sid, 'compression', event or {'kind': 'unchanged',
+                                                                     'beforeEstimate': before,
+                                                                     'afterEstimate': context_estimate(messages, [], None),
+                                                                     'reason': 'nothing_to_compact'})
                         self.store.emit(sid, 'assistant', {'text': 'Context compaction complete.', 'final': True})
                         self.store.emit(sid, 'finish', {'status': 'completed'})
                     except asyncio.CancelledError:
@@ -135,12 +172,13 @@ class RuntimeCommands:
                     # A generic skill runs in an isolated orchestrator context, with the same role configuration.
                     child = self.create({'skills': resolved.skills, 'subagents': session['config']['subagents'],
                         'contextWindow': session['config']['contextWindow'], 'deadlineSeconds': budget,
+                        'contextWindowSource': session['config'].get('contextWindowSource'),
                         **session['config']['route']}, parent_id=sid)
                 else:
                     config = next(r for r in session['config']['subagents'] if r['id'] == role and r.get('enabled', True))
                     from ..agent_core.runtime import route_for
                     child = self.create({'skills': resolved.skills, 'contextWindow': session['config']['contextWindow'],
-                        'deadlineSeconds': budget,
+                        'contextWindowSource': session['config'].get('contextWindowSource'), 'deadlineSeconds': budget,
                         **(route_for(config.get('model')) or session['config']['route']),
                         'instructions': config.get('systemPromptAppended', '')}, parent_id=sid, role=role, parent_tools=session['config']['tools'])
                 self.store.emit(sid, 'child', {'sessionId': child['id'], 'role': role, 'executor': resolved.executor, 'status': 'started'})

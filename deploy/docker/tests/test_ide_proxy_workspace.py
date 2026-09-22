@@ -557,11 +557,16 @@ class IdeProxyWorkspaceWriteTest(unittest.TestCase):
 
     def test_delete_refuses_protected_paths(self) -> None:
         (self.root / ".plans" / "v1-pilot.md").write_text("# plan\n", encoding="utf-8")
-        for protected in ("", ".plans", ".trash", ".generated_artifacts"):
+        # `.session-history` (đợt 20) là bản ghi chỉ-ghi-thêm của chính lượt đang chạy: API file của
+        # người dùng không được xoá nó, kể cả khi thư mục đang có dữ liệu thật.
+        (self.root / ".session-history" / "a1b2c3d4").mkdir(parents=True)
+        (self.root / ".session-history" / "a1b2c3d4" / "journal.jsonl").write_text("{}\n", encoding="utf-8")
+        for protected in ("", ".plans", ".trash", ".generated_artifacts", ".session-history"):
             with self.subTest(path=protected):
                 status, _h, _b = self.write_call("/__box/files/delete", {"path": protected})
                 self.assertEqual(status, 409)
         self.assertTrue((self.root / ".plans" / "v1-pilot.md").is_file())
+        self.assertTrue((self.root / ".session-history" / "a1b2c3d4" / "journal.jsonl").is_file())
         self.assertFalse((self.root / ".trash").exists())
 
     def test_write_endpoints_reject_malformed_body(self) -> None:

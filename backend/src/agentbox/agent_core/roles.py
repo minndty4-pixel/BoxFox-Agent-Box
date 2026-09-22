@@ -157,7 +157,7 @@ ROLES = {r.id: r for r in [
     Role('research', 'Research', RESEARCH_INSTRUCTIONS, RESEARCH, ('grounded-citations',)),
 ]}
 ORCHESTRATOR_TOOLS = WRITE | VISUAL | {'delegate_task', 'session_search', 'write_plan',
-                                       'web_search', 'web_fetch'}
+                                       'web_search', 'web_fetch', 'journal_write', 'journal_brief'}
 
 
 def allowed_tools(role, parent=None):

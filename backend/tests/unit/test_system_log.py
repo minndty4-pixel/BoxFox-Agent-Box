@@ -39,7 +39,7 @@ def test_secrets_are_redacted(tmp_path):
     log = _log(tmp_path)
     log.write('chat.call', apiKey='sk-live-123', headers={'authorization': 'Bearer abc', 'token': 't'},
               safe='giữ lại')
-    entry = json.loads((tmp_path / 'harness.jsonl').read_text().strip())
+    entry = json.loads((tmp_path / 'harness.jsonl').read_text(encoding='utf-8').strip())
     assert entry['data']['apiKey'] == '[redacted]'
     assert entry['data']['headers']['authorization'] == '[redacted]'
     assert entry['data']['headers']['token'] == '[redacted]'
@@ -49,7 +49,7 @@ def test_secrets_are_redacted(tmp_path):
 def test_error_entries_carry_code_and_message(tmp_path):
     log = _log(tmp_path)
     log.error('turn.failed', message='UPSTREAM_UNREACHABLE: mất kết nối', code='UPSTREAM_UNREACHABLE', session_id='s1')
-    entry = json.loads((tmp_path / 'harness.jsonl').read_text().strip())
+    entry = json.loads((tmp_path / 'harness.jsonl').read_text(encoding='utf-8').strip())
     assert entry['level'] == 'error'
     assert entry['code'] == 'UPSTREAM_UNREACHABLE'
     assert 'mất kết nối' in entry['message']
@@ -88,12 +88,13 @@ def test_cli_reads_the_log_it_is_pointed_at(tmp_path):
     log.error('turn.failed', session_id='deadbeef', code='UPSTREAM_UNREACHABLE', message='mất kết nối')
     # `conftest.py` đặt BOXFOX_SYSTEM_LOG_DIR cho cả phiên test; ở đây muốn kiểm
     # nhánh mặc định `~/BoxFox/logs` nên phải bỏ biến đó khỏi môi trường con.
-    env = {**os.environ, 'HOME': str(tmp_path.parent / 'fake-home')}
+    fake_home = str(tmp_path.parent / 'fake-home')
+    env = {**os.environ, 'HOME': fake_home, 'USERPROFILE': fake_home}
     env.pop('BOXFOX_SYSTEM_LOG_DIR', None)
     # CLI đọc `~/BoxFox/logs`; trỏ HOME vào một cây tạm rồi đặt log đúng chỗ.
-    target = Path(env['HOME']) / 'BoxFox' / 'logs'
+    target = Path(fake_home) / 'BoxFox' / 'logs'
     target.mkdir(parents=True, exist_ok=True)
-    (target / 'harness.jsonl').write_text((tmp_path / 'harness.jsonl').read_text())
+    (target / 'harness.jsonl').write_text((tmp_path / 'harness.jsonl').read_text(encoding='utf-8'), encoding='utf-8')
 
     summary = subprocess.run([sys.executable, str(REPO / 'scripts' / 'system-log.py'), 'summary'],
                              capture_output=True, text=True, env=env, cwd=REPO)
@@ -113,7 +114,8 @@ def test_cli_env_var_overrides_the_home_default(tmp_path):
     kiểm chứng chạy tách được log, không ghi vào thư mục log của người vận hành."""
     log = _log(tmp_path)
     log.error('turn.failed', session_id='cafebabe', code='DEADLINE', message='hết hạn')
-    env = {**os.environ, 'HOME': str(tmp_path / 'empty-home'), 'BOXFOX_SYSTEM_LOG_DIR': str(tmp_path)}
+    fake_home = str(tmp_path / 'empty-home')
+    env = {**os.environ, 'HOME': fake_home, 'USERPROFILE': fake_home, 'BOXFOX_SYSTEM_LOG_DIR': str(tmp_path)}
 
     summary = subprocess.run([sys.executable, str(REPO / 'scripts' / 'system-log.py'), 'summary'],
                              capture_output=True, text=True, env=env, cwd=REPO)
@@ -150,7 +152,8 @@ def test_cli_reset_all_leaves_exactly_one_previous_file(tmp_path):
 
 def test_cli_reports_a_missing_log(tmp_path):
     # Cùng lý do: bỏ biến của conftest để CLI đi theo nhánh mặc định `~/BoxFox/logs`.
-    env = {**os.environ, 'HOME': str(tmp_path / 'empty-home')}
+    fake_home = str(tmp_path / 'empty-home')
+    env = {**os.environ, 'HOME': fake_home, 'USERPROFILE': fake_home}
     env.pop('BOXFOX_SYSTEM_LOG_DIR', None)
     result = subprocess.run([sys.executable, str(REPO / 'scripts' / 'system-log.py'), 'tail'],
                             capture_output=True, text=True, env=env, cwd=REPO)

@@ -224,8 +224,41 @@ def write_text(target, content, exclusive=False):
     return target
 
 
+def plan_directory(args):
+    """Thư mục nhóm bên trong `.plans` (`''` = gốc) — mỗi đoạn phải đúng quy tắc slug.
+
+    Harness chọn thư mục (nó sở hữu identity `dir/slug`), sandbox chỉ ghi đúng chỗ.
+    """
+    value = args.get('directory')
+    if value in (None, ''):
+        return ''
+    if not isinstance(value, str):
+        raise ValueError('PLAN_SLUG_INVALID: directory must be a string of slug segments, e.g. designs')
+    segments = value.strip().strip('/').split('/')
+    if not all(PLAN_SLUG.fullmatch(segment) for segment in segments):
+        raise ValueError('PLAN_SLUG_INVALID: directory must be lowercase words separated by single dashes, e.g. designs')
+    return '/'.join(segments)
+
+
+def plan_version(value):
+    """Số phiên bản do harness quyết; `None` nghĩa là "harness không đọc được chỉ mục"."""
+    if value is None or value == '':
+        return None
+    if isinstance(value, bool):
+        raise ValueError('PLAN_INVALID: version must be a positive integer decided by the harness, e.g. 3')
+    if not re.fullmatch(r'[1-9][0-9]{0,9}', str(value).strip()):
+        raise ValueError('PLAN_INVALID: version must be a positive integer decided by the harness, e.g. 3')
+    return int(str(value).strip())
+
+
 def write_plan(args):
-    """Write .plans/vN-slug.md at the next free version. Never overwrites an existing version."""
+    """Write .plans[/dir]/vN-slug.md.
+
+    `version` (tuỳ chọn) là số harness đã quyết từ chỉ mục `GET /__box/plans/index`:
+    file đã tồn tại → từ chối bằng `PLAN_VERSION_TAKEN` (KHÔNG tự tăng số — tự tăng là
+    mầm của lỗi "v5 rồi v6 cho hai chủ đề mới" ở vòng 20). Không truyền `version`
+    (harness không đọc được chỉ mục) thì giữ nguyên hành vi cũ: lấy số trống kế tiếp.
+    """
     slug = str(args.get('slug') or '').strip()
     if not PLAN_SLUG.fullmatch(slug):
         raise ValueError('Plan slug must be lowercase words separated by single dashes (e.g. workspace-plan)')
@@ -235,23 +268,27 @@ def write_plan(args):
     size = len(content.encode('utf-8'))
     if size > PLAN_MAX_BYTES:
         raise ValueError('Plan exceeds the 1 MiB plan-file limit')
-    directory = path(PLAN_ROOM)
-    directory.mkdir(parents=True, exist_ok=True)
-    if not directory.is_dir():
+    directory = plan_directory(args)
+    room = path(PLAN_ROOM + '/' + directory if directory else PLAN_ROOM)
+    room.mkdir(parents=True, exist_ok=True)
+    if not room.is_dir():
         raise ValueError(PLAN_ROOM + ' is not a directory')
-    used = {int(match.group(1)) for match in (PLAN_FILENAME.fullmatch(item.name) for item in directory.iterdir())
-            if match and (directory / match.group(0)).is_file()}
-    version = max(used or {0}) + 1
-    while True:
-        target = directory / f'v{version}-{slug}.md'
-        if target.exists():
-            version += 1
-            continue
-        try:
-            write_text(target, content, exclusive=True)
-            break
-        except FileExistsError:
-            version += 1
+    # Chỉ đếm file CÙNG slug trong CÙNG thư mục: số version là của nhóm, không của cả `.plans`.
+    used = {int(match.group(1)) for match in (PLAN_FILENAME.fullmatch(item.name) for item in room.iterdir())
+            if match and match.group(2) == slug and (room / match.group(0)).is_file()}
+    version = plan_version(args.get('version'))
+    if version is None:
+        version = max(used or {0}) + 1
+    elif version in used:
+        raise ValueError('PLAN_VERSION_TAKEN: v%d-%s.md already exists; the harness must pick the next version'
+                         % (version, slug))
+    target = room / f'v{version}-{slug}.md'
+    try:
+        write_text(target, content, exclusive=True)
+    except FileExistsError:
+        # Đua ghi hiếm gặp: harness đọc lại chỉ mục rồi thử lần hai (PLAN_WRITE_CONFLICT nếu vẫn kẹt).
+        raise ValueError('PLAN_VERSION_TAKEN: v%d-%s.md already exists; the harness must pick the next version'
+                         % (version, slug))
     relative = target.relative_to(ROOT).as_posix()
     # KHÔNG trả `identity` ở đây: hợp đồng §1 cấm dạng kèm tiền tố `vN-` (identity là
     # khoá mà `GET /__box/plans` dùng để nhóm, tức slug trần / `dir/slug`). Bên gọi
@@ -259,6 +296,21 @@ def write_plan(args):
     return {'content': 'Written ' + relative, 'version': version,
             'slug': slug, 'relativePath': relative, 'title': str(args.get('title') or '')[:120],
             'bytes': size}
+
+
+try:  # pragma: no cover - đường dẫn chỉ tồn tại khi worker chạy TRONG box
+    sys.path.insert(0, '/usr/local/bin')
+    import session_ops as _session_ops
+except ImportError:  # box chưa re-stage hai tệp nhật ký: xem `SESSION_OPS_UNAVAILABLE` bên dưới
+    _session_ops = None
+
+SESSION_OP_NAMES = ('session_ensure', 'journal_append', 'checkpoint_write', 'captures_prune')
+# Gán mặc định TRƯỚC nhánh có điều kiện: `importlib.reload` chạy lại thân mô-đun trong chính
+# namespace cũ, nên một biến chỉ được gán trong nhánh `if` sẽ giữ giá trị cũ khi nhánh đó không chạy.
+SESSION_OPS = ()
+
+if _session_ops is not None:
+    SESSION_OPS = tuple(_session_ops.OPS)
 
 
 def execute(name, args, session):
@@ -366,6 +418,22 @@ def execute(name, args, session):
         if desktop_note:
             payload['desktopRestored' if 'to' in desktop_note else 'desktopWarning'] = desktop_note
         return payload
+    if name in SESSION_OP_NAMES:
+        # A1 — bốn op phiên/nhật ký (`session_ensure`, `journal_append`, `checkpoint_write`,
+        # `captures_prune`) do `session_ops.py` trong box phục vụ. Tệp đó phải được staged vào
+        # `/usr/local/bin` (cùng chỗ `capture.py`); chưa staged thì op trả một lỗi **có mã** để
+        # chỗ gọi hạ xuống `notice` — nhật ký không ghi được không bao giờ được giết một lượt.
+        if _session_ops is None:
+            return {'is_error': True,
+                    'error': 'SESSION_OPS_UNAVAILABLE: session_files.py/session_ops.py chưa được '
+                             'staged vào /usr/local/bin trong box (xem deploy/docker/backfill_history.py --stage)'}
+        answer = _session_ops.run_op(name, args)
+        if isinstance(answer, dict) and answer.get('ok') is False and 'is_error' not in answer:
+            # `run_op` không bao giờ ném (thiết kế của nó) — nhưng worker phải trả về đúng khuôn
+            # lỗi mà `execute()` của harness đã hiểu, nếu không lỗi ghi nhật ký sẽ thành công.
+            return {'is_error': True, 'error': f"{answer.get('code') or 'SESSION_FILES_ERROR'}: "
+                                               f"{answer.get('error') or 'op nhật ký hỏng'}"}
+        return answer
     raise ValueError('Unsupported sandbox tool: ' + name)
 
 

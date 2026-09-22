@@ -1,0 +1,281 @@
+/**
+ * Trạng thái duyệt THẬT của một bản kế hoạch + bản chấm P1–P8, đọc từ sổ của harness.
+ *
+ * Vì sao không đọc từ container: nhãn "approved" hôm nay do `withPresentationStatuses` gán theo VỊ
+ * TRÍ trong danh sách version (`types.ts`), còn `.reviews/` trong box thì rỗng — nên hai nhóm kế
+ * hoạch cùng lúc hiện "approved" mà không có quyết định nào của người dùng, và hai kế hoạch mới
+ * tinh nhận số v5/v6 chỉ vì bộ đếm version đọc mọi file trong `.plans/`. Bảng `plan_reviews` của
+ * harness là nguồn duy nhất biết ai đã duyệt bản nào; `GET /api/agent/plans/status` trả trạng thái
+ * đó kèm `reviewStale` và `evaluation` của đúng bản đang được hỏi.
+ *
+ * Mọi trường đều đọc phòng thủ: dữ liệu tới từ mạng, nên một trường thiếu phải thành "chưa biết",
+ * không được thành một lời khẳng định (điểm ảo, "đã duyệt" ảo).
+ */
+import { agentApi } from '../agentApi'
+
+export const EVAL_DIMENSIONS = ['P1', 'P2', 'P3', 'P4', 'P5', 'P6', 'P7', 'P8'] as const
+export type PlanEvalDimension = (typeof EVAL_DIMENSIONS)[number]
+export type PlanEvalLevel = 0 | 1 | 2
+export type PlanEvalLayer = 'oracle' | 'judge'
+/** `plan_eval.verdict_for`: ≥13 đạt, 9–12 đạt có điều kiện, ≤8 chưa đạt. */
+export type PlanEvalVerdict = 'pass' | 'conditional' | 'fail'
+
+/** `plan_registry.GROUP_STATES` — chỉ bản MỚI NHẤT của nhóm quyết định trạng thái. */
+export const PLAN_REVIEW_STATES = [
+  'none',
+  'draft',
+  'submitted',
+  'approved',
+  'changes_requested',
+  'unknown',
+] as const
+export type PlanReviewState = (typeof PLAN_REVIEW_STATES)[number]
+
+export type PlanDecision = 'approved' | 'changes_requested'
+
+/** Ngưỡng độ dài của `plan_eval.py` — dùng để nói "306.721 ký tự > 150.000" trên giao diện. */
+export const PLAN_MAX_CHARS = 150_000
+export const PLAN_WARN_CHARS = 40_000
+
+export interface PlanEvaluation {
+  identity: string
+  version: number | null
+  parentVersion: number | null
+  /** `false` = lần ghi này bị cổng cứng chặn, file trong `.plans` giữ nguyên. */
+  written: boolean
+  rubric: string
+  levels: Record<PlanEvalDimension, PlanEvalLevel | null>
+  layer: Partial<Record<PlanEvalDimension, PlanEvalLayer>>
+  total: number | null
+  maxTotal: number
+  /**
+   * `hardGate` = MỌI cổng cứng đều đạt (cùng cực với `scripts/eval/rubric.py::hard_gate_ok`).
+   * Giao diện KHÔNG được suy ra "bị chặn" từ trường này — dấu hiệu bị chặn là `gatesFailed`
+   * và `rejected`, đúng như `Evaluation.to_payload` phát ra.
+   */
+  hardGate: boolean
+  gatesFailed: PlanEvalDimension[]
+  verdict: PlanEvalVerdict | null
+  /** Mã từ chối: `plan-too-long`, `plan-repetitive`, `QUALITY`, … hoặc `null` nếu được ghi. */
+  rejected: string | null
+  measures: Record<string, unknown>
+  evidence: { code: string; excerpt: string }[]
+  warnings: string[]
+  evaluatedAt: string | null
+}
+
+export interface PlanStatusReview {
+  identity: string
+  version: number | null
+  decision: PlanDecision
+  note: string
+  source: string
+  /** `time.time()` lúc ghi quyết định. */
+  decidedAt: number | null
+}
+
+export interface PlanStatusReport {
+  identity: string
+  version: number | null
+  state: PlanReviewState
+  stateVersion: number | null
+  review: PlanStatusReview | null
+  reviewStale: boolean
+  indexAvailable: boolean
+  evaluation: PlanEvaluation | null
+}
+
+export interface PlanReviewOutcome {
+  review: PlanStatusReview | null
+  /** `false` = đã ghi vào sổ harness nhưng chưa chuyển được sang box; `null` = không đọc được. */
+  forwarded: boolean | null
+}
+
+/** Hợp đồng tối thiểu mà `usePlanFiles` cần — test bơm bản giả, không cần mạng. */
+export interface PlanStatusClient {
+  read(identity: string, version: number | null): Promise<PlanStatusReport>
+  submitReview(
+    identity: string,
+    version: number,
+    decision: PlanDecision,
+    note: string,
+  ): Promise<PlanReviewOutcome>
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function asText(value: unknown): string | null {
+  return typeof value === 'string' ? value : null
+}
+
+function asNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function asLevel(value: unknown): PlanEvalLevel | null {
+  return value === 0 || value === 1 || value === 2 ? value : null
+}
+
+function isDimension(value: unknown): value is PlanEvalDimension {
+  return typeof value === 'string' && (EVAL_DIMENSIONS as readonly string[]).includes(value)
+}
+
+function readLevels(raw: unknown): Record<PlanEvalDimension, PlanEvalLevel | null> {
+  const source = isRecord(raw) ? raw : {}
+  const levels = {} as Record<PlanEvalDimension, PlanEvalLevel | null>
+  for (const dimension of EVAL_DIMENSIONS) levels[dimension] = asLevel(source[dimension])
+  return levels
+}
+
+function readLayer(raw: unknown): Partial<Record<PlanEvalDimension, PlanEvalLayer>> {
+  const source = isRecord(raw) ? raw : {}
+  const layer: Partial<Record<PlanEvalDimension, PlanEvalLayer>> = {}
+  for (const dimension of EVAL_DIMENSIONS) {
+    const value = source[dimension]
+    if (value === 'oracle' || value === 'judge') layer[dimension] = value
+  }
+  return layer
+}
+
+function readEvidence(raw: unknown): { code: string; excerpt: string }[] {
+  if (!Array.isArray(raw)) return []
+  const items: { code: string; excerpt: string }[] = []
+  for (const entry of raw) {
+    if (!isRecord(entry)) continue
+    const code = asText(entry.code)
+    const excerpt = asText(entry.excerpt)
+    if (code && excerpt) items.push({ code, excerpt })
+  }
+  return items
+}
+
+/**
+ * Chuẩn hoá `evaluation` của `GET /api/agent/plans/status`. Payload thật nằm ở `payload` (hàng bảng
+ * `plan_evaluations`), nhưng lớp ngoài nhắc lại `total`/`verdict`/`evaluatedAt`; gộp hai lớp lại
+ * (lớp trong thắng) để đọc được cả hai hình dạng thay vì im lặng trả về toàn `null`.
+ */
+export function readPlanEvaluation(raw: unknown): PlanEvaluation | null {
+  if (!isRecord(raw)) return null
+  const payload = isRecord(raw.payload) ? { ...raw, ...raw.payload } : raw
+  const levels = readLevels(payload.levels)
+  const known = EVAL_DIMENSIONS.map((dimension) => levels[dimension])
+  const complete = known.every((level) => level !== null)
+  const verdictRaw = asText(payload.verdict)
+  const rejected = asText(payload.rejected)
+  return {
+    identity: asText(payload.identity) ?? '',
+    version: asNumber(payload.version),
+    parentVersion: asNumber(payload.parentVersion) ?? asNumber(payload.parent_version),
+    written: payload.written === true,
+    rubric: asText(payload.rubric) ?? '',
+    levels,
+    layer: readLayer(payload.layer),
+    total:
+      asNumber(payload.total) ??
+      (complete ? known.reduce<number>((sum, level) => sum + (level ?? 0), 0) : null),
+    maxTotal: asNumber(payload.maxTotal) ?? EVAL_DIMENSIONS.length * 2,
+    hardGate: payload.hardGate === true,
+    gatesFailed: Array.isArray(payload.gatesFailed)
+      ? payload.gatesFailed.filter(isDimension)
+      : [],
+    verdict:
+      verdictRaw === 'pass' || verdictRaw === 'conditional' || verdictRaw === 'fail'
+        ? verdictRaw
+        : null,
+    rejected,
+    measures: isRecord(payload.measures) ? payload.measures : {},
+    evidence: readEvidence(payload.evidence),
+    warnings: Array.isArray(payload.warnings)
+      ? payload.warnings.filter((item): item is string => typeof item === 'string')
+      : [],
+    evaluatedAt: asText(payload.evaluatedAt),
+  }
+}
+
+export function readPlanStatusReview(raw: unknown): PlanStatusReview | null {
+  if (!isRecord(raw)) return null
+  const decision = raw.decision
+  if (decision !== 'approved' && decision !== 'changes_requested') return null
+  return {
+    identity: asText(raw.identity) ?? '',
+    version: asNumber(raw.version),
+    decision,
+    note: asText(raw.note) ?? '',
+    source: asText(raw.source) ?? 'plan-tab',
+    decidedAt: asNumber(raw.decidedAt),
+  }
+}
+
+/** Chuẩn hoá thân của `GET /api/agent/plans/status`; `null` khi thân không phải một object. */
+export function readPlanStatus(raw: unknown): PlanStatusReport | null {
+  if (!isRecord(raw)) return null
+  const state = PLAN_REVIEW_STATES.find((candidate) => candidate === raw.state)
+  return {
+    identity: asText(raw.identity) ?? '',
+    version: asNumber(raw.version),
+    // Trạng thái lạ (harness cũ hơn giao diện) đọc là `unknown`, không đoán thành `draft`.
+    state: state ?? 'unknown',
+    stateVersion: asNumber(raw.stateVersion),
+    review: readPlanStatusReview(raw.review),
+    reviewStale: raw.reviewStale === true,
+    // Chỉ `false` tường minh mới là "không đọc được chỉ mục"; thiếu trường thì giữ giả định cũ.
+    indexAvailable: raw.indexAvailable !== false,
+    evaluation: readPlanEvaluation(raw.evaluation),
+  }
+}
+
+/** `306.721` — nhóm nghìn kiểu Việt Nam, cùng cách mockup đang ghi số đo. */
+export function planCount(value: number | null | undefined): string | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null
+  return String(Math.round(value)).replace(/\B(?=(\d{3})+(?!\d))/g, '.')
+}
+
+/** `20/09 20:57` theo giờ máy — epoch giây (`decidedAt`) hoặc chuỗi ISO (`evaluatedAt`). */
+export function planStamp(value: number | string | null | undefined): string | null {
+  if (typeof value !== 'number' && typeof value !== 'string') return null
+  const date = typeof value === 'number' ? new Date(value * 1000) : new Date(value)
+  if (Number.isNaN(date.getTime())) return null
+  const pad = (part: number) => String(part).padStart(2, '0')
+  return `${pad(date.getDate())}/${pad(date.getMonth() + 1)} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+/** Số đo trong `measures` (payload không hứa kiểu, nên đọc phòng thủ). */
+export function planMeasure(measures: Record<string, unknown>, key: string): number | null {
+  return asNumber(measures[key])
+}
+
+export function planMeasureText(measures: Record<string, unknown>, key: string): string | null {
+  return asText(measures[key])
+}
+
+/** `POST /api/agent/plans/review` + `GET /api/agent/plans/status` qua proxy `/api/agent`. */
+export class HarnessPlanStatusClient implements PlanStatusClient {
+  async read(identity: string, version: number | null): Promise<PlanStatusReport> {
+    const query = new URLSearchParams({ identity })
+    if (version !== null) query.set('version', String(version))
+    const payload = await agentApi<unknown>(`/plans/status?${query.toString()}`)
+    const report = readPlanStatus(payload)
+    if (!report) throw new Error('The harness returned an unreadable plan status.')
+    return report
+  }
+
+  async submitReview(
+    identity: string,
+    version: number,
+    decision: PlanDecision,
+    note: string,
+  ): Promise<PlanReviewOutcome> {
+    const payload = await agentApi<unknown>('/plans/review', { identity, version, decision, note })
+    const body = isRecord(payload) ? payload : {}
+    return {
+      review: readPlanStatusReview(body.review),
+      forwarded: typeof body.forwarded === 'boolean' ? body.forwarded : null,
+    }
+  }
+}
+
+export function createPlanStatusClient(): PlanStatusClient {
+  return new HarnessPlanStatusClient()
+}

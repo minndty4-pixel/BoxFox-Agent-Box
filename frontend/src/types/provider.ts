@@ -38,6 +38,12 @@ export interface ModelPricing {
 export interface ProviderModel {
   id: string; name: string; enabled: boolean; source?: 'live' | 'static' | 'registry' | 'probe' | 'custom'; stale?: boolean; thinkingLevels?: string[];
   pricing?: ModelPricing | null;
+  /** Số token router đang dùng cho model này; `null` khi không nguồn nào trả lời. */
+  contextWindow?: number | null;
+  /** Nguồn của con số đó: `manual` (người dùng khai) · `documented` (bảng của BoxFox) · `reported` (nhà cung cấp). */
+  contextWindowSource?: 'manual' | 'documented' | 'reported' | null;
+  /** Số nhà cung cấp đã công bố, chỉ có khi khác số đang dùng (để đối chiếu). */
+  contextWindowReported?: number | null;
   upstreamModelId?: string; thinkingLevel?: string | null; quotaFamily?: 'gemini' | 'claude_gpt' | null; probeStatus?: 'registry' | 'passed' | 'fallback'; lastProbedAt?: string | null;
   health?: 'unknown' | 'ready' | 'unavailable' | 'rate_limited' | 'slow' | 'failed'
   lastProbe?: { status: 'passed' | 'failed'; httpStatus: number; latencyMs: number; testedAt: string; error: string | null }

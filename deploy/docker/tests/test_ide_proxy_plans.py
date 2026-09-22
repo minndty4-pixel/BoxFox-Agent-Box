@@ -87,6 +87,90 @@ SECRET_OK = "test-secret-key"
 ORIGIN_OK = "http://localhost:3100"
 
 
+class IdeProxyPlanIndexTest(unittest.TestCase):
+    """`GET /__box/plans/index` — chỉ mục cho harness: cần khoá, không cần Origin.
+
+    Harness quyết số version/identity nên nó phải đọc được chỉ mục y như app đọc
+    (`GET /__box/plans`), nhưng qua cổng shared-secret: thiếu khoá → 401 và KHÔNG
+    trả dữ liệu, để một process trong box không tự phong mình là harness.
+    """
+
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary_directory.name)
+        (self.root / "v1-demo.md").write_bytes(b"# Demo\n")
+        (self.root / "subplans").mkdir()
+        (self.root / "subplans" / "v2-login.md").write_bytes(b"# Login\n")
+        self.previous_root = ide_proxy.PLAN_ROOT
+        self.previous_key = ide_proxy.BOXFOX_API_KEY
+        ide_proxy.PLAN_ROOT = str(self.root)
+        ide_proxy.BOXFOX_API_KEY = SECRET_OK
+        self.server = ide_proxy.ThreadingHTTPServer(("127.0.0.1", 0), ide_proxy.ProxyHandler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base_url = f"http://127.0.0.1:{self.server.server_port}"
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join()
+        ide_proxy.PLAN_ROOT = self.previous_root
+        ide_proxy.BOXFOX_API_KEY = self.previous_key
+        self.temporary_directory.cleanup()
+
+    def request(self, path: str, method: str = "GET", key: str | None = None, origin: str | None = None):
+        headers: dict[str, str] = {}
+        if key is not None:
+            headers["X-BoxFox-Api-Key"] = key
+        if origin is not None:
+            headers["Origin"] = origin
+        request = urllib.request.Request(f"{self.base_url}{path}", method=method, headers=headers)
+        try:
+            with urllib.request.urlopen(request) as response:
+                return response.status, dict(response.headers), response.read().decode("utf-8")
+        except urllib.error.HTTPError as error:
+            return error.code, dict(error.headers), error.read().decode("utf-8")
+
+    def test_index_requires_the_shared_secret(self) -> None:
+        status, _headers, body = self.request("/__box/plans/index")
+        self.assertEqual(status, 401)
+        self.assertIn("X-BoxFox-Api-Key", body)
+        self.assertNotIn("demo", body)
+
+        status, _headers, body = self.request("/__box/plans/index", key="sai-khoa")
+        self.assertEqual(status, 401)
+        self.assertNotIn("demo", body)
+
+    def test_index_payload_matches_the_public_plans_payload(self) -> None:
+        status, headers, body = self.request("/__box/plans/index", key=SECRET_OK)
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        self.assertEqual(headers.get_content_type() if hasattr(headers, "get_content_type") else "application/json",
+                         "application/json")
+
+        # cùng payload như route app đọc (Origin hợp lệ), và không rò đường dẫn tuyệt đối
+        _status, _headers, public_body = self.request("/__box/plans", origin=ORIGIN_OK)
+        self.assertEqual(json.loads(body), json.loads(public_body))
+        self.assertNotIn(str(self.root), body)
+
+    def test_index_rejects_other_methods_and_query_parameters(self) -> None:
+        status, _headers, _body = self.request("/__box/plans/index", method="POST", key=SECRET_OK)
+        self.assertEqual(status, 405)
+
+        status, _headers, _body = self.request("/__box/plans/index?path=/etc/passwd", key=SECRET_OK)
+        self.assertEqual(status, 400)
+
+    def test_index_works_without_an_origin_header(self) -> None:
+        """Backend gọi server-to-server: không có Origin vẫn phải qua (khác nhóm đọc)."""
+
+        status, _headers, body = self.request("/__box/plans/index", key=SECRET_OK)
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            sorted(plan["identity"] for plan in json.loads(body)["plans"]),
+            ["demo", "subplans/login"],
+        )
+
+
 class IdeProxyPlanReviewTest(unittest.TestCase):
     """`POST /__box/plans/review` — route GHI chạy server-to-server nên KHÔNG cần Origin."""
 
@@ -203,7 +287,9 @@ class IdeProxyPlanReviewTest(unittest.TestCase):
         self.assertEqual(headers["Cache-Control"], "no-store")
         self.assertNotIn("Access-Control-Allow-Origin", headers)  # gọi server-to-server
         record = json.loads(body)
-        self.assertEqual(set(record), {"identity", "decision", "note", "updatedAt"})
+        self.assertEqual(
+            set(record), {"identity", "decision", "note", "updatedAt", "version", "reviewLegacy"}
+        )
         self.assertEqual(record["identity"], "demo")
         self.assertEqual(record["decision"], "approved")
         self.assertEqual(record["note"], "ổn rồi")

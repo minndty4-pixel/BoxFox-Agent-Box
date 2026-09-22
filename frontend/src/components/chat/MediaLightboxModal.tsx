@@ -15,13 +15,53 @@ import {
 } from 'lucide-react'
 
 export interface LightboxMediaProps {
-  type?: 'image' | 'video'
+  /**
+   * D1: **bắt buộc**, không có giá trị mặc định. Trước đợt này `type` là trường tuỳ chọn và
+   * khung xem mặc định `'image'`, nên một người gọi quên gửi `type` đã biến bản ghi `.mp4`
+   * thành `<img alt="Sandbox Screen Recording">` mà `tsc` không hề báo. Thiếu `type` từ nay là
+   * lỗi biên dịch.
+   */
+  type: 'image' | 'video'
   src: string
   poster?: string
   caption?: string
   sourceUrl?: string
   duration?: number
   onClose?: () => void
+}
+
+/** D2: đuôi tệp đọc được từ **chính nguồn** — đuôi thật của đường dẫn thắng `type`. */
+const DOWNLOAD_EXTENSIONS: Record<string, string> = {
+  mp4: 'mp4',
+  webm: 'webm',
+  mov: 'mov',
+  mkv: 'mkv',
+  png: 'png',
+  jpg: 'jpg',
+  jpeg: 'jpeg',
+  webp: 'webp',
+}
+
+/**
+ * D2: đuôi tệp khi tải về, theo thứ tự đuôi thật của `src` → `type` → `png`.
+ * `src` của box là `/__box/file/media?path=<đường dẫn thật>` nên phải giải mã trước khi đọc
+ * đuôi; nếu không, mọi tệp đều rơi về `type` và bản ghi lại được lưu thành `.png`.
+ */
+export function downloadExtension(src: string, type: 'image' | 'video'): string {
+  const decoded = (() => {
+    try {
+      return decodeURIComponent(src)
+    } catch {
+      // Chuỗi `%` hỏng thì đọc thẳng trên nguồn gốc — vẫn tốt hơn là bỏ qua đường dẫn.
+      return src
+    }
+  })()
+  const found = decoded.toLowerCase().match(/\.(mp4|webm|mov|mkv|png|jpg|jpeg|webp)\b/g)
+  if (found && found.length > 0) {
+    const ext = found[found.length - 1].slice(1)
+    if (DOWNLOAD_EXTENSIONS[ext]) return DOWNLOAD_EXTENSIONS[ext]
+  }
+  return type === 'video' ? 'mp4' : 'png'
 }
 
 /**
@@ -33,7 +73,7 @@ export interface LightboxMediaProps {
  * - Phím tắt hỗ trợ: Space (Play/Pause), ESC (Close), Arrow keys (Seek / Pan).
  */
 export function MediaLightboxModal({
-  type = 'image',
+  type,
   src,
   poster,
   caption,
@@ -53,6 +93,10 @@ export function MediaLightboxModal({
   const [playbackRate, setPlaybackRate] = useState(1)
   const [currentTime, setCurrentTime] = useState(0)
   const [videoDuration, setVideoDuration] = useState(duration || 0)
+  // D3: bản ghi bị cắt ngang có thể không phát được ở đây — nói thật thay vì để khung trắng.
+  const [playError, setPlayError] = useState(false)
+  // D3: chỉ nói số khi thật sự có số; không có thì nói thẳng là không có.
+  const hasDuration = videoDuration > 0
 
   const containerRef = useRef<HTMLDivElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -137,8 +181,8 @@ export function MediaLightboxModal({
   const handleDownload = () => {
     const link = document.createElement('a')
     link.href = src
-    const ext = type === 'video' ? 'mp4' : 'png'
-    link.download = `boxfox-${type}-capture-${Date.now()}.${ext}`
+    // D2: tên tệp theo đuôi thật của nguồn, không theo `type` một cách mù quáng.
+    link.download = `boxfox-${type}-capture-${Date.now()}.${downloadExtension(src, type)}`
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)
@@ -204,6 +248,12 @@ export function MediaLightboxModal({
               {type === 'video' ? 'Session Screen Recording' : 'Browser Screen Capture'}
             </span>
             {caption && <span className="text-muted font-normal">• {caption}</span>}
+            {/* D3: chú thích thời lượng chỉ hiện số khi có số; thiếu số thì nói thẳng vì sao. */}
+            {type === 'video' && !hasDuration && (
+              <span className="text-amber-300/90 font-normal" data-lightbox-duration-note="true">
+                • Duration unknown — this recording did not stop cleanly
+              </span>
+            )}
           </div>
 
           {sourceUrl && (
@@ -233,6 +283,15 @@ export function MediaLightboxModal({
       {/* Main Media Viewport */}
       <div className="relative flex-1 w-full flex items-center justify-center overflow-hidden my-auto cursor-grab active:cursor-grabbing">
         {type === 'video' ? (
+          playError ? (
+            // D3: trình duyệt không phát được tệp này — nói thẳng, đừng để khung trắng.
+            <div
+              className="max-w-md rounded-xl border border-line/80 bg-panel2 px-5 py-4 text-center text-xs leading-relaxed text-zinc-300 shadow-2xl"
+              data-lightbox-play-error="true"
+            >
+              This recording could not be played here; download it to watch.
+            </div>
+          ) : (
           <div
             style={{
               transform: `translate(${position.x}px, ${position.y}px) scale(${scale})`,
@@ -261,6 +320,7 @@ export function MediaLightboxModal({
                   setVideoDuration(videoRef.current.duration)
                 }
               }}
+              onError={() => setPlayError(true)}
               className="max-h-[75vh] max-w-[85vw] object-contain rounded-xl"
               onClick={togglePlay}
             />
@@ -276,6 +336,7 @@ export function MediaLightboxModal({
               </button>
             )}
           </div>
+          )
         ) : (
           <img
             src={src}

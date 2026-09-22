@@ -9,23 +9,31 @@ import json
 import pytest
 
 import agentbox.sandbox.worker as worker
+from agentbox.agent_core import plan_header, plan_registry
 from agentbox.agent_core.runtime import HarnessRuntime, plan_identity, plan_slug, plan_title
 from agentbox.memory.session_store import SessionStore
 
-# A plan that passes the structural gate (plan_quality.py): acceptance criteria with a real command and
-# its expected result, plus a risks section. The gate must never change what such a plan writes.
+# A plan that passes the whole rubric the round-20 harness applies (plan_quality.py + plan_eval.py):
+# every step carries a command and the result to expect, the acceptance criteria name a command, and
+# the limits paragraph says honestly what could not be checked. The gate must never change what such
+# a plan writes.
 PLAN_MARKDOWN = """# Workspace plan
 
 ## Milestones
-1. Build the workspace panel.
+1. Chạy `.venv/bin/python -m pytest backend/tests -q`; mong đợi 9 passed.
+2. Gọi `GET /api/agent/health` và xác nhận mã trả về là 200.
 
 ## Verification / Acceptance criteria
 Run `.venv/bin/python -m pytest backend/tests -q`; expect only the 3 known environment failures.
 
 ## Risks / Limitations
-- none known: the change is additive.
+- Giới hạn: chưa kiểm được hành vi khi box mất mạng vì môi trường này không mô phỏng được.
 """
-PLAN_MARKDOWN_V2 = PLAN_MARKDOWN + "- v2 adds the review state.\n"
+# A revision must trace back to the version it revises: a v2 that says nothing about v1 is refused
+# (`PLAN_EVAL_REJECTED: (revision-untraceable)`), so this one carries a "changes vs v1" section.
+PLAN_MARKDOWN_V2 = PLAN_MARKDOWN.replace(
+    '## Milestones',
+    '## Thay đổi so với v1\nBản 2 thêm bước thứ hai và ghi rõ giới hạn đã biết.\n\n## Milestones')
 
 
 def answer(text='done', calls=None, finish='stop'):
@@ -48,6 +56,9 @@ class FixtureModel:
         return next(self.responses)
 
 
+JOURNAL_OPS = {'journal_append', 'session_ensure', 'checkpoint_write'}
+
+
 class PlanFixtureExecutor:
     """Stands in for the sandbox worker: confirms the same metadata the real container returns.
 
@@ -62,6 +73,11 @@ class PlanFixtureExecutor:
 
     async def execute(self, name, args, sid):
         self.calls.append((name, args, sid))
+        if name in JOURNAL_OPS:
+            # A7 (đợt 20): một lần ghi plan thành công còn ghim một bản ghi `P:` — op nhật ký đi qua
+            # cùng executor nên fixture phải trả khuôn thật, không được coi là "sai công cụ".
+            return {'ok': True, 'id': (args.get('record') or {}).get('id'), 'seq': 1,
+                    'relPath': f".session-history/journal.jsonl"}
         assert name == 'write_plan', 'write_plan must go through the sandbox executor'
         version = max(self.used or {0}) + 1
         self.used.add(version)
@@ -78,6 +94,8 @@ class NestedPlanExecutor(PlanFixtureExecutor):
 
     async def execute(self, name, args, sid):
         self.calls.append((name, args, sid))
+        if name in JOURNAL_OPS:
+            return {'ok': True, 'id': (args.get('record') or {}).get('id'), 'seq': 1}
         return {'content': 'Written docs/docs', 'version': 1, 'slug': 'docs',
                 'relativePath': '.plans/docs/v1-docs.md', 'title': 'Docs',
                 'bytes': len(args['markdown'].encode('utf-8'))}
@@ -114,8 +132,14 @@ def test_write_plan_emits_plan_written_then_ui_intent(tmp_path):
         sid = runtime.create({'skills': []})['id']
 
         await runtime.start(sid, 'Lên plan')
-        calls = [(name, args, call_sid) for name, args, call_sid in executor.calls]
-        assert [name for name, _, _ in calls] == ['write_plan']
+        # `session_ensure` (A1) là op hạ tầng chạy trước cả công cụ — bỏ ra để dãy dưới đây còn nói
+        # về đúng hợp đồng "ghi file trước, ghim nhật ký sau" của `write_plan`.
+        calls = [(name, args, call_sid) for name, args, call_sid in executor.calls
+                 if name != 'session_ensure']
+        # A7: `write_plan` ghim luôn một bản ghi `P:` — thứ tự này chính là hợp đồng
+        # "ghi file trước, ghim nhật ký sau", nên khoá lại bằng dãy chứ không bằng tập.
+        assert [name for name, _, _ in calls] == ['write_plan'] + [name for name, _, _ in calls[1:]]
+        assert calls[0][0] == 'write_plan' and all(name in JOURNAL_OPS for name, _, _ in calls[1:])
         name, args, call_sid = calls[0]
         assert args['slug'] == 'workspace-plan', 'the slug must be normalized before it reaches the sandbox'
         assert args['markdown'] == PLAN_MARKDOWN and call_sid == sid
@@ -289,6 +313,46 @@ def test_worker_write_plan_picks_the_next_free_version(tmp_path, monkeypatch):
     assert worker.PLAN_FILENAME.fullmatch('v6-other.md'), 'names must match deploy/docker/plan_files.py:18-22'
 
 
+def test_worker_write_plan_takes_the_harness_version_and_never_self_increments(tmp_path, monkeypatch):
+    """§3.4: version là của TỪNG nhóm, harness quyết số; đã có thì từ chối chứ không tự tăng."""
+
+    monkeypatch.setattr(worker, 'ROOT', tmp_path)
+    (tmp_path / '.plans').mkdir()
+    # File của slug KHÁC không được đẩy số của nhóm này (lỗi v5→v6 của vòng 20).
+    (tmp_path / '.plans' / 'v9-other.md').write_text('other plan', encoding='utf-8')
+
+    first = worker.execute('write_plan', {'slug': 'workspace-plan', 'markdown': PLAN_MARKDOWN}, 'session')
+    assert first['relativePath'] == '.plans/v1-workspace-plan.md'
+    assert first['version'] == 1
+
+    # Harness quyết số từ chỉ mục: dùng ĐÚNG số đó (kể cả khi nó nhảy cách quãng).
+    third = worker.execute('write_plan', {'slug': 'workspace-plan', 'version': 3,
+                                          'markdown': PLAN_MARKDOWN}, 'session')
+    assert third['relativePath'] == '.plans/v3-workspace-plan.md'
+    with pytest.raises(ValueError, match='^PLAN_VERSION_TAKEN'):
+        worker.execute('write_plan', {'slug': 'workspace-plan', 'version': 3,
+                                      'markdown': PLAN_MARKDOWN}, 'session')
+    assert (tmp_path / '.plans' / 'v3-workspace-plan.md').read_text(encoding='utf-8') == PLAN_MARKDOWN
+
+    # Không truyền version (harness không đọc được chỉ mục) → giữ hành vi cũ trong nhóm này.
+    fourth = worker.execute('write_plan', {'slug': 'workspace-plan', 'markdown': PLAN_MARKDOWN}, 'session')
+    assert fourth['relativePath'] == '.plans/v4-workspace-plan.md'
+
+    # Thư mục nhóm do harness quyết (identity `dir/slug`), và đếm số theo đúng thư mục đó.
+    nested = worker.execute('write_plan', {'slug': 'docs', 'directory': 'subplans', 'version': 1,
+                                           'markdown': PLAN_MARKDOWN}, 'session')
+    assert nested['relativePath'] == '.plans/subplans/v1-docs.md'
+    assert worker.execute('write_plan', {'slug': 'docs', 'directory': 'subplans', 'markdown': PLAN_MARKDOWN},
+                          'session')['relativePath'] == '.plans/subplans/v2-docs.md'
+    # cùng slug nhưng khác thư mục là NHÓM khác: số đếm riêng, không dùng chung
+    assert worker.execute('write_plan', {'slug': 'docs', 'markdown': PLAN_MARKDOWN},
+                          'session')['relativePath'] == '.plans/v1-docs.md'
+
+    for bad in ({'directory': 'Sub Plans'}, {'version': 'v3'}, {'version': True}):
+        with pytest.raises(ValueError, match='^PLAN_(SLUG_INVALID|INVALID)'):
+            worker.execute('write_plan', {'slug': 'docs', 'markdown': PLAN_MARKDOWN, **bad}, 'session')
+
+
 def test_worker_write_plan_refuses_bad_slug_and_empty_content(tmp_path, monkeypatch):
     monkeypatch.setattr(worker, 'ROOT', tmp_path)
     with pytest.raises(ValueError, match='slug'):
@@ -298,3 +362,297 @@ def test_worker_write_plan_refuses_bad_slug_and_empty_content(tmp_path, monkeypa
     with pytest.raises(ValueError, match='1 MiB'):
         worker.execute('write_plan', {'slug': 'good-slug', 'markdown': 'x' * 1048577}, 'session')
     assert not (tmp_path / '.plans').exists(), 'a refused plan must not create the folder'
+# ---------------------------------------------------------------- đợt 20 §3–§5: chỉ mục + thang điểm
+# Các ca dưới đây khoá **đường ghi mới**: chỉ mục box đọc được thì harness tự quyết
+# identity/version/parent, ghép khối header của chính nó, chấm P1–P8 rồi mới cho sandbox ghi.
+# Vì sao phải có: trước vòng 20 `plan_eval.py` không có chỗ gọi nào trong mã chạy thật (mọi
+# fixture executor đều thiếu `request`), nên điểm P1–P8 không bao giờ xuất hiện trên máy thật.
+
+def index_entry(version, slug, directory=''):
+    """Một version của `GET /__box/plans/index` — khoá camelCase đúng như `plan_files.py` công bố."""
+    prefix = f'{directory}/' if directory else ''
+    return {'version': version, 'relativePath': f'.plans/{prefix}v{version}-{slug}.md',
+            'sizeBytes': 120, 'modifiedAt': '2026-09-21T00:00:00Z', 'status': 'draft',
+            'headerStatus': 'legacy'}
+
+
+def index_group(identity, versions, slug=None):
+    return {'identity': identity, 'slug': slug or (identity.rpartition('/')[2] or identity),
+            'versions': list(versions)}
+
+
+class BoxIndexExecutor(PlanFixtureExecutor):
+    """Sandbox có chỉ mục đọc được: `write_plan` phải tự quyết số version rồi gửi số đó xuống.
+
+    `race=True` mô phỏng hai người ghi cùng lúc: người kia chiếm mất số vừa chọn ngay trước khi op
+    ghi chạy, nên box trả `PLAN_VERSION_TAKEN` đúng khuôn thật — `worker.py::__main__` **không** ném
+    lỗi, nó trả `{'is_error': True, 'error': …}`.
+    """
+
+    def __init__(self, plans=(), race=False):
+        super().__init__()
+        self.plans = copy.deepcopy(list(plans))
+        self.race = race
+        self.raced = False
+        self.index_reads = 0
+
+    async def request(self, path, body=None):
+        assert path == plan_registry.INDEX_PATH, 'chỉ chỉ mục plan được đọc bằng GET'
+        self.index_reads += 1
+        return {'plans': copy.deepcopy(self.plans)}
+
+    async def execute(self, name, args, sid):
+        self.calls.append((name, args, sid))
+        if name in JOURNAL_OPS:
+            return {'ok': True, 'id': (args.get('record') or {}).get('id'), 'seq': 1}
+        assert name == 'write_plan', 'write_plan must go through the sandbox executor'
+        if self.race and not self.raced:
+            self.raced = True
+            # Người kia ghi THẲNG vào nhóm đang có (không phải một nhóm thứ hai cùng tên).
+            entry = index_entry(args['version'], args['slug'], str(args.get('directory') or ''))
+            group = next((item for item in self.plans if item['identity'] == args['slug']), None)
+            if group is None:
+                self.plans.append(index_group(args['slug'], [entry]))
+            else:
+                group['versions'] = sorted(list(group['versions']) + [entry], key=lambda item: item['version'])
+            return {'is_error': True, 'error': f"PLAN_VERSION_TAKEN: v{args['version']}-{args['slug']}.md "
+                                               'already exists; the harness must pick the next version'}
+        version = args.get('version')
+        if version is None:  # nhánh suy giảm: box tự chọn số, y như trước vòng 20
+            version = max(self.used or {0}) + 1
+            self.used.add(version)
+        directory = str(args.get('directory') or '').strip('/')
+        prefix = f'{directory}/' if directory else ''
+        return {'content': 'Written', 'version': version, 'slug': args['slug'],
+                'relativePath': f'.plans/{prefix}v{version}-{args["slug"]}.md',
+                'title': str(args.get('title') or '')[:120],
+                'bytes': len(args['markdown'].encode('utf-8'))}
+
+
+def scored(store, sid):
+    return events_of(store, sid, 'plan_evaluated')
+
+
+def op_calls(executor):
+    """Các op THẬT SỰ đi xuống box (bỏ `session_ensure`/`journal_append` — hạ tầng, không phải công cụ)."""
+    return [(name, args) for name, args, _ in executor.calls if name not in JOURNAL_OPS]
+
+
+def test_the_index_decides_the_version_and_the_write_is_scored(tmp_path):
+    """Lần ghi đầu của một chủ đề mới: box nhận `version: 1` + header harness, và có một bản chấm."""
+
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        executor = BoxIndexExecutor()
+        runtime = HarnessRuntime(store, executor, FixtureModel([
+            answer(calls=[call('write_plan', {'slug': 'workspace-plan', 'markdown': PLAN_MARKDOWN})]),
+            answer('Đã ghi plan')]))
+        sid = runtime.create({'skills': []})['id']
+
+        await runtime.start(sid, 'Ghi plan')
+        name, args = op_calls(executor)[0]
+        assert name == 'write_plan'
+        assert args['version'] == 1 and args['directory'] == '' and args['slug'] == 'workspace-plan'
+        header = plan_header.build_plan_header(1, 'workspace-plan', None, None)
+        assert args['markdown'].startswith('<!-- boxfox-plan\nVersion: v1\nIdentity: workspace-plan\n'
+                                           'Parent: none\n-->\n')
+        assert args['markdown'][len(header):] == PLAN_MARKDOWN, 'thân bài của model phải nguyên vẹn'
+
+        written = events_of(store, sid, 'plan_written')
+        assert len(written) == 1
+        data = written[0]['data']
+        assert data['identity'] == 'workspace-plan' and data['version'] == 1
+        assert data['parentVersion'] is None, 'bản đầu của nhóm không có cha'
+        assert data['headerSource'] == 'synthesized', 'model không viết header → harness chèn'
+        assert data['identityMatchedBy'] == 'none' and data['identityForcedNew'] is False
+        assert data['state'] == 'none', 'nhóm chưa có bản nào thì trạng thái là none'
+
+        events = scored(store, sid)
+        assert len(events) == 1, 'đúng MỘT sự kiện cho mỗi bản được chấm'
+        assert events[0]['data']['written'] is True and events[0]['data']['total'] == 14
+        assert events[0]['data']['verdict'] == 'pass' and events[0]['data']['levels']['P1'] == 1
+        assert events[0]['seq'] == written[0]['seq'] + 1, 'bản chấm đi ngay sau plan_written'
+        row = store.plan_evaluation('workspace-plan', 1)
+        assert row['total'] == 14 and row['verdict'] == 'pass' and row['payload']['written'] is True
+        assert tool_results(store, sid)[-1]['rubric']['total'] == 14
+        assert executor.index_reads == 1, 'một lần ghi chỉ đọc chỉ mục một lần'
+        store.close()
+
+    asyncio.run(run())
+
+
+def test_a_revision_must_name_the_version_it_revises(tmp_path):
+    """§4.3 R1 + cổng cứng P2: bản sửa không nhắc `vN` bị từ chối, và **không** có byte nào bị ghi."""
+
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        executor = BoxIndexExecutor([index_group('workspace-plan',
+                                                [index_entry(1, 'workspace-plan')])])
+        runtime = HarnessRuntime(store, executor, FixtureModel([
+            answer(calls=[call('write_plan', {'slug': 'workspace-plan', 'markdown': PLAN_MARKDOWN})]),
+            answer('Ghi lại cho đúng'),
+            answer(calls=[call('write_plan', {'slug': 'workspace-plan', 'markdown': PLAN_MARKDOWN_V2})]),
+            answer('Đã ghi bản 2')]))
+        sid = runtime.create({'skills': []})['id']
+
+        await runtime.start(sid, 'Sửa plan')
+        failures = [result for result in tool_results(store, sid) if result.get('is_error')]
+        assert failures and 'PLAN_EVAL_REJECTED: (revision-untraceable)' in failures[0]['error']
+        assert failures[0]['errorCode'] == 'PLAN_EVAL_REJECTED'
+        assert op_calls(executor) == [], 'cổng cứng trượt thì sandbox không được chạm đĩa'
+        assert events_of(store, sid, 'plan_written') == [] and events_of(store, sid, 'ui_intent') == []
+        rejected = scored(store, sid)
+        assert len(rejected) == 1 and rejected[0]['data']['written'] is False
+        assert rejected[0]['data']['rejected'] == 'revision-untraceable'
+        assert rejected[0]['data']['verdict'] == 'fail', 'bản không ghi được thì kết luận phải là fail'
+        row = store.plan_evaluation('workspace-plan', 2)
+        assert row['payload']['written'] is False, 'hàng điểm là bằng chứng vì sao không có file mới'
+
+        # Lần thứ hai: đúng bản sửa có mục "thay đổi so với v1" → v2 với `Parent: v1`.
+        await runtime.start(sid, 'Sửa plan lần hai')
+        name, args = op_calls(executor)[0]
+        assert name == 'write_plan' and args['version'] == 2 and args['directory'] == ''
+        assert args['markdown'].startswith('<!-- boxfox-plan\nVersion: v2\nIdentity: workspace-plan\n'
+                                           'Parent: v1\n-->\n')
+        written = events_of(store, sid, 'plan_written')
+        assert len(written) == 1 and written[0]['data']['parentVersion'] == 1
+        assert len(scored(store, sid)) == 2, 'bản bị từ chối cũng có sự kiện; bản ghi được có thêm một cái'
+        assert store.plan_evaluation('workspace-plan', 2)['payload']['written'] is True
+        store.close()
+
+    asyncio.run(run())
+
+
+def test_a_header_the_model_wrote_that_disagrees_with_the_harness_is_refused(tmp_path):
+    """§3.1: model không chọn được số version — khối nó viết chỉ được phép khớp con số harness quyết."""
+
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        executor = BoxIndexExecutor([index_group('workspace-plan',
+                                                [index_entry(1, 'workspace-plan')])])
+        lying = ('<!-- boxfox-plan\nVersion: v3\nIdentity: workspace-plan\nParent: v1\n-->\n'
+                 + PLAN_MARKDOWN_V2)
+        runtime = HarnessRuntime(store, executor, FixtureModel([
+            answer(calls=[call('write_plan', {'slug': 'workspace-plan', 'markdown': lying})]),
+            answer('Thôi được')]))
+        sid = runtime.create({'skills': []})['id']
+
+        await runtime.start(sid, 'Ghi plan')
+        failures = [result for result in tool_results(store, sid) if result.get('is_error')]
+        assert failures and 'PLAN_EVAL_REJECTED: (header-mismatch)' in failures[0]['error']
+        assert op_calls(executor) == [] and events_of(store, sid, 'plan_written') == []
+        store.close()
+
+    asyncio.run(run())
+
+
+def test_an_ambiguous_slug_is_refused_with_the_argument_to_pass(tmp_path):
+    """Dải `0.5 ≤ j < 0.75`: harness không tự đoán nhóm, và câu từ chối nói đúng tham số cần gọi lại."""
+
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        executor = BoxIndexExecutor([
+            index_group('research-patient-record-lookup', [index_entry(1, 'research-patient-record-lookup')])])
+        runtime = HarnessRuntime(store, executor, FixtureModel([
+            answer(calls=[call('write_plan', {'slug': 'patient-record-lookup-history',
+                                              'markdown': PLAN_MARKDOWN})]),
+            answer('Chọn nhóm đi')]))
+        sid = runtime.create({'skills': []})['id']
+
+        await runtime.start(sid, 'Ghi plan mơ hồ')
+        failures = [result for result in tool_results(store, sid) if result.get('is_error')]
+        assert failures and 'PLAN_EVAL_REJECTED: (identity-ambiguous)' in failures[0]['error']
+        assert 'identity: "research-patient-record-lookup"' in failures[0]['error']
+        assert 'relatesTo: "none"' in failures[0]['error']
+        assert op_calls(executor) == [] and scored(store, sid) == [], 'chưa chấm điểm khi chưa biết nhóm'
+        store.close()
+
+    asyncio.run(run())
+
+
+def test_an_unreadable_index_falls_back_and_invents_nothing(tmp_path):
+    """Chỉ mục box chết: hành vi cũ (box tự chọn số, không header) và **không** bịa điểm/cha."""
+
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        executor = PlanFixtureExecutor()  # không có `request` → chỉ mục không đọc được
+        runtime = HarnessRuntime(store, executor, FixtureModel([
+            answer(calls=[call('write_plan', {'slug': 'workspace-plan', 'markdown': PLAN_MARKDOWN})]),
+            answer('Đã ghi plan')]))
+        sid = runtime.create({'skills': []})['id']
+
+        await runtime.start(sid, 'Ghi plan')
+        name, args = op_calls(executor)[0]
+        assert name == 'write_plan' and 'version' not in args and 'directory' not in args
+        assert args['markdown'] == PLAN_MARKDOWN, 'không có header nào được ghép ở nhánh suy giảm'
+        data = events_of(store, sid, 'plan_written')[0]['data']
+        assert set(data) == {'identity', 'version', 'slug', 'relativePath', 'title', 'bytes'}, \
+            'nhánh suy giảm không được thêm `parentVersion`/`headerSource` — hai giá trị đó chưa ai biết'
+        assert scored(store, sid) == [] and store.plan_evaluation('workspace-plan', 1) is None
+        store.close()
+
+    asyncio.run(run())
+
+
+def test_a_taken_version_is_retried_once_with_a_fresh_index(tmp_path):
+    """Hai người ghi cùng lúc: đọc lại chỉ mục đúng MỘT lần rồi ghi lại, không ghi đè ai.
+
+    Người kia chiếm `v1` ngay trước khi op ghi chạy. Lần ghi lại phải dùng `v2` đọc từ chỉ mục mới,
+    và bản chấm phải thuộc về version **đã ghi được** — không phải version bị chiếm.
+    """
+
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        executor = BoxIndexExecutor(race=True)
+        runtime = HarnessRuntime(store, executor, FixtureModel([
+            answer(calls=[call('write_plan', {'slug': 'workspace-plan', 'markdown': PLAN_MARKDOWN_V2})]),
+            answer('Đã ghi plan')]))
+        sid = runtime.create({'skills': []})['id']
+
+        await runtime.start(sid, 'Ghi plan đua')
+        versions = [args.get('version') for name, args in op_calls(executor)]
+        assert versions == [1, 2], 'lần thứ hai phải dùng số vừa đọc lại, không phải số cũ'
+        assert executor.index_reads == 2, 'đọc lại đúng một lần'
+        written = events_of(store, sid, 'plan_written')
+        assert len(written) == 1 and written[0]['data']['version'] == 2
+        assert written[0]['data']['parentVersion'] == 1 and written[0]['data']['headerSource'] == 'synthesized'
+        assert written[0]['data']['relativePath'] == '.plans/v2-workspace-plan.md'
+        assert [event['data']['version'] for event in scored(store, sid)] == [2], \
+            'lần ghi bị chiếm số không được để lại hàng điểm'
+        assert store.plan_evaluation('workspace-plan', 2)['payload']['written'] is True
+        assert store.plan_evaluation('workspace-plan', 1) is None
+        store.close()
+
+    asyncio.run(run())
+
+
+def test_the_refusal_line_tells_the_model_what_to_change(tmp_path):
+    """Câu từ chối phải là câu khắc phục của **chiều vừa trượt**, không phải câu chung.
+
+    Lỗi bắt được ở lượt chạy sống 2026-09-21 (session `00042bab…`): `plan_eval` có bảng khắc phục
+    riêng, nhưng `PlanRegistrationError` dựng lại câu bằng bảng của `plan_registry` — model nhận
+    đúng một dòng "không thoả luật của harness" rồi phải tự đoán. Bài này chốt câu chữ ở tầng công cụ.
+    """
+    prose_steps = PLAN_MARKDOWN.replace(
+        '1. Chạy `.venv/bin/python -m pytest backend/tests -q`; mong đợi 9 passed.\n'
+        '2. Gọi `GET /api/agent/health` và xác nhận mã trả về là 200.',
+        '1. Viết tài liệu cho người dùng.\n2. Xem lại lần cuối.')
+
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        executor = BoxIndexExecutor()
+        runtime = HarnessRuntime(store, executor, FixtureModel([
+            answer(calls=[call('write_plan', {'slug': 'workspace-plan', 'markdown': prose_steps})]),
+            answer('Viết lại cho có neo')]))
+        sid = runtime.create({'skills': []})['id']
+
+        await runtime.start(sid, 'Ghi plan thiếu neo')
+        failure = [result for result in tool_results(store, sid) if result.get('is_error')][0]
+        assert failure['errorCode'] == 'PLAN_EVAL_REJECTED'
+        assert 'steps-unanchored' in failure['error'] and 'chỉ 0/2 bước' in failure['error']
+        assert 'thêm lệnh/kết quả vào từng bước' in failure['error']
+        assert 'không thoả luật của harness' not in failure['error']
+        assert op_calls(executor) == [] and events_of(store, sid, 'plan_written') == []
+        store.close()
+
+    asyncio.run(run())

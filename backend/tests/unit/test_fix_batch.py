@@ -51,7 +51,7 @@ def test_compact_short_conversation_is_unchanged():
             {'role': 'user', 'content': 'A3'},
         ]
 
-        async def summarize(history):
+        async def summarize(history, max_tokens=None):
             # A realistic compaction summary is longer than a three-word transcript.
             return {'choices': [{'message': {'content': 'Goal: ' + ('keep the context small. ' * 40)},
                                  'finish_reason': 'stop'}]}
@@ -72,7 +72,7 @@ def test_compact_still_reports_context_limit_when_truly_over_budget():
         compressor = ContextCompressor(2048)
         messages = [{'role': 'user', 'content': 'x' * 20000}]
 
-        async def summarize(history):
+        async def summarize(history, max_tokens=None):
             raise AssertionError('must not summarize when the transcript cannot be cut')
 
         with pytest.raises(ValueError, match='CONTEXT_LIMIT'):
@@ -81,15 +81,30 @@ def test_compact_still_reports_context_limit_when_truly_over_budget():
     asyncio.run(run())
 
 
-def test_context_window_prefers_explicit_then_router_metadata():
-    """An explicit request wins, then router metadata, then the name heuristic."""
-    assert resolve_context_window('claude-sonnet-4-6', None, {'contextWindow': 1_000_000}) == 1_000_000
-    assert resolve_context_window('claude-sonnet-4-6', 8000, {'contextWindow': 1_000_000}) == 8000
-    assert resolve_context_window('claude-sonnet-4-6', None, None) == 200_000
-    assert resolve_context_window('gemini-3.8-flash-high', None, None) == 1_000_000
-    # Unknown metadata must not raise or shadow the explicit request.
-    assert resolve_context_window('mystery-model', 5000, {'contextWindow': None}) == 5000
-    assert resolve_context_window('mystery-model', None, {'contextWindow': 'nonsense'}) == 128_000
+def test_context_window_returns_the_number_and_its_source():
+    """Cặp (số, nguồn): yêu cầu rõ ràng → metadata router → sàn có nhãn; không đoán theo tên."""
+    assert resolve_context_window('claude-sonnet-4-6', None, {'contextWindow': 1_000_000}) == (1_000_000, 'reported')
+    assert resolve_context_window('claude-sonnet-4-6', 8000, {'contextWindow': 1_000_000}) == (8000, 'manual')
+    assert resolve_context_window('claude-sonnet-4-6', None, {
+        'contextWindow': 1_000_000, 'contextWindowSource': 'documented'}) == (1_000_000, 'documented')
+    # Tên model KHÔNG còn là nguồn: gemini/claude/deepseek đều rơi về sàn có nhãn (trước đợt 18
+    # bảng đoán theo tên ở đây trả 1M/200k/64k, và đó là một trong ba câu trả lời khác nhau).
+    assert resolve_context_window('gemini-3.8-flash-high', None, None) == (256_000, 'fallback')
+    assert resolve_context_window('claude-sonnet-4-6', None, None) == (256_000, 'fallback')
+    assert resolve_context_window('deepseek-v4-flash', None, None) == (256_000, 'fallback')
+    # Số rác không được nhận, và không được nuốt yêu cầu rõ ràng.
+    assert resolve_context_window('mystery-model', 5000, {'contextWindow': None}) == (5000, 'manual')
+    assert resolve_context_window('mystery-model', None, {'contextWindow': 'nonsense'}) == (256_000, 'fallback')
+    assert resolve_context_window('mystery-model', None, {'contextWindow': 0}) == (256_000, 'fallback')
+    assert resolve_context_window('mystery-model', None, {'contextWindow': -5}) == (256_000, 'fallback')
+    # Kẹp hai đầu vẫn giữ: dưới sàn 4096 và trên trần 2 000 000.
+    assert resolve_context_window('mystery-model', 10) == (4096, 'manual')
+    assert resolve_context_window('mystery-model', 9_000_000) == (2_000_000, 'manual')
+    # Phiên con thừa hưởng số của cha mang nhãn của cha, không tự nhận là 'manual';
+    # nhãn lạ (router cũ, hoặc một chuỗi bịa) cũng không được ghi vào config.
+    assert resolve_context_window('mystery-model', 1_000_000, None, 'documented') == (1_000_000, 'documented')
+    assert resolve_context_window('mystery-model', 1_000_000, None, 'fallback') == (1_000_000, 'fallback')
+    assert resolve_context_window('mystery-model', 1_000_000, None, 'guess') == (1_000_000, 'manual')
 
 
 def test_session_create_keeps_thinking_level(tmp_path):
@@ -205,6 +220,29 @@ def test_session_create_uses_router_metadata_context_window(tmp_path):
     session = runtime.create({'skills': [], 'connectionId': 'c1', 'modelId': 'claude-opus-4-6-thinking',
                               'modelMetadata': {'contextWindow': 1_000_000, 'thinkingType': 'effort'}})
     assert session['config']['contextWindow'] == 1_000_000
+    assert session['config']['contextWindowSource'] == 'reported', 'nhãn của router phải đi cùng con số'
+    store.close()
+
+
+def test_session_create_labels_an_unknown_model_as_a_fallback(tmp_path):
+    """Router chưa trả record cho model này: sàn 128k mang nhãn 'fallback', không đoán theo tên."""
+    store = SessionStore(tmp_path / 'sessions.db')
+    runtime = HarnessRuntime(store, FixtureExecutor(), FixtureModel())
+    session = runtime.create({'skills': [], 'connectionId': 'c1', 'modelId': 'deepseek-v4-flash'})
+    assert session['config']['contextWindow'] == 256_000
+    assert session['config']['contextWindowSource'] == 'fallback'
+    # Người dùng gửi số thì số đó thắng, và mang nhãn 'manual'.
+    typed = runtime.create({'skills': [], 'connectionId': 'c1', 'modelId': 'deepseek-v4-flash', 'contextWindow': 262_144})
+    assert typed['config']['contextWindow'] == 262_144
+    assert typed['config']['contextWindowSource'] == 'manual'
+    # Phiên con thừa hưởng NGUYÊN CẶP của phiên cha, kể cả khi số đến từ bảng tên của router.
+    documented = runtime.create({'skills': [], 'connectionId': 'c1', 'modelId': 'm1',
+                                 'modelMetadata': {'contextWindow': 1_048_576, 'contextWindowSource': 'documented'}})
+    child = runtime.create({'skills': [], 'contextWindow': documented['config']['contextWindow'],
+                            'contextWindowSource': documented['config']['contextWindowSource'],
+                            'connectionId': 'c1', 'modelId': 'm1'}, parent_id=documented['id'])
+    assert child['config']['contextWindow'] == 1_048_576
+    assert child['config']['contextWindowSource'] == 'documented'
     store.close()
 
 
@@ -245,28 +283,28 @@ def test_claude_code_role_is_decoupled_from_executor():
 
     assert CLI_DEFAULT_ROLES['claude-code'] == 'build'
     store = None
+    import tempfile
+    from pathlib import Path
+    from agentbox.skills.commands import CommandRegistry
+    from agentbox.skills.catalog import SkillCatalog
+    tmp = tempfile.TemporaryDirectory()
     try:
-        import tempfile
-        from pathlib import Path
-        from agentbox.skills.commands import CommandRegistry
-        from agentbox.skills.catalog import SkillCatalog
-        with tempfile.TemporaryDirectory() as tmp:
-            store = SessionStore(Path(tmp) / 'commands.db')
-            try:
-                registry = CommandRegistry(store, SkillCatalog())
-                registry.configure({'enabled': list(registry.catalog.items), 'revision': 0})
-                resolved = registry.resolve('/claude-code List the files.')
-                assert resolved.executor == 'claude-code'
-                assert resolved.role == CLI_DEFAULT_ROLES['claude-code']
-                custom = registry.save({'slug': 'delegate', 'template': 'Do $ARGUMENTS', 'role': 'review',
-                                        'executor': 'claude-code', 'skills': []})
-                assert custom['role'] == 'review'
-            finally:
-                store.close()
-                store = None
+        store = SessionStore(Path(tmp.name) / 'commands.db')
+        registry = CommandRegistry(store, SkillCatalog())
+        registry.configure({'enabled': list(registry.catalog.items), 'revision': 0})
+        resolved = registry.resolve('/claude-code List the files.')
+        assert resolved.executor == 'claude-code'
+        assert resolved.role == CLI_DEFAULT_ROLES['claude-code']
+        custom = registry.save({'slug': 'delegate', 'template': 'Do $ARGUMENTS', 'role': 'review',
+                                'executor': 'claude-code', 'skills': []})
+        assert custom['role'] == 'review'
     finally:
         if store is not None:
             store.close()
+        try:
+            tmp.cleanup()
+        except OSError:
+            pass
 
 
 def test_probe_reason_is_surfaced_for_the_ui():

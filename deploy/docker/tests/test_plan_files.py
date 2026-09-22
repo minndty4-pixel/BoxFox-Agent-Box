@@ -268,11 +268,15 @@ class PlanReviewsTest(unittest.TestCase):
     def test_write_review_returns_contract_payload_and_writes_file(self) -> None:
         record = write_review(self.root, "v1-pilot", "approved", "ok")
 
-        self.assertEqual(set(record), {"identity", "decision", "note", "updatedAt"})
+        self.assertEqual(
+            set(record), {"identity", "decision", "note", "updatedAt", "version", "reviewLegacy"}
+        )
         self.assertEqual(record["identity"], "v1-pilot")
         self.assertEqual(record["decision"], "approved")
         self.assertEqual(record["note"], "ok")
         self.assertIsInstance(record["updatedAt"], float)
+        self.assertIsNone(record["version"], "không truyền version → lưu null, không đoán số")
+        self.assertTrue(record["reviewLegacy"], "bản ghi không gắn version nào phải tự khai")
         stored = json.loads(self.review_path("v1-pilot").read_text(encoding="utf-8"))
         self.assertEqual(stored, record)
         self.assertEqual(self.review_path("v1-pilot").stat().st_mode & 0o777, 0o640)
@@ -434,7 +438,8 @@ class PlanReviewsTest(unittest.TestCase):
         self.assertEqual(
             by_identity["pilot"]["review"],
             {"identity": "pilot", "decision": "approved", "note": "ok",
-             "updatedAt": read_reviews(self.root)["pilot"]["updatedAt"]},
+             "updatedAt": read_reviews(self.root)["pilot"]["updatedAt"],
+             "version": None, "reviewLegacy": True},
         )
         self.assertIn("review", by_identity["subplans/login"])
         self.assertIsNone(by_identity["subplans/login"]["review"])
@@ -460,6 +465,229 @@ class PlanReviewsTest(unittest.TestCase):
             scan_plans(self.root).to_payload()["plans"][0]["review"]["decision"],
             "changes_requested",
         )
+
+
+def header_block(version: int | str = 2, identity: str = "pilot", parent: int | str | None = 1,
+                 slug: str | None = None) -> str:
+    """Sinh khối `boxfox-plan` đúng hợp đồng để test không phải viết tay từng dòng."""
+
+    lines = [
+        "<!-- boxfox-plan",
+        f"Version: v{version}",
+        f"Identity: {identity}",
+        f"Parent: {'none' if parent is None else f'v{parent}'}",
+    ]
+    if slug is not None:
+        lines.append(f"Slug: {slug}")
+    lines.append("-->")
+    return "\n".join(lines) + "\n"
+
+
+class PlanHeaderParseTest(unittest.TestCase):
+    """`parse_plan_header` — hàm thuần, không bao giờ ném, không bao giờ đoán bừa."""
+
+    def test_reads_a_well_formed_block(self) -> None:
+        header = plan_files.parse_plan_header(header_block(4, "clinical-patient-record-lookup-research", 3,
+                                                            slug="research-patient-record-lookup") + "\n# Plan\n")
+        self.assertIsNotNone(header)
+        assert header is not None
+        self.assertEqual(
+            (header.status, header.version, header.identity, header.parent, header.declared_slug),
+            ("ok", 4, "clinical-patient-record-lookup-research", 3, "research-patient-record-lookup"),
+        )
+        # `body_offset` = chỉ số dòng sau `-->` để bên gọi biết phần thân bắt đầu ở đâu
+        self.assertEqual(header.body_offset, 6)
+
+    def test_parent_none_and_nested_identity_are_valid(self) -> None:
+        header = plan_files.parse_plan_header(header_block(1, "subplans/login", None))
+        assert header is not None
+        self.assertEqual((header.status, header.parent, header.identity), ("ok", None, "subplans/login"))
+
+    def test_missing_header_is_not_an_error(self) -> None:
+        for markdown in ("# Plan\nthân bài\n", "", "\n\n\n"):
+            header = plan_files.parse_plan_header(markdown)
+            assert header is not None
+            self.assertEqual(
+                (header.status, header.version, header.identity, header.parent, header.declared_slug, header.body_offset),
+                ("missing", None, "", None, None, 0),
+            )
+
+    def test_header_beyond_the_line_budget_reads_as_missing(self) -> None:
+        markdown = "x\n" * 13 + header_block(1, "pilot", None)
+        header = plan_files.parse_plan_header(markdown)
+        assert header is not None
+        self.assertEqual(header.status, "missing", "13 dòng trước khối là quá xa: chỉ đọc 12 dòng đầu")
+
+    def test_invalid_blocks_never_raise(self) -> None:
+        # (markdown, version đọc được, identity đọc được): khoá thiếu/sai thì phần
+        # tương ứng phải là None/"" — không được đoán bừa từ tên file.
+        cases = {
+            "chưa đóng": ("<!-- boxfox-plan\nVersion: v1\nIdentity: pilot\nParent: none\n# Plan\n", 1, "pilot"),
+            "thiếu khoá": ("<!-- boxfox-plan\nVersion: v1\n-->\n", 1, ""),
+            "khoá lặp": ("<!-- boxfox-plan\nVersion: v1\nVersion: v2\nIdentity: pilot\nParent: none\n-->\n", 1, "pilot"),
+            "dòng lạ": ("<!-- boxfox-plan\nVersion: v1\nIdentity: pilot\nParent: none\nGhi chú\n-->\n", 1, "pilot"),
+            "version sai định dạng": ("<!-- boxfox-plan\nVersion: 04\nIdentity: pilot\nParent: none\n-->\n", None, "pilot"),
+            "identity hoa": ("<!-- boxfox-plan\nVersion: v1\nIdentity: Pilot\nParent: none\n-->\n", 1, ""),
+            "khoá parent sai tên": ("<!-- boxfox-plan\nVersion: v1\nIdentity: pilot\nCha: v1\n-->\n", 1, "pilot"),
+        }
+        for label, (markdown, version, identity) in cases.items():
+            header = plan_files.parse_plan_header(markdown)
+            assert header is not None
+            self.assertEqual(header.status, "invalid", label)
+            self.assertEqual((header.version, header.identity), (version, identity), label)
+
+    def test_non_string_input_returns_none(self) -> None:
+        self.assertIsNone(plan_files.parse_plan_header(None))
+        self.assertIsNone(plan_files.parse_plan_header(b"<!-- boxfox-plan\n"))
+
+
+class PlanHeaderScanTest(unittest.TestCase):
+    """Quét thư mục: header chỉ để HIỂN THỊ — nhóm plan luôn theo TÊN FILE."""
+
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary_directory.name)
+
+    def tearDown(self) -> None:
+        self.temporary_directory.cleanup()
+
+    def write(self, relative_path: str, content: str = "# Plan\n") -> Path:
+        path = self.root / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def versions(self, identity: str):
+        manifest = scan_plans(self.root)
+        return next(group for group in manifest.plans if group.identity == identity).versions
+
+    def test_matching_header_reads_ok_without_warning(self) -> None:
+        self.write("v1-pilot.md", header_block(1, "pilot", None) + "# Kế hoạch\n")
+
+        manifest = scan_plans(self.root)
+        version = manifest.plans[0].versions[0]
+        self.assertEqual(version.header_status, "ok")
+        self.assertEqual(version.header_version, 1)
+        self.assertEqual(version.header_identity, "pilot")
+        self.assertIsNone(version.declared_parent)
+        self.assertIsNone(version.declared_slug)
+        self.assertEqual(list(manifest.warnings), [])
+        # `status` (trạng thái duyệt) KHÔNG bị header thay thế
+        self.assertEqual(version.status, "approved")
+
+    def test_legacy_file_without_header_is_silent(self) -> None:
+        self.write("v1-pilot.md", "# Kế hoạch cũ\n")
+
+        manifest = scan_plans(self.root)
+        version = manifest.plans[0].versions[0]
+        self.assertEqual(version.header_status, "legacy")
+        self.assertIsNone(version.header_version)
+        self.assertIsNone(version.header_identity)
+        self.assertIsNone(version.declared_parent)
+        self.assertIsNone(version.declared_slug)
+        self.assertEqual(list(manifest.warnings), [], "file cũ không được kèm cảnh báo")
+
+    def test_invalid_header_is_reported_but_file_stays_in_its_group(self) -> None:
+        self.write("v2-pilot.md", header_block(1, "pilot", 1).replace("Parent: v1", "Cha: v1"))
+
+        manifest = scan_plans(self.root)
+        version = manifest.plans[0].versions[0]
+        self.assertEqual(version.header_status, "invalid")
+        self.assertEqual(manifest.plans[0].identity, "pilot")
+        self.assertEqual(version.version, 2)
+        self.assertEqual(len(manifest.warnings), 1)
+        self.assertIn("v2-pilot.md", manifest.warnings[0])
+        self.assertIn("không dùng được", manifest.warnings[0])
+
+    def test_mismatched_header_is_reported_and_never_moves_the_group(self) -> None:
+        # Khối khai v3/nhóm khác nhưng tên file là v4-research-patient-record-lookup.md
+        self.write("v4-research-patient-record-lookup.md", header_block(3, "clinical-patient-record-lookup-research", 3) + "# Kế hoạch\n")
+        self.write("v3-clinical-patient-record-lookup-research.md", header_block(3, "clinical-patient-record-lookup-research", None) + "# Kế hoạch\n")
+
+        manifest = scan_plans(self.root)
+        self.assertEqual([group.identity for group in manifest.plans],
+                         ["clinical-patient-record-lookup-research", "research-patient-record-lookup"])
+        drifted = next(group for group in manifest.plans if group.identity == "research-patient-record-lookup")
+        self.assertEqual([item.version for item in drifted.versions], [4])
+        self.assertEqual(drifted.versions[0].header_status, "mismatch")
+        # công bố đúng những gì file khai để giao diện nói thật
+        self.assertEqual(drifted.versions[0].header_version, 3)
+        self.assertEqual(drifted.versions[0].header_identity, "clinical-patient-record-lookup-research")
+        self.assertEqual(len(manifest.warnings), 1)
+        self.assertIn("nhóm vẫn theo tên file", manifest.warnings[0])
+
+    def test_declared_slug_is_published_only_when_the_header_carries_it(self) -> None:
+        self.write("v4-clinical-patient-record-lookup-research.md",
+                   header_block(4, "clinical-patient-record-lookup-research", 3,
+                                slug="research-patient-record-lookup") + "# Kế hoạch\n")
+
+        version = self.versions("clinical-patient-record-lookup-research")[0]
+        self.assertEqual(version.header_status, "ok")
+        self.assertEqual(version.declared_parent, 3)
+        self.assertEqual(version.declared_slug, "research-patient-record-lookup")
+
+    def test_read_plan_publishes_header_fields_too(self) -> None:
+        self.write("v1-pilot.md", header_block(1, "pilot", None) + "# Kế hoạch\n")
+
+        document = read_plan(self.root, "pilot", 1)
+        self.assertEqual(document.header_status, "ok")
+        self.assertEqual(document.header_version, 1)
+        self.assertEqual(document.header_identity, "pilot")
+        payload = document.to_payload()
+        self.assertEqual(payload["headerStatus"], "ok")
+        self.assertIn("markdown", payload)
+
+    def test_payload_shape_keeps_status_and_adds_header_fields(self) -> None:
+        self.write("v1-pilot.md", header_block(1, "pilot", None) + "# Kế hoạch\n")
+        self.write("v2-pilot.md", "# Cũ\n")
+
+        payload = scan_plans(self.root).to_payload()
+        newest, oldest = payload["plans"][0]["versions"]
+        # bản mới nhất của nhóm đọc là `draft` (chờ duyệt), bản cũ đã duyệt — như hôm nay
+        self.assertEqual(newest["status"], "draft")
+        self.assertEqual(newest["headerStatus"], "legacy")
+        self.assertEqual(oldest["status"], "approved")
+        self.assertEqual(oldest["headerStatus"], "ok")
+
+
+class PlanReviewVersionTest(unittest.TestCase):
+    """Sổ duyệt trong workspace ghi kèm `version` — không đoán số khi thiếu."""
+
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary_directory.name)
+        (self.root / "v1-pilot.md").write_text("# Kế hoạch\n", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self.temporary_directory.cleanup()
+
+    def test_version_is_stored_and_read_back(self) -> None:
+        record = write_review(self.root, "pilot", "approved", "ổn", 3)
+        self.assertEqual(record["version"], 3)
+        self.assertFalse(record["reviewLegacy"])
+        self.assertEqual(read_reviews(self.root)["pilot"]["version"], 3)
+        self.assertFalse(read_reviews(self.root)["pilot"]["reviewLegacy"])
+
+    def test_junk_versions_are_rejected_and_numeric_strings_are_coerced(self) -> None:
+        for bad in (0, -1, True, "0", "-1", "3.5", "v3", "abc", 10**10):
+            with self.assertRaises(InvalidPlanRequest, msg=repr(bad)):
+                write_review(self.root, "pilot", "approved", "", bad)
+
+        # chuỗi số vẫn nhận (query/JSON của app có thể gửi chuỗi), nhưng phải là số dương
+        self.assertEqual(write_review(self.root, "pilot", "approved", "", "3")["version"], 3)
+
+    def test_old_record_without_version_reads_as_null(self) -> None:
+        reviews_directory = self.root / ".reviews"
+        reviews_directory.mkdir()
+        (reviews_directory / "pilot.json").write_text(
+            json.dumps({"identity": "pilot", "decision": "approved", "note": "cũ", "updatedAt": 1.0}),
+            encoding="utf-8",
+        )
+
+        review = read_reviews(self.root)["pilot"]
+        self.assertIsNone(review["version"])
+        self.assertTrue(review["reviewLegacy"])
+        self.assertEqual(scan_plans(self.root).to_payload()["plans"][0]["review"]["version"], None)
 
 
 if __name__ == "__main__":

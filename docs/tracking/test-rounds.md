@@ -652,3 +652,355 @@ DeepSeek mang nguyên văn cảnh báo ngày lễ; `title` của ô độ trễ 
 Bộ kiểm thử: router **156 / 0**, frontend **739 / 4** (đúng bộ đỏ có sẵn), `tsc` mã 0. Dọn dẹp: hai kết nối tạm xoá,
 khoá tạm thu hồi, stub tắt, không còn giá tay; ledger tăng đúng **2 dòng mồ côi** (`r17/cache-money`) → **16 dòng
 `r17/*` mồ côi** tổng cộng (kết nối đã xoá, chỉ là số liệu phân tích).
+
+## Vòng 18 — chín yêu cầu của chủ sở hữu, ba nhánh C/D/E (2026-09-21)
+
+Kế hoạch được duyệt: *"Một lượt trợ lý gọn theo nhóm, màn Máy tự nối lại, công tắc bảng Workspace, và hai tab
+Settings có thật"* (`plan_id` 1223, 15 bản vẽ thiết kế). Ba nhánh: **C** — cửa sổ ngữ cảnh có nguồn và bản ghi màn
+hình xem được (yêu cầu 1, 9); **D** — một lượt trợ lý đọc gọn hơn (yêu cầu 4, 5, 6); **E** — màn Máy tự nối lại,
+công tắc bảng Workspace, hai tab Settings, số đo điểm ảnh (yêu cầu 2, 3, 7, 8). Việc chốt mã: `fc51864`.
+
+### Số ca kiểm thử trước và sau
+
+| Bộ | Trước vòng 18 | Sau vòng 18 | Đỏ còn lại |
+| --- | --- | --- | --- |
+| Router (`/opt/node24/bin/npm test`) | 156 ca (155 đạt, **1 đỏ** do ca phụ thuộc ngày) | **176 ca / 176 đạt / 0 đỏ** | không |
+| Harness (`backend/tests/unit`) | 544 ca (540 đạt, 2 đỏ, 2 bỏ qua — đo cả cây) | **561 ca / 560 đạt / 1 đỏ** | `test_terminal_tools.py::test_terminal_exec_echo` (có sẵn; cần PowerShell/TTY) |
+| Giao diện (`npx vitest run`) | 743 ca / 94 tệp (739 đạt, 4 đỏ) | **885 ca / 111 tệp / 881 đạt / 4 đỏ** | 3 ca `components/shell/Sidebar.test.tsx` + 1 ca `lib/workspace/index.test.ts` (có sẵn) |
+| Kiểu (`tsc -b --noEmit`) | 0 lỗi | **0 lỗi** | — |
+
+### Vì sao "cửa sổ ngữ cảnh" là lỗi thật (chi tiết ở `bug-register.md` §6.16)
+
+Ba tầng cùng đoán theo tên nên cùng một câu hỏi có ba câu trả lời khác nhau; số 64 000 mà giao diện in còn mang nhãn
+`est.` nên trông như đã có nguồn. Sau khi sửa, một bảng duy nhất ở router và một nhãn nguồn đi cùng mọi con số. Số đo
+sống và phép lành phiên cũ ở §6.16 và ở mục nghiệm thu dưới đây.
+
+### Việc chốt và ca cũ phải sửa (kèm lý do)
+
+- `router/tests/cost.test.mjs`: ca `a manual price shows through the snapshot…` so ngày hôm nay với ngày trong bảng
+  giá. Sửa để so với `DEEPSEEK_PRICE_AS_OF` — ca đỏ **có sẵn** từ trước vòng này, không do đợt này.
+- `router/tests/deepseek.test.mjs`: câu "payload không mang độ dài nên không bịa số nào" (`contextWindow === null`)
+  nay sai có chủ đích — dòng `deepseek-flash` **có** số từ bảng kèm nhãn `documented`, còn `deepseek-r1` (ngoài
+  bảng) vẫn `null` như cũ, nên ca cũ được viết lại thành hai nửa và thêm một ca mới.
+- `router/tests/model-metadata.test.mjs`: `SHARED_FIELDS` thêm `contextWindowSource`/`contextWindowReported` (hợp
+  đồng dòng model mở rộng), hai phép so thêm nhãn nguồn, thêm ca "dòng đã lưu nhận bảng và dòng ngoài bảng giữ số của
+  nó".
+- `backend/tests/unit/test_fix_batch.py`: ca `…prefers_explicit_then_router_metadata` so **số trần**; hàm nay trả
+  **cặp** `(số, nguồn)` nên sáu phép so được viết lại, và thêm ca nhãn `fallback` cho model không nguồn nào biết.
+- `frontend/src/components/panels/ContextUsageBar.test.tsx`: hai ca viết lại (đường "số đang hiệu lực trong phiên →
+  dòng router → bảng tĩnh", và ca heuristic-theo-tên nay phải trả `unknown`), một ca dựng lại trên `claude-3.7-sonnet`
+  vì `unknown` không còn in `est.`; thêm bốn ca mới.
+- Nhánh D — `components/chat/HarnessStepView.test.tsx`: **8 ca cũ** phải sửa vì hành vi mới (mở khối hoạt động trước
+  khi đọc một hàng, một khối `data-activity` duy nhất, bản ghi nằm sau chevron, nhãn `View details`).
+- Nhánh E — `lib/vnc/state.test.ts` mở rộng theo thang mới (bỏ trần 4 lượt, nấc cuối giữ ở 20 s), và các ca
+  `SandboxScreenPanel` viết lại theo lớp phủ thay cho hai nút thử lại.
+
+### Số ca mới theo nhóm
+
+Cửa sổ ngữ cảnh **16** (router `context-window.test.mjs`) + **1** (router `model-metadata`) + **1** (router
+`deepseek`) + **4** (harness `test_context_window_heal.py`) + **4** (giao diện `ContextUsageBar.test.tsx`); lượt trợ
+lý của nhánh D **17** ca mới trong `HarnessStepView*` cộng **8** ca đầu tiên cho khung xem
+(`MediaLightboxModal.test.tsx`) và **2** ca chuỗi mở khung xem (`MediaLightboxFlow.test.tsx`); màn Máy và bố cục
+**66** ca (vnc state 14, hook 5, `ui.test.tsx` 6, `uiStore.workspace` 11, `SandboxScreenPanel` 18, `App.workspace` 8,
+`ChatPanel.workspace` 4); hai tab Settings **39** ca (instructions, sổ phiên, đường gửi, sổ harness) cộng **21** ca
+editor/danh sách/visualizer của nhánh còn lại.
+
+### Nghiệm thu sống
+
+Router và harness được khởi động lại để chạy mã mới. `/api/router/state` → `deepseek-flash` **1000000 /
+documented**; TokenHarbor `deepseek-v4.1-flash` **1000000 / documented / reported 1048576**; OpenRouter
+`deepseek/deepseek-v3.2` **163840 / reported** (dòng cũ, không có bảng). `GET /v1/models` (61 dòng) đọc cùng bộ số.
+Phiên mới tạo với `deepseek-flash`: `1000000 / documented` (trước đợt này: `64000`, không nhãn); phiên khai tay
+`32768`: `32768 / manual`. Phép lành một lần: 4 phiên còn `64000` và 22 phiên `1048576` trong 50 phiên lưu sẵn đều
+thành cặp `(số, nhãn)`; lần khởi động thứ hai **đổi 0 dòng**. `GET /api/agent/runtime-info` trả 7 nhóm / 20 công cụ /
+9 vai trò, retry `{3, [1,4,12], 30, 60, 0.2}` và `limits.instructionsChars 12000`. Lỗi định tuyến được đo lại trên
+router đang chạy: `deepseek-v4-pro` và `Claude 3.7 Sonnet` → `404 MODEL_NOT_FOUND`, còn
+`7ee21256-…/deepseek-flash` → `200`.
+
+Ghi chú trung thực: phép lành đưa hai phiên rất cũ (khai `30000` và `250000` **trước** vòng này, không có trường
+nhãn) về số của định tuyến — từ vòng này mọi lời khai đều mang nhãn `manual` và không bị chạm. Hàng `info` "context
+window healed for N stored sessions" không xuất hiện trong nhật ký harness vì harness không cấu hình handler logging
+nào; phép lành được đo bằng chính các bản ghi phiên.
+
+### Vòng soát mã độc lập đợt 18 — bảy phát hiện, đã sửa hết (`074a8ae`)
+
+Vòng soát đọc diff `a061f03..fc51864`, kết luận `RISK SCORE 4` / `Medium` / ngưỡng 7 / `Ship with mitigations`. Nó
+không chạy bộ kiểm thử (đúng phạm vi), nhưng tự dựng script trong `/var/tmp` để tái hiện hai phát hiện và mở bản ghi
+phiên thật ở chế độ chỉ-đọc để chứng minh phát hiện còn lại. Bảy phát hiện và bản sửa ở `bug-register.md` §6.18; đây là
+số ca kèm theo.
+
+| Bộ | Trước lượt sửa (`fc51864`) | Sau lượt sửa (`074a8ae`) | Đỏ còn lại |
+| --- | --- | --- | --- |
+| Router | 176 / 176 đạt | **178 / 178 đạt** | không |
+| Harness (`backend/tests/unit`) | 560 đạt, 1 đỏ | **561 đạt, 1 đỏ** | `test_terminal_tools.py::test_terminal_exec_echo` (có sẵn) |
+| Giao diện (`npx vitest run`) | 885 ca / 111 tệp, 4 đỏ | **894 ca / 111 tệp, 890 đạt, 4 đỏ** | đúng bốn ca có sẵn (3 × `Sidebar`, 1 × `workspace/index`) |
+| Kiểu (`tsc -b --noEmit`) | 0 lỗi | **0 lỗi** | — |
+
+**Chín ca mới, mỗi ca khoá đúng một phát hiện:** `HarnessStepView.media.test.tsx` (+2 — hàng `start` chưa từng `stop`
+được mở, và một bản ghi đã đóng vẫn đúng một player); `uiStore.workspace.test.ts` (+3 — `selectFile` hiện bảng đang ẩn,
+đường cũ khi bảng đang hiện, hàng đợi đóng băng được xả đúng luật); `harnessStore.workspace.test.ts` (+3 — `null` xoá
+hẳn khoá, `undefined` không đụng tới, bật lại đủ bộ công cụ thì danh sách thu hẹp biến mất);
+`ContextUsageBar.test.tsx` (+1 — bản ghi không nhãn nguồn không được đọc là `reported`, kèm nhãn lạ và đối chứng
+`reported` thật); `router/tests/context-window.test.mjs` (+2 — `contextWindowReported` không được bằng số đang dùng, và
+cận trên `2 000 000` mà vòng soát ghi là "chưa đo"); `backend/tests/unit/test_owner_settings.py` (+1 — phiên tạo không
+qua giao diện thừa hưởng tài liệu đang lưu, chỉ dẫn client gửi kèm vẫn thắng, tài liệu rỗng thì không có khối nào).
+
+Hai câu chữ đổi theo bản sửa (không phải ca mới): `contextUsage.fallbackHint` ở **cả hai** danh mục và ca
+`nguồn sàn của phiên` trong `ContextUsageBar.test.tsx` — câu cũ ("sàn an toàn {{tokens}} token") chỉ đúng cho sàn thật,
+không đúng cho một bản ghi cũ mang số khác mà không có nhãn nguồn, nên câu mới nói thẳng "harness đang giữ {{tokens}}
+token, không phải số nhà cung cấp báo".
+
+**Đo lại sống sau lượt sửa:** router khởi động lại (pid 1189311) và harness khởi động lại (pid 1189363): `/api/router/state`
+trả **556** dòng có cửa sổ, `deepseek-flash` vẫn `1000000 / documented / reported null`; phép lành lúc khởi động **đổi
+0 dòng**; và trong 131 bản ghi phiên thì 13 dòng **không có nhãn nguồn** (9 × `1000000`, 4 × `128000`) — đúng nhóm mà
+phát hiện R4 nói tới, nay hiện kèm `est.` và tooltip.
+
+## Vòng 19 — nén ngữ cảnh theo HERMES/PI, OpenCode Free dùng được, và đồng bộ 9Router v0.5.81 (2026-09-21 chiều)
+
+Chủ sở hữu giao bốn việc: (1) clone `hermes-agent`, đọc **cả** `hermes-agent` **và** `pi` rồi port logic nén ngữ cảnh về
+BoxFox (bản v1 port thẳng, đối chiếu xem bản BoxFox hiện tại có đúng gốc không) và đề xuất cơ chế nén tự động vì ngưỡng
+70 % không bao giờ chạm tới; (2) thử OpenCode Free với **Muse Spark 1.2** xem có dùng được không; (3) nếu 1.2 chạy được
+thì chạy nốt các phép kiểm từng bị cắt vì giới hạn, không còn thì dùng DeepSeek API Flash (không phải Pro); (4) nếu 1.2
+chạy được mà không bị giới hạn nặng thì chạy các benchmark chuẩn dùng 1.2 — chỉ 1.2, còn không thì báo lại. Tin thứ hai:
+clone 9Router bản mới (v0.5.81) và đồng bộ có lọc sang BoxFox, **giữ nguyên UI/UX**, chỉ chỉnh logic.
+
+### Số ca kiểm thử trước và sau
+
+| Bộ | Trước vòng 19 | Sau vòng 19 | Đỏ còn lại |
+| --- | --- | --- | --- |
+| Router (`/opt/node24/bin/npm test`) | 178 ca / 178 đạt | **207 ca / 207 đạt / 0 đỏ** | không |
+| Harness (`backend/tests/unit`) | 561 đạt, 1 đỏ | **583 đạt, 1 đỏ** | `test_terminal_tools.py::test_terminal_exec_echo` (có sẵn; cần PowerShell) |
+| Giao diện (`npx vitest run`) | 894 ca / 111 tệp, 890 đạt, 4 đỏ | **894 ca / 111 tệp, 890 đạt, 4 đỏ** | y hệt bốn ca có sẵn — vòng này **không đụng** tệp giao diện nào |
+| Kiểu (`tsc -b --noEmit`) | 0 lỗi | **0 lỗi** | — |
+
+**Ca mới:** router **27** (OpenCode 15, hết hạn/cooldown tài khoản 5, lỗi giữa luồng 4, chữ ký suy luận theo họ model 3);
+harness **19** (`test_compression_port.py` — 16 ca đơn vị + 3 ca chạy một lượt thật qua `HarnessRuntime` với client giả để
+khoá đường ghi usage, đường thay danh sách + huỷ hoá đơn cũ, và trạng thái chống-thrash theo phiên).
+
+### Chủ đề 1 — Nén ngữ cảnh: ngưỡng nay chạm được (chi tiết ở `bug-register.md` §6.20)
+
+Ngưỡng cũ là 70 % cứng của cửa sổ: trên cửa sổ 1 000 000 token ⇒ **697 132 token** (`int((1 000 000 − 4 096) × 0,7)`), trong khi trần thật của một request
+là 900 KiB thân bài ≈ 307 000 token. Nghĩa là router cắt bớt trước khi ngưỡng chạm, không checkpoint, rồi các lượt sau
+`UPSTREAM_HTTP_413`. Sau khi port: `threshold = min(threshold_tokens hoặc phần trăm, trần byte 301 200)`, đo bằng hoá đơn
+thật của router, tỉa nhiều lượt + khử trùng lặp trước khi tóm tắt, đuôi theo ngân sách token, trần tóm tắt co theo độ lớn
+transcript, chống-thrash 300 s, và cờ `ineffective` khi nén xong vẫn sát ngưỡng.
+
+**Ngưỡng theo cửa sổ:** 1 000 000 → **301 200** (trước 697 132); 128 000 → 86 732 (không đổi); 32 768 → 20 070 (không
+đổi — trần byte không chạm tới ở cửa sổ này).
+
+**Bằng chứng sống:** harness chạy mã mới; phiên `b2cfba9a245b4e84bb06f0ae468f6192` (`deepseek-flash`, cửa sổ khai tay
+32 768 để ngưỡng chạm được trong ngân sách) sinh **hai** lần nén tự động:
+`{"kind":"summary","beforeEstimate":20408,"afterEstimate":16267}` và `{"kind":"summary","beforeEstimate":21127,
+"afterEstimate":13869}`; hai checkpoint `reason=summary` (id 13, 14) ghi **trước** khi thay danh sách; lượt kế tiếp mở
+bằng 15 message thay vì 24. Cửa sổ khai tay đã xoá lại: `deepseek-flash` về `1000000 / documented`,
+`muse-spark-1.2-contributor-free` về `null`.
+
+**Hai lần từ chối thật khi cửa sổ quá nhỏ (giữ nguyên nhánh fail-closed):** khai 8 192 ⇒ `CONTEXT_LIMIT: current turn/tools
+exceed the context budget` (prompt hệ thống + schema công cụ không lọt ngân sách 6 144); khai 32 768 rồi đổ một kết quả
+công cụ ~33 000 token trong một lượt ⇒ `CONTEXT_LIMIT: summary did not reduce context enough`. Bản gốc còn nguyên trong cả
+hai trường hợp.
+
+### Chủ đề 2 — OpenCode Free với Muse Spark 1.2: **dùng được** (chi tiết ở `bug-register.md` §6.19)
+
+Bậc miễn phí từ chối `403 FreeTierError`/`429` trước đây vì bốn cổng: User-Agent không số, thiếu tool mồi, `stream:false`
+của người gọi, và phiên `ses_<32 hex>` mint mới mỗi request. Đo từng biến một (bảng ở §6.19), sửa hết, và hợp đồng dây
+ghi ở `router/CONTRACT.md`. Sau khi sửa: khám phá **74 dòng / 8 id bật**; lượt gọi tool thật **1,1 s**; lượt có ảnh trong
+kết quả tool trả lời đúng **5,4 s**; người gọi `stream:false` nhận câu trả lời thật **7,6 s**.
+
+Hai giới hạn của nhà cung cấp, đo được và **không** phải lỗi của BoxFox: tên công cụ **quá một dấu chấm** bị từ chối
+(`invalid_request_error: name may contain at most one dot`), và bậc miễn phí có **trần theo cửa sổ** (xem chủ đề 4).
+
+### Chủ đề 3 — Hai bậc CUA từng chết vì giới hạn: **PASSED** trên Muse Spark 1.2
+
+Vòng 14 bậc "nặng-có-kịch-bản" chết ở bước 27/30 với `UPSTREAM_HTTP_429` → `UPSTREAM_RETRY_EXHAUSTED`, còn bậc
+"nặng-không-kịch-bản" chưa từng chạy. Vòng này chạy cả hai qua OpenCode Free + `muse-spark-1.2-contributor-free`
+(`maxSteps 30`, `deadlineSeconds 600`):
+
+| Bậc | Kết quả | Số bước | Công cụ | Lỗi | Giới hạn |
+| --- | --- | --- | --- | --- | --- |
+| Nặng có kịch bản (14 bước: menu Application → Terminal → 3 lệnh → đóng cửa sổ, chụp sau mỗi bước) | **PASSED** | 25 | 24 (`computer_use` 14, `computer_screen_capture` 9, `inspect_element` 1) | 0 | không có `429`, `413`, `CONTEXT_LIMIT` |
+| Nặng không kịch bản (tự mở trình quản lý tệp, tạo thư mục + tệp, chụp bằng chứng) | **PASSED** | 8 | 7 (`terminal_exec` 5, `computer_screen_capture` 2) | 0 | như trên |
+
+Đối chiếu khách quan cho bậc hai: trong hộp, `ls -la /home/agent/boxfox-r19/` có `ladder.txt` **25 byte**, nội dung đúng
+`muse-spark-1.2 heavy rung`. Tổng hoá đơn của bậc một: 25 lượt gọi, 229 122 token vào / 13 990 token ra.
+
+### Chủ đề 4 — Benchmark tier-0 `bfcl-simple-subset` với Muse Spark 1.2: **92,1 %**, rồi bậc miễn phí chặn
+
+Bộ dữ liệu BFCL v3 `simple` (400 câu) tải từ HF, chạy qua chính router; lỗi hạ tầng không bao giờ tính là câu sai. Hai
+lỗi của **chính bộ chạy** lộ ra và được sửa trước khi lấy số: BFCL phát schema kiểu Python (`type: dict`, `float`) nên
+OpenCode từ chối `Invalid JSON schema` (50 câu "rỗng" giả), và một thân bài lỗi **không phải SSE** đã bị bỏ qua.
+
+| Executor | Câu đã gọi | Chấm được | Đúng | Sai | Hạ tầng | Điểm trên phần chấm được |
+| --- | --- | --- | --- | --- | --- | --- |
+| Muse Spark 1.2 (OpenCode Free), câu `simple_0`–`simple_233` | 234 | 228 | 210 | 18 | 6 (5 lần trần token đầu ra + 1 câu bị luật tên công cụ) | **92,1 %** |
+| DeepSeek Flash (API), câu `simple_234`–`simple_399` | 166 | 79 | 74 | 5 | 87 (85 câu bị nhà cung cấp từ chối vì tên công cụ có dấu chấm, 2 câu trả lời rỗng) | 93,7 % |
+
+Hai nửa này **không chồng lên nhau** (166 câu sau chỉ chạy sau khi bậc miễn phí đã chặn hẳn), nên gộp lại là 307 câu chấm
+được / 284 câu đúng = 92,5 % — con số gộp chỉ để tham khảo, không phải điểm của một model nào.
+
+Ghi chú trung thực về điểm của Muse Spark 1.2: trong 18 câu sai, **5 câu chỉ sai cách viết** và không phải kiến thức
+(2 câu `[12, 15, …]` so với `[12.0, 15.0, …]`, 3 câu viết `x^2` thay vì `x**2`); nếu tính cả năm câu đó thì 94,3 % — con số
+này **không** phải thang chấm của BFCL nên chỉ ghi kèm. 13 câu còn lại sai thật (thiếu tham số, chọn giá trị khác nghĩa).
+
+Trần của bậc miễn phí: sau câu `simple_233`, nhà cung cấp trả `[rate_limit_exceeded] Output token rate limit exceeded`, rồi mọi
+lượt sau — kể cả một bậc CUA chạy song song — bị chính router trả `429` (`This target is cooling down after a provider
+limit.`) trong hơn 35 phút. Đây là **giới hạn của bậc miễn phí**, không phải lỗi mã; phần còn lại chạy bằng DeepSeek API
+Flash đúng như quy tắc dự phòng của chủ sở hữu.
+
+### Chủ đề 5 — Đồng bộ 9Router v0.5.81 (lọc sáu ứng viên, không đụng giao diện)
+
+Bản clone `/var/tmp/9router` ở commit `a8c9d38` (*"docs: update changelog header to v0.5.81"*, 2026-09-18);
+`git fetch --all` xác nhận **không có commit mới hơn**. Sáu ứng viên được lọc theo đúng mã nguồn 9Router rồi mới port:
+
+| # | Ứng viên | Kết quả | Nơi sửa | Ca khoá |
+| --- | --- | --- | --- | --- |
+| 1 | Chữ ký suy luận của Gemini chỉ dùng lại cho đúng họ model | **ĐÃ PORT** | `router/src/anthropic.mjs:56,66,70,83` (ghi `:506`, đọc `:286`) | 3 |
+| 2 | Lỗi 4xx theo phạm vi request không được đánh hỏng tài khoản/không vào cooldown | **ĐÃ PORT** | `router/src/errors.mjs:44`, `router/src/engine.mjs:148` | 5 |
+| 3 | Lỗi giữa luồng sau `200` phải thành khung lỗi + `[DONE]` | **ĐÃ PORT** (hẹp hơn bản gốc) | `router/src/server.mjs:145-153` | 4 |
+| 4 | DeepSeek V4/V4.1: mức suy luận `low`/`max` và luật vision theo bản có dấu chấm | **ĐÃ PORT** (không đụng `none/low/high/max` đang ghim) | `router/src/providers/deepseek.mjs:104,112,121` | 2 |
+| 5 | Kiro: giữ dấu gạch dưới, tên công cụ của client, ảnh trong kết quả tool | **BỎ QUA** | BoxFox **không có** adapter Kiro (`adapterFor('kiro')` trả `null`, catalog ghi `planned`) | — |
+| 6 | Ollama Cloud thêm `deepseek-v4.1-flash:cloud` | **BỎ QUA** | không có danh sách model Ollama để sửa; inventory dò sống từ `GET https://ollama.com/v1/models` | — |
+
+Ngoài phạm vi, đã ghi rõ: OAuth Xiaomi MiMo, công tắc 1M của Claude Code + `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, Command
+Code, Zed, màn Usage/credit, phạm vi hiển thị Model Catalog, i18n tiếng Ba Tư. Vòng này **không** sửa tệp nào trong
+`frontend/`.
+
+### Vòng soát mã độc lập đợt 19 — bốn phát hiện, ba sửa (2026-09-21 tối)
+
+Vòng soát mã độc lập (`r19-review`, dải `00b7a8a..374a70a`) chốt **"Ship with mitigations"**, rủi ro **4/10 (Trung bình)**,
+và đề nghị sửa F1 + F3 trước lượt kiểm chứng cuối. Cả ba phát hiện có mã đã sửa ở commit `f827dd5`, mỗi bản sửa có bài
+khoá; F4 ghi nhận có chủ đích. Chi tiết đầy đủ nằm ở `docs/tracking/bug-register.md` §6.21.
+
+| Phát hiện | Mức | Bản sửa | Ca khoá |
+| --- | --- | --- | --- |
+| F1 — đuôi nguyên văn co về 0 khi transcript kết thúc giữa một loạt công cụ song song to hơn `tail_budget` | Cao | `keep_tail()` (`compression.py:180-199`, gọi ở `:479` và `:486`) | `test_the_fold_never_takes_the_whole_tail_of_a_parallel_batch` |
+| F2 — `compact()` trả bản sao y nguyên kèm event `prune` khi hoá đơn vượt ngưỡng mà chưa tỉa được gì | Trung bình | hợp đồng no-op ở hai nhánh thoát sớm của vòng tỉa (`compression.py:498`, `:528`) | `test_a_usage_trigger_with_nothing_to_prune_is_a_no_op` |
+| F3 — nhánh chat với `tools: []` không được nguỵ trang, cú từ chối hình dạng bị xếp là lỗi khoá | Trung bình | nhánh chat luôn gửi công cụ mồi (`opencode.mjs:668-672`) | 2 ca trong `router/tests/opencode.test.mjs` |
+| F4 — `threshold_tokens` không có điểm gọi; dòng `tool_choice` vô hại | Thấp | ghi nhận, giữ nguyên (bề mặt có test / bản đối chiếu 9Router) | — |
+
+**Khe hở bàn giao do làn kiểm thử nêu** (điểm gọi `/compact` chưa có bài nào chạm) đã đóng bằng
+`test_the_manual_compact_command_anchors_on_the_recorded_usage` ở `342d31e`. **Đo sống sau khi sửa** (harness chạy mã mới,
+`deepseek-flash`, cửa sổ khai 32 768, phiên `985672004f4b44ab85efc6db7c37e421`): lượt tỉa
+`{"kind":"prune","beforeEstimate":20353,"afterEstimate":19517,"pruned":4}` và lượt gộp
+`{"kind":"summary","beforeEstimate":21467,"afterEstimate":16325}`, hai checkpoint ghi trước khi thay danh sách, danh sách
+gộp còn 13 message (3 hàng `tool`, 2 hàng `user` nguyên văn). **`/compact` đầu-cuối trên OpenCode Free** (phiên
+`cfd20946b37947069c0cadedf700d8c3`, `nemotron-3-ultra-free`, qua router sống sau khi khởi động lại):
+`{"kind":"summary","beforeEstimate":13626,"afterEstimate":3907}`, không lỗi — trên cửa sổ 128k thì lệnh nói thật
+`{"kind":"unchanged"}`. Hình dạng `tools: []` trước/sau khi khởi động lại router, cùng khoá: trước `403 AUTH`, sau
+`200` trong 1,0 s.
+
+## Vòng 20 — nhật ký tác vụ dài và thư mục riêng cho mỗi phiên, kế hoạch có phiên bản thật kèm thang điểm, và hai lỗi trần bước/agent con (2026-09-21 tối)
+
+Vòng này bắt đầu từ **phép đo byte**, không phải từ cảm nhận: chủ sở hữu thấy các phiên dài thường "đuối" mà không rõ vì
+sao. Đo `~/BoxFox/harness/sessions.sqlite` trong box cho ra bốn con số buộc phải sửa:
+
+| Chỗ chứa | Kích thước | Số hàng | Ghi chú |
+| --- | --- | --- | --- |
+| `sessions.messages` | **36 435 050 B** | 150 phiên | hàng to nhất **6 424 279 B** |
+| `checkpoints.messages` | **17 967 616 B** | 22 hàng / **12** phiên | chỉ 8 % số phiên có bản lưu; hàng to nhất **3 170 519 B** |
+| `events` | 6 324 257 B | **74 994** | **0** hàng `turn_start` / `turn_end` |
+| tệp `sessions.sqlite` + WAL | 76 111 872 B + 4 441 392 B | — | bản sao người đọc được: **không có** |
+
+Độ dài phiên (150 phiên sống của box): trung vị **7** message, p90 **42**, cao nhất **123**; **87/150 phiên dưới 10
+message**; trạng thái `completed` 77 / `failed` **51** / `idle` 18 / `cancelled` 4. **10 phiên vượt trần thân bài của router
+(`ROUTER_BODY_BUDGET` 921 600 B) — cả 10 đều to hơn 1 MiB và cả 10 mang trạng thái `failed`.**
+
+**Bốn nguyên nhân gốc của "phiên cụt"** (mỗi cái đều có bằng chứng sống, không phải suy đoán):
+
+1. `heal_context_windows()` bỏ qua nguồn `manual` ⇒ 12 phiên đứng nguyên ở 32 768 / 16 384 / 8 192, kéo ngưỡng nén xuống
+   20 070 / 8 602 / 2 867.
+2. `FALLBACK_CONTEXT_WINDOW` áp cho hai model `nemotron-*-free` mà router trả `null` ⇒ nén ở 86 732 dù cửa sổ thật lớn.
+3. Ngưỡng byte `921600 // 3 − 6000 = 301 200` là ngưỡng **duy nhất** còn chạm được trên cửa sổ lớn.
+4. `MAX_STEPS 20` cộng nhánh cắt hạn chót im lặng ⇒ 51/150 phiên `failed`, kể cả phiên đã làm xong việc.
+
+Nén đo được trên các phiên thật: `920946a7` 58 → 8 message (86,2 %), `98567200` 33 → 13 (60,6 %), `43a92d61` 9 → 8 với
+bốn lần `"ineffective": true` liên tiếp. Phiên to nhất `72a6a428` gỡ được **0 %**. Thư mục ảnh ghi hình: **374 tệp / 113 MB**
+(79 mp4 = **94 505 331 B**), **không** có chỗ nào dọn. Đánh số plan: hai slug mới tinh nhận **v5** và **v6** cách nhau sáu
+phút, vì `used` lấy từ **mọi** tệp trong `.plans/`.
+
+### Số ca kiểm thử trước và sau
+
+| Bộ | Trước vòng 20 | Sau vòng 20 | Đỏ còn lại |
+| --- | --- | --- | --- |
+| Harness (`backend/tests/unit`) | 583 đạt, 1 đỏ | **821 đạt, 1 đỏ** | `test_terminal_tools.py::test_terminal_exec_echo` (có sẵn; cần PowerShell) |
+| Box (`deploy/docker`, `unittest discover -s tests -t tests`) | 437 OK | **447 OK** | không |
+| Router (`/opt/node24/bin/npm test`) | 207 / 207 | **209 / 209** | không |
+| Giao diện (`npx vitest run`) | 894 ca / 111 tệp, 890 đạt, 4 đỏ | **918 ca / 113 tệp, 914 đạt, 4 đỏ** | y hệt bốn ca có sẵn — vòng này chỉ đụng khối checklist ở tab Plan |
+| Kiểu (`tsc -b --noEmit`) | 0 lỗi | **0 lỗi** | — |
+
+### Phần A — thư mục theo phiên, nhật ký, dọn ảnh (A1–A9)
+
+`deploy/docker/session_files.py` (997 dòng) + `session_ops.py` (283 dòng) là tầng file trong box; `worker.py` gọi qua bốn op
+`session_ensure`, `journal_append`, `checkpoint_write`, `captures_prune` (tên op khai trong `SESSION_OP_NAMES` độc lập với
+việc nạp được mô-đun, để thiếu tệp thì báo `SESSION_OPS_UNAVAILABLE` chứ không im lặng). Hình dạng mỗi phiên:
+`.session-history/<sid8>/{session.json, journal.jsonl, journal.md, checkpoints/*.json + *.md}`; `session.json` không bao giờ
+là bản nửa vời (ghi tệp tạm rồi `os.replace`); ghi lỗi thì lượt vẫn xong, có `notice` và bản ghi `status: degraded`.
+
+Bảng `journal` (SQLite, `seq` tự tăng) là **chỉ mục**, file JSONL là **bản người đọc được**; bản ghi có `id` theo tiền tố
+(`T:` việc, `P:` kế hoạch, `S:` bước, `D:` quyết định, `E:` bằng chứng, `C:` lần nén, `F:` sự kiện, `X:` việc giao cho con).
+`session_search` v2 tra **ba nguồn** (message hiện tại, checkpoint, nhật ký) và nói thật khi bị cắt (`truncated`, `dropped`).
+Hai công cụ mới cho agent (`journal_write`, `journal_brief`) đưa số công cụ **20 → 22**; `status`/`refs`/`evidence` đi thẳng
+vào bộ kiểm của `journal.record` nên một lời gọi sai bị **từ chối**, không được lặng lẽ bỏ qua.
+
+Dọn ảnh: bốn hằng số có tên — 200 tệp/loại/phiên, 512 MiB/phiên, 4 GiB/toàn box, 40 mp4/phiên (`retention()` trong
+`session_files.py`). Không tệp nào bị xoá trong vòng này: `backfill_history.py` chỉ chạy dry-run.
+
+### Phần B — kế hoạch có phiên bản thật, thang điểm, và khối checklist ở tab Plan (B1–B6)
+
+`plan_eval.py` chấm P1–P8 theo thang 0/1/2 (hai mức là **cổng cứng**: bằng chứng đo được và tiêu chí nghiệm thu), trả
+`verdict` `pass` / `pass_with_conditions` / `fail` cùng `hardGate` (`true` = **mọi** cổng cứng đạt, cùng chiều với
+`scripts/eval/rubric.py`). `plan_registry.py` dựng chỉ mục theo **thư mục**, nên `v4` nằm cạnh `v3` trong cùng nhóm là một
+nhóm hai bản. `plan_header.py` + header `<!-- boxfox-plan` cho mỗi bản (giờ cả tệp mồi
+`deploy/docker/bootstrap-plans/v1-agent-box-plan.md` cũng có). Hai route mới: `GET /api/agent/plans/status` và
+`POST /api/agent/plans/review` (ghi sổ ở harness trước, chuyển tiếp vào box sau; chuyển tiếp lỗi thì trả
+`forwarded: false` chứ không báo thành công).
+
+`deploy/docker/migrate_plans.py` (**mặc định dry-run**) nạp header cho sáu tệp `.plans` đang sống, có `--merge a=b` (từ chối
+khi **tên đích** đã tồn tại, bỏ qua kèm cảnh báo khi nhóm nguồn đã gộp trước đó) và `--renumber-lone` (mặc định tắt).
+Chạy thật trên **bản sao**: `wrote=6`, `renamed=1`, lần hai báo `nothingToDo=true`; chạy dry-run trên tệp sống: `wrote=0`,
+md5 sáu tệp không đổi.
+
+### Phần C — hai lỗi đo được trong lúc kiểm thử sống (C1, C2)
+
+- **C1:** `limits.py` cắt `deadlineSeconds` 900 → 600 **im lặng**, và `MAX_STEPS` đánh dấu `failed` một phiên đã xong việc.
+  Đo sống: 20 bước / 140,1 s ⇒ `failed`; chạy lại với `maxSteps: 40` trên `pallets/click` ⇒ `completed` trong **27 bước**.
+  Nay việc cắt hạn chót có mã `notice` riêng, và đầu ra bị cắt vì `length` được nhận diện bằng `TRUNCATED_OUTPUT_NOTICE_CODE`.
+- **C2:** agent con `6bd868ad…` trả `finishReason: length, outputTokens: 4096, toolCalls: 0` ⇒ `TURN_EMPTY_RESPONSE` **không
+  thử lại**, cha nhận `failed`. Nay có `TRUNCATED_OUTPUT_MAX_TOKENS = 2048` và một lượt thử lại trước khi bỏ.
+
+### Phần D — chính sách độ dài, đánh số, và ngưỡng nén (N1–N10, P1–P5)
+
+`docs/naming.md` gom 29 quy luật (9 **BẮT BUỘC**, 20 **THÓI QUEN**) cùng bảng tiền tố nhật ký. Luật đánh số nay **không**
+lấy `max` của mọi tệp: số chỉ tăng trong **cùng nhóm identity**, nên việc mới tinh bắt đầu ở `v1`. Ngưỡng nén theo cửa sổ
+(công thức: `min(0,7 × (cửa sổ − dự trữ đầu ra), 200 000, 301 200)`, sàn 32 000 khi còn đủ chỗ):
+
+| Cửa sổ | Ngưỡng mới | Trước |
+| --- | --- | --- |
+| 8 192 | 2 867 | 2 867 |
+| 32 768 | 20 070 | 20 070 |
+| 128 000 | 86 732 | 86 732 |
+| 256 000 | **176 332** | 172 532 |
+| 1 000 000 | **200 000** | 301 200 |
+
+`FALLBACK_CONTEXT_WINDOW` 128 000 → **256 000**, và hai dòng `nemotron-3-ultra-free` / `nemotron-3.5-lightning-free` được
+khai **1 000 000** trong bảng cửa sổ của router (OpenRouter công bố đúng 1 000 000 cho hai bản `:free` này).
+
+### Nghiệm thu sống
+
+- Bản dry-run nạp lịch sử cũ (`/code/.generated_artifacts/r20/backfill_dry_run.md`): 22 hàng checkpoint trên 12 phiên,
+  **12 ghim `P:`**, **258 đường dẫn artefact trên 39 phiên**, **123 tệp ảnh không payload nào nhắc tới** (96 953 338 B) —
+  chỉ đếm, không xoá.
+- Bản dry-run migration (`/code/.generated_artifacts/r20/migrate_plans_dry_run.md`): sáu tệp, sáu header, một ca gộp, `wrote=0`.
+- Di trú schema trên **bản sao** `sessions.sqlite`: `checkpoints` thêm bốn cột (`before_estimate`, `after_estimate`,
+  `context_window`, `model_id`), bảng `journal` xuất hiện, 22 hàng còn nguyên.
+- Lượt thật của làn C trên repo (`/code/.generated_artifacts/r20/cua_repo_report.md`): **300 bài đạt**, và cặp bằng chứng
+  `20 bước → failed` so với `40 bước → completed trong 27 bước`.
+- Hình dạng giao diện khối checklist: `/code/.generated_artifacts/images/r20_design_plan_eval_checklist.png`.
+
+### Cần chủ nhà chốt sau vòng này
+
+1. `maxSteps` mặc định 16 → **40** (khuyến nghị; đo được: trần bước, không phải hạn chót, là thứ đánh `failed` một việc đã xong).
+2. Có `--apply` migration trên box sống không, và có `--renumber-lone` / xoá hai plan thử hay không; `v4` có đổi tên theo nhóm không.
+3. Dải identity mơ hồ `0,5 ≤ j < 0,75`: từ chối một lần (khuyến nghị) hay gộp luôn.
+4. Ngưỡng cứng độ dài plan: từ chối khi > 150 000 ký tự (khuyến nghị) hay chỉ cảnh báo.
+5. Gốc thư mục theo phiên: `.session-history` (khuyến nghị) hay `.sessions/`.

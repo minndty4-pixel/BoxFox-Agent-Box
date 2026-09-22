@@ -2,13 +2,22 @@ import type { ReactNode } from 'react'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it } from 'vitest'
-import { FINAL_ANSWER_EXPAND_LABEL, HarnessStepView } from './HarnessStepView'
+import {
+  FINAL_ANSWER_COLLAPSE_LABEL,
+  FINAL_ANSWER_EXPAND_LABEL,
+  HarnessStepView,
+  activityReceipt,
+  formatMediaLabel,
+  splitAuthoredSummary,
+  summarizeFinalText,
+} from './HarnessStepView'
 import { I18nProvider } from '../../i18n'
 import type { HarnessEvent } from '../../store/harnessChatStore'
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 let roots: Root[] = []
+const rootByHost = new Map<HTMLElement, Root>()
 let seq = 0
 
 function ev(type: string, data: Record<string, unknown> = {}, created?: number): HarnessEvent {
@@ -21,10 +30,20 @@ function render(node: ReactNode): HTMLElement {
   document.body.append(host)
   const root = createRoot(host)
   roots.push(root)
+  rootByHost.set(host, root)
   act(() => {
     root.render(<I18nProvider>{node}</I18nProvider>)
   })
   return host
+}
+
+/** R1.4: render lại CHÍNH root đó (đúng nhịp poll 1200 ms của ChatPanel), không tạo cây mới. */
+function rerender(host: HTMLElement, node: ReactNode) {
+  const root = rootByHost.get(host)
+  if (!root) throw new Error('rerender: host chưa có root')
+  act(() => {
+    root.render(<I18nProvider>{node}</I18nProvider>)
+  })
 }
 
 function renderSession(events: HarnessEvent[]): HTMLElement {
@@ -37,6 +56,11 @@ function click(el: Element) {
   })
 }
 
+/** Đúng thứ tự tài liệu: `a` nằm trước `b`? (mockup: nút gấp phải ở SAU lưới ảnh) */
+function fullTextFollows(a: Element, b: Element): boolean {
+  return Boolean(b.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING)
+}
+
 function timelineKinds(host: HTMLElement): string[] {
   return [...host.querySelectorAll('[data-timeline], [data-final-answer]')].map(
     (el) => el.getAttribute('data-timeline') ?? 'final-answer',
@@ -46,6 +70,7 @@ function timelineKinds(host: HTMLElement): string[] {
 afterEach(() => {
   for (const root of roots) act(() => root.unmount())
   roots = []
+  rootByHost.clear()
   document.body.innerHTML = ''
   seq = 0
 })
@@ -68,6 +93,9 @@ describe('HarnessStepView — F2 thứ tự thời gian', () => {
 
     const host = renderSession(events)
 
+    // R2 (yêu cầu 5): lượt đã xong nên khối hoạt động đang GẤP — mở nó ra rồi mới đọc thứ tự.
+    click(host.querySelector('[data-activity-toggle="true"]')!)
+
     expect(timelineKinds(host)).toEqual([
       'assistant-text',
       'tool',
@@ -79,6 +107,11 @@ describe('HarnessStepView — F2 thứ tự thời gian', () => {
     // Hai hàng tool, mỗi hàng giữ đúng vị trí của nó (không gom vào accordion/gallery).
     expect(host.querySelectorAll('[data-timeline="tool"]').length).toBe(2)
     expect(host.querySelectorAll('[data-timeline="assistant-text"]').length).toBe(2)
+    // Đúng MỘT khối hoạt động cho lượt này, và câu trả lời cuối nằm NGOÀI nó.
+    expect(host.querySelectorAll('[data-activity="true"]').length).toBe(1)
+    const finalAnswer = host.querySelector('[data-final-answer="true"]')
+    expect(finalAnswer).toBeTruthy()
+    expect(finalAnswer!.closest('[data-activity="true"]')).toBeNull()
     // Văn bản giữa lượt (final:false) hiện thật, không bị mất.
     expect(host.textContent).toContain('Đầu tiên tôi xem log.')
     expect(host.textContent).toContain('Lỗi nằm ở dòng cuối.')
@@ -100,13 +133,29 @@ describe('HarnessStepView — F2 thứ tự thời gian', () => {
     ]
 
     const host = renderSession(events)
-    const toolRow = host.querySelector('[data-timeline="tool"]')
+    // R2: khối hoạt động gấp khi lượt đã xong, nên mở nó trước khi tìm hàng tool.
+    click(host.querySelector('[data-activity-toggle="true"]')!)
 
+    const toolRow = host.querySelector('[data-timeline="tool"]')
     expect(toolRow).toBeTruthy()
-    expect(toolRow?.querySelector('[data-tool-media="image"]')).toBeTruthy()
+    const mediaRow = toolRow?.querySelector('[data-tool-media="image"]')
+    expect(mediaRow).toBeTruthy()
+    // R1 (yêu cầu 4): hàng GẤP — có ảnh thu và nhãn thật, chưa có ảnh lớn.
+    expect(mediaRow?.getAttribute('data-media-collapsed')).toBe('true')
+    expect(mediaRow?.querySelector('[data-media-thumb="true"]')).toBeTruthy()
+    expect(mediaRow?.querySelectorAll('[data-media-toggle="true"]').length).toBe(1)
+    expect(toolRow?.querySelector('[data-media-full="true"]')).toBeNull()
     // Nhãn lấy từ dữ liệu thật (F4) — không còn "1280 × 720" hardcode.
-    expect(host.textContent).toContain('1280 × 800')
+    expect(mediaRow?.querySelector('[data-media-label="true"]')?.textContent).toBe('1280 × 800 · PNG')
     expect(host.textContent).not.toContain('1280 × 720')
+
+    click(mediaRow!.querySelector('[data-media-toggle="true"]')!)
+
+    expect(mediaRow?.getAttribute('data-media-collapsed')).toBeNull()
+    expect(mediaRow?.querySelector('[data-media-thumb="true"]')).toBeNull()
+    const fullImage = toolRow?.querySelector('[data-media-full="true"] img') as HTMLImageElement | null
+    expect(fullImage).toBeTruthy()
+    expect(fullImage!.getAttribute('src')).toContain('/__box/file/media?path=')
   })
 
   it('keeps the live streaming behaviour and reports a missing tool result honestly', () => {
@@ -134,6 +183,13 @@ describe('HarnessStepView — F2 thứ tự thời gian', () => {
       ev('finish', { status: 'cancelled' }),
     ])
     expect(finished.querySelector('[data-tool-pending="true"]')).toBeNull()
+    // R2: việc gấp khối không được giấu chuyện có lệnh chưa trả kết quả — biên nhận nói TRƯỚC
+    // khi người dùng mở khối.
+    expect(finished.querySelector('[data-activity-open="false"]')).toBeTruthy()
+    expect(finished.querySelector('[data-activity-receipt="true"]')?.textContent).toContain('1 without result')
+
+    click(finished.querySelector('[data-activity-toggle="true"]')!)
+
     expect(finished.querySelector('[data-tool-unfinished="true"]')).toBeTruthy()
     expect(finished.textContent).toContain('no result recorded')
   })
@@ -248,19 +304,27 @@ describe('HarnessStepView — F6 tóm tắt câu trả lời cuối', () => {
     expect(summaryBlock!.textContent!.length).toBeLessThan(full.length)
     expect(summaryBlock!.textContent).not.toContain('FINAL-MARKER-END')
 
-    const expander = host.querySelector('[data-final-expander="true"]')
+    // R3 (yêu cầu 6): nút nằm NGAY DƯỚI đoạn tóm tắt (trong cùng khung chữ của tóm tắt).
+    const expander = summaryBlock!.querySelector('[data-final-expander="true"]')
     expect(expander?.textContent).toContain(FINAL_ANSWER_EXPAND_LABEL)
+    expect(host.querySelectorAll('[data-final-expander="true"]').length).toBe(1)
 
-    // Ảnh của lượt nằm trong khối câu trả lời cuối.
-    const finalMedia = host.querySelector('[data-final-answer="true"] [data-final-media="true"]')
-    expect(finalMedia).toBeTruthy()
-    expect(finalMedia!.querySelectorAll('img').length).toBe(1)
+    // Lưới ảnh của lượt là "phần bên dưới": KHÔNG có trong trạng thái tóm tắt (R3).
+    expect(host.querySelector('[data-final-answer="true"] [data-final-media="true"]')).toBeNull()
 
     click(expander!)
 
     const expandedBlock = host.querySelector('[data-final-text="expanded"]')
     expect(expandedBlock).toBeTruthy()
     expect(expandedBlock!.textContent).toContain('FINAL-MARKER-END')
+
+    // Mở rồi thì lưới ảnh hiện, và nút gấp nằm SAU lưới ảnh trong thứ tự tài liệu.
+    const finalMedia = host.querySelector('[data-final-answer="true"] [data-final-media="true"]')
+    expect(finalMedia).toBeTruthy()
+    expect(finalMedia!.querySelectorAll('img').length).toBe(1)
+    const collapse = host.querySelector('[data-final-expander="true"]')
+    expect(collapse?.textContent).toContain(FINAL_ANSWER_COLLAPSE_LABEL)
+    expect(fullTextFollows(collapse!, finalMedia!)).toBe(true)
   })
 })
 
@@ -274,13 +338,17 @@ describe('HarnessStepView — F7 thông báo nén context', () => {
     ]
 
     const host = renderSession(events)
+    // R2: lượt đã xong nên khối hoạt động gấp — mở ra trước khi tìm hàng nén.
+    click(host.querySelector('[data-activity-toggle="true"]')!)
 
     const notice = host.querySelector('[data-timeline="compaction"]')
     expect(notice).toBeTruthy()
     expect(notice!.textContent).toContain('Context compacted: 196608 → 394 tokens')
-    // Nằm ở cấp cao nhất của lượt (cùng danh sách với các hàng tool), không trong cây Thinking.
+    // Nằm ở cấp cao nhất của lượt (cùng danh sách với các hàng tool), không trong cây accordion riêng.
     expect(notice!.parentElement?.querySelector('[data-timeline="tool"]')).toBeNull()
-    expect(notice!.closest('[data-thinking-toggle]')).toBeNull()
+    // Câu cũ ("không nằm trong cây Thinking") không còn đúng: khối hoạt động mới CHÍNH LÀ vùng
+    // suy luận (yêu cầu 5), nên hàng nén là một hàng bên trong nó.
+    expect(notice!.closest('[data-activity="true"]')).not.toBeNull()
     expect(host.querySelector('[data-compaction-detail="true"]')).toBeNull()
 
     click(notice!.querySelector('button')!)
@@ -300,6 +368,349 @@ describe('HarnessStepView — F7 thông báo nén context', () => {
       ev('finish', { status: 'completed' }),
     ])
 
+    // R2: lượt đã xong nên khối hoạt động gấp — mở ra rồi mới đọc hàng nén.
+    click(host.querySelector('[data-activity-toggle="true"]')!)
+
     expect(host.querySelector('[data-timeline="compaction"]')?.textContent).toContain('No compaction needed')
+  })
+})
+
+const CAPTURE_ARTIFACT = '/home/agent/workspace/.generated_artifacts/captures/screen/1789971811705-screen.png'
+
+function captureEvents(dimensions: unknown): HarnessEvent[] {
+  const result: Record<string, unknown> = { content: 'Sandbox screenshot', artifact: CAPTURE_ARTIFACT, mime: 'image/png' }
+  if (dimensions !== null) result.dimensions = dimensions
+  return [
+    ev('user', { text: 'Chụp màn hình' }),
+    ev('tool_start', { id: 'c9', name: 'computer_screen_capture', args: {} }),
+    ev('tool_end', { id: 'c9', name: 'computer_screen_capture', args: {}, result }),
+    ev('assistant', { text: 'Đã chụp.', final: true }),
+    ev('finish', { status: 'completed' }),
+  ]
+}
+
+describe('HarnessStepView — R1 ảnh chụp gấp', () => {
+  it('R1.1 hàng gấp là mặc định, mở ra bằng đúng một mũi tên', () => {
+    const host = renderSession(captureEvents([1280, 800]))
+    click(host.querySelector('[data-activity-toggle="true"]')!)
+
+    const mediaRow = host.querySelector('[data-tool-media="image"]') as HTMLElement | null
+    expect(mediaRow).toBeTruthy()
+    expect(mediaRow!.getAttribute('data-media-collapsed')).toBe('true')
+    expect(mediaRow!.querySelectorAll('[data-media-toggle="true"]').length).toBe(1)
+    expect(mediaRow!.querySelector('[data-media-thumb="true"]')).toBeTruthy()
+    expect(mediaRow!.querySelector('[data-media-label="true"]')).toBeTruthy()
+    expect(mediaRow!.querySelector('[data-media-full="true"]')).toBeNull()
+
+    click(mediaRow!.querySelector('[data-media-toggle="true"]')!)
+
+    expect(host.querySelector('[data-tool-media="image"]')!.getAttribute('data-media-collapsed')).toBeNull()
+    const full = host.querySelector('[data-media-full="true"]') as HTMLElement | null
+    expect(full).toBeTruthy()
+    expect(full!.querySelector('img')?.getAttribute('src')).toContain('/__box/file/media?path=')
+    expect(host.querySelector('[data-media-thumb="true"]')).toBeNull()
+    // Một tài liệu chỉ hiện một lần: nhãn vẫn đúng một phần tử, giờ có thêm đường dẫn artifact.
+    expect(host.querySelectorAll('[data-media-label="true"]').length).toBe(1)
+    expect(host.querySelector('[data-media-label="true"]')!.textContent).toContain(CAPTURE_ARTIFACT)
+  })
+
+  it('R1.2 nhãn kích thước chỉ lấy từ payload', () => {
+    const withDimensions = renderSession(captureEvents([1280, 800]))
+    click(withDimensions.querySelector('[data-activity-toggle="true"]')!)
+    const label = withDimensions.querySelector('[data-media-label="true"]')!.textContent ?? ''
+    expect(label).toContain('1280 × 800')
+    expect(label).not.toContain('1280 × 720')
+
+    const withoutDimensions = renderSession(captureEvents(null))
+    click(withoutDimensions.querySelector('[data-activity-toggle="true"]')!)
+    expect(withoutDimensions.querySelector('[data-media-label="true"]')!.textContent).not.toContain('×')
+
+    expect(formatMediaLabel({ mime: 'image/png', dimensions: null, artifactPath: 'a.png', kind: 'image' })).toBe('PNG')
+  })
+
+  it('R1.3 video cũng gấp và chỉ tạo player khi người dùng hỏi', () => {
+    const events = [
+      ev('user', { text: 'Ghi màn hình' }),
+      ev('tool_start', { id: 'r1', name: 'computer_screen_record', args: { action: 'start' } }),
+      ev('tool_end', {
+        id: 'r1',
+        name: 'computer_screen_record',
+        args: { action: 'start' },
+        result: { ok: true, recordingId: 'rec-1', path: '/home/agent/workspace/.generated_artifacts/captures/screen/1789971805978-screen.mp4' },
+      }),
+      ev('tool_start', { id: 'r2', name: 'computer_screen_record', args: { action: 'stop' } }),
+      ev('tool_end', {
+        id: 'r2',
+        name: 'computer_screen_record',
+        args: { action: 'stop' },
+        result: { ok: true, recordingId: 'rec-1', path: '/home/agent/workspace/.generated_artifacts/captures/screen/1789971805978-screen.mp4', durationSec: 40.87, bytes: 153403 },
+      }),
+      ev('assistant', { text: 'Đã ghi xong màn hình.', final: true }),
+      ev('finish', { status: 'completed' }),
+    ]
+
+    const host = renderSession(events)
+    click(host.querySelector('[data-activity-toggle="true"]')!)
+
+    expect(host.querySelectorAll('video').length).toBe(0)
+    const mediaRow = host.querySelector('[data-tool-media="video"]') as HTMLElement | null
+    expect(mediaRow).toBeTruthy()
+    expect(mediaRow!.getAttribute('data-media-collapsed')).toBe('true')
+    expect(mediaRow!.querySelector('[data-media-label="true"]')!.textContent).toBe('40.87s · MP4')
+    expect(mediaRow!.querySelector('[data-media-thumb="true"]')).toBeNull()
+
+    click(mediaRow!.querySelector('[data-media-toggle="true"]')!)
+
+    expect(host.querySelectorAll('[data-tool-media="video"] video').length).toBe(1)
+  })
+
+  it('R1.4 ý định của người dùng thắng vòng poll', () => {
+    // Mảng event gốc dựng MỘT LẦN: `seq` phải ổn định, nếu không `turn_<seq>` đổi khoá và
+    // React dựng cây mới (khi đó phép đo không còn là "ý định người dùng thắng vòng poll" nữa).
+    const base = [
+      ev('user', { text: 'Chụp màn hình' }),
+      ev('tool_start', { id: 'c9', name: 'computer_screen_capture', args: {} }),
+      ev('tool_end', {
+        id: 'c9',
+        name: 'computer_screen_capture',
+        args: {},
+        result: { artifact: CAPTURE_ARTIFACT, mime: 'image/png', dimensions: [1280, 800] },
+      }),
+    ]
+    const running = (extra: HarnessEvent[]) => (
+      <HarnessStepView events={[...base, ...extra]} status="running" error={null} />
+    )
+    const nextPoll = ev('tool_start', { id: 'c10', name: 'terminal_exec', args: { command: 'echo hi' } })
+
+    const host = render(running([]))
+    click(host.querySelector('[data-media-toggle="true"]')!)
+    expect(host.querySelector('[data-media-full="true"]')).toBeTruthy()
+
+    // Vòng poll 1200 ms của ChatPanel render lại CÙNG root — ý định người dùng phải được giữ.
+    rerender(host, running([nextPoll]))
+
+    expect(host.querySelector('[data-media-full="true"]')).toBeTruthy()
+    expect(host.querySelector('[data-media-thumb="true"]')).toBeNull()
+  })
+})
+
+describe('HarnessStepView — R2 một khối hoạt động', () => {
+  const mixedTurn = [
+    ev('user', { text: 'Làm việc' }),
+    ev('thought', { text: 'Tôi nên đọc app.log trước.' }),
+    ev('assistant_delta', { text: 'Tôi xem log trước.' }),
+    ev('assistant', { text: 'Tôi xem log trước.', final: false }),
+    ev('tool_start', { id: 'c1', name: 'terminal_exec', args: { command: 'tail -n 20 app.log' } }),
+    ev('tool_end', { id: 'c1', name: 'terminal_exec', args: { command: 'tail -n 20 app.log' }, result: { output: 'ERROR: boom' } }),
+    ev('notice', { code: 'UPSTREAM_RETRY', message: 'thử lại' }),
+    ev('compression', { kind: 'summary', beforeEstimate: 196608, afterEstimate: 394 }),
+    ev('assistant', { text: 'Xong.', final: true }),
+    ev('finish', { status: 'completed' }),
+  ]
+
+  it('R2.1 mọi hàng của lượt nằm trong khối, câu trả lời cuối nằm ngoài', () => {
+    const host = renderSession(mixedTurn)
+    click(host.querySelector('[data-activity-toggle="true"]')!)
+
+    const activity = host.querySelector('[data-activity="true"]')
+    expect(host.querySelectorAll('[data-activity="true"]').length).toBe(1)
+    const rows = [...host.querySelectorAll('[data-timeline]')]
+    expect(rows.length).toBeGreaterThanOrEqual(4)
+    for (const row of rows) expect(row.closest('[data-activity="true"]')).not.toBeNull()
+    expect(activity!.querySelectorAll('[data-timeline]').length).toBe(rows.length)
+    expect(host.querySelector('[data-final-answer="true"]')!.closest('[data-activity="true"]')).toBeNull()
+  })
+
+  it('R2.2 lượt đã xong thì gấp còn dòng biên nhận, bấm thì mở đúng thứ tự cũ', () => {
+    const host = renderSession(mixedTurn)
+
+    expect(host.querySelector('[data-activity="true"]')!.getAttribute('data-activity-open')).toBe('false')
+    expect(host.querySelectorAll('[data-timeline]').length).toBe(0)
+    expect(host.querySelector('[data-turn-header="true"]')).toBeTruthy()
+    // Chỉ tiêu 4 của kế hoạch, đọc thẳng trên DOM: `Thinking · …` — văn bản suy luận THẬT đứng đầu
+    // dòng biên nhận, dù lượt đang gấp (đây là chỗ chống giấu bằng chứng).
+    expect(host.querySelector('[data-activity-receipt="true"]')!.textContent).toBe('Thinking · 1 command')
+
+    click(host.querySelector('[data-activity-toggle="true"]')!)
+
+    expect(host.querySelector('[data-activity="true"]')!.getAttribute('data-activity-open')).toBe('true')
+    expect(timelineKinds(host)).toEqual(['assistant-text', 'tool', 'notice', 'compaction', 'final-answer'])
+
+    click(host.querySelector('[data-activity-toggle="true"]')!)
+
+    expect(host.querySelector('[data-activity="true"]')!.getAttribute('data-activity-open')).toBe('false')
+    expect(host.querySelectorAll('[data-timeline]').length).toBe(0)
+  })
+
+  it('R2.3 lượt đang chạy thì khối mở, và biên nhận cập nhật khi hàng mới tới', () => {
+    const running = (events: HarnessEvent[]) => (
+      <HarnessStepView events={events} status="running" error={null} />
+    )
+    const first = [
+      ev('user', { text: 'Chạy hai lệnh' }),
+      ev('tool_start', { id: 'c1', name: 'terminal_exec', args: { command: 'echo 1' } }),
+      ev('tool_end', { id: 'c1', name: 'terminal_exec', args: { command: 'echo 1' }, result: { output: '1' } }),
+    ]
+
+    const host = render(running(first))
+    expect(host.querySelector('[data-activity="true"]')!.getAttribute('data-activity-open')).toBe('true')
+    expect(host.querySelector('[data-activity-toggle="true"]')!.textContent).toContain('Working...')
+    expect(host.querySelector('[data-activity-receipt="true"]')!.textContent).toContain('1 command')
+    expect(host.querySelectorAll('[data-timeline="tool"]').length).toBe(1)
+
+    rerender(host, running([
+      ...first,
+      ev('tool_start', { id: 'c2', name: 'terminal_exec', args: { command: 'echo 2' } }),
+      ev('tool_end', { id: 'c2', name: 'terminal_exec', args: { command: 'echo 2' }, result: { output: '2' } }),
+    ]))
+
+    expect(host.querySelector('[data-activity="true"]')!.getAttribute('data-activity-open')).toBe('true')
+    expect(host.querySelector('[data-activity-receipt="true"]')!.textContent).toContain('2 commands')
+    expect(host.querySelectorAll('[data-timeline="tool"]').length).toBe(2)
+  })
+
+  it('R2.4 dòng biên nhận đếm đúng và giữ đúng thứ tự đoạn', () => {
+    expect(activityReceipt({ thinking: true, commands: 6, captures: 2, failed: 1, unfinished: 0 })).toEqual([
+      { label: 'Thinking', tone: 'muted' },
+      { label: '6 commands', tone: 'muted' },
+      { label: '2 captures', tone: 'muted' },
+      { label: '1 failed', tone: 'rose' },
+    ])
+    expect(activityReceipt({ thinking: false, commands: 1, captures: 1, failed: 0, unfinished: 0 })).toEqual([
+      { label: '1 command', tone: 'muted' },
+      { label: '1 capture', tone: 'muted' },
+    ])
+    expect(activityReceipt({ thinking: false, commands: 0, captures: 0, failed: 0, unfinished: 2 })).toEqual([
+      { label: '2 without result', tone: 'amber' },
+    ])
+    expect(activityReceipt({ thinking: false, commands: 0, captures: 0, failed: 0, unfinished: 0 })).toEqual([])
+  })
+})
+
+describe('HarnessStepView — R3 tách tóm tắt / chi tiết', () => {
+  const AUTHORED = 'Xong — đã sửa lỗi múi giờ.\n\n## Diễn biến\n| Bước | Việc |\n| --- | --- |\n| 1 | sửa |\n'
+
+  it('R3.1 đoạn đầu nguyên văn là tóm tắt, phần còn lại trả về nguyên vẹn', () => {
+    expect(splitAuthoredSummary(AUTHORED)).toEqual({
+      summary: 'Xong — đã sửa lỗi múi giờ.',
+      rest: '## Diễn biến\n| Bước | Việc |\n| --- | --- |\n| 1 | sửa |',
+    })
+    expect(splitAuthoredSummary('Câu một.\nCâu hai.\nCâu ba.\n\nPhần sau.')).toEqual({
+      summary: 'Câu một.\nCâu hai.\nCâu ba.',
+      rest: 'Phần sau.',
+    })
+  })
+
+  it('R3.2 không có dòng trống (một đoạn dài) thì không nhận là tóm tắt', () => {
+    const oneBlock = 'Dòng tóm tắt nội dung trả lời. '.repeat(40) + 'HET'
+    expect(splitAuthoredSummary(oneBlock)).toBeNull()
+    expect(splitAuthoredSummary('Chỉ một đoạn.\n\n')).toBeNull()
+  })
+
+  it('R3.3 đoạn đầu là tiêu đề, bảng hay danh sách thì không nhận', () => {
+    expect(splitAuthoredSummary('# Tiêu đề\n\nPhần sau.')).toBeNull()
+    expect(splitAuthoredSummary('| a | b |\n| --- | --- |\n\nPhần sau.')).toBeNull()
+    expect(splitAuthoredSummary('- việc một\n- việc hai\n\nPhần sau.')).toBeNull()
+  })
+
+  it('R3.4 đoạn kết giữa câu thì lùi về mốc câu cuối, không có mốc nào thì không nhận', () => {
+    expect(splitAuthoredSummary('Bước 1 xong. Bước 2 đang\n\nPhần sau.')).toEqual({
+      summary: 'Bước 1 xong.',
+      rest: 'Phần sau.',
+    })
+    expect(splitAuthoredSummary('Bước 1 xong nhưng\n\nPhần sau.')).toBeNull()
+  })
+
+  it('R3.5 lát cắt không kết thúc trong khối ``` chưa đóng', () => {
+    const text = [
+      'Dòng một.',
+      'Dòng hai.',
+      'Dòng ba.',
+      'Dòng bốn.',
+      'Dòng năm.',
+      '```bash',
+      'echo hien-nguyen-van',
+      'echo con-nua',
+      '```',
+    ].join('\n')
+
+    const { summary, truncated } = summarizeFinalText(text)
+
+    expect(truncated).toBe(true)
+    expect(summary).not.toContain('```')
+    expect(summary).not.toContain('hien-nguyen-van')
+    expect(summary).toContain('Dòng năm.')
+  })
+
+  it('R3.6 lát cắt không giữ nửa hàng bảng', () => {
+    // Lát cắt cũ bị cắt theo KÝ TỰ (600) và rơi vào giữa hàng bảng thứ ba: phần còn lại là
+    // một hàng bảng chưa trọn, phải bị bỏ để bảng không hiện ra sai.
+    const text = ['| Bước | Việc |', '| --- | --- |', `| 1 | ${'x'.repeat(700)} |`].join('\n')
+
+    const { summary, truncated } = summarizeFinalText(text)
+
+    expect(truncated).toBe(true)
+    expect(summary).not.toContain('| 1 |')
+    // `…` là dấu của lát cắt, không phải nội dung model viết.
+    expect(summary).toBe('| Bước | Việc |\n| --- | --- |…')
+  })
+
+  it('R3.7 trong DOM: tóm tắt là đoạn đầu nguyên văn, phần còn lại chỉ hiện khi bấm', () => {
+    const events = [
+      ev('user', { text: 'Sửa lỗi' }),
+      ev('assistant', { text: AUTHORED, final: true }),
+      ev('finish', { status: 'completed' }),
+    ]
+
+    const host = renderSession(events)
+    const summaryBlock = host.querySelector('[data-final-text="summary"]')!
+    expect(summaryBlock.textContent).toContain('Xong — đã sửa lỗi múi giờ.')
+    expect(summaryBlock.textContent).not.toContain('Diễn biến')
+    expect(summaryBlock.textContent).not.toContain('|')
+    expect(summaryBlock.textContent).not.toContain('…')
+    // Nút nằm ngay trong khung chữ của tóm tắt (dưới đoạn đó), không phải sau một khối khác.
+    expect(summaryBlock.querySelector('[data-final-expander="true"]')).toBeTruthy()
+
+    click(summaryBlock.querySelector('[data-final-expander="true"]')!)
+
+    const expanded = host.querySelector('[data-final-text="expanded"]')!
+    expect(expanded.textContent).toContain('Diễn biến')
+    expect(expanded.querySelector('[data-final-expander="true"]')).toBeNull()
+    expect(host.querySelector('[data-final-expander="true"]')!.textContent).toContain(FINAL_ANSWER_COLLAPSE_LABEL)
+  })
+
+  it('R3.8 lượt chỉ có ảnh, không có phần chữ nào để mở: nút vẫn tồn tại vì có lưới ảnh', () => {
+    const events = [
+      ev('user', { text: 'Chụp màn hình' }),
+      ev('tool_start', { id: 'c9', name: 'computer_screen_capture', args: {} }),
+      ev('tool_end', {
+        id: 'c9',
+        name: 'computer_screen_capture',
+        args: {},
+        result: { artifact: CAPTURE_ARTIFACT, mime: 'image/png', dimensions: [1280, 800] },
+      }),
+      ev('assistant', { text: 'Đã chụp.', final: true }),
+      ev('finish', { status: 'completed' }),
+    ]
+
+    const host = renderSession(events)
+    expect(host.querySelector('[data-final-text="summary"]')).toBeTruthy()
+    expect(host.querySelector('[data-final-expander="true"]')).toBeTruthy()
+    expect(host.querySelector('[data-final-media="true"]')).toBeNull()
+
+    click(host.querySelector('[data-final-expander="true"]')!)
+
+    expect(host.querySelector('[data-final-media="true"]')).toBeTruthy()
+  })
+
+  it('R3.9 câu trả lời ngắn, không ảnh, không phần còn lại: nút KHÔNG tồn tại', () => {
+    const host = renderSession([
+      ev('user', { text: 'Câu hỏi ngắn' }),
+      ev('assistant', { text: 'Trả lời ngắn.', final: true }),
+      ev('finish', { status: 'completed' }),
+    ])
+
+    expect(host.querySelector('[data-final-text="summary"]')).toBeTruthy()
+    expect(host.querySelector('[data-final-expander="true"]')).toBeNull()
   })
 })

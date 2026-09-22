@@ -15,11 +15,13 @@ import { ProviderService } from '../src/service.mjs';
 const json = (value, options = {}) => new Response(JSON.stringify(value), { ...options, headers: { 'Content-Type': 'application/json', ...(options.headers || {}) } });
 const connection = { id: 'connection', providerId: 'stub', endpoint: 'https://provider.invalid/v1' };
 const credentials = { apiKey: 'test-only-key' };
-const SHARED_FIELDS = ['contextWindow', 'thinkingType', 'defaultThinking', 'thinkingLevels'];
+// Đợt 18: mỗi dòng model còn phải nói được cửa sổ ngữ cảnh của nó ĐẾN TỪ ĐÂU, và
+// giữ số nhà cung cấp đã công bố bên cạnh khi bảng tên thắng.
+const SHARED_FIELDS = ['contextWindow', 'contextWindowSource', 'contextWindowReported', 'thinkingType', 'defaultThinking', 'thinkingLevels'];
 const contract = model => SHARED_FIELDS.map(field => field in model);
 
 function assertContract(models) {
-  for (const model of models) assert.deepEqual(contract(model), [true, true, true, true], `model ${model.id} carries the shared metadata fields`);
+  for (const model of models) assert.deepEqual(contract(model), [true, true, true, true, true, true], `model ${model.id} carries the shared metadata fields`);
 }
 
 const providers = fetchImpl => createProviders({ fetchImpl });
@@ -56,6 +58,7 @@ test('OpenRouter reads context_length and the reasoning block; no name guessing'
   assert.deepEqual(params.thinkingLevels, [], 'no supported_efforts published, so no levels are invented');
   assert.equal(params.defaultThinking, null);
   assert.equal(plain.contextWindow, null, 'no context_length reported');
+  assert.equal(plain.contextWindowSource, null, 'and no source either — an unknown name says nothing');
   assert.equal(plain.thinkingType, 'none', 'a reasoning-sounding name is no longer evidence');
   assert.deepEqual(plain.thinkingLevels, []);
 });
@@ -130,7 +133,9 @@ test('OpenAI-compatible endpoints use reasoning_effort levels and any reported w
   assert.equal(models[0].thinkingType, 'effort');
   assert.deepEqual(models[0].thinkingLevels, ['minimal', 'low', 'medium', 'high'], 'the adapter control is reasoning_effort');
   assert.equal(models[0].contextWindow, null, 'OpenAI /models reports no window, so none is invented');
+  assert.equal(models[0].contextWindowSource, null);
   assert.equal(models[1].contextWindow, 32768, 'a compatible gateway that reports a window is believed');
+  assert.equal(models[1].contextWindowSource, 'reported', 'a number the payload published is labelled as such');
   assert.deepEqual(models[1].thinkingLevels, ['low', 'high'], 'published efforts win over the default set');
   assert.equal(models[1].defaultThinking, 'low');
 });
@@ -171,6 +176,40 @@ test('curated catalogs no longer claim a live inventory', async () => {
   assert.equal((await openrouter.discover({ connection, credentials })).models.every(model => model.source === 'static'), true);
   const opencode = providers(async () => { throw new Error('offline'); }).opencode;
   assert.equal((await opencode.discover({ connection, credentials })).models.every(model => model.source === 'static'), true);
+});
+
+test('a stored row picks up the shipped table, and a row outside the table keeps its own number', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'boxfox-context-test-'));
+  const store = new RouterStore({ dataDir: dir });
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const registry = providers(async () => json({ data: [] }));
+  const service = new ProviderService({ store, providers: registry });
+  const account = service.create({ providerId: 'deepseek', name: 'DeepSeek', endpoint: 'https://deepseek.invalid/v1', apiKey: 'test-only-key' });
+  const legacy = store.get('connection', account.id);
+  // Ba dòng cũ, đúng trạng thái trước đợt 18: dòng DeepSeek chính chủ không có số
+  // (nên harness tự đoán 64 000), một dòng họ cũ có số thật của nhà cung cấp, và
+  // một dòng người dùng tự gõ tay.
+  legacy.models = [
+    { id: 'deepseek-flash', name: 'deepseek-flash', source: 'live', capabilities: {}, enabled: true, contextWindow: null },
+    { id: 'deepseek-r1', name: 'deepseek-r1', source: 'live', capabilities: {}, enabled: true, contextWindow: 64000 },
+    { id: 'typed-by-hand', name: 'Typed By Hand', source: 'custom', capabilities: {}, enabled: true, contextWindow: 32768, contextWindowSource: 'manual' },
+  ];
+  store.put('connection', legacy);
+
+  const restarted = new ProviderService({ store, providers: registry });
+  const models = restarted.connection(account.id).models;
+  assertContract(models);
+  const row = id => models.find(model => model.id === id);
+  assert.equal(row('deepseek-flash').contextWindow, 1000000, 'a name in the table gets the table’s number');
+  assert.equal(row('deepseek-flash').contextWindowSource, 'documented');
+  assert.equal(row('deepseek-r1').contextWindow, 64000, 'a name outside the table keeps the provider’s number');
+  assert.equal(row('deepseek-r1').contextWindowSource, 'reported');
+  assert.equal(row('typed-by-hand').contextWindow, 32768, 'a number the user typed is not normalized away');
+  assert.equal(row('typed-by-hand').contextWindowSource, 'manual');
+
+  const before = JSON.stringify(models);
+  new ProviderService({ store, providers: registry });
+  assert.equal(JSON.stringify(restarted.connection(account.id).models), before, 'normalization is idempotent');
 });
 
 test('stored rows are normalized to the contract without inventing provider data', async t => {

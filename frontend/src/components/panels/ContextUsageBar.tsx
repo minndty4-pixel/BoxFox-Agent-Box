@@ -26,7 +26,9 @@ import {
   FileText,
   Search,
 } from 'lucide-react'
-import { useT } from '../../i18n/context'
+import { useT, type TKey, type TVars } from '../../i18n/context'
+import { readingColumnClass } from '../../lib/readingColumn'
+import { useUiStore } from '../../store/uiStore'
 import { useAgentStore } from '../../store/agentStore'
 import { useHarnessChatStore } from '../../store/harnessChatStore'
 import { useHarnessStore, AVAILABLE_MODELS } from '../../store/harnessStore'
@@ -52,28 +54,63 @@ export interface DisplayChunk {
 }
 
 /**
- * Nguồn của con số context window:
- * - `router`: metadata thật của model từ router (`contextWindow`) — nguồn duy nhất đáng tin.
- * - `catalog`: bảng tĩnh `AVAILABLE_MODELS` trong repo — chỉ là ước lượng.
- * - `heuristic`: đoán theo tên model — phương án cuối, phải ghi rõ là ước lượng.
- * - `unknown`: không có dữ liệu nào → hiện "unknown", KHÔNG bịa số.
+ * Nguồn của con số cửa sổ ngữ cảnh — cùng từ vựng `contextWindowSource` mà router
+ * công bố trên mỗi dòng model, cộng hai nguồn chỉ giao diện biết:
+ * - `reported`: số nhà cung cấp công bố (router chuyển tiếp) — nguồn duy nhất không ước lượng.
+ * - `manual`: người dùng tự khai cho model đó; số này thắng cả router lẫn nhà cung cấp.
+ * - `documented`: bảng model của BoxFox (router) — không phải nhà cung cấp báo, nên có `est.`.
+ * - `fallback`: không nguồn nào trả lời con số này — sàn an toàn của harness, hoặc một bản ghi
+ *   phiên cũ không mang nhãn nguồn (không được đọc là `reported`) — có `est.`.
+ * - `catalog`: danh mục tĩnh trong repo — ước lượng.
+ * - `unknown`: không có số nào → hiện "unknown" (không vẽ phần trăm, KHÔNG bịa số).
  */
-export type ContextWindowSource = 'router' | 'catalog' | 'heuristic' | 'unknown'
+export type ContextWindowBasis = 'reported' | 'manual' | 'documented' | 'fallback' | 'catalog' | 'unknown'
+
+/** Ba nguồn không phải nhà cung cấp báo: nhãn `est.` đi cùng đúng những nguồn này. */
+const ESTIMATED_BASES: readonly ContextWindowBasis[] = ['documented', 'fallback', 'catalog']
 
 export interface ContextWindowResolution {
   tokens: number | null
-  source: ContextWindowSource
+  basis: ContextWindowBasis
+  estimated: boolean
 }
 
-/** Model record từ router có thể mang `contextWindow` (xem plan §R2). */
+/** Dòng model trong snapshot router: số đang dùng + nhãn nguồn của chính router. */
 export interface RouterModelMetadata {
   contextWindow?: number | null
+  contextWindowSource?: string | null
+  contextWindowReported?: number | null
 }
 
-function readReportedContextWindow(model: unknown): number | null {
-  const value = (model as RouterModelMetadata | null | undefined)?.contextWindow
+/** Cặp `(số, nguồn)` mà `GET /api/agent/sessions/{sid}` trả về trong `config`. */
+export interface SessionContextWindow {
+  contextWindow?: number | null
+  contextWindowSource?: string | null
+}
+
+/** Cửa sổ của một dòng model router: đã lọc số rác, đã quy nhãn về từ vựng của giao diện. */
+export interface RouterWindow {
+  tokens: number
+  basis: 'reported' | 'manual' | 'documented'
+}
+
+function positiveInteger(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null
   return Math.round(value)
+}
+
+/**
+ * Đọc một dòng model router thành `{ số, nguồn }`.
+ *
+ * Router cũ (trước đợt 18) không có `contextWindowSource`, và dòng do nó điền từ
+ * payload nhà cung cấp cũng không có: cả hai đọc là `reported`.
+ */
+function readRouterWindow(model: unknown): RouterWindow | null {
+  const row = model as RouterModelMetadata | null | undefined
+  const tokens = positiveInteger(row?.contextWindow)
+  if (tokens === null) return null
+  const declared = row?.contextWindowSource
+  return { tokens, basis: declared === 'manual' || declared === 'documented' ? declared : 'reported' }
 }
 
 const CATALOG_WINDOW_TOKENS: Record<string, number> = {
@@ -85,14 +122,15 @@ const CATALOG_WINDOW_TOKENS: Record<string, number> = {
 }
 
 /**
- * Tìm `contextWindow` thật của model đang chạy trong snapshot router: ưu tiên
- * route đang chọn (model hoặc target đầu của alias), sau đó khớp nhãn model.
+ * Tìm cửa sổ của model đang chạy trong snapshot router: ưu tiên route đang chọn
+ * (model hoặc target đầu của alias), sau đó khớp nhãn model. Trả về CẢ nhãn nguồn
+ * của dòng đó, vì "số này ở đâu ra" là câu hỏi thứ hai của người dùng.
  */
 export function findRouterContextWindow(
   snapshot: ProviderSnapshot | null,
   selection: RouterChatSelection | null,
   modelLabelOrId?: string | null,
-): number | null {
+): RouterWindow | null {
   if (!snapshot) return null
   const modelOf = (connectionId?: string | null, modelId?: string | null) => {
     if (!connectionId || !modelId) return null
@@ -101,13 +139,13 @@ export function findRouterContextWindow(
   }
 
   if (selection?.kind === 'model') {
-    const reported = readReportedContextWindow(modelOf(selection.connectionId, selection.modelId))
-    if (reported !== null) return reported
+    const found = readRouterWindow(modelOf(selection.connectionId, selection.modelId))
+    if (found) return found
   }
   if (selection?.kind === 'alias') {
     const target = snapshot.aliases.find((a) => a.id === selection.aliasId)?.targets?.[0]
-    const reported = readReportedContextWindow(modelOf(target?.connectionId, target?.modelId))
-    if (reported !== null) return reported
+    const found = readRouterWindow(modelOf(target?.connectionId, target?.modelId))
+    if (found) return found
   }
 
   // Nhãn harness là "Tên connection · Tên model (High)" — bỏ hậu tố mức thinking
@@ -117,32 +155,73 @@ export function findRouterContextWindow(
   for (const connection of snapshot.connections) {
     for (const model of connection.models) {
       if (!needle.includes(model.id.toLowerCase()) && !needle.includes(model.name.toLowerCase())) continue
-      const reported = readReportedContextWindow(model)
-      if (reported !== null) return reported
+      const found = readRouterWindow(model)
+      if (found) return found
     }
   }
   return null
 }
 
 /**
- * Context window của model đang chạy. Thứ tự: metadata router → bảng tĩnh →
- * đoán theo tên → `unknown` (không bịa số).
+ * Context window của model đang chạy. Thứ tự: số đang có hiệu lực trong **bản ghi
+ * phiên** (harness nén theo đúng số này) → dòng model router → danh mục tĩnh →
+ * `unknown` (không bịa số).
+ *
+ * Bảng đoán theo tên (`gemini`→1M, `deepseek`→64k, `claude`→200k) đã bị xoá: nó là
+ * câu trả lời thứ tư cho cùng một câu hỏi, và là câu trả lời sai — harness nén ở
+ * 128 000 trong khi thanh ghi `64.0k (59%) est.`.
  */
-export function resolveContextWindow(reportedTokens: number | null, modelIdOrName?: string | null): ContextWindowResolution {
-  if (reportedTokens !== null && Number.isFinite(reportedTokens) && reportedTokens > 0) {
-    return { tokens: Math.round(reportedTokens), source: 'router' }
+export function resolveContextWindow(
+  router: RouterWindow | null,
+  modelIdOrName?: string | null,
+  session?: SessionContextWindow | null,
+): ContextWindowResolution {
+  const fromSession = positiveInteger(session?.contextWindow)
+  if (fromSession !== null) {
+    const declared = session?.contextWindowSource
+    // Bản ghi CÓ số mà KHÔNG có nhãn nguồn (phiên cũ, không mang `route` nên bản
+    // vá lúc khởi động bỏ qua) không được đọc là `reported`: chưa ai báo con số
+    // ấy cả — trước đợt 18 nhãn này vẫn còn dấu `est.` (lỗi b18-review #4). Đọc
+    // là `fallback` (một nguồn KHÔNG phải nhà cung cấp) để số hiện kèm `est.` và
+    // tooltip nói thẳng là chưa có nguồn.
+    const basis: ContextWindowBasis =
+      declared === 'manual' || declared === 'documented' || declared === 'reported' ? declared : 'fallback'
+    return { tokens: fromSession, basis, estimated: ESTIMATED_BASES.includes(basis) }
   }
-  if (!modelIdOrName) return { tokens: null, source: 'unknown' }
+  if (router) {
+    return { tokens: router.tokens, basis: router.basis, estimated: ESTIMATED_BASES.includes(router.basis) }
+  }
+  if (!modelIdOrName) return { tokens: null, basis: 'unknown', estimated: false }
 
   const found = AVAILABLE_MODELS.find(m => m.id === modelIdOrName || m.name === modelIdOrName)
   const catalogTokens = found?.contextWindow ? CATALOG_WINDOW_TOKENS[found.contextWindow] : undefined
-  if (catalogTokens) return { tokens: catalogTokens, source: 'catalog' }
+  if (catalogTokens) return { tokens: catalogTokens, basis: 'catalog', estimated: true }
 
-  const m = modelIdOrName.toLowerCase()
-  if (m.includes('gemini')) return { tokens: 1_000_000, source: 'heuristic' }
-  if (m.includes('claude')) return { tokens: 200_000, source: 'heuristic' }
-  if (m.includes('deepseek') || m.includes('qwen')) return { tokens: 64_000, source: 'heuristic' }
-  return { tokens: null, source: 'unknown' }
+  return { tokens: null, basis: 'unknown', estimated: false }
+}
+
+/**
+ * Dòng `title` của nhãn, theo nguồn gốc con số. `reported` không cần tooltip (như
+ * hôm nay): nhà cung cấp báo thì không có gì phải giải thích.
+ */
+export function contextWindowHint(
+  resolution: ContextWindowResolution,
+  t: (key: TKey, vars?: TVars) => string,
+): string | undefined {
+  switch (resolution.basis) {
+    case 'reported':
+      return undefined
+    case 'manual':
+      return t('contextUsage.manualHint')
+    case 'documented':
+      return t('contextUsage.documentedHint')
+    case 'fallback':
+      return t('contextUsage.fallbackHint', { tokens: formatTokenCount(resolution.tokens ?? 0) })
+    case 'catalog':
+      return t('contextUsage.estimatedHint')
+    default:
+      return t('contextUsage.unknownHint')
+  }
 }
 
 /** `28.6k` / `1.0M` — dùng chung cho thanh và modal để hai nhãn không lệch nhau. */
@@ -157,6 +236,7 @@ export function ContextUsageBar() {
   const harnessRun = useHarnessChatStore((s) => s.sessions[activeSessionId])
   const sendHarnessCommand = useHarnessChatStore((s) => s.send)
   const activeModelId = useHarnessStore((s) => s.activeModelId)
+  const workspaceHidden = useUiStore((s) => s.workspaceHidden)
 
   const context = useAgentStore((s) => s.context)
   const contextChunks = context?.chunks || []
@@ -172,13 +252,14 @@ export function ContextUsageBar() {
   const [compactedSuccess, setCompactedSuccess] = useState(false)
   const [dismissed, setDismissed] = useState(false)
 
-  // Context window thật theo model đang chạy: metadata router trước, chỉ khi
-  // router không báo mới rơi về bảng tĩnh/đoán tên (BUG-4/U3).
+  // Context window thật theo model đang chạy: số đang có hiệu lực trong bản ghi
+  // phiên trước (harness nén theo đúng số đó), rồi tới dòng model của router, cuối
+  // cùng là danh mục tĩnh (BUG-4/U3 + vòng 18: bỏ bảng đoán theo tên).
   const modelLabel = harnessRun?.lastModelLabel || activeModelId
   const contextWindow = useMemo(() => {
-    const reported = findRouterContextWindow(snapshot, routerSelection, modelLabel)
-    return resolveContextWindow(reported, modelLabel)
-  }, [snapshot, routerSelection, modelLabel])
+    const router = findRouterContextWindow(snapshot, routerSelection, modelLabel)
+    return resolveContextWindow(router, modelLabel, harnessRun)
+  }, [snapshot, routerSelection, modelLabel, harnessRun])
   const contextLimitTokens = contextWindow.tokens
   const limitLabel = contextLimitTokens === null ? t('contextUsage.unknown') : formatTokenCount(contextLimitTokens)
 
@@ -338,7 +419,7 @@ export function ContextUsageBar() {
           thành containing block của modal `fixed inset-0` bên dưới. */}
       <div
         data-testid="context-usage-row"
-        className="flex @container items-center justify-between gap-3 overflow-hidden whitespace-nowrap"
+        className={`flex @container items-center justify-between gap-3 overflow-hidden whitespace-nowrap ${readingColumnClass(workspaceHidden)}`}
       >
         {/* Left: Context Window Title & Expand Toggle */}
         <div className="flex items-center gap-2 shrink-0">
@@ -385,18 +466,18 @@ export function ContextUsageBar() {
         <div data-testid="context-usage-actions" className="flex min-w-0 items-center gap-2">
           <span
             data-testid="context-usage-label"
-            title={contextWindow.source === 'router' ? undefined : t(contextLimitTokens === null ? 'contextUsage.unknownHint' : 'contextUsage.estimatedHint')}
+            title={contextWindowHint(contextWindow, t)}
             className="min-w-0 overflow-hidden whitespace-nowrap text-ellipsis font-mono text-[11px] tabular-nums text-muted"
           >
             <strong className="text-fg">{formatTokenCount(currentTokens)}</strong>
             {' / '}
             <span>{limitLabel}</span>
             {percent !== null && <> ({percent}%)</>}
-            {contextWindow.source === 'router' ? null : (
+            {contextWindow.estimated ? (
               // Khung hẹp: nhãn ước lượng bị ẩn để số token + nút Compact còn chỗ;
               // thông tin "ước lượng" vẫn còn ở `title` và ở màu hổ phách.
               <span className="ml-1 hidden text-amber-500/90 @lg:inline">{t('contextUsage.estimated')}</span>
-            )}
+            ) : null}
           </span>
 
           <button

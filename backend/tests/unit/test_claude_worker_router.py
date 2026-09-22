@@ -17,6 +17,11 @@ import pytest
 
 from agentbox.sandbox import claude_worker
 
+pytestmark = pytest.mark.skipif(
+    sys.platform == 'win32',
+    reason='claude_worker is a Linux container daemon relying on /proc and POSIX permissions',
+)
+
 TOKEN = 'bf_test_token_do_not_leak'
 STRUCTURED_FLAGS = ('--output-format', '--allowedTools', '--tools', '--strict-mcp-config',
                     '--setting-sources', '--settings')

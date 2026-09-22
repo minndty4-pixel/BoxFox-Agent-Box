@@ -2,14 +2,18 @@ import { create } from 'zustand'
 import { resolveThinkingLevel } from '../lib/harnessThinking'
 import { agentApi } from '../lib/agentApi'
 import { useHarnessStore } from './harnessStore'
+import { useOwnerSettingsStore } from './ownerSettingsStore'
+import { useSessionRecordStore } from './sessionRecordStore'
 import { useSkillsStore } from './skillsStore'
 import { useUiStore } from './uiStore'
 import type { TabIntent } from './uiStore'
 import type { RouterChatSelection } from './routerChatStore'
 
 export interface HarnessEvent { seq: number; type: string; data: Record<string, unknown>; created: number }
-interface HarnessSession { id: string; status: string; events: HarnessEvent[] }
-interface RunView { id: string | null; status: string; events: HarnessEvent[]; error: string | null; lastModelLabel?: string }
+interface HarnessSession { id: string; status: string; events: HarnessEvent[]; config?: Record<string, unknown> }
+interface RunView { id: string | null; status: string; events: HarnessEvent[]; error: string | null; lastModelLabel?: string
+  /** Cặp `(số, nguồn)` của cửa sổ ngữ cảnh trong `config` phiên — harness nén theo đúng số này. */
+  contextWindow?: number | null; contextWindowSource?: string | null }
 export interface SavedSessionRow {
   id: string
   role: string
@@ -253,6 +257,22 @@ const storageKey = (chatId: string) => `boxfox-harness-session:${chatId}`
 const isHexId = (s: string) => /^[0-9a-f]{16,64}$/i.test(s)
 const empty = (): RunView => ({ id: null, status: 'idle', events: [], error: null })
 
+/**
+ * Cặp `(số, nguồn)` của cửa sổ ngữ cảnh trong `config` phiên, đã lọc kiểu.
+ *
+ * `GET /sessions/{sid}` vốn đã trả `config` trong mỗi vòng poll; đọc nó ở đây là
+ * cách duy nhất thanh ngữ cảnh biết con số harness THẬT SỰ đang nén theo, thay vì
+ * đoán lại lần thứ tư từ tên model.
+ */
+function sessionContextWindow(config: Record<string, unknown> | undefined) {
+  const tokens = config?.contextWindow
+  const source = config?.contextWindowSource
+  return {
+    contextWindow: typeof tokens === 'number' && Number.isFinite(tokens) && tokens > 0 ? Math.round(tokens) : null,
+    contextWindowSource: typeof source === 'string' && source ? source : null,
+  }
+}
+
 /** True khi harness trả lời rằng id phiên không còn tồn tại (mã `SESSION_NOT_FOUND`). */
 function isStaleSession(error: unknown): boolean {
   return /SESSION_NOT_FOUND/.test(String(error))
@@ -309,6 +329,7 @@ export const useHarnessChatStore = create<State>((set, get) => ({
               status: session.status,
               error: sessionError,
               events: allEvents,
+              ...sessionContextWindow(session.config),
             },
           },
           decisions: { ...state.decisions, [chatId]: decisions },
@@ -408,9 +429,21 @@ export const useHarnessChatStore = create<State>((set, get) => ({
         const isSingleModel = harnessStore.activeType === 'model'
         const harness = harnessStore.getHarnessById(harnessStore.activeHarnessId)
         await useSkillsStore.getState().load()
+        // Chỉ dẫn của chủ sở hữu đọc trước khi mở phiên. Lỗi mạng thì phiên VẪN mở, nhưng
+        // không mang chỉ dẫn — và sổ ghi phiên ghi lại lý do để tab Instructions nói thật,
+        // thay vì im lặng coi như đã gửi.
+        const directivesLoaded = await useOwnerSettingsStore.getState().ensureLoaded()
+        const ownerDirectives = useOwnerSettingsStore.getState()
         const skills = useSkillsStore.getState().skills.filter(s => s.enabled).map(s => s.id)
         const route = selection?.kind === 'model' ? { connectionId: selection.connectionId, modelId: selection.modelId }
           : selection?.kind === 'alias' ? { aliasId: selection.aliasId } : {}
+        // Chỉ gửi trần bước/thời gian/công cụ khi harness thật sự đặt chúng: thiếu trường
+        // nghĩa là engine tự quyết, không phải client gửi số đoán.
+        const tuning = {
+          ...(harness?.maxSteps !== undefined ? { maxSteps: harness.maxSteps } : {}),
+          ...(harness?.deadlineSeconds !== undefined ? { deadlineSeconds: harness.deadlineSeconds } : {}),
+          ...(harness?.tools !== undefined ? { tools: harness.tools } : {}),
+        }
         
         // Single Model Mode: When user selects Single Model, override entire harness with this single model
         const singleModelId = isSingleModel ? (selection?.kind === 'model' ? `model:${selection.connectionId}:${selection.modelId}` : harnessStore.activeModelId) : null
@@ -418,13 +451,27 @@ export const useHarnessChatStore = create<State>((set, get) => ({
         const session = await agentApi<HarnessSession>('/sessions', {
           ...route,
           skills,
+          ...(harness ? { harnessId: harness.id } : {}),
+          ...(directivesLoaded ? { instructions: ownerDirectives.instructions } : {}),
+          ...tuning,
           subagents: isSingleModel && singleModelId
             ? harness?.subagents?.map(s => ({ ...s, model: singleModelId })) ?? []
             : harness?.subagents,
           ...(singleModelId ? { singleModel: singleModelId, model: singleModelId }
               : (harness?.mainModel && harness.mainModel !== 'default' ? { model: harness.mainModel } : {}))
         })
+        useSessionRecordStore.getState().record(session.id, {
+          harnessId: harness?.id ?? '',
+          instructionsChars: directivesLoaded ? [...ownerDirectives.instructions].length : 0,
+          ...(directivesLoaded ? {} : { directivesSkipped: ownerDirectives.loadError ?? 'the harness did not answer' }),
+        })
         localStorage.setItem(storageKey(session.id), session.id)
+        // Phiên vừa mở đã mang sẵn cặp (số, nguồn): hiện ngay, không phải chờ vòng poll
+        // đầu tiên. Cùng một phản hồi `/sessions`, không thêm lời gọi mạng nào.
+        if (session.config) {
+          set(state => ({ sessions: { ...state.sessions,
+            [chatId]: { ...(state.sessions[chatId] ?? current), ...sessionContextWindow(session.config) } } }))
+        }
         return session.id
       }
       throw new Error('SESSION_NOT_FOUND: could not open a harness session')

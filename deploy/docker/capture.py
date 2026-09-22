@@ -26,7 +26,17 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections import OrderedDict
 from pathlib import Path
+
+# `session_files.py` nằm cùng thư mục trong box (`/usr/local/bin`) — nguồn duy nhất cho khung
+# thư mục phiên, chỉ mục ảnh và trần dọn dẹp. Import có phòng: một container chưa kịp stage file
+# phụ vẫn phải chụp/ghi hình được (control plane không chết vì thiếu bản sao hằng số), chỉ mất
+# phần chỉ mục/dọn dẹp cho tới khi file đó có mặt.
+try:
+    import session_files as _session_files
+except Exception:  # noqa: BLE001
+    _session_files = None
 
 DISPLAY = ":99"
 AGENT_UID = 1000
@@ -47,6 +57,21 @@ BROWSER_CAPTURE_BIN = Path(os.environ.get("BROWSER_CAPTURE_BIN", "/usr/local/bin
 
 SUPPORTED_IMAGE_FORMATS = ("png", "jpg")
 
+# Trần dọn dẹp (F2): hằng số nằm ở `session_files.py` để tầng ghi và tầng dọn không bao giờ lệch
+# nhau; nhánh dự phòng chỉ chạy khi container chưa có file đó.
+CAPTURE_KEEP_PER_KIND = _session_files.CAPTURE_KEEP_PER_KIND if _session_files else 200
+CAPTURE_MAX_BYTES_PER_SESSION = (_session_files.CAPTURE_MAX_BYTES_PER_SESSION if _session_files
+                                 else 512 * 1024 * 1024)
+CAPTURE_MAX_BYTES_BOX = _session_files.CAPTURE_MAX_BYTES_BOX if _session_files else 4 * 1024 * 1024 * 1024
+RECORD_KEEP_PER_SESSION = _session_files.RECORD_KEEP_PER_SESSION if _session_files else 40
+CAPTURE_EVICT_EVERY = _session_files.CAPTURE_EVICT_EVERY if _session_files else 20
+CAPTURE_DEDUP_LRU = _session_files.CAPTURE_DEDUP_LRU if _session_files else 256
+# File vừa ghi trong tiến trình này không bao giờ bị dọn: capture.py chạy trong box, không đọc
+# được DB nên không biết "50 event tool_end mới nhất" — nó giữ đúng 50 đường dẫn gần nhất của
+# chính mình. Danh sách bảo vệ phía harness (ảnh đang hiện trên UI) là việc của route prune.
+CAPTURE_RECENT_PROTECT = 50
+SESSION_ID_RE = re.compile(r"^[0-9a-f]{8,32}$")
+
 # Serial hoá thao tác raise + chụp/record X11: không có compositor nên việc raise
 # cửa sổ B trong lúc đang quay cửa sổ A sẽ đè nhiễm vào bản ghi A.
 _X11_LOCK = threading.RLock()
@@ -56,6 +81,14 @@ _RECORDS: dict[str, dict] = {}
 # agent có thể tra lại kết quả sau khi record kết thúc, kể cả khi nó quên stop.
 _FINISHED_RECORDS: dict[str, dict] = {}
 _MAX_FINISHED_RECORDS = 20
+
+# Khử trùng lặp theo nội dung: `{(sid8, kind): OrderedDict[sha256 -> relPath]}`. Ảnh desktop
+# không đổi giữa hai lần chụp là ca **rất** thường gặp trong box dùng chung — mỗi lần lưu thêm
+# một bản y hệt vừa tốn đĩa vừa làm chỉ mục dài vô nghĩa.
+_DEDUP_LOCK = threading.Lock()
+_DEDUP: dict[tuple[str, str], "OrderedDict[str, str]"] = {}
+_RECENT_CAPTURE_PATHS: list[str] = []
+_WRITES_SINCE_EVICT = 0
 
 
 class CaptureError(Exception):
@@ -145,9 +178,221 @@ def _slug(value: str) -> str:
     return re.sub(r"[^0-9A-Za-z_.-]", "-", value)[:80]
 
 
-def _new_path(kind: str, key: str, extension: str) -> Path:
+def _new_path(kind: str, key: str, extension: str, *, session: str = None, step=None) -> Path:
+    """Đường dẫn cho file mới — **theo phiên** khi biết phiên, phẳng như cũ khi không.
+
+    Vì sao có hai khuôn: `captures/screen/` đang là một thư mục phẳng 375 file của mọi phiên, nên
+    "ảnh này của phiên nào" chỉ trả lời được bằng cách quét hơn 100 000 hàng `events`. Khuôn mới
+    `<kind>/<sid8>/<sid8>_<step>_<slug>.<ext>` trả lời câu đó bằng chính đường dẫn. File cũ **giữ
+    nguyên tại chỗ** (link trong UI còn trỏ vào) và vẫn mở được qua `/__box/file/media`.
+    """
     _ensure_dirs()
-    return CAPTURE_ROOT / kind / f"{int(time.time() * 1000)}-{_slug(key)}.{extension}"
+    sid = _session_id(session)
+    if sid is None:
+        return CAPTURE_ROOT / kind / f"{int(time.time() * 1000)}-{_slug(key)}.{extension}"
+    sid8 = _sid8(sid)
+    directory = _ensure_session_dirs(kind, sid8)
+    stem = f"{sid8}_{_step_token(step)}_{_slug(key)}"
+    candidate = directory / f"{stem}.{extension}"
+    if not candidate.exists():
+        return candidate
+    # Cùng bước, cùng khoá, hai lần chụp: không bao giờ ghi đè ảnh cũ (link đã phát tán trong
+    # event stream) — thêm hậu tố đếm, giữ nguyên khuôn `<sid8>_<step>_<slug>`.
+    for index in range(2, 1000):
+        candidate = directory / f"{stem}-{index}.{extension}"
+        if not candidate.exists():
+            return candidate
+    return directory / f"{stem}-{int(time.time() * 1000)}.{extension}"
+
+
+def _session_id(value) -> str | None:
+    """Chuẩn hoá session id do harness gửi kèm; `None` nghĩa là "không theo phiên"."""
+    text = str(value or "").strip().lower()
+    return text if SESSION_ID_RE.match(text) else None
+
+
+def _sid8(sid: str) -> str:
+    """8 hex đầu (12 khi đụng độ) — luật đụng độ lấy từ `session_files`, gốc là `.session-history`."""
+    if _session_files is not None:
+        try:
+            return _session_files.sid8_of(sid, root=_session_files.SESSION_HISTORY_DIR)
+        except Exception:  # noqa: BLE001
+            pass
+    return sid[:8]
+
+
+def _step_token(step) -> str:
+    """Bước của công cụ thành 3 chữ số (`003`); không biết bước thì `000` — không bao giờ rỗng."""
+    try:
+        value = int(step)
+    except (TypeError, ValueError):
+        return "000"
+    return f"{max(0, value):03d}"
+
+
+def _ensure_session_dirs(kind: str, sid8: str) -> Path:
+    """Thư mục ảnh của một phiên: `<capture root>/<kind>/<sid8>/`, quyền như mọi thư mục khác."""
+    directory = CAPTURE_ROOT / kind / sid8
+    directory.mkdir(parents=True, exist_ok=True)
+    for target in (CAPTURE_ROOT / kind, directory):
+        try:
+            os.chown(target, AGENT_UID, AGENT_GID)
+            os.chmod(target, 0o750)
+        except OSError:
+            pass
+    return directory
+
+
+def _rel_path(path) -> str:
+    """Đường dẫn tương đối so với workspace — đúng khuôn `relPath` của chỉ mục ảnh."""
+    try:
+        return str(Path(path).relative_to(WORKSPACE_ROOT))
+    except ValueError:
+        return str(path)
+
+
+def _from_rel(rel: str) -> Path:
+    return WORKSPACE_ROOT / str(rel)
+
+
+def _dedup_lookup(key: tuple[str, str], sha: str) -> str | None:
+    if not sha:
+        return None
+    with _DEDUP_LOCK:
+        bucket = _DEDUP.get(key)
+        return bucket.get(sha) if bucket else None
+
+
+def _dedup_remember(key: tuple[str, str], sha: str, rel: str) -> None:
+    if not sha:
+        return
+    with _DEDUP_LOCK:
+        bucket = _DEDUP.setdefault(key, OrderedDict())
+        bucket.pop(sha, None)
+        bucket[sha] = rel
+        while len(bucket) > CAPTURE_DEDUP_LRU:
+            bucket.popitem(last=False)
+
+
+def _remember_recent(path) -> None:
+    text = str(path)
+    if text in _RECENT_CAPTURE_PATHS:
+        _RECENT_CAPTURE_PATHS.remove(text)
+    _RECENT_CAPTURE_PATHS.append(text)
+    del _RECENT_CAPTURE_PATHS[:-CAPTURE_RECENT_PROTECT]
+
+
+def _index_append(item: dict) -> None:
+    """Ghi một dòng chỉ mục — **best effort**: chỉ mục là bản phụ, hỏng nó không được làm hỏng ảnh."""
+    if _session_files is None:
+        return
+    session = item.get("session")
+    try:
+        _session_files.capture_index_append(CAPTURE_ROOT, sid=session, item=item)
+    except Exception:  # noqa: BLE001
+        return
+    _note_capture_write()
+
+
+def _note_capture_write() -> None:
+    """Đếm đường ghi; cứ `CAPTURE_EVICT_EVERY` lần thì dọn một lượt (dọn hỏng cũng không sao)."""
+    global _WRITES_SINCE_EVICT
+    _WRITES_SINCE_EVICT += 1
+    if _WRITES_SINCE_EVICT < CAPTURE_EVICT_EVERY:
+        return
+    _WRITES_SINCE_EVICT = 0
+    _prune_captures()
+
+
+def _prune_captures(session: str = None, dry_run: bool = False) -> dict:
+    """Dọn ảnh/ghi hình theo trần F2, giữ lại 50 đường dẫn gần nhất của tiến trình này."""
+    if _session_files is None:
+        return {"ok": False, "removedFiles": 0, "removedBytes": 0,
+                "error": "session_files chưa có trong container"}
+    try:
+        return _session_files.retention(CAPTURE_ROOT, session=session,
+                                        protect=list(_RECENT_CAPTURE_PATHS), dry_run=dry_run)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "removedFiles": 0, "removedBytes": 0, "error": str(exc)}
+
+
+def _image_index_item(result: dict, *, sid: str, sid8: str, kind: str, step, tool_call_id,
+                      dedup: str = "new", duplicate_of: str = None) -> dict:
+    """Một dòng chỉ mục cho ảnh — đủ để nối ảnh về đúng bước công cụ đã sinh ra nó."""
+    item = {
+        "ts": time.time(), "session": sid, "sid8": sid8, "kind": kind,
+        "path": str(result.get("path") or ""), "relPath": _rel_path(result.get("path") or ""),
+        "bytes": _file_size(Path(result.get("path") or ".")), "sha256": result.get("sha256"),
+        "format": result.get("format"), "width": result.get("width"), "height": result.get("height"),
+        "method": result.get("method"), "media": "image", "durationSec": None,
+        "dedup": dedup, "step": step, "toolCallId": tool_call_id, "backfilled": False,
+    }
+    if duplicate_of:
+        item["duplicateOf"] = duplicate_of
+    return item
+
+
+def _finish_image(result: dict, *, session: str = None, step=None, tool_call_id=None) -> dict:
+    """Sau khi chụp: khử trùng lặp, ghi chỉ mục, rồi trả artifact (có thể trỏ về file cũ).
+
+    Khử theo **nội dung** (sha256) chứ không theo tên: cùng một màn hình desktop chụp hai lần là
+    hai file khác tên, cùng nội dung. Trùng thì **không** giữ file thứ hai và artifact trỏ về file
+    cũ — ảnh vẫn hiện đúng, mà đĩa không phình.
+    """
+    sid = _session_id(session)
+    if sid is None:
+        return result
+    sid8 = _sid8(sid)
+    kind = str(result.get("kind") or "screen")
+    path = Path(str(result.get("path") or ""))
+    sha = str(result.get("sha256") or "")
+    rel = _rel_path(path)
+    dedup, duplicate_of = "new", None
+    old = _dedup_lookup((sid8, kind), sha)
+    if old and old != rel:
+        old_path = _from_rel(old)
+        if old_path.exists():
+            dedup, duplicate_of = "duplicate", old
+            _safe_unlink(path)
+            result["path"] = str(old_path)
+            result["relPath"] = old
+            result["deduplicateOf"] = old
+    result["relPath"] = _rel_path(result.get("path"))
+    if dedup == "new":
+        _dedup_remember((sid8, kind), sha, rel)
+        _remember_recent(result.get("path"))
+    _index_append(_image_index_item(result, sid=sid, sid8=sid8, kind=kind, step=step,
+                                    tool_call_id=tool_call_id, dedup=dedup,
+                                    duplicate_of=duplicate_of))
+    return result
+
+
+def _safe_unlink(path) -> None:
+    try:
+        Path(path).unlink()
+    except OSError:
+        pass
+
+
+def _record_index_item(item: dict, entry: dict) -> dict:
+    """Một dòng chỉ mục cho bản ghi hình — `sha256` để trống: khử trùng lặp video không đổi lấy gì."""
+    session = entry.get("session")
+    return {
+        "ts": time.time(), "session": session, "sid8": _sid8(session), "kind": entry.get("kind"),
+        "path": str(item.get("path") or ""), "relPath": _rel_path(item.get("path") or ""),
+        "bytes": int(item.get("sizeBytes") or 0), "sha256": None, "format": "mp4",
+        "width": None, "height": None, "method": "x11grab", "media": "video",
+        "durationSec": item.get("durationSec"), "dedup": "new", "step": entry.get("step"),
+        "toolCallId": entry.get("toolCallId"), "backfilled": False,
+        "recordingId": item.get("recordingId"),
+    }
+
+
+def _index_record(item: dict, entry: dict) -> None:
+    if _session_id(entry.get("session")) is None:
+        return
+    _index_append(_record_index_item(item, entry))
+    _remember_recent(item.get("path"))
 
 
 def _sha256(path: Path) -> str:
@@ -611,10 +856,10 @@ def resolve_tab(spec: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Capture ảnh
 # ---------------------------------------------------------------------------
-def _capture_window(spec: dict, fmt: str) -> dict:
+def _capture_window(spec: dict, fmt: str, *, session: str = None, step=None) -> dict:
     win = resolve_window(spec)
     _check_size(win["w"], win["h"])
-    path = _new_path("window", f"window-{win['id']}", fmt)
+    path = _new_path("window", f"window-{win['id']}", fmt, session=session, step=step)
     with _X11_LOCK:
         if _count_active_records() > 0:
             raise _conflict(
@@ -625,20 +870,20 @@ def _capture_window(spec: dict, fmt: str) -> dict:
     return _image_result(path, fmt, "window", "x11", win["w"], win["h"])
 
 
-def _capture_screen(fmt: str) -> dict:
+def _capture_screen(fmt: str, *, session: str = None, step=None) -> dict:
     width, height = screen_size()
     _check_size(width, height)
-    path = _new_path("screen", "screen", fmt)
+    path = _new_path("screen", "screen", fmt, session=session, step=step)
     with _X11_LOCK:
         _run_import("-window", "root", str(path), fmt)
     return _image_result(path, fmt, "screen", "x11", width, height)
 
 
-def _capture_tab(spec: dict, fmt: str) -> dict:
+def _capture_tab(spec: dict, fmt: str, *, session: str = None, step=None) -> dict:
     tab = resolve_tab(spec)
     if not tab.get("webSocketDebuggerUrl"):
         raise CaptureError("Tab không có webSocketDebuggerUrl — CDP bất thường.", status_code=500)
-    path = _new_path("tab", f"tab-{tab['id'][:24]}", fmt)
+    path = _new_path("tab", f"tab-{tab['id'][:24]}", fmt, session=session, step=step)
     args = [
         sys.executable, str(BROWSER_CAPTURE_BIN), "capture_tab",
         "--web-socket-url", tab["webSocketDebuggerUrl"],
@@ -694,18 +939,28 @@ def _image_result(path: Path, fmt: str, kind: str, method: str,
     }
 
 
-def capture(spec: dict, default_format: str = "png") -> dict:
+def capture(spec: dict, default_format: str = "png", *, session: str = None, step=None,
+            tool_call_id: str = None) -> dict:
     kind = spec.get("kind", "screen")
     fmt = spec.get("format", default_format) or default_format
     if fmt not in SUPPORTED_IMAGE_FORMATS:
         raise _invalid(f"format phải là một trong {SUPPORTED_IMAGE_FORMATS}")
     if kind == "window":
-        return _capture_window(spec, fmt)
-    if kind == "tab":
-        return _capture_tab(spec, fmt)
-    if kind == "screen":
-        return _capture_screen(fmt)
-    raise _invalid("kind phải là window/tab/screen")
+        result = (_capture_window(spec, fmt, session=session, step=step)
+                  if _session_id(session) is not None else _capture_window(spec, fmt))
+    elif kind == "tab":
+        result = (_capture_tab(spec, fmt, session=session, step=step)
+                  if _session_id(session) is not None else _capture_tab(spec, fmt))
+    elif kind == "screen":
+        result = (_capture_screen(fmt, session=session, step=step)
+                  if _session_id(session) is not None else _capture_screen(fmt))
+    else:
+        raise _invalid("kind phải là window/tab/screen")
+    # Theo phiên thì khử trùng lặp + ghi chỉ mục; không theo phiên (đường gọi cũ) thì giữ
+    # nguyên hành vi cũ, không chạm đĩa thêm.
+    if _session_id(session) is not None:
+        result = _finish_image(result, session=session, step=step, tool_call_id=tool_call_id)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -789,7 +1044,9 @@ def _reap_finished_records() -> None:
             _RECORDS.pop(record_id, None)
             reaped.append(entry)
     for entry in reaped:
-        _remember_finished(_record_finished_entry(entry))
+        finished = _record_finished_entry(entry)
+        _remember_finished(finished)
+        _index_record(finished, entry)
 
 
 def _spawn_ffmpeg(args: list[str]) -> subprocess.Popen:
@@ -801,7 +1058,7 @@ def _spawn_ffmpeg(args: list[str]) -> subprocess.Popen:
     )
 
 
-def record_start(spec: dict) -> dict:
+def record_start(spec: dict, *, session: str = None, step=None, tool_call_id: str = None) -> dict:
     # Bỏ các bản ghi đã tự thoát (hết -t) TRƯỚC khi đếm concurrency — nếu không,
     # bản ghi "ma" vẫn chiếm chỗ và chặn record mới dù ffmpeg đã dừng từ lâu.
     _reap_finished_records()
@@ -834,7 +1091,7 @@ def record_start(spec: dict) -> dict:
         if kind == "window":
             win = resolve_window(spec)
             _check_size(win["w"], win["h"])
-            path = _new_path("window", f"window-{win['id']}", "mp4")
+            path = _new_path("window", f"window-{win['id']}", "mp4", session=session, step=step)
             _raise_window(win["id"])
             proc = _spawn_ffmpeg([
                 "-f", "x11grab", "-framerate", str(framerate),
@@ -849,7 +1106,7 @@ def record_start(spec: dict) -> dict:
         elif kind == "screen":
             width, height = screen_size()
             _check_size(width, height)
-            path = _new_path("screen", "screen", "mp4")
+            path = _new_path("screen", "screen", "mp4", session=session, step=step)
             proc = _spawn_ffmpeg([
                 "-f", "x11grab", "-framerate", str(framerate),
                 "-video_size", f"{width}x{height}", "-i", DISPLAY,
@@ -872,6 +1129,9 @@ def record_start(spec: dict) -> dict:
         "pid": proc.pid,
         "startedAt": time.time(),
         "maxDurationSec": max_duration,
+        "session": _session_id(session),
+        "step": step,
+        "toolCallId": tool_call_id,
     })
     return {
         "ok": True,
@@ -913,6 +1173,7 @@ def record_stop(recording_id: str) -> dict:
     result = _record_finished_entry(entry)
     result["ok"] = True
     _remember_finished(result)
+    _index_record(result, entry)
     return result
 
 
@@ -966,9 +1227,15 @@ def dispatch_list_tabs() -> dict:
     return {"tabs": [_public_tab(tab) for tab in list_tabs()]}
 
 
-def dispatch_capture(target: dict, output: str = "file") -> dict:
+def dispatch_capture(target: dict, output: str = "file", session: str = None, step=None,
+                     tool_call_id: str = None) -> dict:
+    """Điểm vào của ide-proxy: chụp, kèm phiên/bước khi harness gửi (mặc định `None` = như cũ)."""
     note = ensure_desktop_size() if (target or {}).get("kind", "screen") == "screen" else None
-    result = capture(target)
+    if _session_id(session) is not None:
+        result = capture(target, session=session, step=step, tool_call_id=tool_call_id)
+    else:
+        # Không có phiên thì gọi y hệt bản cũ: mọi chỗ gọi/mock cũ không phải biết tham số mới.
+        result = capture(target)
     if output == "base64":
         import base64
         path = Path(result["path"])
@@ -976,9 +1243,14 @@ def dispatch_capture(target: dict, output: str = "file") -> dict:
     return _attach_desktop_note(result, note)
 
 
-def dispatch_record_start(target: dict) -> dict:
+def dispatch_record_start(target: dict, session: str = None, step=None,
+                          tool_call_id: str = None) -> dict:
     note = ensure_desktop_size() if (target or {}).get("kind", "screen") == "screen" else None
-    return _attach_desktop_note(record_start(target), note)
+    if _session_id(session) is not None:
+        started = record_start(target, session=session, step=step, tool_call_id=tool_call_id)
+    else:
+        started = record_start(target)
+    return _attach_desktop_note(started, note)
 
 
 def dispatch_record_stop(recording_id: str) -> dict:
@@ -987,3 +1259,11 @@ def dispatch_record_stop(recording_id: str) -> dict:
 
 def dispatch_record_status() -> dict:
     return record_status()
+
+
+def dispatch_captures_prune(session: str = None, dry_run: bool = False) -> dict:
+    """Dọn ảnh/ghi hình theo trần F2 (route `POST /__box/captures/prune` cho người vận hành)."""
+    if _session_files is None:
+        raise CaptureError("session_files.py chưa có trong container — chưa dọn được ảnh.",
+                           status_code=503)
+    return _prune_captures(session=session, dry_run=bool(dry_run))

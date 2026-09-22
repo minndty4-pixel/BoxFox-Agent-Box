@@ -1,4 +1,5 @@
 import { RouterError } from '../errors.mjs';
+import { resolveContextWindow } from '../context-window.mjs';
 
 export function baseUrl(value) {
   return String(value || '').replace(/\/+$/, '');
@@ -103,19 +104,34 @@ export function normalizeThinkingLevels(value) {
 }
 
 /**
- * Normalizes the three shared thinking/context fields. Nothing is guessed from
- * the model name: a value only exists when the caller (provider payload or an
- * authored catalog) supplied it. When a provider reports nothing the model gets
- * `contextWindow: null`, `thinkingType: 'none'` and `thinkingLevels: []`.
+ * Normalizes the shared thinking/context fields.
+ *
+ * The context window goes through the router's shipped name table
+ * (`context-window.mjs`): a model whose name matches the table publishes the
+ * table's number (`contextWindowSource:'documented'`), and the provider's own
+ * number is kept beside it as `contextWindowReported` so a stale row can show
+ * itself. A name the table does not know keeps the number its caller supplied
+ * (`'reported'`), or `null` when nobody supplied one — nothing is guessed here.
+ *
+ * Inputs: `id`/`name` (what the table matches on), `contextWindow` (the number
+ * the provider payload or the adapter's rule supplied), `declaredContextWindow`
+ * (a number the user typed for this model), `reportedContextWindow` (a provider
+ * number already held beside a user declaration).
  */
 export function modelThinking(values = {}) {
   const source = values && typeof values === 'object' ? values : {};
   const thinkingLevels = normalizeThinkingLevels(source.thinkingLevels);
   const declared = THINKING_TYPES.includes(source.thinkingType) ? source.thinkingType : null;
+  // A row already marked `manual` keeps the number it is holding, even when a
+  // caller forgets to name it: a user declaration never degrades into a guess.
+  const manual = positiveInteger(source.declaredContextWindow)
+    ?? (source.contextWindowSource === 'manual' ? positiveInteger(source.contextWindow) : null);
+  const reported = positiveInteger(source.reportedContextWindow) ?? (manual === null ? positiveInteger(source.contextWindow) : null);
+  const context = resolveContextWindow({ id: source.id, name: source.name, reported, declared: manual });
   // Levels without an explicit control type still mean the provider exposes
   // selectable levels; those providers use an effort-style control.
   return {
-    contextWindow: positiveInteger(source.contextWindow),
+    ...context,
     thinkingType: declared || (thinkingLevels.length ? 'effort' : 'none'),
     defaultThinking: typeof source.defaultThinking === 'string' && source.defaultThinking.trim() ? source.defaultThinking.trim() : null,
     thinkingLevels,
@@ -140,6 +156,8 @@ export function thinkingFromProviderPayload(item = {}) {
     params.includes('reasoning') || params.includes('include_reasoning') || params.includes('thinking'),
   );
   return modelThinking({
+    id: item?.id,
+    name: item?.name,
     contextWindow: item?.context_length ?? item?.context_window ?? item?.top_provider?.context_length ?? item?.max_context_length ?? null,
     thinkingType: declared ? 'effort' : 'none',
     thinkingLevels: reasoning?.supported_efforts,
@@ -153,7 +171,7 @@ export function modelRecord(id, name = id, capabilities = {}, thinking = {}) {
     name: name || id,
     source: 'live',
     stale: false,
-    ...modelThinking(thinking),
+    ...modelThinking({ ...thinking, id, name }),
     capabilities: { streaming: 'reported', tools: 'unknown', vision: 'unknown', reasoning: 'unknown', ...capabilities },
   };
 }

@@ -32,8 +32,15 @@ export interface UseVncScreenResult {
   reason: VncOfflineReason | null
   exhausted: boolean
   url: string
+  /** Lượt đang thử (1 = lần đầu); `connected` đặt lại về 1. */
+  attempt: number
   /** Mốc thời gian (ms) của lần tự thử lại kế tiếp — dùng cho đếm ngược. `null` nếu không có. */
   retryAtMs: number | null
+  /**
+   * Độ dài (ms) của khoảng chờ đang hẹn — lớp phủ dùng để vẽ thanh tiến trình.
+   * `null` khi không hẹn gì (đang live, lý do không thể tự khỏi, hoặc tab bị ẩn).
+   */
+  retryDelayMs: number | null
   frameSize: { width: number; height: number } | null
   /** `true` khi bàn phím/chuột đang bị canvas noVNC giữ. */
   controlling: boolean
@@ -58,6 +65,17 @@ export function useVncScreen(override?: ScreenSource): UseVncScreenResult {
   const [frameSize, setFrameSize] = useState<{ width: number; height: number } | null>(null)
   const [retryAtMs, setRetryAtMs] = useState<number | null>(null)
   const [controlling, setControlling] = useState(false)
+  /**
+   * Tab có đang hiện không — nguồn duy nhất là `visibilitychange`.
+   *
+   * Kế hoạch E1: thang thử lại giờ chạy mãi, nên nếu để nó chạy cả khi tab bị
+   * ẩn thì một tab bỏ quên sẽ nối lại mỗi 25 s và nhồi một dòng đỏ WebSocket
+   * vào console mỗi lượt (trình duyệt tự ghi, không tắt được). Dừng thang khi
+   * ẩn chính là cách trả món nợ đó.
+   */
+  const [visible, setVisible] = useState(() =>
+    typeof document === 'undefined' ? true : document.visibilityState === 'visible',
+  )
 
   const url = useMemo(() => resolveVncUrl(import.meta.env), [])
 
@@ -117,17 +135,30 @@ export function useVncScreen(override?: ScreenSource): UseVncScreenResult {
     }
   }, [enabled, url, state.seq])
 
-  // Effect B — hẹn thử lại tự động khi đang offline và còn lượt.
+  // Effect B — hẹn thử lại tự động khi đang offline và còn hẹn được.
+  //
+  // Tab bị ẩn ⇒ KHÔNG hẹn gì (và cleanup xoá timer đang chờ): xem chú thích
+  // `visible`. Deps có `visible` để lúc tab hiện lại effect chạy lại và hẹn một
+  // khoảng chờ mới — lúc đó `retryAtMs` cũng đặt lại nên đồng hồ đếm ngược
+  // không tiếp tục từ một mốc đã trôi qua từ lâu.
   useEffect(() => {
     const delay = retryDelayMs(state)
-    if (delay === null) {
+    if (delay === null || !visible) {
       setRetryAtMs(null)
       return
     }
     setRetryAtMs(Date.now() + delay)
     const id = setTimeout(() => dispatch({ type: 'connectStarted' }), delay)
     return () => clearTimeout(id)
-  }, [state.phase, state.attempt, state.exhausted])
+  }, [state.phase, state.attempt, state.exhausted, visible])
+
+  // Effect B' — theo dõi tab ẩn/hiện.
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    const onVisibilityChange = () => setVisible(document.visibilityState === 'visible')
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange)
+  }, [])
 
   // Effect C — theo dõi quyền điều khiển trên chính canvas của noVNC.
   // `focusin`/`focusout` nổi bọt lên container; `onBlur` của wrapper thì không
@@ -222,7 +253,11 @@ export function useVncScreen(override?: ScreenSource): UseVncScreenResult {
     reason: state.reason,
     exhausted: state.exhausted,
     url,
+    attempt: state.attempt,
     retryAtMs,
+    // Cùng điều kiện với Effect B: tab ẩn thì coi như không hẹn, dù state vẫn
+    // là offline/thử lại được.
+    retryDelayMs: visible ? retryDelayMs(state) : null,
     frameSize,
     controlling,
     retry,

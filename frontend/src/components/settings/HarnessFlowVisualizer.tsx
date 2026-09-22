@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo } from 'react'
+import { useEffect, useState, useRef, useMemo } from 'react'
 import {
   ZoomIn,
   ZoomOut,
@@ -21,6 +21,7 @@ import {
 import { useHarnessStore, AVAILABLE_MODELS } from '../../store/harnessStore'
 import { useSkillsStore } from '../../store/skillsStore'
 import { useRouterStore } from '../../store/routerStore'
+import { useRuntimeInfoStore } from '../../store/runtimeInfoStore'
 
 export interface NodeDetails {
   title: string
@@ -29,6 +30,8 @@ export interface NodeDetails {
   modelAssigned?: string
   inheritedFrom?: string
   toolsAllowed?: string[]
+  /** Engine chưa trả lời nên danh sách công cụ đang thiếu — nói thẳng thay vì bỏ trống. */
+  toolsUnavailable?: boolean
   meta?: Record<string, string | undefined>
 }
 
@@ -73,6 +76,23 @@ export function HarnessFlowVisualizer() {
   const skills = useSkillsStore((s) => s.skills)
   const activeSkills = useMemo(() => skills.filter((sk) => sk.enabled), [skills])
   const routerRoutes = useRouterStore((s) => s.routes)
+
+  /**
+   * Danh sách công cụ theo vai trò là dữ liệu thật của engine
+   * (`GET /api/agent/runtime-info` → `roles[].tools`). Bản chép tay trước đây in ra
+   * năm cái tên không hề tồn tại trong registry: file_multi_replace, diagram_generate,
+   * dir_list, git_diff, read_url_content.
+   */
+  const runtimeInfo = useRuntimeInfoStore((s) => s.info)
+  const loadRuntimeInfo = useRuntimeInfoStore((s) => s.load)
+  useEffect(() => {
+    void loadRuntimeInfo()
+  }, [loadRuntimeInfo])
+
+  const roleTools = useMemo(() => {
+    const byRole = new Map((runtimeInfo?.roles ?? []).map((role) => [role.id, role.tools]))
+    return (roleId: string) => byRole.get(roleId)
+  }, [runtimeInfo])
 
   // Danh sách model hợp nhất từ Router và Available Models
   const allAvailableModels = useMemo(() => {
@@ -277,7 +297,8 @@ export function HarnessFlowVisualizer() {
           modelAssigned: getSubagentModel(activeHarness.subagents?.find((s) => s.id === 'explore')?.model),
           description:
             'Chuyên trách tìm kiếm file, grep code, lập chỉ mục kiến trúc dự án và cung cấp snapshot tài nguyên cho Orchestrator mà không được sửa code.',
-          toolsAllowed: ['codebase_glob', 'codebase_grep', 'file_read', 'dir_list'],
+          toolsAllowed: roleTools('explore'),
+          toolsUnavailable: roleTools('explore') === undefined,
           meta: {
             'Sandboxed Permissions': 'Strictly Read-Only (Không có quyền file_write / edit)',
             'Execution Target': 'Map and discover patterns, locate symbols and schema definitions',
@@ -304,7 +325,8 @@ export function HarnessFlowVisualizer() {
           modelAssigned: getSubagentModel(activeHarness.subagents?.find((s) => s.id === 'plan')?.model),
           description:
             'Phân tích rủi ro, vạch ra các bước thực hiện chi tiết, định nghĩa các interfaces và ranh giới an toàn trước khi viết bất kỳ dòng mã nào.',
-          toolsAllowed: ['file_read', 'codebase_grep', 'diagram_generate'],
+          toolsAllowed: roleTools('plan'),
+          toolsUnavailable: roleTools('plan') === undefined,
           meta: {
             'Discipline': 'Spec-Driven Development & Accidental Data Loss Prevention',
             'Output Format': 'Structured Markdown Implementation Plan & Verification Matrix',
@@ -318,7 +340,7 @@ export function HarnessFlowVisualizer() {
         label: '3. Build & Code',
         category: 'subagent',
         phaseNumber: 3,
-        sublabel: getSubagentModel(activeHarness.subagents?.find((s) => s.id === 'code')?.model),
+        sublabel: getSubagentModel(activeHarness.subagents?.find((s) => s.id === 'build')?.model),
         badge: isSingleModelMode ? 'Single Override' : 'Full File Edit',
         icon: Code2,
         x: 0,
@@ -329,10 +351,11 @@ export function HarnessFlowVisualizer() {
         details: {
           title: 'Build & Code Specialist (Phase 3)',
           role: 'Lập trình & Hiện thực hóa Mã nguồn',
-          modelAssigned: getSubagentModel(activeHarness.subagents?.find((s) => s.id === 'code')?.model),
+          modelAssigned: getSubagentModel(activeHarness.subagents?.find((s) => s.id === 'build')?.model),
           description:
             'Chuyên tâm sinh code chất lượng cao, thực thi chỉnh sửa chính xác từng khối nội dung file mà không làm mất comment hay phá vỡ cấu trúc.',
-          toolsAllowed: ['file_read', 'file_write', 'file_edit_block', 'file_multi_replace'],
+          toolsAllowed: roleTools('build'),
+          toolsUnavailable: roleTools('build') === undefined,
           meta: {
             'Discipline': 'Strict Typescript / Python Best Practices, No Ad-hoc Utilities',
             'Modification Guard': 'Preserve unrelated docstrings and adhere to project standards',
@@ -346,7 +369,7 @@ export function HarnessFlowVisualizer() {
         label: '4. Testing & Debug',
         category: 'subagent',
         phaseNumber: 4,
-        sublabel: getSubagentModel(activeHarness.subagents?.find((s) => s.id === 'test')?.model),
+        sublabel: getSubagentModel(activeHarness.subagents?.find((s) => s.id === 'testing')?.model),
         badge: isSingleModelMode ? 'Single Override' : 'Sandbox Execution',
         icon: Bug,
         x: 210,
@@ -356,10 +379,11 @@ export function HarnessFlowVisualizer() {
         details: {
           title: 'Testing & Debug Specialist (Phase 4)',
           role: 'Chạy Thử nghiệm & Chẩn đoán Lỗi',
-          modelAssigned: getSubagentModel(activeHarness.subagents?.find((s) => s.id === 'test')?.model),
+          modelAssigned: getSubagentModel(activeHarness.subagents?.find((s) => s.id === 'testing')?.model),
           description:
             'Thực thi các lệnh test (Vitest, Pytest), phân tích log lỗi, cô lập nguyên nhân gốc rễ và xác thực hành vi của hệ thống trong môi trường sandbox.',
-          toolsAllowed: ['terminal_exec', 'file_read', 'browser_use', 'computer_screen_capture'],
+          toolsAllowed: roleTools('testing'),
+          toolsUnavailable: roleTools('testing') === undefined,
           meta: {
             'Verification Pipeline': 'Unit Tests, Typecheck, Diagnostics & Visual Inspection',
             'Environment': 'Dockerized Sandbox / Local Isolated Runtime',
@@ -386,7 +410,8 @@ export function HarnessFlowVisualizer() {
           modelAssigned: getSubagentModel(activeHarness.subagents?.find((s) => s.id === 'review')?.model),
           description:
             'Rà soát mã nguồn lần cuối, đối chiếu diff với yêu cầu ban đầu của người dùng, phát hiện lỗ hổng bảo mật và tối giản hóa logic dư thừa.',
-          toolsAllowed: ['file_read', 'git_diff', 'codebase_grep'],
+          toolsAllowed: roleTools('review'),
+          toolsUnavailable: roleTools('review') === undefined,
           meta: {
             'Quality Standards': 'Clean Code, Performance, Security Boundary Validation',
             'Sign-off Gate': 'Final Pass / Fail Verdict before User Delivery',
@@ -412,7 +437,8 @@ export function HarnessFlowVisualizer() {
           modelAssigned: getSubagentModel(activeHarness.subagents?.find((s) => s.id === 'research')?.model),
           description:
             'Hỗ trợ tra cứu nhanh tài liệu API bên ngoài, tổng hợp kiến thức chuyên ngành và phân tích các trường hợp ngoại lệ phức tạp.',
-          toolsAllowed: ['web_search', 'read_url_content', 'file_read'],
+          toolsAllowed: roleTools('research'),
+          toolsUnavailable: roleTools('research') === undefined,
           meta: {
             'Scope': 'External SDKs, Standard Specs, Protocol References',
           },
@@ -502,6 +528,7 @@ export function HarnessFlowVisualizer() {
     activeSingleModelName,
     activeHarness,
     activeSkills,
+    roleTools,
   ])
 
   // Định nghĩa các đường luồng kết nối có hướng (Directed Flow Edges)
@@ -982,21 +1009,27 @@ export function HarnessFlowVisualizer() {
               )}
 
               {/* Tools Allowed */}
-              {selectedNode.details.toolsAllowed && selectedNode.details.toolsAllowed.length > 0 && (
+              {(selectedNode.details.toolsAllowed || selectedNode.details.toolsUnavailable) && (
                 <div className="space-y-1.5 border-t border-line pt-3">
                   <span className="text-[10px] font-bold text-muted uppercase tracking-wider">
                     Tools Được Phép Thực Thi
                   </span>
-                  <div className="flex flex-wrap gap-1 mt-1">
-                    {selectedNode.details.toolsAllowed.map((t) => (
-                      <span
-                        key={t}
-                        className="rounded border border-line bg-panel2 px-2 py-0.5 text-[10px] font-mono text-cyan-400"
-                      >
-                        {t}
-                      </span>
-                    ))}
-                  </div>
+                  {(selectedNode.details.toolsAllowed?.length ?? 0) > 0 ? (
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {(selectedNode.details.toolsAllowed ?? []).map((t) => (
+                        <span
+                          key={t}
+                          className="rounded border border-line bg-panel2 px-2 py-0.5 text-[10px] font-mono text-cyan-400"
+                        >
+                          {t}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="mt-1 text-[11px] text-muted">
+                      Danh sách công cụ đang unavailable — engine chưa trả lời. Sơ đồ không đoán tên công cụ.
+                    </p>
+                  )}
                 </div>
               )}
 

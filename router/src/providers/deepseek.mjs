@@ -97,13 +97,30 @@ export function deepseekThinking(model = {}) {
 }
 
 /**
- * Documented capabilities of the two live models. Vision is the one that
- * matters: `deepseek-v4-pro` answers an image request with 200 and a wrong
- * answer instead of an error, so the record has to say it cannot read images.
+ * Ids DeepSeek ships as natively multimodal: the V4.1-Flash GA id and the
+ * experimental vision build. Upstream lists them one by one and generalises the
+ * capability to the dotted V4 releases (`open-sse/providers/capabilities.js:116-127`).
+ */
+const DEEPSEEK_VISION_IDS = new Set(['deepseek-flash', 'deepseek-v4-flash-vision-exp']);
+/**
+ * Real image input starts with the dotted V4 releases — probed live on the V4.1
+ * line — while the non-dotted V4 ids accept image blocks and ignore them, so the
+ * plain `*deepseek-v4*` pattern carries no vision upstream
+ * (`open-sse/providers/capabilities.js:380-389`); the dotted pattern is matched
+ * first there, so a dotted id wins over everything else, as it does here.
+ */
+const DEEPSEEK_VISION_DOTTED = 'deepseek-v4.';
+
+/**
+ * Documented capabilities of a discovered model. Vision is the one that matters:
+ * `deepseek-v4-pro` answers an image request with 200 and a wrong answer instead of
+ * an error, so the record has to say it cannot read images, and a model that *can*
+ * read them must not lose the badge to a generic pattern (that was the V4.1-Flash
+ * bug upstream fixed in v0.5.81).
  */
 export function deepseekCapabilities(model = {}) {
   const id = String(model?.id || '').toLowerCase();
-  const vision = id.includes('pro') ? 'unsupported' : 'reported';
+  const vision = id.includes(DEEPSEEK_VISION_DOTTED) || DEEPSEEK_VISION_IDS.has(id) ? 'reported' : 'unsupported';
   return { streaming: 'reported', tools: 'reported', vision, reasoning: 'reported' };
 }
 

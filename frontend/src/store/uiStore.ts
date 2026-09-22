@@ -1,6 +1,7 @@
 /**
- * Trạng thái THUẦN GIAO DIỆN: thanh bên thu gọn, tab nào đang mở, tỉ lệ hai
- * cột, file nào đang chọn, modal nguồn nào đang mở, và điều hướng Settings.
+ * Trạng thái THUẦN GIAO DIỆN: thanh bên thu gọn, tab nào đang mở, công tắc ẩn
+ * bảng Workspace, tỉ lệ hai cột, file nào đang chọn, modal nguồn nào đang mở,
+ * và điều hướng Settings.
  */
 import { create } from 'zustand'
 import type { AuditQueryId } from '../types/session'
@@ -96,6 +97,27 @@ function getInitialFlag(key: string, fallback: boolean): boolean {
 
 export const AUTO_OPEN_TABS_KEY = 'boxfox_auto_open_tabs'
 export const AUTO_OPEN_IDLE_ONLY_KEY = 'boxfox_auto_open_only_when_idle'
+/** Bảng Workspace đang bị ẩn bằng công tắc trên thanh trên (Kế hoạch E2). */
+export const WORKSPACE_HIDDEN_KEY = 'boxfox_workspace_hidden'
+
+/** Đọc cờ ẩn bảng lúc khởi tạo store — cùng chỗ với `boxfox_theme`. */
+function getInitialWorkspaceHidden(): boolean {
+  if (typeof window === 'undefined') return false
+  return localStorage.getItem(WORKSPACE_HIDDEN_KEY) === '1'
+}
+
+/**
+ * Ghi cờ ẩn bảng: `'1'` khi ẩn, **xoá khoá** khi hiện.
+ *
+ * Xoá thay vì ghi `'0'` để "chưa từng bấm" và "đã hiện lại" là cùng một trạng
+ * thái trên đĩa — đúng cách `boxfox_theme` đang làm (chỉ có một giá trị được
+ * ghi khi người dùng thật sự đổi).
+ */
+function persistWorkspaceHidden(hidden: boolean): void {
+  if (typeof localStorage === 'undefined') return
+  if (hidden) localStorage.setItem(WORKSPACE_HIDDEN_KEY, '1')
+  else localStorage.removeItem(WORKSPACE_HIDDEN_KEY)
+}
 
 
 function getInitialTheme(): 'light' | 'dark' | 'system' {
@@ -134,6 +156,22 @@ interface UiState {
 
   openTabs: PanelTabId[]
   activeTab: PanelTabId | null
+  /**
+   * Bảng Workspace (cột phải) đang bị ẩn bằng công tắc trên thanh trên.
+   *
+   * Một boolean, KHÔNG phải enum layout mode (Kế hoạch E2): màn Máy và bảng
+   * Workspace vốn là cùng một cột, nên "ẩn bảng" chỉ có nghĩa là không dựng cột
+   * đó nữa — `splitRatio` không bị đụng, hiện lại là về đúng tỉ lệ cũ.
+   */
+  workspaceHidden: boolean
+  setWorkspaceHidden: (hidden: boolean) => void
+  toggleWorkspace: () => void
+  /**
+   * Đường "người dùng vừa bấm một thứ cần bảng": hiện bảng + ghim tab + mở tab.
+   * Dùng cho menu `+ Open Workspace` và các link trong chat — bấm là thấy bảng,
+   * khác với ý định do agent đẩy tới (đang ẩn thì xếp hàng).
+   */
+  showTab: (tab: PanelTabId, target?: Record<string, unknown> | null) => void
   /**
    * Mở + kích hoạt tab. `target` (tuỳ chọn) là ngữ cảnh của ý định đang mở
    * (ví dụ `{identity}` cho plan) — panel đọc lại qua `tabIntentTargets`.
@@ -269,6 +307,9 @@ export const useUiStore = create<UiState>((set, get) => ({
       const queuedTarget = queued.length ? (queued[queued.length - 1].target ?? null) : null
       const nextTarget = target ?? queuedTarget
       const pendingIntents = s.pendingIntents.filter((intent) => intent.tab !== tab)
+      // KHÔNG chạm `workspaceHidden`: mở tab khi bảng đang ẩn chỉ dựng sẵn
+      // trạng thái (`openTabs` + `activeTab`) cho lúc bảng hiện lại, không tự
+      // hiện bảng. Chỉ `showTab` mới được phép hiện bảng (Kế hoạch E2).
       return {
         openTabs: s.openTabs.includes(tab) ? s.openTabs : [...s.openTabs, tab],
         activeTab: tab,
@@ -290,6 +331,23 @@ export const useUiStore = create<UiState>((set, get) => ({
       }
     }),
   closePanel: () => set({ activeTab: null, panelFullscreen: false }),
+
+  // ── Công tắc bảng Workspace (Kế hoạch E2) ──────────────────────────────
+  workspaceHidden: getInitialWorkspaceHidden(),
+  setWorkspaceHidden: (hidden) => {
+    persistWorkspaceHidden(hidden)
+    set({ workspaceHidden: hidden })
+    // Hiện bảng là điều kiện thứ tư của luật xếp hàng: hàng đợi đóng băng lúc
+    // ẩn phải được xả ngay — cũ-trước, và vẫn qua ĐÚNG luật §3 tại thời điểm
+    // gọi (tab bị ghim thì ở lại hàng đợi).
+    if (!hidden) get().flushPendingIntents()
+  },
+  toggleWorkspace: () => get().setWorkspaceHidden(!get().workspaceHidden),
+  showTab: (tab, target) => {
+    get().setWorkspaceHidden(false)
+    get().pinTab(tab)
+    get().openTab(tab, target ?? null)
+  },
 
   // ── Luật tự mở tab (hợp đồng §3). Thứ tự ba điều kiện là phần hợp đồng:
   // dừng ở điều kiện đầu tiên vi phạm và xếp hàng thay vì mở.
@@ -325,6 +383,10 @@ export const useUiStore = create<UiState>((set, get) => ({
       return 'queued' as const
     }
     if (!state.autoOpenTabs) return queue()
+    // Điều kiện 4 (Kế hoạch E2): bảng đang ẩn ⇒ mở tab là vô nghĩa (người dùng
+    // không thấy gì), nên xếp hàng và không cướp tab đã ghim. KHÔNG hẹn flush:
+    // chỉ người dùng hiện bảng mới xả hàng đợi này.
+    if (state.workspaceHidden) return queue()
     if (state.pinnedTab === intent.tab) return queue()
     if (state.autoOpenOnlyWhenIdle && Date.now() - state.lastUserActivityAt < AUTO_OPEN_IDLE_MS) {
       // Chỉ bị chặn vì người dùng đang bận → hẹn mở lại khi cửa sổ rảnh kết thúc.
@@ -337,6 +399,9 @@ export const useUiStore = create<UiState>((set, get) => ({
   flushPendingIntents: () => {
     const state = get()
     if (state.pendingIntents.length === 0) return
+    // Điều kiện 4: bảng đang ẩn — hàng đợi ĐÓNG BĂNG, không xả (xem
+    // `setWorkspaceHidden`: hiện bảng mới là lúc xả).
+    if (state.workspaceHidden) return
     // Điều kiện 1: công tắc tắt — không có gì để làm, hàng đợi chờ lần bật lại.
     if (!state.autoOpenTabs) return
     // Điều kiện 3: người dùng vừa hoạt động lại → hẹn tiếp cho hết cửa sổ hiện
@@ -375,9 +440,15 @@ export const useUiStore = create<UiState>((set, get) => ({
   selectedFilePath: null,
   // Định tuyến lại: chọn file → mở tab Files (panel Workspace Files tiêu thụ
   // `selectedFilePath` rồi mở file đó, không mở song song cả tab IDE nữa).
+  //
+  // `selectFile` CHỈ có một người gọi: nút [👁 View] trong chat — một cú bấm của
+  // người dùng. Nên nó đi qua `showTab` (hiện bảng nếu đang ẩn), không phải
+  // `openTab`: bấm View lúc bảng Workspace đang ẩn mà không hiện gì là một cú
+  // bấm im lặng (lỗi b18-review #2), trong khi `openTab` cố ý không chạm
+  // `workspaceHidden`.
   selectFile: (path) => {
     set({ selectedFilePath: path })
-    get().openTab('files')
+    get().showTab('files')
   },
   clearSelectedFile: () => set({ selectedFilePath: null }),
 

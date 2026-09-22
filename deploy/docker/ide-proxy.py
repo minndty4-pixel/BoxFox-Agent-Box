@@ -190,6 +190,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         "/__box/record/stop",
         "/__box/record/status",
         "/__box/inspect-element",
+        "/__box/captures/prune",
     )
 
     def _is_capture_endpoint(self) -> bool:
@@ -275,7 +276,13 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                 output = body.get("output", "file")
                 if output not in ("file", "base64"):
                     raise capture._invalid("output phải là file hoặc base64")
-                self._send_json_cors(200, json.dumps(capture.dispatch_capture(target, output), default=str))
+                # A3 (đợt 20): harness gửi kèm định danh phiên/bước/công cụ để ảnh nằm đúng thư mục
+                # `.generated_artifacts/captures/<sid8>/` thay vì đổ phẳng vào `captures/screen`
+                # (đo sống: 375 tệp / 113 MB, 123 tệp không payload nào nhắc tới). Thiếu thì giữ
+                # nguyên hành vi cũ — bản cũ không phải biết tham số mới.
+                self._send_json_cors(200, json.dumps(capture.dispatch_capture(
+                    target, output, session=body.get("session"), step=body.get("step"),
+                    tool_call_id=body.get("toolCallId")), default=str))
                 return
 
             if self.path == "/__box/record/start":
@@ -284,7 +291,21 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                     return
                 body = self._read_json_body()
                 target = body.get("target") or {}
-                self._send_json_cors(200, json.dumps(capture.dispatch_record_start(target), default=str))
+                # A3: cùng lý do như `/__box/capture` — ghi hình cũng vào thư mục riêng của phiên.
+                self._send_json_cors(200, json.dumps(capture.dispatch_record_start(
+                    target, session=body.get("session"), step=body.get("step"),
+                    tool_call_id=body.get("toolCallId")), default=str))
+                return
+
+            if self.path == "/__box/captures/prune":
+                # A8 (đợt 20): dọn ảnh/ghi hình theo trần F2 cho người vận hành. Box tự dọn mỗi
+                # `CAPTURE_EVICT_EVERY` lần ghi; route này là chỗ chạy tay (kèm `dryRun` để xem trước).
+                if self.command != "POST":
+                    self._send_json_cors(405, json.dumps({"error": "Method Not Allowed"}))
+                    return
+                body = self._read_json_body()
+                self._send_json_cors(200, json.dumps(capture.dispatch_captures_prune(
+                    session=body.get("session"), dry_run=bool(body.get("dryRun"))), default=str))
                 return
 
             if self.path == "/__box/record/stop":
@@ -605,7 +626,11 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         try:
             body = self._read_json_body()
             payload = plan_files.write_review(
-                PLAN_ROOT, body.get("identity"), body.get("decision"), body.get("note", "")
+                PLAN_ROOT,
+                body.get("identity"),
+                body.get("decision"),
+                body.get("note", ""),
+                body.get("version"),
             )
             self._send_json_cors(200, json.dumps(payload))
         except plan_files.PlanFileError as error:
@@ -615,6 +640,39 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             self._send_json_cors(error.status_code, json.dumps({"error": error.public_message}))
         except Exception as error:  # lưới an toàn cho thread
             print(f"[ide-proxy] lỗi plan review: {error!r}", file=sys.stderr)
+            self._send_json_cors(500, json.dumps({"error": "Lỗi nội bộ."}))
+
+    # ------------------------------------------------------------------
+    # Chỉ mục plan cho harness (§2/§3 của vòng 20) — route ĐỌC cần khoá API
+    # ------------------------------------------------------------------
+    def _handle_plan_index(self) -> None:
+        """GET /__box/plans/index — cùng payload như `GET /__box/plans`, cần shared-secret.
+
+        Harness là bên quyết số version/identity (nó đọc chỉ mục này TRƯỚC khi ghi),
+        nên nó phải là server-to-server: cùng luật với `_handle_plan_review`, đứng
+        TRƯỚC cổng Origin của nhóm đọc `/__box/plans` (request của harness không có
+        header Origin). Thiếu/sai khoá → 401, không bao giờ trả dữ liệu.
+        """
+
+        if self.command == "OPTIONS":
+            self._send_cors_preflight()
+            return
+        if self.command != "GET":
+            self._send_json_cors(405, json.dumps({"error": "Phương thức không được phép"}))
+            return
+        if not self._require_secret():
+            return
+        parsed = urllib.parse.urlsplit(self.path)
+        if parsed.query:
+            self._send_json_cors(400, json.dumps({"error": "Unexpected query parameters"}))
+            return
+        try:
+            manifest = plan_files.scan_plans(PLAN_ROOT)
+            self._send_json_cors(200, json.dumps(manifest.to_payload()))
+        except plan_files.PlanFileError as error:
+            self._send_json_cors(error.status_code, json.dumps({"error": error.public_message}))
+        except Exception as error:  # lưới an toàn cho thread
+            print(f"[ide-proxy] lỗi plan index: {error!r}", file=sys.stderr)
             self._send_json_cors(500, json.dumps({"error": "Lỗi nội bộ."}))
 
     def _handle_box_api(self) -> None:
@@ -657,6 +715,13 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         # đọc `/__box/plans` bên dưới — cùng luật với network/power.
         if urllib.parse.urlsplit(self.path).path == "/__box/plans/review":
             self._handle_plan_review()
+            return
+
+        # Chỉ mục plan cho harness (`GET /__box/plans/index`): harness đọc nó trước khi
+        # ghi nên cũng là server-to-server, cùng luật khoá API và cùng vị trí TRƯỚC
+        # cổng Origin. Không có khoá → 401, không trả dữ liệu.
+        if urllib.parse.urlsplit(self.path).path == "/__box/plans/index":
+            self._handle_plan_index()
             return
 
         if not self._origin_ok_for_box_api():
@@ -911,7 +976,8 @@ def main():
         f"[ide-proxy] Workspace API: GET /__box/files · /__box/file/content|media|thumbnail|download · "
         f"POST /__box/files/zip · /__box/file/upload|unzip · "
         f"/__box/files/mkdir|touch|rename|move|delete (cần secret)\n"
-        f"[ide-proxy] Plan API: GET /__box/plans|content · POST /__box/plans/review (cần secret)",
+        f"[ide-proxy] Plan API: GET /__box/plans|content · GET /__box/plans/index (cần secret) · "
+        f"POST /__box/plans/review (cần secret)",
         flush=True,
     )
     server.serve_forever()

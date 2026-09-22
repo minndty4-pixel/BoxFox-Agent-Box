@@ -11,6 +11,7 @@ import {
   AlertCircle,
   ChevronRight,
   ChevronDown,
+  ChevronUp,
   Sparkles,
   Copy,
   Check,
@@ -95,13 +96,110 @@ export interface ToolMedia {
   caption: string
   sourceUrl?: string
   durationSec?: number
+  /** D3: tệp có thật nhưng bản ghi không chạy `stop` trọn vẹn → không có số thời lượng. */
+  unfinished?: boolean
 }
 
 /** i18n thuộc workstream khác — hai nhãn này được export thẳng từ component. */
-export const FINAL_ANSWER_EXPAND_LABEL = 'View detailed response'
-export const FINAL_ANSWER_COLLAPSE_LABEL = 'Hide detailed response'
+export const FINAL_ANSWER_EXPAND_LABEL = 'View details'
+export const FINAL_ANSWER_COLLAPSE_LABEL = 'Hide details'
 export const FINAL_ANSWER_SUMMARY_MAX_CHARS = 600
 export const FINAL_ANSWER_SUMMARY_MAX_LINES = 6
+
+/** R2 (yêu cầu 5): số liệu của khối hoạt động — đếm từ chính dữ liệu lượt, không phải từ prop. */
+export interface ActivityCounts {
+  thinking: boolean
+  commands: number
+  captures: number
+  failed: number
+  unfinished: number
+}
+
+export interface ActivityReceiptPart {
+  label: string
+  tone: 'muted' | 'rose' | 'amber'
+}
+
+export const ACTIVITY_TONE_CLASS: Record<ActivityReceiptPart['tone'], string> = {
+  muted: 'text-zinc-400',
+  rose: 'text-rose-400',
+  amber: 'text-amber-400',
+}
+
+/**
+ * R2: dòng biên nhận in đúng những gì đang nằm trong khối hoạt động, để việc gấp khối không
+ * giấu mất chuyện "có lệnh chưa trả kết quả". Trả mảng đoạn thuần (không JSX) để kiểm thử được
+ * bằng đơn vị; đoạn đếm 0 bị bỏ, không có gì thì trả mảng rỗng.
+ */
+export function activityReceipt(counts: ActivityCounts): ActivityReceiptPart[] {
+  const parts: ActivityReceiptPart[] = []
+  if (counts.thinking) parts.push({ label: 'Thinking', tone: 'muted' })
+  if (counts.commands > 0) {
+    parts.push({ label: `${counts.commands} ${counts.commands === 1 ? 'command' : 'commands'}`, tone: 'muted' })
+  }
+  if (counts.captures > 0) {
+    parts.push({ label: `${counts.captures} ${counts.captures === 1 ? 'capture' : 'captures'}`, tone: 'muted' })
+  }
+  if (counts.failed > 0) parts.push({ label: `${counts.failed} failed`, tone: 'rose' })
+  if (counts.unfinished > 0) parts.push({ label: `${counts.unfinished} without result`, tone: 'amber' })
+  return parts
+}
+
+/** Văn xuôi: không mở đầu bằng tiêu đề, bảng, danh sách hay trích dẫn. */
+const SUMMARY_BLOCK_OPENER = /^\s*(#{1,6}\s|\||[-*+]\s|>\s?|\d+[.)]\s|```)/
+const SUMMARY_SENTENCE_MARKS = ['.', '!', '?', ':', '…']
+
+/**
+ * R3 (yêu cầu 6): bộ nhận biết ranh giới tóm tắt/chi tiết đọc **cấu trúc của chính câu trả lời**.
+ * Đoạn đầu tới dòng trống đầu tiên là tóm tắt khi nó là văn xuôi, nằm trong hạn 6 dòng/600 ký tự
+ * và **có** phần còn lại để mở. Trả `null` khi không chắc — người gọi quay về đường cắt cũ, chứ
+ * không im lặng cắt ở một chỗ vô nghĩa.
+ */
+export function splitAuthoredSummary(text: string): { summary: string; rest: string } | null {
+  const normalized = text.replace(/\r\n/g, '\n')
+  const lines = normalized.split('\n')
+  const blank = lines.findIndex((line) => line.trim() === '')
+  // Không có dòng trống (hoặc đoạn đầu rỗng) → không có gì tách ra.
+  if (blank <= 0) return null
+  const block = lines.slice(0, blank)
+  const rest = lines.slice(blank).join('\n').trim()
+  if (!rest) return null
+  if (block.length > FINAL_ANSWER_SUMMARY_MAX_LINES) return null
+  let summary = block.join('\n').trim()
+  if (!summary || summary.length > FINAL_ANSWER_SUMMARY_MAX_CHARS) return null
+  if (SUMMARY_BLOCK_OPENER.test(summary) || summary.includes('```')) return null
+  // Đoạn kết giữa câu → lùi về mốc câu cuối cùng trong đoạn đó; không có mốc nào thì không nhận.
+  if (!/[.!?:…]$/.test(summary)) {
+    let cut = -1
+    for (const mark of SUMMARY_SENTENCE_MARKS) cut = Math.max(cut, summary.lastIndexOf(mark))
+    if (cut < 0) return null
+    summary = summary.slice(0, cut + 1).trim()
+    if (!summary) return null
+  }
+  return { summary, rest }
+}
+
+/**
+ * R3: hai luật an toàn khối cho lát cắt cũ — không kết thúc trong khối ``` ``` chưa đóng và không
+ * giữ nửa hàng bảng. Chỉ bỏ phần đuôi; không bao giờ làm lát cắt rỗng.
+ */
+function safetyTrim(summary: string): string {
+  let result = summary
+  const fences = (result.match(/```/g) ?? []).length
+  if (fences % 2 === 1) {
+    const fenceLineStart = result.lastIndexOf('\n', result.lastIndexOf('```')) + 1
+    if (fenceLineStart > 0) result = result.slice(0, fenceLineStart).replace(/\s+$/, '')
+  }
+  const rows = result.split('\n')
+  if (rows.length > 1) {
+    const last = rows[rows.length - 1].trim()
+    const prev = rows[rows.length - 2].trim()
+    if (last.includes('|') && !last.endsWith('|') && prev.startsWith('|')) {
+      result = rows.slice(0, -1).join('\n').replace(/\s+$/, '')
+    }
+  }
+  return result || summary
+}
 
 /** F3: không bịa nội dung suy luận — chỉ nói đúng những gì model trả về. */
 export function reasoningTokensNotice(reasoningTokens: number): string {
@@ -200,30 +298,61 @@ function boxMediaUrl(artifactPath: string): string {
   return `/__box/file/media?path=${encodeURIComponent(relPath)}`
 }
 
-/** F2 + F4: ảnh/video của `tool_end` lấy từ payload thật, gắn ngay dưới hàng tool. */
-export function extractToolMedia(event: HarnessEvent): ToolMedia | null {
+/**
+ * Đường dẫn tệp thật của một hàng `tool_end` (nếu có). Dùng để biết hàng `start` của một bản ghi
+ * đã có hàng nào khác trong cùng lượt nói tới chưa — xem `TurnBlock` (D3).
+ */
+export function artifactPathOf(event: HarnessEvent | null | undefined): string | null {
+  const result = event?.data?.result
+  const resObj = result && typeof result === 'object' ? (result as Record<string, unknown>) : null
+  if (!resObj) return null
+  // Hàng `ok:false` nói về một lần gọi hỏng, không nói về một tệp có thật.
+  if (resObj.ok === false) return null
+  return typeof resObj.artifact === 'string' ? resObj.artifact : typeof resObj.path === 'string' ? resObj.path : null
+}
+
+/**
+ * F2 + F4: ảnh/video của `tool_end` lấy từ payload thật, gắn ngay dưới hàng tool.
+ *
+ * `opts.allowStartMedia` chỉ có tác dụng với hàng `start` của `computer_screen_record` — hàng này
+ * trả về đường dẫn tệp ĐANG ghi, không phải tệp đã đóng. Mặc định `false` để một bản ghi đã đóng
+ * đúng không hiện hai player (một ở hàng `start`, một ở hàng `stop`). `TurnBlock` bật nó lên **chỉ
+ * khi** trong lượt không hàng nào khác nói về chính tệp ấy — ca bản ghi bị cắt ngang
+ * (`1789929795687-screen.mp4`): tệp có thật trên đĩa mà trước đây không có đường nào mở.
+ */
+export function extractToolMedia(
+  event: HarnessEvent,
+  opts?: { allowStartMedia?: boolean },
+): ToolMedia | null {
   const result = event.data?.result
   const resObj = result && typeof result === 'object' ? (result as Record<string, unknown>) : null
   if (!resObj) return null
+  // Hàng `ok:false` nói về một lần gọi hỏng, không nói về một tệp có thật → không có dòng media.
+  if (resObj.ok === false) return null
 
   const name = String(event.data?.name ?? '')
   const args = event.data?.args as Record<string, unknown> | null
+  const action = String(args?.action ?? '')
   const inlineImage = typeof resObj.image === 'string' ? resObj.image : null
-  const artifactPath =
-    typeof resObj.artifact === 'string' ? resObj.artifact : typeof resObj.path === 'string' ? resObj.path : null
+  const artifactPath = artifactPathOf(event)
   const mime = typeof resObj.mime === 'string' ? resObj.mime : null
   const dimensions = parseDimensions(resObj.dimensions)
   const durationSec = typeof resObj.durationSec === 'number' ? resObj.durationSec : undefined
 
   let src: string | null = inlineImage ? `data:${mime || 'image/png'};base64,${inlineImage}` : null
   let kind: 'image' | 'video' = 'image'
+  let unfinished = false
   if (!src && artifactPath) {
     const ext = extensionOf(artifactPath)
     if (VIDEO_EXTENSIONS.includes(ext)) {
-      // `action=start` của computer_screen_record trả về đường dẫn tệp đang ghi (chưa có
-      // durationSec). Nếu nhận nó, một bản ghi hiện thành hai player: một ở hàng `start`,
-      // một ở hàng `stop`. Chỉ hàng đã ghi xong mới là media.
-      if (typeof durationSec !== 'number') return null
+      // `action=start` của computer_screen_record trả về đường dẫn tệp ĐANG ghi. Chỉ nhận nó khi
+      // người gọi xác nhận không hàng nào khác trong lượt nói về chính tệp ấy; nếu không, một bản
+      // ghi sẽ hiện thành hai player: một ở hàng `start`, một ở hàng `stop`.
+      if (action === 'start' && !opts?.allowStartMedia) return null
+      // D3: thiếu `durationSec` không có nghĩa là không có tệp. Bản ghi bị cắt ngang (`stop`
+      // không trả số) vẫn là một tệp CÓ THẬT trên đĩa — bỏ nó đi là không còn đường nào mở tệp
+      // đó ra. Giữ dòng media, để trống thời lượng và đánh dấu là chưa trọn.
+      if (typeof durationSec !== 'number') unfinished = true
       src = boxMediaUrl(artifactPath)
       kind = 'video'
     } else if (IMAGE_EXTENSIONS.includes(ext)) {
@@ -247,6 +376,7 @@ export function extractToolMedia(event: HarnessEvent): ToolMedia | null {
           : 'Sandbox Desktop Screen Capture',
     sourceUrl: typeof args?.url === 'string' ? args.url : undefined,
     durationSec,
+    unfinished,
   }
 }
 
@@ -344,14 +474,24 @@ function getToolDisplay(name: string, args: Record<string, unknown> | null, isEr
   }
 }
 
-/** F6: câu trả lời cuối chỉ hiện tóm tắt, nút mở rộng hiện bản đầy đủ. */
+/** F6 + R3 (yêu cầu 6): tóm tắt do chính câu trả lời viết, hoặc lát cắt cũ có luật an toàn khối. */
 export function summarizeFinalText(text: string): { summary: string; truncated: boolean } {
   const normalized = text.replace(/\r\n/g, '\n')
+
+  // R3: đoạn đầu nguyên văn của chính câu trả lời là tóm tắt — không rút gọn, không viết lại.
+  const authored = splitAuthoredSummary(normalized)
+  if (authored) return { summary: authored.summary, truncated: true }
+
+  // Không nhận ra cấu trúc → giữ nguyên đường cắt hôm nay (6 dòng, rồi 600 ký tự)…
   const lines = normalized.split('\n')
+  const cutOff =
+    lines.length > FINAL_ANSWER_SUMMARY_MAX_LINES || normalized.length > FINAL_ANSWER_SUMMARY_MAX_CHARS
   let summary = lines.slice(0, FINAL_ANSWER_SUMMARY_MAX_LINES).join('\n')
   if (summary.length > FINAL_ANSWER_SUMMARY_MAX_CHARS) {
     summary = summary.slice(0, FINAL_ANSWER_SUMMARY_MAX_CHARS)
   }
+  // …cộng hai luật an toàn khối, để lát cắt không rơi vào giữa khối code hay nửa hàng bảng.
+  if (cutOff) summary = safetyTrim(summary)
   const truncated = summary.length < normalized.length
   return {
     summary: truncated ? summary.replace(/\s+$/, '') + '…' : normalized,
@@ -749,12 +889,37 @@ function TurnBlock({
     [turn.items],
   )
 
+  // D3: hàng `start` chỉ được hiện tệp khi trong lượt KHÔNG hàng nào khác nói về chính tệp ấy.
+  // Ca thật: `1789929795687-screen.mp4` (560 s) — lượt chết vì DEADLINE trước khi kịp chạy `stop`,
+  // tệp nằm trên đĩa mà chat không có đường nào mở. Nhiều hàng `start` cùng một tệp thì chỉ hàng
+  // đầu tiên được hiện, để một tệp không thành hai player.
+  const startAllowedSeqs = useMemo(() => {
+    const startSeqs = new Map<string, number[]>()
+    const closed = new Set<string>()
+    for (const item of turn.items) {
+      if (item.kind !== 'tool' || !item.end) continue
+      const path = artifactPathOf(item.end)
+      if (!path) continue
+      const action = String((item.end.data?.args as Record<string, unknown> | null)?.action ?? '')
+      if (action === 'start') {
+        startSeqs.set(path, [...(startSeqs.get(path) ?? []), item.end.seq])
+      } else {
+        closed.add(path)
+      }
+    }
+    const allowed = new Set<number>()
+    for (const [path, seqs] of startSeqs) {
+      if (!closed.has(path)) allowed.add(Math.min(...seqs))
+    }
+    return allowed
+  }, [turn.items])
+
   const turnMedia = useMemo(() => {
     const media: ToolMedia[] = []
     const seen = new Set<string>()
     for (const item of turn.items) {
       if (item.kind !== 'tool' || !item.end) continue
-      const found = extractToolMedia(item.end)
+      const found = extractToolMedia(item.end, { allowStartMedia: startAllowedSeqs.has(item.end.seq) })
       // Cùng một tệp có thể xuất hiện ở nhiều tool_end; chỉ hiện một lần.
       const key = found?.artifactPath ?? found?.src ?? ''
       if (found && !seen.has(key)) {
@@ -763,10 +928,37 @@ function TurnBlock({
       }
     }
     return media
-  }, [turn.items])
+  }, [turn.items, startAllowedSeqs])
 
   const reasoningTokens = typeof turn.usage?.reasoning_tokens === 'number' ? turn.usage.reasoning_tokens : 0
   const thoughtText = turn.thought && turn.thought.trim() ? turn.thought : null
+
+  // R2 (yêu cầu 5): số liệu của dòng biên nhận đếm từ chính dữ liệu lượt — không có con số nào
+  // được viết tay ở đây. `captures` dùng danh sách media đã khử trùng của lượt.
+  const counts = useMemo<ActivityCounts>(() => {
+    let commands = 0
+    let failed = 0
+    let unfinished = 0
+    for (const item of turn.items) {
+      if (item.kind !== 'tool') continue
+      commands += 1
+      const result = item.end?.data?.result
+      if (result && typeof result === 'object' && (result as Record<string, unknown>).is_error) failed += 1
+      if (!item.end && turn.isCompleted) unfinished += 1
+    }
+    return { thinking: Boolean(thoughtText), commands, captures: turnMedia.length, failed, unfinished }
+  }, [turn.items, turn.isCompleted, thoughtText, turnMedia])
+
+  const receipt = useMemo(() => activityReceipt(counts), [counts])
+
+  // Khối hoạt động: mở khi lượt đang chạy, gấp còn dòng biên nhận khi lượt xong — nhưng ý định
+  // của người dùng thắng: đã bấm thì không tự đổi nữa.
+  const hasActivity = Boolean(thoughtText) || turn.items.length > 0 || isTurnBusy
+  const [activityOpen, setActivityOpen] = useState(() => !turn.isCompleted)
+  const [activityTouched, setActivityTouched] = useState(false)
+  useEffect(() => {
+    if (!activityTouched && turn.isCompleted) setActivityOpen(false)
+  }, [turn.isCompleted, activityTouched])
 
   const handleCopyUser = () => {
     const text = String(turn.userEvent?.data?.text ?? '')
@@ -806,7 +998,7 @@ function TurnBlock({
           <div className="w-fit rounded-2xl bg-panel2 border border-line px-4 py-3 text-xs leading-relaxed text-fg shadow-xs">
             {userImage && (
               <div
-                onClick={() => onOpenLightbox?.({ src: userImage, caption: 'Attached image' })}
+                onClick={() => onOpenLightbox?.({ type: 'image', src: userImage, caption: 'Attached image' })}
                 className="mb-2 max-w-sm cursor-pointer overflow-hidden rounded-xl border border-line/80 bg-panel hover:border-brand/60 transition shadow-xs group"
                 title="Nhấp vào để phóng to ảnh"
               >
@@ -838,9 +1030,21 @@ function TurnBlock({
         </div>
       )}
 
-      {/* 2. Slim turn header — chỉ còn dòng tổng kết thời gian, không bọc toàn bộ lượt (F2) */}
+      {/* 2. Slim turn header — hàng nhãn là NÚT GẤP của khối hoạt động, dưới nó là dòng biên nhận (F2 + R2) */}
       <div className="space-y-1.5 pl-0.5" data-turn-header="true">
-        <div className="flex items-center gap-1.5 text-xs text-muted select-none">
+        {/* `data-thinking-toggle` giữ nguyên tên cũ: vùng hoạt động **chính là** vùng suy luận sau
+            yêu cầu 5, nên nút này vừa là nút của khối vừa là nút mở văn bản suy luận. */}
+        <button
+          type="button"
+          data-activity-toggle="true"
+          data-thinking-toggle="true"
+          aria-expanded={activityOpen}
+          onClick={() => {
+            setActivityTouched(true)
+            setActivityOpen(!activityOpen)
+          }}
+          className="flex items-center gap-1.5 text-xs text-muted hover:text-fg transition cursor-pointer select-none group"
+        >
           <span
             className={`size-1.5 rounded-full transition duration-200 ${
               isTurnBusy ? 'bg-brand animate-pulse scale-110' : 'bg-brand/80'
@@ -849,95 +1053,122 @@ function TurnBlock({
           <span className="text-zinc-400">
             {isTurnBusy ? 'Working...' : `Worked for ${durationSec}s`}
           </span>
-        </div>
+          {hasActivity &&
+            (activityOpen ? (
+              <ChevronDown className="size-3 text-muted group-hover:text-fg" />
+            ) : (
+              <ChevronRight className="size-3 text-muted group-hover:text-fg" />
+            ))}
+        </button>
 
-        {/* Suy luận thật (stream từ model) hoặc dòng trung thực khi model chỉ trả token (F3) */}
-        {thoughtText ? (
-          <ThinkingSubItem thought={thoughtText} durationSec={durationSec} isLive={isTurnBusy} />
-        ) : reasoningTokens > 0 ? (
+        {/* R2: dòng biên nhận — in đúng những gì đang nằm trong khối, kể cả lệnh chưa trả kết quả */}
+        {receipt.length > 0 && (
+          <div className="flex flex-wrap items-center text-[11px] font-mono select-none" data-activity-receipt="true">
+            {receipt.map((part, index) => (
+              <span key={part.label} className="flex items-center">
+                {/* Dấu phân tách mang chính khoảng trắng của nó, nên chữ trong DOM đọc
+                    đúng `Thinking · 6 commands · …` chứ không dính liền nhau. */}
+                {index > 0 && <span className="text-zinc-600">{' · '}</span>}
+                <span className={ACTIVITY_TONE_CLASS[part.tone]}>{part.label}</span>
+              </span>
+            ))}
+          </div>
+        )}
+
+        {/* Suy luận thật (stream từ model) hoặc dòng trung thực khi model chỉ trả token (F3).
+            Dòng token ở LẠI header, ngoài khối gấp — không giấu khi model chỉ trả token. */}
+        {!thoughtText && reasoningTokens > 0 && (
           <div className="flex items-center gap-1.5 text-[11px] text-muted" data-thinking-tokens="true">
             <Sparkles className="size-3 text-brand/70 shrink-0" />
             <span className="text-zinc-400">{reasoningTokensNotice(reasoningTokens)}</span>
           </div>
-        ) : null}
+        )}
       </div>
 
-      {/* 3. Flat chronological timeline — text, tool, ảnh của tool, specialist, nén context (F2) */}
-      <div className="space-y-3">
-        {turn.items.map((item) => {
-          if (item.kind === 'text') {
-            return <TimelineTextBlock key={item.id} text={item.text} isLive={item.live && isTurnBusy} />
-          }
-          if (item.kind === 'tool') {
-            return (
-              <ToolTimelineRow
-                key={item.id}
-                start={item.start}
-                end={item.end}
-                isTurnBusy={isTurnBusy}
-                onOpenLightbox={onOpenLightbox}
-              />
-            )
-          }
-          if (item.kind === 'child') {
-            const childSessionId = String(item.event.data.sessionId ?? item.event.data.role ?? '')
-            return (
-              <button
-                key={item.id}
-                type="button"
-                data-timeline="child"
-                aria-label={t('chat.openSubagentTab')}
-                onClick={() => onOpenTab?.('subagents', childSessionId ? { sessionId: childSessionId } : null)}
-                className="group inline-flex items-center gap-1.5 rounded-md border border-brand/30 bg-brand/5 px-2 py-0.5 text-[11px] text-brand font-medium select-none transition hover:bg-brand/10 cursor-pointer"
-              >
-                <BrainCircuit className="size-3 animate-pulse" />
-                <span className="group-hover:underline">
-                  Specialist: {String(item.event.data.role)} ({String(item.event.data.status)})
-                </span>
-                <ChevronRight className="size-3 opacity-0 transition group-hover:opacity-100" />
-              </button>
-            )
-          }
-          if (item.kind === 'plan') {
-            const identity = String(item.event.data.identity ?? '')
-            return (
-              <button
-                key={item.id}
-                type="button"
-                data-timeline="plan"
-                data-plan-identity={identity || undefined}
-                aria-label={t('chat.openPlanTab')}
-                onClick={() => onOpenTab?.('plan', identity ? { identity } : null)}
-                className="group inline-flex items-center gap-1.5 rounded-md border border-brand/30 bg-brand/5 px-2 py-0.5 text-[11px] text-brand font-medium select-none transition hover:bg-brand/10 cursor-pointer"
-              >
-                <FileText className="size-3" />
-                <span className="group-hover:underline">{t('chat.planWritten')}</span>
-                {identity && <span className="font-mono text-[10px] text-muted">{identity}</span>}
-                <ChevronRight className="size-3 opacity-0 transition group-hover:opacity-100" />
-              </button>
-            )
-          }
-          if (item.kind === 'decision') {
-            return (
-              <DecisionRow
-                key={item.id}
-                event={item.event}
-                resolution={item.resolution}
-                onOpenTab={onOpenTab}
-              />
-            )
-          }
-          if (item.kind === 'notice') {
-            return <ServicingNotice key={item.id} event={item.event} />
-          }
-          return <CompactionNotice key={item.id} event={item.event} />
-        })}
+      {/* 3. MỘT khối hoạt động (R2): văn xuôi suy luận + mọi hàng theo `seq` + chỉ báo bận.
+          Câu trả lời cuối và khối lỗi nằm NGOÀI khối này. */}
+      <div data-activity="true" data-activity-open={activityOpen ? 'true' : 'false'}>
+        {activityOpen && (
+          <div className="space-y-3">
+            {thoughtText && <ThoughtProse thought={thoughtText} isLive={isTurnBusy} />}
 
-        {/* Lightweight Text-only Thinking Indicator (Không viền hộp to) */}
-        {isTurnBusy && !pendingTool && (
-          <div className="flex items-center gap-2 py-1 text-xs text-muted select-none" data-state-indicator="thinking">
-            <Sparkles className="size-3.5 text-brand animate-pulse shrink-0" />
-            <span className="text-zinc-300">BoxFox is thinking and synthesizing response...</span>
+            {turn.items.map((item) => {
+              if (item.kind === 'text') {
+                return <TimelineTextBlock key={item.id} text={item.text} isLive={item.live && isTurnBusy} />
+              }
+              if (item.kind === 'tool') {
+                return (
+                  <ToolTimelineRow
+                    key={item.id}
+                    start={item.start}
+                    end={item.end}
+                    isTurnBusy={isTurnBusy}
+                    allowStartMedia={item.end ? startAllowedSeqs.has(item.end.seq) : false}
+                    onOpenLightbox={onOpenLightbox}
+                  />
+                )
+              }
+              if (item.kind === 'child') {
+                const childSessionId = String(item.event.data.sessionId ?? item.event.data.role ?? '')
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    data-timeline="child"
+                    aria-label={t('chat.openSubagentTab')}
+                    onClick={() => onOpenTab?.('subagents', childSessionId ? { sessionId: childSessionId } : null)}
+                    className="group inline-flex items-center gap-1.5 rounded-md border border-brand/30 bg-brand/5 px-2 py-0.5 text-[11px] text-brand font-medium select-none transition hover:bg-brand/10 cursor-pointer"
+                  >
+                    <BrainCircuit className="size-3 animate-pulse" />
+                    <span className="group-hover:underline">
+                      Specialist: {String(item.event.data.role)} ({String(item.event.data.status)})
+                    </span>
+                    <ChevronRight className="size-3 opacity-0 transition group-hover:opacity-100" />
+                  </button>
+                )
+              }
+              if (item.kind === 'plan') {
+                const identity = String(item.event.data.identity ?? '')
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    data-timeline="plan"
+                    data-plan-identity={identity || undefined}
+                    aria-label={t('chat.openPlanTab')}
+                    onClick={() => onOpenTab?.('plan', identity ? { identity } : null)}
+                    className="group inline-flex items-center gap-1.5 rounded-md border border-brand/30 bg-brand/5 px-2 py-0.5 text-[11px] text-brand font-medium select-none transition hover:bg-brand/10 cursor-pointer"
+                  >
+                    <FileText className="size-3" />
+                    <span className="group-hover:underline">{t('chat.planWritten')}</span>
+                    {identity && <span className="font-mono text-[10px] text-muted">{identity}</span>}
+                    <ChevronRight className="size-3 opacity-0 transition group-hover:opacity-100" />
+                  </button>
+                )
+              }
+              if (item.kind === 'decision') {
+                return (
+                  <DecisionRow
+                    key={item.id}
+                    event={item.event}
+                    resolution={item.resolution}
+                    onOpenTab={onOpenTab}
+                  />
+                )
+              }
+              if (item.kind === 'notice') {
+                return <ServicingNotice key={item.id} event={item.event} />
+              }
+              return <CompactionNotice key={item.id} event={item.event} />
+            })}
+
+            {/* Lightweight Text-only Thinking Indicator (Không viền hộp to) */}
+            {isTurnBusy && !pendingTool && (
+              <div className="flex items-center gap-2 py-1 text-xs text-muted select-none" data-state-indicator="thinking">
+                <Sparkles className="size-3.5 text-brand animate-pulse shrink-0" />
+                <span className="text-zinc-300">BoxFox is thinking and synthesizing response...</span>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -979,11 +1210,14 @@ function ToolTimelineRow({
   start,
   end,
   isTurnBusy,
+  allowStartMedia,
   onOpenLightbox,
 }: {
   start: HarnessEvent | null
   end: HarnessEvent | null
   isTurnBusy?: boolean
+  /** D3: hàng `start` của bản ghi chưa từng `stop` vẫn có đường mở tệp — xem `TurnBlock`. */
+  allowStartMedia?: boolean
   onOpenLightbox?: (media: LightboxMediaProps) => void
 }) {
   const [open, setOpen] = useState(false)
@@ -994,7 +1228,10 @@ function ToolTimelineRow({
   const result = end?.data.result
   const isError = Boolean(result && typeof result === 'object' && (result as Record<string, unknown>).is_error)
   const display = getToolDisplay(name, args, isError)
-  const media = useMemo(() => (end ? extractToolMedia(end) : null), [end])
+  const media = useMemo(
+    () => (end ? extractToolMedia(end, { allowStartMedia }) : null),
+    [end, allowStartMedia],
+  )
   // Chỉ hiện trạng thái "đang chạy" khi lượt thực sự đang chạy; lượt đã xong mà thiếu
   // `tool_end` (bị huỷ / hết hạn) phải nói thật là không có kết quả.
   const running = !end && Boolean(isTurnBusy)
@@ -1067,12 +1304,18 @@ function ToolMediaBlock({
   onOpenLightbox?: (media: LightboxMediaProps) => void
 }) {
   const t = useT()
+  // R1 (yêu cầu 4): ảnh chụp gấp theo mặc định. State nằm trong chính hàng này (cùng khuôn với
+  // `ToolTimelineRow`), nên vòng poll 1200 ms không tự mở/gấp lại ảnh.
+  const [open, setOpen] = useState(false)
   // Payload `dimensions` là nguồn chính; nếu tool không kèm (ví dụ browser_use) thì lấy
   // kích thước thật của chính ảnh khi nó tải xong — không đoán, không hardcode.
   const [naturalSize, setNaturalSize] = useState<[number, number] | null>(null)
   const dimensions = media.dimensions ?? naturalSize
   const label = formatMediaLabel({ ...media, dimensions })
-  const open = () =>
+  const measure = (el: HTMLImageElement) => {
+    if (el.naturalWidth && el.naturalHeight) setNaturalSize([el.naturalWidth, el.naturalHeight])
+  }
+  const openLightbox = () =>
     onOpenLightbox?.({
       type: media.kind,
       src: media.src,
@@ -1082,38 +1325,96 @@ function ToolMediaBlock({
     })
 
   return (
-    <div className="max-w-2xl space-y-1 pl-0.5" data-tool-media={media.kind}>
-      <div
-        className="group relative overflow-hidden rounded-xl border border-line bg-panel2 shadow-xs transition hover:border-brand/50 hover:shadow-md cursor-pointer"
-        onClick={open}
-        title="Nhấp để phóng to"
+    <div
+      className="max-w-2xl space-y-1 pl-0.5"
+      data-tool-media={media.kind}
+      data-media-collapsed={open ? undefined : 'true'}
+      data-media-unfinished={media.unfinished ? 'true' : undefined}
+    >
+      {/* Hàng gấp nói thật là CÓ ảnh đã tới: ảnh thu 56 × 36 (hoặc chip chữ cho video),
+          nhãn dựng từ payload, và đúng một mũi tên. Mở rồi thì hàng gấp biến mất — một tài
+          liệu chỉ hiện một lần. */}
+      {!open ? (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          aria-expanded={false}
+          data-media-toggle="true"
+        className="flex items-center gap-2 text-xs text-muted hover:text-fg transition cursor-pointer select-none group rounded-md text-left"
       >
-        {media.kind === 'video' ? (
-          <video src={media.src} muted playsInline className="w-full max-h-80 rounded-lg" data-tool-media-element="video" />
-        ) : (
-          <img
-            src={media.src}
-            alt={media.caption}
-            onLoad={(e) => {
-              const el = e.currentTarget
-              if (el.naturalWidth && el.naturalHeight) setNaturalSize([el.naturalWidth, el.naturalHeight])
-            }}
-            onError={(e) => {
-              (e.currentTarget as HTMLElement).style.display = 'none'
-            }}
-            className="w-full object-contain max-h-96 rounded-lg transition group-hover:scale-[1.01]"
-          />
-        )}
-        <div className="absolute top-2 right-2 flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition bg-black/75 backdrop-blur-xs px-2.5 py-1 rounded-md text-[11px] text-white shadow-xs">
-          <Maximize2 className="size-3 text-zinc-200" />
-          <span>{t('chat.zoom')}</span>
+          {media.kind === 'video' ? (
+            <span className="flex h-9 w-14 shrink-0 items-center justify-center rounded-md border border-line bg-panel2 text-fuchsia-400">
+              <Film className="size-3.5" />
+            </span>
+          ) : (
+            <img
+              data-media-thumb="true"
+              src={media.src}
+              alt={media.caption}
+              loading="lazy"
+              onLoad={(e) => measure(e.currentTarget)}
+              onError={(e) => {
+                // Ảnh không tải được thì nhãn chỉ in định dạng — không suy ra số.
+                e.currentTarget.style.display = 'none'
+              }}
+              className="h-9 w-14 shrink-0 rounded-md border border-line bg-panel2 object-cover"
+            />
+          )}
+          <span className="truncate font-mono text-[10px] text-zinc-400" data-media-label="true">
+            {label}
+          </span>
+          <ChevronRight className="size-3 shrink-0 text-muted group-hover:text-fg" />
+        </button>
+      ) : null}
+
+      {/* Nhánh mở: giữ nguyên khối markup cũ (ảnh/video lớn + chip Zoom + dòng caption có đường dẫn) */}
+      {open && (
+        <div className="space-y-1" data-media-full="true">
+          <div
+            className="group relative overflow-hidden rounded-xl border border-line bg-panel2 shadow-xs transition hover:border-brand/50 hover:shadow-md cursor-pointer"
+            onClick={openLightbox}
+            data-media-open="true"
+            title="Nhấp để phóng to"
+          >
+            {media.kind === 'video' ? (
+              <video src={media.src} muted playsInline className="w-full max-h-80 rounded-lg" data-tool-media-element="video" />
+            ) : (
+              <img
+                src={media.src}
+                alt={media.caption}
+                onLoad={(e) => measure(e.currentTarget)}
+                onError={(e) => {
+                  (e.currentTarget as HTMLElement).style.display = 'none'
+                }}
+                className="w-full object-contain max-h-96 rounded-lg transition group-hover:scale-[1.01]"
+              />
+            )}
+            <div className="absolute top-2 right-2 flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition bg-black/75 backdrop-blur-xs px-2.5 py-1 rounded-md text-[11px] text-white shadow-xs">
+              <Maximize2 className="size-3 text-zinc-200" />
+              <span>{t('chat.zoom')}</span>
+            </div>
+          </div>
+          {/* F4: nhãn lấy từ `dimensions` + `mime` thật của payload; đường dẫn artifact chỉ ở đây */}
+          <div className="flex items-center justify-between text-[10px] text-zinc-500 font-mono" data-media-label="true">
+            <span className="shrink-0">{label}</span>
+            <span className="flex min-w-0 items-center gap-1.5">
+              {media.artifactPath && <span className="truncate">{media.artifactPath}</span>}
+              {/* Nút thu lại nằm NGOÀI khung ảnh, nên bấm nó không mở khung xem lớn. */}
+              <button
+                type="button"
+                onClick={() => setOpen(false)}
+                aria-expanded
+                data-media-toggle="true"
+                data-media-collapse="true"
+                title="Thu hàng ảnh lại"
+                className="flex shrink-0 items-center text-muted hover:text-fg transition cursor-pointer"
+              >
+                <ChevronUp className="size-3" />
+              </button>
+            </span>
+          </div>
         </div>
-      </div>
-      {/* F4: nhãn lấy từ `dimensions` + `mime` thật của payload */}
-      <div className="flex items-center justify-between text-[10px] text-zinc-500 font-mono" data-media-label="true">
-        <span>{label}</span>
-        {media.artifactPath && <span className="truncate ml-2">{media.artifactPath}</span>}
-      </div>
+      )}
     </div>
   )
 }
@@ -1219,6 +1520,8 @@ function FinalAnswerBlock({
   if (!turn.finalAssistant) return null
 
   const visibleText = truncated && !expanded ? summary : fullText
+  // R3: nút chỉ tồn tại khi có gì để mở — phần chữ còn lại, hoặc lưới ảnh của lượt.
+  const hasMore = truncated || media.length > 0
 
   return (
     <div className="space-y-1.5 pl-0.5" data-final-answer="true">
@@ -1267,26 +1570,23 @@ function FinalAnswerBlock({
       <div className="max-w-3xl text-sm text-fg leading-relaxed" data-final-text={expanded ? 'expanded' : 'summary'}>
         <MarkdownRenderer content={visibleText} />
 
-        {truncated && (
+        {/* R3 (yêu cầu 6): nút nằm NGAY DƯỚI đoạn tóm tắt, và chỉ tồn tại khi có gì để mở. */}
+        {hasMore && !expanded && (
           <button
             type="button"
-            onClick={() => setExpanded(!expanded)}
-            aria-expanded={expanded}
+            onClick={() => setExpanded(true)}
+            aria-expanded={false}
             data-final-expander="true"
             className="mt-1.5 inline-flex items-center gap-1 text-[11px] text-brand hover:text-brand/80 font-medium transition cursor-pointer select-none"
           >
-            {expanded ? (
-              <ChevronDown className="size-3" />
-            ) : (
-              <ChevronRight className="size-3" />
-            )}
-            <span>› {expanded ? FINAL_ANSWER_COLLAPSE_LABEL : FINAL_ANSWER_EXPAND_LABEL}</span>
+            <ChevronRight className="size-3" />
+            <span>› {FINAL_ANSWER_EXPAND_LABEL}</span>
           </button>
         )}
       </div>
 
-      {/* Ảnh/video sinh ra trong lượt — gắn kèm câu trả lời cuối */}
-      {media.length > 0 && (
+      {/* Ảnh/video sinh ra trong lượt — nằm TRONG phần chi tiết: chỉ hiện sau khi người dùng mở */}
+      {expanded && media.length > 0 && (
         <div className="flex flex-wrap gap-2 pt-0.5" data-final-media="true">
           {media.map((item) => (
             <div
@@ -1317,6 +1617,20 @@ function FinalAnswerBlock({
             </div>
           ))}
         </div>
+      )}
+
+      {/* Nút gấp nằm ở CUỐI phần vừa mở — sau lưới ảnh, đúng thứ tự tài liệu của mockup */}
+      {hasMore && expanded && (
+        <button
+          type="button"
+          onClick={() => setExpanded(false)}
+          aria-expanded
+          data-final-expander="true"
+          className="inline-flex items-center gap-1 text-[11px] text-brand hover:text-brand/80 font-medium transition cursor-pointer select-none"
+        >
+          <ChevronDown className="size-3" />
+          <span>› {FINAL_ANSWER_COLLAPSE_LABEL}</span>
+        </button>
       )}
     </div>
   )
@@ -1362,39 +1676,15 @@ function ProgressiveMarkdown({
   )
 }
 
-/** Thinking Reasoning Sub-item — tự đóng khi lượt đã xong (F6) */
-function ThinkingSubItem({ thought, durationSec, isLive }: { thought: string; durationSec?: number; isLive?: boolean }) {
-  const [open, setOpen] = useState(Boolean(isLive))
-
-  useEffect(() => {
-    if (!isLive) setOpen(false)
-  }, [isLive])
-
+/**
+ * R2 (yêu cầu 5): văn bản suy luận nằm TRONG khối hoạt động, không còn nút `Thinking (Xs)` riêng —
+ * thông tin của nút đó nay nằm ở hàng nhãn (`Worked for Xs`) và dòng biên nhận (`Thinking · …`).
+ * Khung giữ nguyên như trước, chỉ bỏ state riêng vì việc mở/gấp do khối hoạt động quyết định.
+ */
+function ThoughtProse({ thought, isLive }: { thought: string; isLive?: boolean }) {
   return (
-    <div className="space-y-1">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        aria-expanded={open}
-        data-thinking-toggle="true"
-        className="flex items-center gap-1.5 text-xs text-muted hover:text-fg transition cursor-pointer select-none group"
-      >
-        <Sparkles className="size-3 text-brand/80" />
-        <span className="font-mono text-[11px] text-zinc-300">
-          Thinking {durationSec ? `(${durationSec}s)` : ''}
-        </span>
-        {open ? (
-          <ChevronDown className="size-3 text-muted group-hover:text-fg" />
-        ) : (
-          <ChevronRight className="size-3 text-muted group-hover:text-fg" />
-        )}
-      </button>
-
-      {open && (
-        <div className="ml-3 pl-3 border-l-2 border-brand/50 py-1.5 text-xs text-zinc-300/95 leading-relaxed bg-panel2/40 rounded-r-xl animate-in fade-in duration-150">
-          <ProgressiveMarkdown content={thought} isLive={isLive} />
-        </div>
-      )}
+    <div className="ml-3 pl-3 border-l-2 border-brand/50 py-1.5 text-xs text-zinc-300/95 leading-relaxed bg-panel2/40 rounded-r-xl animate-in fade-in duration-150">
+      <ProgressiveMarkdown content={thought} isLive={isLive} />
     </div>
   )
 }

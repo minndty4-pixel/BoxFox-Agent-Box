@@ -9,6 +9,16 @@ export interface PlanVersion {
   sizeBytes: number
   modifiedAt: string
   status: PlanStatus
+  /**
+   * Khối header đọc thẳng từ file (vòng 20, `plan_files.py::parse_plan_header`).
+   * `ok` = file có `<!-- boxfox-plan`; `legacy` = file cũ chưa có; `mismatch` = header lệch tên file.
+   * Chỉ `ok` mới có quyền nói cha–con (`declaredParent`) — file legacy không được đoán.
+   */
+  headerStatus?: 'ok' | 'legacy' | 'mismatch' | null
+  headerVersion?: number | null
+  headerIdentity?: string | null
+  declaredParent?: number | null
+  declaredSlug?: string | null
 }
 
 export interface PlanManifestEntry {

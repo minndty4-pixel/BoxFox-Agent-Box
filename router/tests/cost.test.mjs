@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createProviders } from '../src/providers/index.mjs';
 import { documentedPricing } from '../src/providers/deepseek.mjs';
+import { DEEPSEEK_PRICE_AS_OF } from '../src/pricing.mjs';
 import { RouterStore } from '../src/store.mjs';
 import { ProviderService } from '../src/service.mjs';
 import { RouterEngine } from '../src/engine.mjs';
@@ -184,7 +185,9 @@ test('a manual price shows through the snapshot and a scan never overwrites it',
   const cleared = row().pricing;
   assert.equal(cleared.source, 'documented', 'clearing a manual price hands the row back to the documented table');
   assert.equal(cleared.input, documentedPricing({ id: 'deepseek-flash' }, new Date()).input);
-  assert.equal(cleared.asOf, documentedPricing({ id: 'deepseek-flash' }, new Date()).asOf);
+  // Giá tài liệu đóng dấu ngày chốt bảng, không phải ngày chạy: so với hằng của bảng,
+  // nếu không ca này chỉ xanh đúng một ngày rồi đỏ (đã xảy ra 2026-09-21).
+  assert.equal(cleared.asOf, DEEPSEEK_PRICE_AS_OF);
 });
 
 test('a price can be set on a model that only exists because the user typed it', async t => {
