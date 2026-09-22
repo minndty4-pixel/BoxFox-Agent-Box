@@ -27,6 +27,8 @@ import type { HarnessEvent } from '../../store/harnessChatStore'
 import type { ProviderSnapshot } from '../../types/provider'
 import type { RouterChatSelection } from '../../store/routerChatStore'
 import { MarkdownRenderer } from './MarkdownRenderer'
+import { formatAttachmentSize } from './AttachmentPicker'
+import { absoluteWorkspacePath } from '../../lib/chat/attachmentUpload'
 import { appendStreamText } from '../../lib/streamText'
 import { ProviderIcon } from '../providers/ProviderIcon'
 import type { LightboxMediaProps } from './MediaLightboxModal'
@@ -977,6 +979,21 @@ function TurnBlock({
   }
 
   const userImage = turn.userEvent?.data?.image as string | undefined
+  // A10: một lượt có thể mang NHIỀU ảnh (`images`) — bản ghi cũ chỉ có `image` số ít, và
+  // lượt cũ không có `attachments`: cả hai trường hợp phải render y như trước.
+  const rawUserImages = turn.userEvent?.data?.images
+  const userImages = Array.isArray(rawUserImages)
+    ? (rawUserImages.filter((item) => typeof item === 'string') as string[])
+    : userImage
+      ? [userImage]
+      : []
+  const rawAttachments = turn.userEvent?.data?.attachments
+  const userAttachments = Array.isArray(rawAttachments)
+    ? (rawAttachments.filter(
+        (item): item is { name?: string; path?: string; sizeBytes?: number } =>
+          Boolean(item) && typeof item === 'object',
+      ))
+    : []
 
   return (
     <div className="space-y-4">
@@ -996,20 +1013,49 @@ function TurnBlock({
       {turn.userEvent && (
         <div className="flex flex-col items-end gap-1.5 ml-auto max-w-[68%]">
           <div className="w-fit rounded-2xl bg-panel2 border border-line px-4 py-3 text-xs leading-relaxed text-fg shadow-xs">
-            {userImage && (
+            {userImages.map((src, index) => (
               <div
-                onClick={() => onOpenLightbox?.({ type: 'image', src: userImage, caption: 'Attached image' })}
+                key={`user-image-${index}`}
+                onClick={() => onOpenLightbox?.({ type: 'image', src, caption: 'Attached image' })}
                 className="mb-2 max-w-sm cursor-pointer overflow-hidden rounded-xl border border-line/80 bg-panel hover:border-brand/60 transition shadow-xs group"
                 title="Nhấp vào để phóng to ảnh"
               >
                 <img
-                  src={userImage}
+                  src={src}
                   alt="Attached"
                   className="w-full object-cover max-h-56 rounded-lg group-hover:scale-[1.02] transition duration-200"
                 />
               </div>
-            )}
+            ))}
             <MarkdownRenderer content={String(turn.userEvent.data.text ?? '')} />
+            {/* A10: chip tệp đính kèm của lượt — người dùng phải thấy tệp nào ĐÃ tới box.
+                `title` là đường dẫn tuyệt đối để đối chiếu với đường dẫn agent đọc. */}
+            {userAttachments.length > 0 && (
+              <div data-testid="user-attachments" className="mt-2 flex flex-col gap-1">
+                {userAttachments.map((file, index) => {
+                  const path = typeof file.path === 'string' ? file.path : ''
+                  const name = typeof file.name === 'string' && file.name ? file.name : path
+                  const sizeBytes = typeof file.sizeBytes === 'number' ? file.sizeBytes : undefined
+                  return (
+                    <div
+                      key={`user-attachment-${index}`}
+                      data-testid="user-attachment-chip"
+                      title={path ? absoluteWorkspacePath(path) : undefined}
+                      className="flex items-center gap-1.5 rounded-lg border border-line/80 bg-panel px-2 py-1 text-[10px] text-muted"
+                    >
+                      <FileText className="size-3 shrink-0" />
+                      <span className="truncate font-mono text-fg" data-testid="user-attachment-name">
+                        {name}
+                      </span>
+                      {sizeBytes !== undefined && <span className="shrink-0">{formatAttachmentSize(sizeBytes)}</span>}
+                      {path && path !== name && (
+                        <span className="truncate font-mono">{path}</span>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
           </div>
 
           {/* User Bubble Footer */}
