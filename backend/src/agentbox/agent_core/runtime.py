@@ -1018,6 +1018,10 @@ class HarnessRuntime(RuntimeCommands):
         self.commands = CommandRegistry(store, self.catalog)
         self.skill_loader = SkillLoader(self.catalog, store.emit)
         self.active_messages = {}
+        # T2 — sessionId -> số LƯỢT đang chạy. Con số thật nằm trong DB (`begin_turn`), nên nó
+        # một chiều và sống qua lần khởi động lại harness; dict này chỉ là bản đọc nhanh cho
+        # event/log của lượt đang chạy.
+        self.active_turn = {}
         # sessionId -> đã gọi op `session_ensure` trong box (A1). Thư mục phiên sinh ở LẦN GHI đầu
         # tiên của phiên, nhưng một tiến trình harness chỉ trả MỘT `docker exec` cho việc đó; lượt
         # sau đọc lại set này. Không nhớ khi box chưa trả lời — hỏng thì lượt kế thử lại.
@@ -1298,7 +1302,12 @@ class HarnessRuntime(RuntimeCommands):
             content = text
         messages.append({'role': 'user', 'content': content})
         self.store.save(sid, messages, 'running')
-        event = {'text': prompt}
+        # T2 — số LƯỢT của phiên, cấp ĐÚNG MỘT lần cho mỗi lượt (đọc–tăng–ghi trong một giao
+        # dịch, xem `begin_turn`). Trước đây `turnId` trong log là số BƯỚC nên không có cách nào
+        # nói một event thuộc lượt nào; BUG-43/T4 dựng trên con số này.
+        turn = self.store.begin_turn(sid)
+        self.active_turn[sid] = turn
+        event = {'text': prompt, 'turn': turn}
         if checked_attachments:
             event['attachments'] = checked_attachments
         if checked_images:
@@ -1718,6 +1727,13 @@ class HarnessRuntime(RuntimeCommands):
         # từng có lượt dở nào đó thì mọi hạn chót sau đó bỏ luôn đường chẩn đoán và đóng lượt
         # bằng `failed` trắng — đúng thứ B4/BUG-42 dựng lên để xoá.
         turn_partial = {'code': ''}
+        # T2 — lượt mà lượt-chạy này thuộc về. `start()` đã cấp số; nhánh nào vào `_run` mà chưa
+        # có (kiểm thử gọi thẳng, đường chạy lại sau `settle`) thì cấp tại đây, để không event nào
+        # của lượt bị thiếu `turn`.
+        turn_no = self.active_turn.get(sid)
+        if not isinstance(turn_no, int) or isinstance(turn_no, bool) or turn_no < 1:
+            turn_no = self.store.begin_turn(sid)
+            self.active_turn[sid] = turn_no
 
         def close_turn(status, finish_reason=None, tool_calls=0, usage=None, extra=None):
             """Đóng cặp `turn_start`/`turn_end` của bước đang mở, nếu có.
@@ -1735,7 +1751,7 @@ class HarnessRuntime(RuntimeCommands):
             if step_open is None:
                 return
             turn['step'] = None
-            payload = {'step': step_open, 'status': status,
+            payload = {'turn': turn_no, 'step': step_open, 'status': status,
                        'finishReason': finish_reason, 'toolCalls': tool_calls,
                        'contextEstimate': estimate_tokens(messages, tools),
                        'stepsUsed': steps_used, 'toolsRun': tools_run,
@@ -1766,7 +1782,7 @@ class HarnessRuntime(RuntimeCommands):
             self.store.save(sid, messages, 'completed')
             self.store.emit(sid, 'assistant', {'text': text, 'thought': '', 'final': True})
             close_turn('partial', 'stop', 0, None, extra={'partial': True, 'diagnosis': True})
-            self.store.emit(sid, 'finish', {'status': 'completed'})
+            self.store.emit(sid, 'finish', {'status': 'completed', 'turn': turn_no})
             elapsed_ms = round((time.time() - started) * 1000)
             notice = {'code': reason_code, 'partial': True, 'diagnosis': True,
                       'diagnosisChars': len(text), 'stepsUsed': steps_used, 'toolsRun': tools_run,
@@ -1777,15 +1793,16 @@ class HarnessRuntime(RuntimeCommands):
             if read_tool_calls:
                 notice['readToolCalls'] = read_tool_calls
             self.store.emit(sid, 'notice', notice)
-            system_log.write('turn.end', level='warn', session_id=sid, status='completed',
-                             partial=True, diagnosis=True, reason=reason_code, steps=steps_used,
+            system_log.write('turn.end', level='warn', session_id=sid, turn=turn_no, turn_id=steps_used,
+                             status='completed', partial=True, diagnosis=True, reason=reason_code,
+                             steps=steps_used,
                              toolsRun=tools_run, textChars=len(text), deadlineUsedMs=elapsed_ms)
             return text
         # B3 — cửa sổ giữ chỗ: ba bước cuối của trần bước là của việc CHẨN ĐOÁN, không phải
         # của việc mới. Đo sống vòng 21: lượt chạm trần bước (phiên `ea948649…`) chạy đủ 10/10
         # bước rồi trả "iteration budget reached" trong khi mọi việc trên đĩa đã xong.
         wrap_up_at = max(0, config['maxSteps'] - WRAP_UP_STEPS_RESERVED)
-        system_log.write('turn.start', session_id=sid, role=session.get('role'),
+        system_log.write('turn.start', session_id=sid, turn=turn_no, role=session.get('role'),
                          model=(config.get('route') or {}).get('modelId'),
                          connectionId=(config.get('route') or {}).get('connectionId'),
                          contextWindow=config.get('contextWindow'), maxSteps=config.get('maxSteps'),
@@ -1839,7 +1856,7 @@ class HarnessRuntime(RuntimeCommands):
                             await self.write_journal_checkpoint(sid, saved, compacted, event, config)
                             self.refresh_journal_brief(sid, messages)
                         self.store.emit(sid, 'compression', event)
-                    self.store.emit(sid, 'step', {'iteration': step + 1, 'contextEstimate': estimate_tokens(messages, tools)})
+                    self.store.emit(sid, 'step', {'turn': turn_no, 'iteration': step + 1, 'contextEstimate': estimate_tokens(messages, tools)})
                     # The router callback hands over the text accumulated so far (that is the shape
                     # every provider adapter can satisfy). Events must carry only the NEW part:
                     # a consumer that appends `assistant_delta.text` would otherwise reprint the
@@ -1877,7 +1894,7 @@ class HarnessRuntime(RuntimeCommands):
                     # mỗi bước nên nhánh dưới gần như không chạy.
                     compressor = self.compressors.get(sid) or ContextCompressor(
                         config.get('contextWindow') or FALLBACK_CONTEXT_WINDOW)
-                    turn_payload = {'step': steps_used,
+                    turn_payload = {'turn': turn_no, 'step': steps_used,
                                     'modelId': (config.get('route') or {}).get('modelId'),
                                     'contextWindow': config.get('contextWindow'),
                                     'threshold': compressor.threshold,
@@ -1913,7 +1930,8 @@ class HarnessRuntime(RuntimeCommands):
                         except Exception as exc:
                             code, message = classify_failure(exc)
                             system_log.write('model.error', level='warn', session_id=sid, turn_id=steps_used,
-                                             step=step + 1, attempt=attempts + 1, errorCode=code, message=message,
+                                             turn=turn_no, step=step + 1, attempt=attempts + 1,
+                                             errorCode=code, message=message,
                                              durationMs=(time.time() - step_started) * 1000, retries=attempts,
                                              retryWaitedMs=round(retry_waited * 1000),
                                              retryBudgetSeconds=RETRY_BUDGET_SECONDS,
@@ -2071,6 +2089,7 @@ class HarnessRuntime(RuntimeCommands):
                                                         f'nothing twice; retried once with {empty_how}')})
                         self.store.emit(sid, 'notice', empty_retry)
                         system_log.write('turn.retry', level='warn', session_id=sid, turn_id=steps_used,
+                                         turn=turn_no, step=steps_used,
                                          reason='empty_response', how=empty_how)
                         if not calls and (choice.get('finish_reason') not in {'stop', 'end_turn'} or not text.strip()):
                             raise ValueError('Model did not produce a complete non-empty final response')
@@ -2109,9 +2128,10 @@ class HarnessRuntime(RuntimeCommands):
                         close_turn('partial' if partial else 'completed', choice.get('finish_reason'), 0,
                                    response.get('usage'), extra={'partial': True} if partial else None)
                         self.store.save(sid, messages, 'completed')
-                        self.store.emit(sid, 'finish', {'status': 'completed'})
+                        self.store.emit(sid, 'finish', {'status': 'completed', 'turn': turn_no})
                         elapsed_ms = (time.time() - started) * 1000
-                        system_log.write('turn.end', session_id=sid, status='completed', steps=steps_used,
+                        system_log.write('turn.end', session_id=sid, turn=turn_no, turn_id=steps_used,
+                                         status='completed', steps=steps_used,
                                          textChars=len(text or ''), partial=partial,
                                          stepsUsed=steps_used, toolsRun=tools_run,
                                          deadlineUsedMs=elapsed_ms,
@@ -2139,10 +2159,12 @@ class HarnessRuntime(RuntimeCommands):
                             # user query or a fetched URL off the machine.
                             _, log_message, log_detail = log_safe_failure(exc)
                             system_log.write('tool.error', level='error', session_id=sid, turn_id=steps_used,
-                                             step=step + 1, tool=name, errorCode=code, message=log_message,
+                                             turn=turn_no, step=step + 1, tool=name, errorCode=code,
+                                             message=log_message,
                                              durationMs=(time.time() - tool_started) * 1000, detail=log_detail)
                             result = {'is_error': True, 'error': message, 'errorCode': code}
-                        system_log.write('tool.end', session_id=sid, turn_id=steps_used, step=step + 1, tool=name,
+                        system_log.write('tool.end', session_id=sid, turn_id=steps_used, turn=turn_no,
+                                         step=step + 1, tool=name,
                                          isError=bool(result.get('is_error')),
                                          durationMs=(time.time() - tool_started) * 1000)
                         safe = {k: v for k, v in result.items() if k not in {'image', 'base64'}}
@@ -2191,9 +2213,10 @@ class HarnessRuntime(RuntimeCommands):
         except asyncio.CancelledError:
             close_turn('cancelled')
             self.store.save(sid, messages, 'cancelled')
-            self.store.emit(sid, 'finish', {'status': 'cancelled'})
+            self.store.emit(sid, 'finish', {'status': 'cancelled', 'turn': turn_no})
             elapsed_ms = (time.time() - started) * 1000
-            system_log.write('turn.end', session_id=sid, status='cancelled', steps=steps_used,
+            system_log.write('turn.end', session_id=sid, turn=turn_no, turn_id=steps_used,
+                             status='cancelled', steps=steps_used,
                              stepsUsed=steps_used, toolsRun=tools_run, deadlineUsedMs=elapsed_ms,
                              durationMs=elapsed_ms)
             raise
@@ -2218,7 +2241,8 @@ class HarnessRuntime(RuntimeCommands):
             self.store.save(sid, messages, 'failed')
             self.store.emit(sid, 'error', {'message': error, 'code': code})
             elapsed_ms = (time.time() - started) * 1000
-            system_log.write('turn.failed', level='error', session_id=sid, turn_id=steps_used, status='failed',
+            system_log.write('turn.failed', level='error', session_id=sid, turn_id=steps_used,
+                             turn=turn_no, step=steps_used, status='failed',
                              errorCode=code, message=error, steps=steps_used,
                              stepsUsed=steps_used, toolsRun=tools_run, deadlineUsedMs=elapsed_ms,
                              durationMs=elapsed_ms, detail=failure_detail(exc))
