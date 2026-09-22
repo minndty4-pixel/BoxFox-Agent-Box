@@ -652,6 +652,25 @@ def context_window_locked(environ=None):
     return str(raw or '').strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
+def _journal_row(store, session_id, text, numbers):
+    """Ghim MỘT hàng nhật ký kiểu `X:` (trần bước, câu trả lời bị cắt) — trả số thứ tự, hoặc `None`.
+
+    Đi qua `session_journal.insert_row` chứ không gọi thẳng `store.journal_add`: bản ghi phải có mã
+    `X:<sid8>-<seq>` như mọi bản ghi khác (bản 0.1 ghi thẳng nên hàng không có mã, và khối ký ức in
+    ra `X:?`). Ghi nhật ký là việc PHỤ: kho lưu trữ không có API này, hoặc ghi hỏng vì bất cứ lý do
+    gì, đều trả `None` — chỗ gọi không được coi im lặng là thành công. Số `None` bị bỏ khỏi payload.
+    """
+    if store is None or not callable(getattr(store, 'journal_add', None)):
+        return None
+    try:
+        item, stored = session_journal.insert_row(
+            store, session_id, 'blocker', text,
+            numbers={key: value for key, value in numbers.items() if value is not None})
+        return stored if stored else None
+    except Exception:
+        return None
+
+
 def _journal_blocker(store, session_id, record, step=None):
     """Ghim bản ghi `blocker` của trần bước vào NHẬT KÝ phiên — đúng một hàng (C1).
 
@@ -665,22 +684,12 @@ def _journal_blocker(store, session_id, record, step=None):
     đều trả `None` — lượt đã hết ngân sách bước và người dùng vẫn phải thấy lý do thật
     (`MAX_STEPS`), không phải một lỗi ghi nhật ký.
     """
-    if store is None or not callable(getattr(store, 'journal_add', None)):
-        return None
     numbers = {'step': step, 'maxSteps': record.get('maxSteps'),
                'planPath': record.get('planPath'), 'diffPath': record.get('diffPath')}
-    try:
-        # Đi qua `session_journal.insert_row` chứ không gọi thẳng `store.journal_add`: bản ghi phải
-        # có mã `X:<sid8>-<seq>` như mọi bản ghi khác. Bản 0.1 ghi thẳng nên hàng này không có mã,
-        # và khối ký ức in ra `X:?` — đúng chỗ mà đợt này dựng lên để đọc được.
-        item, stored = session_journal.insert_row(
-            store, session_id, 'blocker',
-            'STEP_BUDGET_EXHAUSTED: the iteration budget cut this turn short — the work on disk may already '
-            'be done; see planPath/diffPath in this record',
-            numbers={key: value for key, value in numbers.items() if value is not None})
-        return stored if stored else None
-    except Exception:
-        return None
+    return _journal_row(store, session_id,
+                        f'{STEP_BUDGET_NOTICE_CODE}: the iteration budget cut this turn short — the work '
+                        'on disk may already be done; see planPath/diffPath in this record',
+                        numbers)
 
 
 # --- Vòng 22: chẩn đoán chỗ tắc, MỘT nguồn cho mọi đường (B3, B4, B10) --------------------
@@ -719,10 +728,10 @@ EMPTY_ANSWER_INSTRUCTION = ('You produced no answer and no tool call. Answer in 
                            'briefly, using what you already know — do not start new work.')
 
 
-def answer_truncation_tail(limit=ANSWER_MAX_CHARS):
+def answer_truncation_tail():
     """Dòng cuối của câu trả lời bị cắt ở trần (D2) — nói luôn cách lấy phần còn lại."""
-    return (f'\n[Answer truncated at {limit} chars — the full content must be written to a file '
-            'in the workspace]')
+    return (f'\n[Answer truncated at {ANSWER_MAX_CHARS} chars — the full content must be written to a '
+            'file in the workspace]')
 
 
 def _journal_answer_truncated(store, session_id, chars, kept):
@@ -732,15 +741,10 @@ def _journal_answer_truncated(store, session_id, chars, kept):
     phiên (`X:<sid8>-<seq>`) để khối ký ức đọc được nó. Trả `None` khi không ghi được — chỗ
     gọi không được coi im lặng là thành công.
     """
-    try:
-        item, stored = session_journal.insert_row(
-            store, session_id, 'blocker',
-            f'{ANSWER_TOO_LONG_CODE}: the final answer was {chars} chars and was cut at {kept} — '
-            'the full content must be written to a file in the workspace',
-            numbers={'chars': chars, 'keptChars': kept})
-        return stored if stored else None
-    except Exception:
-        return None
+    return _journal_row(store, session_id,
+                        f'{ANSWER_TOO_LONG_CODE}: the final answer was {chars} chars and was cut at '
+                        f'{kept} — the full content must be written to a file in the workspace',
+                        {'chars': chars, 'keptChars': kept})
 
 
 def resolve_context_window(model_str='', requested=None, metadata=None, declared_source=None):
@@ -922,15 +926,15 @@ CHILD_ECHO_MAX_CHARS = 3000
 CHILD_EXPECT_MAX_CHARS = 2000
 # Appended to every child prompt (<= 1200 chars, asserted by tests). Free-form prose from a child is what
 # made the first round of plans unusable: no evidence, no verification, no honest limits.
-CHILD_RESULT_CONTRACT = """
+CHILD_RESULT_CONTRACT = f"""
 
-Result contract (the parent needs exactly this back). Your own budget is at most 40 steps and 300 s, clamped by the parent; plan for it.
+Result contract (the parent needs exactly this back). Your own budget is at most {CHILD_MAX_STEPS} steps and {CHILD_DEADLINE_SECONDS} s, clamped by the parent; plan for it.
 ## Findings — what you established, most important first.
 ## Evidence — file paths with line numbers, exact commands, and the real observed output quoted.
 ## Verification performed — each check you actually ran and its result. Never claim success without evidence; if you could not run a check, say so.
 ## Limitations & open questions — what you could not verify, your assumptions, and what the parent must decide.
 Keep it compact and drop nothing that proves a claim. An unevidenced claim is a failure, not an answer.
-If you run out of steps or time, stop starting work and answer with the four-part diagnosis instead: what is done / where you are stuck / what is left / what to try next — a `partial` answer with that diagnosis is worth far more to the parent than an empty failure."""
+If you run out of steps or time, stop starting work and answer with the four-part diagnosis instead: {DIAGNOSIS_PARTS} — a `partial` answer with that diagnosis is worth far more to the parent than an empty failure."""
 
 
 def bound_child_text(text, limit):
@@ -1264,7 +1268,7 @@ class HarnessRuntime(RuntimeCommands):
             raise ValueError('Prompt is required')
         # Một `image` đơn (đường cũ) gộp vào mảng `images`; luật từng ảnh và hai trần của
         # lượt nằm ở `validate_inline_images` (một nguồn, xem `agent_core/attachments.py`).
-        checked_images = validate_inline_images(([image] if image else []) + list(images or []))
+        checked_images = validate_inline_images([image, *(images or [])])
         checked_attachments = validate_attachments(attachments)
         # Reconcile interrupted tool groups without replaying side effects.
         messages = session['messages']
@@ -1491,6 +1495,20 @@ class HarnessRuntime(RuntimeCommands):
         self.store.save(sid, messages)
         return True
 
+    def _notice_seen(self, sid, *codes):
+        """True khi phiên này đã có notice BỀN khớp MỘT trong các mã (`payload LIKE %<code>%`).
+
+        Một chỗ cho ba câu hỏi cùng dạng: `partial_turn` (mã lý do của lượt dở) và `diagnosed_turn`
+        (mã lý do cộng dấu `"diagnosis": true`) — SQL không chép lại ba lần.
+        """
+        if not codes:
+            return False
+        where = ' OR '.join('payload LIKE ?' for _ in codes)
+        row = self.store.db.execute(
+            f"SELECT COUNT(*) AS total FROM events WHERE session_id=? AND kind='notice' AND ({where})",
+            (sid, *(f'%{code}%' for code in codes))).fetchone()
+        return bool(row is not None and row['total'])
+
     def partial_turn(self, sid):
         """Mã lý do khi lượt gần nhất của phiên này trả về câu trả lời DỞ, ngược lại `None`.
 
@@ -1502,10 +1520,7 @@ class HarnessRuntime(RuntimeCommands):
         ngân sách" vì hai ca cần hai cách xử lý khác nhau.
         """
         for code in (TRUNCATED_OUTPUT_NOTICE_CODE, STEP_BUDGET_NOTICE_CODE, DEADLINE_NOTICE_CODE):
-            row = self.store.db.execute(
-                "SELECT COUNT(*) AS total FROM events WHERE session_id=? AND kind='notice' AND payload LIKE ?",
-                (sid, f'%{code}%')).fetchone()
-            if row is not None and row['total']:
+            if self._notice_seen(sid, code):
                 return code
         return None
 
@@ -1547,8 +1562,7 @@ class HarnessRuntime(RuntimeCommands):
                          chars=chars, kept=ANSWER_MAX_CHARS)
         return kept, True
 
-    async def wrap_up_diagnosis(self, sid, messages, config, budget, reason, *,
-                                out_of_time=False, allow_read_tools=False):
+    async def wrap_up_diagnosis(self, sid, messages, config, budget, reason, *, out_of_time=False):
         """Lượt chốt CÓ TRẦN cho một lượt sắp hết ngân sách. Trả `(text, read_tool_calls)`.
 
         Ba tính chất, và cả ba đều là điều kiện sống còn của đường này:
@@ -1575,9 +1589,8 @@ class HarnessRuntime(RuntimeCommands):
         prompt = diagnosis_prompt(reason, out_of_time=out_of_time)
         try:
             async with asyncio.timeout(limit):
-                if allow_read_tools and WRAP_UP_READ_TOOL_CALLS > 0:
-                    read_schemas = [schema for schema in schemas_for(config['tools'])
-                                    if schema.get('function', {}).get('name') in READ_TOOL_NAMES]
+                if out_of_time:
+                    read_schemas = schemas_for(READ_TOOL_NAMES & set(config['tools']))
                     if read_schemas:
                         request = list(messages) + [{'role': 'user', 'content': prompt}]
                         # Đúng HAI lời gọi có tool đọc (mỗi lời tối đa `WRAP_UP_READ_TOOL_CALLS`
@@ -1643,15 +1656,9 @@ class HarnessRuntime(RuntimeCommands):
         B10: notice BỀN mà `finish_partial` phát ra mang `code` và `diagnosis: true` — đọc chính
         nó thì cha biết câu trả lời dở kia có bốn phần chẩn đoán, chứ không phải một câu cụt.
         """
-        row = self.store.db.execute(
-            "SELECT COUNT(*) AS total FROM events WHERE session_id=? AND kind='notice' AND payload LIKE ?",
-            (sid, f'%{reason_code}%')).fetchone()
-        if row is None or not row['total']:
+        if not self._notice_seen(sid, reason_code):
             return False
-        row = self.store.db.execute(
-            "SELECT COUNT(*) AS total FROM events WHERE session_id=? AND kind='notice' "
-            "AND payload LIKE '%\"diagnosis\": true%'", (sid,)).fetchone()
-        return bool(row is not None and row['total'])
+        return self._notice_seen(sid, '"diagnosis": true')
 
     @staticmethod
     def diagnosis_ok(text):
@@ -1727,7 +1734,7 @@ class HarnessRuntime(RuntimeCommands):
                 payload['outputTokens'] = output_tokens
             self.store.emit(sid, 'turn_end', payload)
 
-        def finish_partial(text, reason_code, *, diagnosis=True, read_tool_calls=0):
+        def finish_partial(text, reason_code, *, read_tool_calls=0):
             """Đóng lượt bằng câu trả lời DỞ nhưng CÓ THẬT (B3/B4): hàng assistant, `partial`, notice.
 
             Thứ tự bốn việc là hợp đồng: transcript trước (lượt sau đọc được nó), rồi `turn_end`
@@ -1739,10 +1746,10 @@ class HarnessRuntime(RuntimeCommands):
             messages.append({'role': 'assistant', 'content': text})
             self.store.save(sid, messages, 'completed')
             self.store.emit(sid, 'assistant', {'text': text, 'thought': '', 'final': True})
-            close_turn('partial', 'stop', 0, None, extra={'partial': True, 'diagnosis': diagnosis})
+            close_turn('partial', 'stop', 0, None, extra={'partial': True, 'diagnosis': True})
             self.store.emit(sid, 'finish', {'status': 'completed'})
             elapsed_ms = round((time.time() - started) * 1000)
-            notice = {'code': reason_code, 'partial': True, 'diagnosis': diagnosis,
+            notice = {'code': reason_code, 'partial': True, 'diagnosis': True,
                       'diagnosisChars': len(text), 'stepsUsed': steps_used, 'toolsRun': tools_run,
                       'maxSteps': config.get('maxSteps'), 'reservedSteps': WRAP_UP_STEPS_RESERVED,
                       'deadlineSeconds': config.get('deadlineSeconds'), 'deadlineUsedMs': elapsed_ms,
@@ -1752,7 +1759,7 @@ class HarnessRuntime(RuntimeCommands):
                 notice['readToolCalls'] = read_tool_calls
             self.store.emit(sid, 'notice', notice)
             system_log.write('turn.end', level='warn', session_id=sid, status='completed',
-                             partial=True, diagnosis=diagnosis, reason=reason_code, steps=steps_used,
+                             partial=True, diagnosis=True, reason=reason_code, steps=steps_used,
                              toolsRun=tools_run, textChars=len(text), deadlineUsedMs=elapsed_ms)
             return text
         # B3 — cửa sổ giữ chỗ: ba bước cuối của trần bước là của việc CHẨN ĐOÁN, không phải
@@ -2136,13 +2143,11 @@ class HarnessRuntime(RuntimeCommands):
                         self.store.emit(sid, 'tool_end', {'id': call['id'], 'name': name, 'args': args, 'result': safe})
                     # N6 — đóng bước SAU khi mọi kết quả tool đã vào transcript, nên
                     # `contextEstimate` của `turn_end` là ngữ cảnh mà bước kế tiếp thật sự gửi đi.
-                    if step + 1 >= config['maxSteps']:
-                        # B3 — đây là bước CUỐI của trần bước, nên cặp `turn_start`/`turn_end` được
-                        # để MỞ: đường chốt sau vòng lặp sẽ đóng nó bằng `status='partial'` sau
-                        # khi chẩn đoán xong (không có chẩn đoán thì nhánh `error` đóng). Đóng ở
-                        # đây là nói sai ranh giới của lượt — đúng thứ giao diện đọc.
-                        pass
-                    else:
+                    # B3 — ở bước CUỐI của trần bước, cặp `turn_start`/`turn_end` được để MỞ: đường
+                    # chốt sau vòng lặp sẽ đóng nó bằng `status='partial'` sau khi chẩn đoán xong
+                    # (không có chẩn đoán thì nhánh `error` đóng). Đóng ở đây là nói sai ranh giới
+                    # của lượt — đúng thứ giao diện đọc.
+                    if step + 1 < config['maxSteps']:
                         close_turn('tool_calls', choice.get('finish_reason'), len(calls), response.get('usage'))
                 # C1 — hết ngân sách bước. Ghi ĐÚNG MỘT bản ghi bền nói rằng việc có thể đã xong
                 # trên đĩa còn lượt thì bị trần bước cắt (lượt chạy sống 2026-09-21: plan 9 155 B,
@@ -2163,7 +2168,7 @@ class HarnessRuntime(RuntimeCommands):
                                                             STEP_BUDGET_NOTICE_CODE)
                 if self.diagnosis_ok(diagnosis):
                     return finish_partial(diagnosis, STEP_BUDGET_NOTICE_CODE)
-                raise ValueError('STEP_BUDGET_EXHAUSTED: iteration budget reached; work may be incomplete')
+                raise ValueError(f'{STEP_BUDGET_NOTICE_CODE}: iteration budget reached; work may be incomplete')
         except asyncio.CancelledError:
             close_turn('cancelled')
             self.store.save(sid, messages, 'cancelled')
@@ -2183,8 +2188,7 @@ class HarnessRuntime(RuntimeCommands):
                 # `turn_start`/`turn_end` đóng đúng một lần với `status='partial'`.
                 diagnosis, read_calls = await self.wrap_up_diagnosis(sid, messages, config, None,
                                                                      DEADLINE_NOTICE_CODE,
-                                                                     out_of_time=True,
-                                                                     allow_read_tools=True)
+                                                                     out_of_time=True)
                 if self.diagnosis_ok(diagnosis):
                     return finish_partial(diagnosis, DEADLINE_NOTICE_CODE, read_tool_calls=read_calls)
             close_turn('error')

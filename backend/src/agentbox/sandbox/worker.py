@@ -119,7 +119,9 @@ def read_file_payload(target):
         try:
             return {'content': target.read_text(encoding='utf-8')[:BINARY_READ_CHARS]}
         except UnicodeDecodeError:
-            binary = True
+            # Tệp đuôi chữ nhưng không giải mã được UTF-8 (ảnh lưu sai tên, tệp nén đổi đuôi): rơi
+            # xuống đường base64 ngay dưới đây thay vì làm lượt chết `UnicodeDecodeError`.
+            pass
     # 30 000 ký tự base64 ≈ 22 500 byte thật; đọc đúng ngần ấy rồi mã hoá.
     size = target.stat().st_size
     with open(target, 'rb') as handle:
