@@ -61,6 +61,34 @@ class SessionStore:
                 total INTEGER NOT NULL, verdict TEXT NOT NULL, evaluated_at REAL NOT NULL,
                 PRIMARY KEY (identity, version));
         ''')
+        # Vòng 22 (peer mesh) T1 — sổ con + bảng giao hàng. Hai bảng này là NGUỒN CHÂN LÝ cho
+        # "phiên này sinh con nào, ở lượt nào, đã giao kết quả cho ai": `runtime.delegate` ghi,
+        # `peer_read`/`await_children` đọc, watchdog quét. Khoá `UNIQUE(child_id, recipient,
+        # recipient_turn)` biến "không giao hai lần" thành chuyện KHÔNG-THỂ, không phải một lời hứa.
+        self.db.executescript('''
+            CREATE TABLE IF NOT EXISTS children (
+                session_id TEXT PRIMARY KEY, parent_id TEXT NOT NULL,
+                parent_turn INTEGER NOT NULL DEFAULT 0, spawn_step INTEGER NOT NULL DEFAULT 0,
+                role TEXT NOT NULL, goal TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'started',
+                reason TEXT,
+                deliveries TEXT NOT NULL DEFAULT '[]',
+                waiting_for TEXT NOT NULL DEFAULT '[]',
+                waiting_since REAL, started REAL NOT NULL, finished REAL,
+                steps_used INTEGER, output_tokens INTEGER, answer_chars INTEGER);
+            CREATE INDEX IF NOT EXISTS children_parent ON children(parent_id, parent_turn);
+            CREATE TABLE IF NOT EXISTS child_deliveries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                child_id TEXT NOT NULL, recipient TEXT NOT NULL, recipient_turn INTEGER NOT NULL DEFAULT 0,
+                kind TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'pending',
+                chars INTEGER NOT NULL DEFAULT 0, truncated INTEGER NOT NULL DEFAULT 0,
+                created REAL NOT NULL, injected REAL, skip_reason TEXT,
+                UNIQUE(child_id, recipient, recipient_turn));
+        ''')
+        # Bộ đếm lượt của phiên (T2 đọc nó để mọi event mang `turn`). Cột thêm kiểu cộng thêm:
+        # phiên cũ đọc ra `0` rồi lượt kế tiếp bắt đầu từ 1.
+        self._add_missing_columns('sessions', {'turn_count': 'INTEGER NOT NULL DEFAULT 0'})
         self.db.execute("UPDATE sessions SET status='interrupted' WHERE status IN ('running','awaiting_decision')")
         self.db.commit()
 
@@ -231,6 +259,150 @@ class SessionStore:
         return result
 
     # ------------------------------------------------------------------
+    # Vòng 22 (peer mesh) T1 — sổ con, biên nhận giao hàng, bộ đếm lượt
+    #
+    # Ba thứ này đi cùng nhau vì cùng trả lời một câu: "phiên này đã sinh con nào, ở lượt nào, và
+    # kết quả của con đã tới tay ai". Hàng `sessions` vẫn là nguồn chân lý cho phiên; hai bảng
+    # dưới đây chỉ THÊM, không thay thế hàng nào.
+    # ------------------------------------------------------------------
+    def begin_turn(self, sid):
+        """Số lượt kế tiếp của phiên (một chiều, không bao giờ lùi).
+
+        Đọc–tăng–ghi trong **một** transaction, nên hai lượt không thể nhận cùng một số.
+        """
+        with self.db:
+            row = self.db.execute('SELECT turn_count FROM sessions WHERE id=?', (sid,)).fetchone()
+            if row is None:
+                raise KeyError('Session not found')
+            turn = int(row['turn_count'] or 0) + 1
+            self.db.execute('UPDATE sessions SET turn_count=? WHERE id=?', (turn, sid))
+        return turn
+
+    def child_start(self, child_id, parent_id, turn, step, role, goal=''):
+        """Ghi hàng sổ con lúc con được sinh; gọi lại thì cập nhật chỗ sinh chứ không nhân hàng."""
+        with self.db:
+            self.db.execute(
+                'INSERT INTO children(session_id,parent_id,parent_turn,spawn_step,role,goal,status,started)'
+                ' VALUES(?,?,?,?,?,?,?,?)'
+                ' ON CONFLICT(session_id) DO UPDATE SET parent_id=excluded.parent_id,'
+                ' parent_turn=excluded.parent_turn, spawn_step=excluded.spawn_step,'
+                ' role=excluded.role, goal=excluded.goal, started=excluded.started',
+                (child_id, parent_id, int(turn or 0), int(step or 0), role, str(goal or ''),
+                 'started', time.time()))
+        return self.child(child_id)
+
+    def child_finish(self, child_id, status, reason=None, steps_used=None, output_tokens=None,
+                     answer_chars=None):
+        """Đóng hàng sổ con. Chỉ hàng còn `started` mới đổi được ⇒ lần gọi thứ hai không đổi gì."""
+        with self.db:
+            self.db.execute(
+                "UPDATE children SET status=?, reason=?, finished=?, steps_used=?, output_tokens=?,"
+                " answer_chars=?, waiting_for='[]', waiting_since=NULL"
+                " WHERE session_id=? AND status='started'",
+                (status, reason, time.time(), steps_used, output_tokens, answer_chars, child_id))
+        return self.child(child_id)
+
+    def child(self, child_id):
+        """Một hàng sổ con (đã giải JSON), hoặc `None` khi chưa có hàng nào."""
+        row = self.db.execute('SELECT * FROM children WHERE session_id=?', (child_id,)).fetchone()
+        return self._child_view(row) if row is not None else None
+
+    @staticmethod
+    def _child_view(row):
+        item = dict(row)
+        for key in ('deliveries', 'waiting_for'):
+            try:
+                item[key] = json.loads(item[key] or '[]')
+            except (TypeError, ValueError):
+                item[key] = []
+        return item
+
+    def children_of(self, parent_id, turn=None):
+        """Con của một cha (lọc theo `parent_turn` khi có), cũ → mới."""
+        sql = 'SELECT * FROM children WHERE parent_id=?'
+        args = [parent_id]
+        if turn is not None:
+            sql += ' AND parent_turn=?'
+            args.append(int(turn))
+        sql += ' ORDER BY started, session_id'
+        return [self._child_view(r) for r in self.db.execute(sql, args).fetchall()]
+
+    def live_children(self, parent_id=None):
+        """Hàng sổ con còn `started` — mọi cha khi `parent_id=None` (watchdog quét đường này)."""
+        if parent_id is None:
+            rows = self.db.execute("SELECT * FROM children WHERE status='started' ORDER BY started").fetchall()
+        else:
+            rows = self.db.execute("SELECT * FROM children WHERE parent_id=? AND status='started'"
+                                   ' ORDER BY started', (parent_id,)).fetchall()
+        return [self._child_view(r) for r in rows]
+
+    def child_wait(self, child_id, targets=None, since=None):
+        """Ghi/bỏ trạng thái "đang chờ" của một con (giao diện đọc `waiting_for`)."""
+        with self.db:
+            self.db.execute('UPDATE children SET waiting_for=?, waiting_since=? WHERE session_id=?',
+                            (json.dumps(list(targets or []), ensure_ascii=False), since, child_id))
+        return self.child(child_id)
+
+    def child_set_deliveries(self, child_id, receipts):
+        """Ghim danh sách biên nhận (`[{recipient,state,chars,truncated}]`) vào hàng sổ con."""
+        with self.db:
+            self.db.execute('UPDATE children SET deliveries=? WHERE session_id=?',
+                            (json.dumps(list(receipts or []), ensure_ascii=False), child_id))
+        return self.child(child_id)
+
+    def queue_delivery(self, child_id, recipient, recipient_turn, kind, chars=0, truncated=False):
+        """Ghi một biên nhận `pending`; giao lặp trả **hàng cũ** thay vì ghi thêm.
+
+        `IntegrityError` ở đây là chuyện bình thường (đường kết thúc bình thường và watchdog cùng
+        gọi), không phải lỗi — nên bắt rồi trả hàng đã có.
+        """
+        turn = int(recipient_turn or 0)
+        try:
+            with self.db:
+                cur = self.db.execute(
+                    'INSERT INTO child_deliveries(child_id,recipient,recipient_turn,kind,state,chars,'
+                    ' truncated,created) VALUES(?,?,?,?,?,?,?,?)',
+                    (child_id, recipient, turn, kind, 'pending', int(chars or 0),
+                     1 if truncated else 0, time.time()))
+            return self.delivery(cur.lastrowid)
+        except sqlite3.IntegrityError:
+            row = self.db.execute('SELECT * FROM child_deliveries WHERE child_id=? AND recipient=?'
+                                  ' AND recipient_turn=?', (child_id, recipient, turn)).fetchone()
+            return dict(row) if row is not None else None
+
+    def delivery(self, delivery_id):
+        """Một hàng biên nhận, hoặc `None`."""
+        row = self.db.execute('SELECT * FROM child_deliveries WHERE id=?', (delivery_id,)).fetchone()
+        return dict(row) if row is not None else None
+
+    def pending_deliveries(self, sid, limit=4):
+        """Biên nhận đang chờ bơm vào transcript của `sid` (cũ → mới, có trần)."""
+        rows = self.db.execute("SELECT * FROM child_deliveries WHERE recipient=? AND state='pending'"
+                               ' ORDER BY id LIMIT ?', (sid, int(limit))).fetchall()
+        return [dict(r) for r in rows]
+
+    def mark_delivered(self, delivery_id, state='injected', skip_reason=None):
+        """Chuyển `pending` → `injected`/`skipped` trong một transaction; trả hàng sau khi đổi."""
+        if state not in ('injected', 'skipped'):
+            raise ValueError("state must be 'injected' or 'skipped'")
+        with self.db:
+            self.db.execute("UPDATE child_deliveries SET state=?, injected=?, skip_reason=?"
+                            " WHERE id=? AND state='pending'",
+                            (state, time.time(), skip_reason, int(delivery_id)))
+        return self.delivery(delivery_id)
+
+    def deliveries_of(self, child_id):
+        """Mọi biên nhận của một con, cũ → mới (đường đọc cho event và cho sổ con)."""
+        rows = self.db.execute('SELECT * FROM child_deliveries WHERE child_id=? ORDER BY id',
+                               (child_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def child_delivery_receipts(self, child_id):
+        """Biên nhận gọn để nhét vào dict kết quả/event: `{recipient,state,chars,truncated}`."""
+        return [{'recipient': r['recipient'], 'state': r['state'], 'chars': r['chars'],
+                 'truncated': bool(r['truncated'])} for r in self.deliveries_of(child_id)]
+
+    # ------------------------------------------------------------------
     # Sổ duyệt plan (vòng 20 §4.1) + điểm đánh giá P1–P8 (§5)
     #
     # Hai đường ghi vào `plan_reviews`, đúng hai đường của plan:
@@ -314,6 +486,12 @@ class SessionStore:
             self.db.execute(f'DELETE FROM checkpoints WHERE session_id IN ({placeholders})', all_sids)
             self.db.execute(f'DELETE FROM events WHERE session_id IN ({placeholders})', all_sids)
             self.db.execute(f'DELETE FROM sessions WHERE id IN ({placeholders})', all_sids)
+            # Vòng 22 (T1): sổ con và biên nhận đi theo phiên — xoá phiên mà để lại hàng sổ con
+            # thì watchdog sẽ đi tìm một phiên không còn tồn tại (và bắn event vào luồng đã xoá).
+            self.db.execute(f'DELETE FROM children WHERE session_id IN ({placeholders})', all_sids)
+            self.db.execute(f'DELETE FROM children WHERE parent_id IN ({placeholders})', all_sids)
+            self.db.execute(f'DELETE FROM child_deliveries WHERE child_id IN ({placeholders})', all_sids)
+            self.db.execute(f'DELETE FROM child_deliveries WHERE recipient IN ({placeholders})', all_sids)
         return True
 
     def close(self):
