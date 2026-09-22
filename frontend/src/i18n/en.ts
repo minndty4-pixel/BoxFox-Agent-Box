@@ -188,6 +188,22 @@ const en: SameShape<typeof vi> = {
     userLabel: 'You',
     agentLabel: 'Agent',
     systemLabel: 'System',
+    // Đợt 22 / T4 + T15 — nhãn của bảng Sub-agents theo lượt và đường ống peer. Chủ nhà chốt
+    // NGUYÊN VĂN tiếng Việt cho sáu nhãn này (kế hoạch `v1-peer-mesh.md`, T4/T15: tiêu đề
+    // `Lượt N · n con`, nút chờ `đang chờ <role> giao kết quả`, biên nhận `đã nhận từ <role>`,
+    // công tắc `tất cả lượt`, lưới an toàn `lưới an toàn còn <mm:ss>`), nên bản tiếng Anh giữ
+    // đúng chữ đã chốt — cùng cách xử lý với `labelsLeases.*.untrustedBadge` ở trên.
+    subagentTurnHeader: 'Lượt {{turn}} · {{count}} con',
+    subagentTurnChip: 'Lượt {{turn}}',
+    subagentTurnUnknown: 'Lượt ? · {{count}} con',
+    subagentTurnEmpty: 'Lượt này không giao việc cho em nào',
+    subagentTurnEmptyHint: 'Chuyển sang lượt khác hoặc bật “tất cả lượt” để xem các con của lượt trước.',
+    subagentAllTurns: 'tất cả lượt',
+    subagentTurnStep: 'lượt {{turn}} · bước {{step}}',
+    subagentWaitingFor: 'đang chờ {{role}} giao kết quả',
+    subagentSafetyNet: 'lưới an toàn còn {{time}}',
+    subagentReceivedFrom: 'đã nhận từ {{role}}',
+    subagentDeliversTo: 'đã giao cho {{targets}}',
   },
   contextUsage: {
     title: 'Context window',

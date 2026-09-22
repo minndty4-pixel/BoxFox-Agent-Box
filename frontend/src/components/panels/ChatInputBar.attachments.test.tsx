@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '../../i18n'
 import { useAgentStore } from '../../store/agentStore'
 import { useComposerStore } from '../../store/composerStore'
+import { useUiStore } from '../../store/uiStore'
 import type { WorkspaceRepository, WorkspaceUploadOptions, WorkspaceUploadResult } from '../../lib/workspace/types'
 import type { OutgoingAttachment } from '../../lib/chat/attachmentUpload'
 import { ChatInputBar, MAX_TURN_IMAGE_CHARS, MAX_TURN_IMAGES } from './ChatInputBar'
@@ -114,6 +115,7 @@ function sendButton(host: HTMLElement): HTMLButtonElement {
 beforeEach(() => {
   useComposerStore.setState({ pendingElements: [] })
   useAgentStore.setState({ isBusy: false })
+  useUiStore.setState({ selectedFilePath: null })
 })
 
 afterEach(() => {
@@ -278,5 +280,108 @@ describe('ChatInputBar — tệp đính kèm đi thật lên box (A6)', () => {
 
     expect(calls).toEqual([])
     expect(onSend).toHaveBeenCalledWith('/stop', undefined, undefined)
+  })
+})
+
+/** Repo giữ từng lần upload ở một cổng mở tay — để thấy được trạng thái ĐANG BAY thật. */
+function gatedRepo() {
+  const gates: Array<() => void> = []
+  const calls: string[] = []
+  const repo = {
+    upload: vi.fn(async (dir: string, filename: string, body: Blob) => {
+      calls.push(filename)
+      await new Promise<void>((resolve) => {
+        gates.push(resolve)
+      })
+      return { path: `${dir}/${filename}`, name: filename, sizeBytes: body.size }
+    }),
+  } as unknown as WorkspaceRepository
+  return { repo, calls, release: () => gates.shift()?.() }
+}
+
+function chips(host: HTMLElement): HTMLElement[] {
+  return [...host.querySelectorAll<HTMLElement>('[data-testid="composer-attach-chip"]')]
+}
+
+describe('ChatInputBar — E5: trạng thái tải lên của TỪNG chip', () => {
+  it('chip đi từ "đang tải" sang "đã tải lên" theo đúng tệp đang bay', async () => {
+    const { repo, calls, release } = gatedRepo()
+    const onSend = sendSpy()
+    const host = render(<ChatInputBar router={routerAdapter(onSend)} repository={repo} />)
+
+    pickFile(host, [new File(['aaaa'], '1.md'), new File(['bb'], '2.txt')])
+    await settle()
+    typeInto(host.querySelector('textarea') as HTMLTextAreaElement, 'gửi hai tệp')
+
+    click(sendButton(host))
+    // Tệp 1 đang bay: trạng thái là SỰ THẬT (1 trong 2 tệp), không phải phần trăm bịa.
+    expect(chips(host)[0].getAttribute('data-attach-state')).toBe('uploading')
+    expect(chips(host)[0].textContent).toContain('đang tải lên 1/2 tệp')
+    expect(chips(host)[1].getAttribute('data-attach-state')).toBeNull()
+
+    await act(async () => {
+      release()
+    })
+    // Tệp 1 xong, tệp 2 vào lượt — chip nào xong thì nói xong.
+    expect(chips(host)[0].getAttribute('data-attach-state')).toBe('uploaded')
+    expect(chips(host)[0].textContent).toContain('đã tải lên')
+    expect(chips(host)[1].getAttribute('data-attach-state')).toBe('uploading')
+    expect(chips(host)[1].textContent).toContain('đang tải lên 2/2 tệp')
+
+    await act(async () => {
+      release()
+    })
+    await settle()
+
+    expect(calls).toEqual(['1.md', '2.txt'])
+    expect(onSend).toHaveBeenCalledTimes(1)
+    expect((onSend.mock.calls[0][2] ?? []).map((a) => a.path)).toEqual([
+      '.uploaded_artifacts/1.md',
+      '.uploaded_artifacts/2.txt',
+    ])
+  })
+
+  it('tệp hỏng: chip "tải lên thất bại" + Thử lại; Thử lại không tự gửi lượt và lần Gửi sau không tải lại tệp đã lên box', async () => {
+    let attempt = 0
+    const { repo, calls } = fakeRepo(() => {
+      attempt += 1
+      return attempt === 1
+        ? new Error('Dung lượng vượt giới hạn 26214400 byte.')
+        : { path: '.uploaded_artifacts/9/bao-cao.pdf', name: 'bao-cao.pdf', sizeBytes: 5 }
+    })
+    const onSend = sendSpy()
+    const host = render(<ChatInputBar router={routerAdapter(onSend)} repository={repo} />)
+
+    typeInto(host.querySelector('textarea') as HTMLTextAreaElement, 'gửi kèm báo cáo')
+    pickFile(host, [new File(['x'], 'bao-cao.pdf')])
+    await settle()
+
+    click(sendButton(host))
+    await settle()
+
+    expect(chips(host)[0].getAttribute('data-attach-state')).toBe('failed')
+    expect(chips(host)[0].textContent).toContain('tải lên thất bại')
+    expect(onSend).not.toHaveBeenCalled()
+
+    // "Thử lại" chỉ tải lại CHÍNH tệp đó — không nhân bản tệp, không gửi lượt thay người dùng.
+    click(host.querySelector('[data-testid="composer-attach-retry"]'))
+    await settle()
+
+    expect(calls).toHaveLength(2)
+    expect(chips(host)[0].getAttribute('data-attach-state')).toBe('uploaded')
+    expect(chips(host)[0].textContent).toContain('đã tải lên')
+    expect(onSend).not.toHaveBeenCalled()
+
+    // Tệp đã nằm trên box thì chip mở được trong tab Files (đúng hành động `selectFile`).
+    click(host.querySelector('[data-testid="composer-attach-open"]'))
+    expect(useUiStore.getState().selectedFilePath).toBe('.uploaded_artifacts/9/bao-cao.pdf')
+
+    click(sendButton(host))
+    await settle()
+
+    // Lần gửi này KHÔNG tải lại tệp: tổng số lần gọi box vẫn là 2, lượt đi kèm đường dẫn thật.
+    expect(calls).toHaveLength(2)
+    expect(onSend).toHaveBeenCalledTimes(1)
+    expect((onSend.mock.calls[0][2] ?? []).map((a) => a.path)).toEqual(['.uploaded_artifacts/9/bao-cao.pdf'])
   })
 })

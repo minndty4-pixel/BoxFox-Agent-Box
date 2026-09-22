@@ -6,14 +6,18 @@
  *   2. lượt có nhiều ảnh (`images`) ⇒ hiện đủ số ảnh, mỗi ảnh mở được lightbox;
  *   3. bản ghi CŨ (chỉ `image` số ít, không có `attachments`) ⇒ render y hệt trước đây, không chip.
  *
+ * E5 (đợt 22) thêm hai điều nữa, đo trong khối `describe` cuối: chip đọc
+ * `đường dẫn · dung lượng · loại` và có nút "Mở trong Files" gọi `uiStore.selectFile(path)`.
+ *
  * Render qua raw `createRoot` + `act` — dự án không dùng @testing-library.
  */
 import type { ReactNode } from 'react'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '../../i18n'
 import type { HarnessEvent } from '../../store/harnessChatStore'
+import { useUiStore } from '../../store/uiStore'
 import type { LightboxMediaProps } from './MediaLightboxModal'
 import { HarnessStepView } from './HarnessStepView'
 
@@ -52,6 +56,11 @@ afterEach(() => {
   roots = []
   document.body.innerHTML = ''
   seq = 0
+})
+
+beforeEach(() => {
+  localStorage.clear()
+  useUiStore.setState({ selectedFilePath: null })
 })
 
 describe('HarnessStepView — nội dung đính kèm trên bong bóng người dùng (A10)', () => {
@@ -120,5 +129,50 @@ describe('HarnessStepView — nội dung đính kèm trên bong bóng người d
     // Thiếu `name` thì lấy `path` làm nhãn, thiếu `sizeBytes` thì không bịa dung lượng.
     expect(chips[0].textContent).toContain('.uploaded_artifacts/7.md')
     expect(chips[0].textContent).not.toContain('KB')
+  })
+})
+
+describe('HarnessStepView — chip đính kèm E5: đường dẫn · dung lượng · loại + Mở trong Files', () => {
+  it('chip đọc đủ ba phần và nút mở đúng tệp trong tab Files', () => {
+    const host = render([
+      ev('user', {
+        text: 'Đọc 3 tệp này',
+        attachments: [
+          { name: '3096.png', path: '.uploaded_artifacts/3096.png', sizeBytes: 214 * 1024, kind: 'image' },
+          { name: '3101.txt', path: '.uploaded_artifacts/3101.txt', sizeBytes: 1229 },
+          { name: 'khối.bin', path: '.uploaded_artifacts/khối.bin', sizeBytes: 40 },
+        ],
+      }),
+    ])
+
+    const chips = host.querySelectorAll('[data-testid="user-attachment-chip"]')
+    expect(chips).toHaveLength(3)
+    // Thứ tự trong hàng theo mockup `attachments-chip-row`: đường dẫn · dung lượng · loại.
+    expect(chips[0].textContent).toContain('.uploaded_artifacts/3096.png')
+    expect(chips[0].textContent).toContain('214 KB')
+    expect(chips[0].textContent).toContain('ảnh')
+    // Bản ghi cũ không khai `kind`: suy từ phần mở rộng.
+    expect(chips[1].textContent).toContain('văn bản')
+    // Không dám chắc loại thì nói "tệp", không gán bừa.
+    expect(chips[2].textContent).toContain('tệp')
+
+    const open = chips[0].querySelector('[data-testid="user-attachment-open-files"]')
+    expect(open).toBeTruthy()
+    click(open)
+
+    // Đúng hành động đã có sẵn: `selectFile` mở tab Files với đường dẫn tương đối của box.
+    expect(useUiStore.getState().selectedFilePath).toBe('.uploaded_artifacts/3096.png')
+    expect(useUiStore.getState().activeTab).toBe('files')
+  })
+
+  it('tệp chỉ có tên, không có đường dẫn: không có nút mở (không bịa đường dẫn)', () => {
+    const host = render([
+      ev('user', { text: 'x', attachments: [{ name: 'chỉ-có-tên.txt' }] }),
+    ])
+
+    const chip = host.querySelector('[data-testid="user-attachment-chip"]')
+    expect(chip?.textContent).toContain('chỉ-có-tên.txt')
+    expect(chip?.querySelector('[data-testid="user-attachment-open-files"]')).toBeNull()
+    expect(useUiStore.getState().selectedFilePath).toBeNull()
   })
 })

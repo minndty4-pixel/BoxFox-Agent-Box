@@ -288,3 +288,28 @@ describe('AttachmentPicker — A9: Google Drive nói thật', () => {
     expect(menu()!.textContent).not.toContain('Architecture_Blueprint_2026.gdoc')
   })
 })
+
+describe('AttachmentPicker — E5: chân bảng nói rõ luật gửi tệp', () => {
+  it('có dòng nhắc Esc + tệp chỉ đi khi đã lên tới box', () => {
+    const host = renderClipped(<AttachmentPicker onAttach={vi.fn()} />)
+    click(triggerButton(host))
+
+    const hint = menu()?.querySelector('[data-testid="attach-menu-hint"]')
+    expect(hint).toBeTruthy()
+    // Đóng bằng Esc là thật: picker có listener `keydown` (test "Escape đóng menu" ở trên).
+    expect(hint?.textContent ?? '').toContain('Esc để đóng')
+    expect(hint?.textContent ?? '').toContain('tệp chỉ được gửi sau khi lên tới box')
+    expect(hint?.textContent ?? '').toContain('/__box/file/upload')
+  })
+
+  it('dòng nhắc không thêm mục menu nào và không hoá ảo mục Drive', () => {
+    const host = renderClipped(<AttachmentPicker onAttach={vi.fn()} />)
+    click(triggerButton(host))
+
+    // Vẫn đúng bốn mục bấm được như trước, Drive vẫn khoá và vẫn nói thật.
+    expect(menuItems()).toHaveLength(4)
+    const drive = menu()?.querySelector('[data-testid="attach-drive-item"]')
+    expect(drive?.getAttribute('aria-disabled')).toBe('true')
+    expect(drive?.textContent ?? '').toContain('Chưa kết nối')
+  })
+})

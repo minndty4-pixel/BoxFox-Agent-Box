@@ -28,12 +28,29 @@ import {
   FileCode2,
   Search,
   Camera,
+  ArrowRight,
+  Clock,
+  Inbox,
 } from 'lucide-react'
 import { useHarnessChatStore, type HarnessEvent } from '../../store/harnessChatStore'
 import { useAgentStore } from '../../store/agentStore'
 import { useUiStore } from '../../store/uiStore'
 import { MarkdownRenderer } from '../chat/MarkdownRenderer'
 import { appendStreamText } from '../../lib/streamText'
+import { useT } from '../../i18n/context'
+import {
+  deliveryRows,
+  formatClock,
+  hasAbsoluteDeadline,
+  openPeerWait,
+  peerLabels,
+  peerReceipts,
+  receiptsFromDeliveries,
+  safetyNetSeconds,
+  waitFromChildRow,
+  type PeerReceipt,
+  type PeerWait,
+} from '../../lib/chat/peerPipeline'
 
 const ROLE_DESCRIPTIONS: Record<string, string> = {
   explore: 'Inspect the repository. Return file/symbol evidence, dependencies and unknowns.',
@@ -50,7 +67,7 @@ const ROLE_DESCRIPTIONS: Record<string, string> = {
 interface ChildSessionView {
   sessionId: string
   role: string
-  status: 'running' | 'completed' | 'failed'
+  status: 'running' | 'completed' | 'failed' | 'partial'
   goal?: string
   prompt?: string
   context?: string
@@ -58,6 +75,36 @@ interface ChildSessionView {
   lastError?: string
   toolsRun: string[]
   events: HarnessEvent[]
+  /**
+   * Lượt mà con này thuộc về (T4). `data.turn` khi backend khai báo (đợt 22); bản ghi CŨ
+   * không có `turn` thì lấy lượt của event `user` gần nhất đứng trước — đúng luật
+   * `buildHarnessTurns` dùng cho transcript, nên bảng và khung chat không lệch nhau.
+   */
+  turn: number
+  /** Bước của lượt cha lúc giao việc (`data.step`) — chỉ có từ đợt 22. */
+  step: number | null
+  /** Số bước con đã dùng, khi hàng sổ con báo (`stepsUsed`). */
+  stepsUsed: number | null
+  /** `deliverTo` lúc giao việc (T15). */
+  deliverTo: string[]
+  /** `deliveredTo` khi con kết thúc — mũi tên "đã giao cho …". */
+  deliveredTo: string[]
+  /** `deliveries[]` thật của hàng sổ con; mỗi mục là một biên nhận. */
+  deliveries: Array<Record<string, unknown>>
+  /** Hàng sổ con còn `waiting_for` ⇒ con đang chờ peer. */
+  waiting: PeerWait | null
+}
+
+/** Một khối bảng của MỘT lượt (T4) — bảng cũ trộn mọi lượt vào một danh sách phẳng. */
+interface ChildTurnGroup {
+  turn: number
+  userEvent: HarnessEvent | null
+  prompt: string
+  children: ChildSessionView[]
+  steps: number | null
+  startedAt: number | null
+  endedAt: number | null
+  completed: boolean
 }
 
 interface ParsedToolCall {
@@ -67,6 +114,149 @@ interface ParsedToolCall {
   result?: string | null
   isError?: boolean
   isRunning?: boolean
+}
+
+function asNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+/** `data.turn` mà event tự khai báo; `null` cho bản ghi cũ (trước đợt 22). */
+function declaredTurn(event: HarnessEvent): number | null {
+  const turn = asNumber(event.data?.turn)
+  return turn !== null && turn > 0 ? Math.trunc(turn) : null
+}
+
+/**
+ * Trạng thái hàng con. `partial` KHÔNG được vẽ như `failed`: đợt 22 (D-1) biến "chạm trần
+ * bước/hạn" thành lượt dở nhưng CÓ kết quả, nên tô nó màu đỏ là nói sai sự thật.
+ */
+function childStatus(value: unknown): ChildSessionView['status'] {
+  if (value === 'completed') return 'completed'
+  if (value === 'partial') return 'partial'
+  if (value === 'started' || value === 'running') return 'running'
+  return 'failed'
+}
+
+/** Gộp một event `child` (start hoặc end) vào hàng của con đó, giữ nguyên cách đọc cũ. */
+function mergeChildEvent(
+  existing: ChildSessionView | undefined,
+  event: HarnessEvent,
+  turn: number,
+): ChildSessionView {
+  const data = event.data
+  const view: ChildSessionView = existing ?? {
+    sessionId: String(data.sessionId ?? data.role ?? 'unknown'),
+    role: String(data.role ?? 'specialist'),
+    status: 'running',
+    toolsRun: [],
+    events: [],
+    turn,
+    step: null,
+    stepsUsed: null,
+    deliverTo: [],
+    deliveredTo: [],
+    deliveries: [],
+    waiting: null,
+  }
+  view.turn = turn
+  if (data.role) view.role = String(data.role)
+  if (data.status !== undefined) view.status = childStatus(data.status)
+  if (data.goal) view.goal = String(data.goal)
+  if (data.prompt) view.prompt = String(data.prompt)
+  if (data.context) view.context = String(data.context)
+  if (data.summary) view.summary = String(data.summary)
+  if (data.last_error) view.lastError = String(data.last_error)
+  if (Array.isArray(data.tools_run)) view.toolsRun = data.tools_run.map(String)
+
+  const step = asNumber(data.step)
+  if (step !== null) view.step = Math.trunc(step)
+  const stepsUsed = asNumber(data.stepsUsed)
+  if (stepsUsed !== null) view.stepsUsed = Math.trunc(stepsUsed)
+  const deliverTo = peerLabels(data.deliverTo)
+  if (deliverTo.length > 0) view.deliverTo = deliverTo
+  const deliveredTo = peerLabels(data.deliveredTo)
+  if (deliveredTo.length > 0) view.deliveredTo = deliveredTo
+  const deliveries = deliveryRows(data.deliveries)
+  if (deliveries.length > 0) view.deliveries = deliveries
+  // Hàng MỚI NHẤT nói trạng thái hiện tại: event kết thúc không còn `waiting_for` ⇒ nhãn chờ tắt.
+  view.waiting = waitFromChildRow(data)
+  return view
+}
+
+/**
+ * T4: gom event `child` theo lượt và dựng luôn phần đầu của mỗi lượt (prompt, số bước, thời lượng).
+ *
+ * Luật gán lượt cho event con **không có `turn`** là luật của transcript: lượt của event
+ * `user` gần nhất đứng trước (`HarnessStepView.buildHarnessTurns`, bản ghi trước đợt 22).
+ * Không có event `user` nào cả (bản ghi méo) ⇒ gom vào lượt `0` để không im lặng bỏ mất hàng.
+ */
+export function buildChildTurns(events: readonly HarnessEvent[]): ChildTurnGroup[] {
+  const groups = new Map<number, ChildTurnGroup>()
+  const ensure = (turn: number): ChildTurnGroup => {
+    let group = groups.get(turn)
+    if (!group) {
+      group = {
+        turn,
+        userEvent: null,
+        prompt: '',
+        children: [],
+        steps: null,
+        startedAt: null,
+        endedAt: null,
+        completed: false,
+      }
+      groups.set(turn, group)
+    }
+    return group
+  }
+
+  let currentTurn: number | null = null
+  let userIndex = 0
+
+  for (const event of events) {
+    if (event.type === 'model_change') continue
+    const declared = declaredTurn(event)
+
+    if (event.type === 'user') {
+      userIndex += 1
+      currentTurn = declared ?? userIndex
+      const group = ensure(currentTurn)
+      if (!group.userEvent) {
+        group.userEvent = event
+        group.prompt = String(event.data.text ?? '')
+        group.startedAt = event.created
+      }
+      continue
+    }
+
+    if (declared !== null) currentTurn = declared
+
+    if (event.type === 'child') {
+      const turn = currentTurn ?? 0
+      const group = ensure(turn)
+      const sessionId = String(event.data.sessionId ?? event.data.role ?? 'unknown')
+      const existing = group.children.find((child) => child.sessionId === sessionId)
+      const merged = mergeChildEvent(existing, event, turn)
+      if (existing) Object.assign(existing, merged)
+      else group.children.push(merged)
+      if (!group.completed) group.endedAt = Math.max(group.endedAt ?? event.created, event.created)
+      continue
+    }
+
+    const group = currentTurn === null ? undefined : groups.get(currentTurn)
+    if (!group) continue
+    if (!group.completed) group.endedAt = Math.max(group.endedAt ?? event.created, event.created)
+    if (event.type === 'turn_end' && declared !== null) {
+      const steps = asNumber(event.data.stepsUsed) ?? asNumber(event.data.step)
+      if (steps !== null) group.steps = Math.max(group.steps ?? 0, Math.trunc(steps))
+    } else if (event.type === 'finish' || event.type === 'error') {
+      group.completed = true
+      const steps = asNumber(event.data.steps)
+      if (steps !== null) group.steps = Math.max(group.steps ?? 0, Math.trunc(steps))
+    }
+  }
+
+  return [...groups.values()].sort((a, b) => a.turn - b.turn)
 }
 
 function getToolIcon(name: string) {
@@ -155,56 +345,34 @@ function SubagentToolItem({ tool }: { tool: ParsedToolCall }) {
 }
 
 export function SubagentInspectorPanel() {
+  const t = useT()
   const activeChatId = useAgentStore((s) => s.activeSessionId)
   const harnessRun = useHarnessChatStore((s) => s.sessions[activeChatId])
 
-  // Tập hợp danh sách các subagent từ events của harness run
-  const childrenMap = useMemo(() => {
-    const map: Record<string, ChildSessionView> = {}
-    if (!harnessRun?.events) return map
+  // T4: gom con theo LƯỢT. Bảng cũ dựng một danh sách phẳng từ MỌI event `child` của cả run,
+  // nên đang hỏi câu 2 vẫn còn thấy con của câu 1 (BUG-43).
+  const turnGroups = useMemo(() => buildChildTurns(harnessRun?.events ?? []), [harnessRun?.events])
+  const childrenList = useMemo(() => turnGroups.flatMap((group) => group.children), [turnGroups])
 
-    for (const ev of harnessRun.events) {
-      if (ev.type === 'child') {
-        const sid = String(ev.data.sessionId ?? ev.data.role ?? 'unknown')
-        const role = String(ev.data.role ?? 'specialist')
-        const status = (ev.data.status === 'completed' ? 'completed' : ev.data.status === 'started' ? 'running' : 'failed') as ChildSessionView['status']
-        const existing = map[sid] ?? {
-          sessionId: sid,
-          role,
-          status,
-          goal: String(ev.data.goal ?? ''),
-          prompt: String(ev.data.prompt ?? ev.data.goal ?? ''),
-          context: ev.data.context ? String(ev.data.context) : undefined,
-          summary: String(ev.data.summary ?? ''),
-          lastError: ev.data.last_error ? String(ev.data.last_error) : undefined,
-          toolsRun: Array.isArray(ev.data.tools_run) ? ev.data.tools_run.map(String) : [],
-          events: [],
-        }
-        existing.status = status
-        if (ev.data.goal) existing.goal = String(ev.data.goal)
-        if (ev.data.prompt) existing.prompt = String(ev.data.prompt)
-        if (ev.data.context) existing.context = String(ev.data.context)
-        if (ev.data.summary) existing.summary = String(ev.data.summary)
-        if (ev.data.last_error) existing.lastError = String(ev.data.last_error)
-        if (Array.isArray(ev.data.tools_run)) existing.toolsRun = ev.data.tools_run.map(String)
-        map[sid] = existing
-      }
-    }
-    return map
-  }, [harnessRun?.events])
-
-  const childrenList = useMemo(() => Object.values(childrenMap), [childrenMap])
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
   const [thinkingExpanded, setThinkingExpanded] = useState(false)
   const [childEvents, setChildEvents] = useState<HarnessEvent[]>([])
   const [copied, setCopied] = useState(false)
+  // Lượt đang xem: mặc định lượt mới nhất (lượt vừa hỏi), đổi được bằng chip lượt hoặc công tắc.
+  const [viewedTurn, setViewedTurn] = useState<number | null>(null)
+  const [allTurns, setAllTurns] = useState(false)
+  const [openTurns, setOpenTurns] = useState<Record<number, boolean>>({})
 
-  const activeChild = useMemo(() => {
-    if (selectedSessionId && childrenMap[selectedSessionId]) {
-      return childrenMap[selectedSessionId]
-    }
-    return childrenList[0] ?? null
-  }, [selectedSessionId, childrenMap, childrenList])
+  const latestTurn = turnGroups.length > 0 ? turnGroups[turnGroups.length - 1].turn : null
+  const effectiveTurn = viewedTurn ?? latestTurn
+  const visibleGroups = useMemo(
+    () => (allTurns ? turnGroups : turnGroups.filter((group) => group.turn === effectiveTurn)),
+    [allTurns, effectiveTurn, turnGroups],
+  )
+  const visibleChildren = useMemo(
+    () => visibleGroups.flatMap((group) => group.children),
+    [visibleGroups],
+  )
 
   // Chip chuyên gia trong transcript mở tab này kèm `sessionId` của em đó → chọn
   // đúng em. Chỉ áp dụng một lần cho mỗi đích để người dùng vẫn tự đổi được sau.
@@ -213,10 +381,24 @@ export function SubagentInspectorPanel() {
   const appliedChildTargetRef = useRef<string | null>(null)
   useEffect(() => {
     if (!targetChildId || appliedChildTargetRef.current === targetChildId) return
-    if (!childrenList.some((child) => child.sessionId === targetChildId)) return
+    const target = childrenList.find((child) => child.sessionId === targetChildId)
+    if (!target) return
     appliedChildTargetRef.current = targetChildId
     setSelectedSessionId(targetChildId)
+    // Mở đúng lượt chứa em đó — nếu không, hàng được chọn nằm ngoài tầm mắt của bảng.
+    if (target.turn > 0) {
+      setAllTurns(false)
+      setViewedTurn(target.turn)
+    }
   }, [targetChildId, childrenList])
+
+  const activeChild = useMemo(() => {
+    const selected = selectedSessionId
+      ? childrenList.find((child) => child.sessionId === selectedSessionId) ?? null
+      : null
+    if (selected && visibleChildren.some((child) => child.sessionId === selected.sessionId)) return selected
+    return visibleChildren[0] ?? selected
+  }, [selectedSessionId, childrenList, visibleChildren])
 
   // Live poll child events từ endpoint /api/agent/sessions/{childSessionId}
   useEffect(() => {
@@ -307,6 +489,55 @@ export function SubagentInspectorPanel() {
     }
   }, [childEvents])
 
+  // T15 — đường ống peer của em ĐANG XEM, đọc từ chính luồng của em đó (poll ở trên).
+  const activeWait = useMemo(() => openPeerWait(childEvents), [childEvents])
+  const activeReceipts = useMemo(() => peerReceipts(childEvents), [childEvents])
+
+  // Hàng con của CHA mang `deliveries[]`/`deliveredTo`, nhưng biên nhận thuộc về em NHẬN:
+  // phải đối chiếu `recipient` với role/sessionId của từng em rồi mới gắn huy hiệu.
+  const receiptsByChild = useMemo(() => {
+    const map = new Map<string, PeerReceipt[]>()
+    for (const source of childrenList) {
+      const rows =
+        source.deliveries.length > 0
+          ? source.deliveries
+          : source.deliveredTo.map((recipient) => ({ recipient }))
+      if (rows.length === 0) continue
+      for (const child of childrenList) {
+        if (child.sessionId === source.sessionId) continue
+        for (const receipt of receiptsFromDeliveries(rows, child.role, child.sessionId)) {
+          const list = map.get(child.sessionId) ?? []
+          list.push({ ...receipt, role: receipt.role || source.role })
+          map.set(child.sessionId, list)
+        }
+      }
+    }
+    return map
+  }, [childrenList])
+
+  // Đồng hồ chỉ chạy khi có mốc hạn THẬT (deadline tuyệt đối) — không đếm ngược bằng số giây
+  // ước lượng, và không đếm khi người chờ đã tự đặt hạn riêng (`waitsUntilDelivery === false`).
+  const clockNeeded = useMemo(
+    () =>
+      hasAbsoluteDeadline(activeWait) ||
+      turnGroups.some((group) => group.children.some((child) => hasAbsoluteDeadline(child.waiting))),
+    [activeWait, turnGroups],
+  )
+  const [nowMs, setNowMs] = useState(() => Date.now())
+  useEffect(() => {
+    if (!clockNeeded) return
+    const timer = setInterval(() => setNowMs(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [clockNeeded])
+
+  const waitForRow = (child: ChildSessionView): PeerWait | null =>
+    activeChild?.sessionId === child.sessionId && activeWait ? activeWait : child.waiting
+
+  const receiptsForRow = (child: ChildSessionView): PeerReceipt[] => {
+    const own = activeChild?.sessionId === child.sessionId ? activeReceipts : []
+    return [...own, ...(receiptsByChild.get(child.sessionId) ?? [])]
+  }
+
   const roleDescription = activeChild ? (ROLE_DESCRIPTIONS[activeChild.role] ?? 'Specialized subagent execution.') : ''
 
   const finalResponseText = assistantOutput || activeChild?.summary || ''
@@ -348,8 +579,61 @@ export function SubagentInspectorPanel() {
             </span>
           </div>
 
+          {/* T4 — phạm vi lượt: mặc định đúng lượt đang xem, công tắc để xem mọi lượt. */}
+          {turnGroups.length > 0 && (
+            <div
+              data-testid="subagents-turn-scope"
+              className="flex flex-wrap items-center gap-1 border-b border-line/40 bg-[#0f131a] px-2 py-1.5"
+            >
+              {turnGroups.map((group) => {
+                const isCurrent = !allTurns && group.turn === effectiveTurn
+                return (
+                  <button
+                    key={group.turn}
+                    type="button"
+                    data-testid="subagents-turn-chip"
+                    data-turn={group.turn}
+                    data-selected={isCurrent}
+                    aria-current={isCurrent ? 'true' : undefined}
+                    onClick={() => {
+                      setAllTurns(false)
+                      setViewedTurn(group.turn)
+                    }}
+                    title={t('chat.subagentTurnHeader', {
+                      turn: group.turn,
+                      count: group.children.length,
+                    })}
+                    className={`rounded-full border px-1.5 py-0.5 font-mono text-[9px] transition cursor-pointer ${
+                      isCurrent
+                        ? 'border-brand/60 bg-brand/15 text-brand'
+                        : 'border-line bg-panel2 text-zinc-400 hover:text-fg'
+                    }`}
+                  >
+                    {/* Lượt `0` là bản ghi không có event `user` nào — nói thẳng là chưa rõ lượt. */}
+                    {group.turn > 0 ? t('chat.subagentTurnChip', { turn: group.turn }) : '?'} ·{' '}
+                    {group.children.length}
+                  </button>
+                )
+              })}
+              <label
+                data-testid="subagents-all-turns"
+                data-on={allTurns}
+                className="ml-auto flex items-center gap-1 text-[10px] text-zinc-400 cursor-pointer select-none"
+              >
+                <input
+                  type="checkbox"
+                  checked={allTurns}
+                  aria-label={t('chat.subagentAllTurns')}
+                  onChange={(e) => setAllTurns(e.target.checked)}
+                  className="size-3 cursor-pointer accent-brand"
+                />
+                {t('chat.subagentAllTurns')}
+              </label>
+            </div>
+          )}
+
           <div className="flex-1 overflow-y-auto p-1.5 space-y-1">
-            {childrenList.length === 0 ? (
+            {turnGroups.length === 0 ? (
               <div className="p-6 text-center text-xs text-muted space-y-2">
                 <Bot className="size-8 mx-auto text-zinc-600 animate-pulse" />
                 <p>No subagents active yet.</p>
@@ -358,54 +642,226 @@ export function SubagentInspectorPanel() {
                 </p>
               </div>
             ) : (
-              childrenList.map((child) => {
-                const isSelected = activeChild?.sessionId === child.sessionId
-
+              visibleGroups.map((group) => {
+                const isOpen = openTurns[group.turn] !== false
+                const durationSeconds =
+                  group.startedAt !== null && group.endedAt !== null
+                    ? Math.max(0, Math.round((group.endedAt - group.startedAt) / 1000))
+                    : null
                 return (
-                  <button
-                    key={child.sessionId}
-                    type="button"
-                    data-child-session-id={child.sessionId}
-                    data-selected={isSelected}
-                    onClick={() => setSelectedSessionId(child.sessionId)}
-                    className={`flex w-full items-center gap-2.5 rounded-lg p-2 text-left transition cursor-pointer ${
-                      isSelected
-                        ? 'bg-[#1c222d] text-white border border-brand/40 shadow-xs ring-1 ring-brand/30'
-                        : 'text-zinc-300 hover:bg-panel2/50 border border-transparent'
-                    }`}
+                  <section
+                    key={group.turn}
+                    data-testid="subagents-turn-block"
+                    data-turn={group.turn}
+                    className="overflow-hidden rounded-lg border border-line/60 bg-[#0f131a]"
                   >
-                    <div
-                      className={`flex size-7 shrink-0 items-center justify-center rounded-md ${
-                        child.status === 'completed'
-                          ? 'bg-emerald-500/15 text-emerald-400'
-                          : child.status === 'running'
-                            ? 'bg-amber-500/15 text-amber-400'
-                            : 'bg-red-500/15 text-red-400'
-                      }`}
+                    <button
+                      type="button"
+                      data-testid="subagents-turn-header"
+                      aria-expanded={isOpen}
+                      onClick={() => setOpenTurns((prev) => ({ ...prev, [group.turn]: !isOpen }))}
+                      className="flex w-full items-center gap-1.5 px-2 py-1.5 text-left transition hover:bg-panel2/40 cursor-pointer"
                     >
-                      <Bot className="size-4" />
-                    </div>
-
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center justify-between">
-                        <span className="font-semibold text-xs capitalize truncate">
-                          {child.role} Specialist
+                      {isOpen ? (
+                        <ChevronDown className="size-3 shrink-0 text-zinc-500" />
+                      ) : (
+                        <ChevronRight className="size-3 shrink-0 text-zinc-500" />
+                      )}
+                      <span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-fg">
+                        {group.turn > 0
+                          ? t('chat.subagentTurnHeader', {
+                              turn: group.turn,
+                              count: group.children.length,
+                            })
+                          : t('chat.subagentTurnUnknown', { count: group.children.length })}
+                      </span>
+                      {group.steps !== null && (
+                        <span className="shrink-0 font-mono text-[9px] text-zinc-500">
+                          {group.steps} steps
                         </span>
-                        {child.status === 'completed' ? (
-                          <CheckCircle2 className="size-3 text-emerald-400 shrink-0" />
-                        ) : child.status === 'running' ? (
-                          <span className="size-2 rounded-full bg-amber-400 animate-ping shrink-0" />
+                      )}
+                      {durationSeconds !== null && (
+                        <span className="shrink-0 font-mono text-[9px] text-zinc-500">
+                          {durationSeconds}s
+                        </span>
+                      )}
+                      {group.completed ? (
+                        <CheckCircle2 className="size-3 shrink-0 text-emerald-400" />
+                      ) : (
+                        <span className="size-2 shrink-0 rounded-full bg-amber-400" />
+                      )}
+                    </button>
+
+                    {isOpen && (
+                      <div className="border-t border-line/40">
+                        {group.prompt && (
+                          <p
+                            className="truncate px-2 pt-1.5 text-[10px] text-zinc-500"
+                            title={group.prompt}
+                          >
+                            {group.prompt}
+                          </p>
+                        )}
+
+                        {group.children.length === 0 ? (
+                          <div
+                            data-testid="subagents-turn-empty"
+                            role="status"
+                            className="flex items-start gap-2 px-2 py-2"
+                          >
+                            <Bot className="mt-0.5 size-3.5 shrink-0 text-zinc-600" />
+                            <div className="space-y-0.5">
+                              <p className="text-[10px] text-zinc-400">
+                                {t('chat.subagentTurnEmpty')}
+                              </p>
+                              <p className="text-[10px] text-zinc-600">
+                                {t('chat.subagentTurnEmptyHint')}
+                              </p>
+                            </div>
+                          </div>
                         ) : (
-                          <AlertCircle className="size-3 text-red-400 shrink-0" />
+                          <div className="space-y-1 p-1.5">
+                            {group.children.map((child) => {
+                              const isSelected = activeChild?.sessionId === child.sessionId
+                              const waiting = waitForRow(child)
+                              const receipts = receiptsForRow(child)
+                              const safetySeconds = waiting ? safetyNetSeconds(waiting, nowMs) : null
+                              const targets =
+                                child.deliveredTo.length > 0 ? child.deliveredTo : child.deliverTo
+
+                              return (
+                                <button
+                                  key={child.sessionId}
+                                  type="button"
+                                  data-child-session-id={child.sessionId}
+                                  data-selected={isSelected}
+                                  data-child-turn={child.turn}
+                                  data-child-status={child.status}
+                                  onClick={() => setSelectedSessionId(child.sessionId)}
+                                  className={`flex w-full flex-col gap-0.5 rounded-lg p-2 text-left transition cursor-pointer ${
+                                    isSelected
+                                      ? 'bg-[#1c222d] text-white border border-brand/40 shadow-xs ring-1 ring-brand/30'
+                                      : 'text-zinc-300 hover:bg-panel2/50 border border-transparent'
+                                  }`}
+                                >
+                                  <div className="flex items-center gap-2.5">
+                                    <div
+                                      className={`flex size-7 shrink-0 items-center justify-center rounded-md ${
+                                        child.status === 'completed'
+                                          ? 'bg-emerald-500/15 text-emerald-400'
+                                          : child.status === 'running'
+                                            ? 'bg-amber-500/15 text-amber-400'
+                                            : child.status === 'partial'
+                                              ? 'bg-sky-500/15 text-sky-400'
+                                              : 'bg-red-500/15 text-red-400'
+                                      }`}
+                                    >
+                                      <Bot className="size-4" />
+                                    </div>
+
+                                    <div className="min-w-0 flex-1">
+                                      <div className="flex items-center justify-between">
+                                        <span className="font-semibold text-xs capitalize truncate">
+                                          {child.role} Specialist
+                                        </span>
+                                        {child.status === 'completed' ? (
+                                          <CheckCircle2 className="size-3 text-emerald-400 shrink-0" />
+                                        ) : child.status === 'running' ? (
+                                          <span className="size-2 rounded-full bg-amber-400 animate-ping shrink-0" />
+                                        ) : child.status === 'partial' ? (
+                                          <AlertCircle className="size-3 text-sky-400 shrink-0" />
+                                        ) : (
+                                          <AlertCircle className="size-3 text-red-400 shrink-0" />
+                                        )}
+                                      </div>
+                                      <div className="text-[10px] text-zinc-500 truncate mt-0.5">
+                                        {child.toolsRun.length > 0
+                                          ? `${child.toolsRun.length} tools executed`
+                                          : 'Autonomous run'}
+                                      </div>
+                                    </div>
+
+                                    <ChevronRight
+                                      className={`size-3 text-zinc-600 transition ${isSelected ? 'text-brand' : ''}`}
+                                    />
+                                  </div>
+
+                                  {/* T15 — bước và số bước con đã dùng (chỉ có từ đợt 22). */}
+                                  {(child.turn > 0 && child.step !== null) || child.stepsUsed !== null ? (
+                                    <div className="pl-9 font-mono text-[9px] text-zinc-600">
+                                      {child.turn > 0 && child.step !== null
+                                        ? t('chat.subagentTurnStep', {
+                                            turn: child.turn,
+                                            step: child.step,
+                                          })
+                                        : ''}
+                                      {child.stepsUsed !== null
+                                        ? `${child.turn > 0 && child.step !== null ? ' · ' : ''}${child.stepsUsed} steps used`
+                                        : ''}
+                                    </div>
+                                  ) : null}
+
+                                  {/* T15 — đang chờ peer giao kết quả; tự tắt khi `peer_wait_end` tới
+                                      hoặc khi hàng sổ con của cha không còn `waiting_for`. */}
+                                  {waiting && (
+                                    <div
+                                      data-testid="child-peer-wait"
+                                      className="pl-9 flex items-center gap-1 text-[10px] text-sky-300"
+                                    >
+                                      <Clock className="size-3 shrink-0" />
+                                      <span className="truncate">
+                                        {t('chat.subagentWaitingFor', {
+                                          role: waiting.roles.join(', ') || 'peer',
+                                        })}
+                                      </span>
+                                      {safetySeconds !== null && (
+                                        <span className="shrink-0 font-mono text-zinc-500">
+                                          ·{' '}
+                                          {t('chat.subagentSafetyNet', {
+                                            time: formatClock(safetySeconds),
+                                          })}
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
+
+                                  {/* T15 — mũi tên giao kết quả (`deliverTo` lúc giao, `deliveredTo` khi xong). */}
+                                  {targets.length > 0 && (
+                                    <div
+                                      data-testid="child-delivers-to"
+                                      className="pl-9 flex items-center gap-1 text-[10px] text-zinc-500"
+                                    >
+                                      <ArrowRight className="size-3 shrink-0" />
+                                      <span className="truncate">
+                                        {t('chat.subagentDeliversTo', {
+                                          targets: targets.join(', '),
+                                        })}
+                                      </span>
+                                    </div>
+                                  )}
+
+                                  {/* T15 — biên nhận: em này đã nhận kết quả từ ai. */}
+                                  {receipts.map((receipt, index) => (
+                                    <div
+                                      key={`${receipt.role}-${receipt.deliveryId ?? index}`}
+                                      data-testid="child-receipt"
+                                      className="pl-9 flex items-center gap-1 text-[10px] text-emerald-300"
+                                    >
+                                      <Inbox className="size-3 shrink-0" />
+                                      <span className="truncate">
+                                        {t('chat.subagentReceivedFrom', { role: receipt.role })}
+                                        {receipt.chars !== null ? ` · ${receipt.chars} chars` : ''}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </button>
+                              )
+                            })}
+                          </div>
                         )}
                       </div>
-                      <div className="text-[10px] text-zinc-500 truncate mt-0.5">
-                        {child.toolsRun.length > 0 ? `${child.toolsRun.length} tools executed` : 'Autonomous run'}
-                      </div>
-                    </div>
-
-                    <ChevronRight className={`size-3 text-zinc-600 transition ${isSelected ? 'text-brand' : ''}`} />
-                  </button>
+                    )}
+                  </section>
                 )
               })
             )}

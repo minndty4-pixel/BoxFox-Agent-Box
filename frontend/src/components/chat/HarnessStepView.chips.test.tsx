@@ -184,4 +184,57 @@ describe('HarnessStepView — chip mở tab (đợt 4)', () => {
 
     expect(() => click(host.querySelector('[data-timeline="plan"]'))).not.toThrow()
   })
+
+  // T15 — chip chuyên gia phải kể đường ống peer, không chỉ tên + trạng thái.
+  it('chip chuyên gia đang chờ peer thì ghi rõ đang chờ ai', () => {
+    const host = render(
+      [
+        userTurn,
+        ev('child', {
+          sessionId: 'child-43',
+          role: 'testing',
+          status: 'running',
+          waiting_for: ['role:review'],
+          waitingSince: 1000,
+        }),
+      ],
+      vi.fn(),
+    )
+
+    const chip = host.querySelector('[data-timeline="child"]')
+    expect(chip?.getAttribute('data-child-waiting')).toBe('true')
+    expect(chip?.textContent ?? '').toContain('Specialist: testing (running)')
+    expect(chip?.textContent ?? '').toContain('đang chờ review giao kết quả')
+  })
+
+  it('chip chuyên gia đã giao kết quả thì ghi rõ giao cho ai', () => {
+    const host = render(
+      [
+        userTurn,
+        ev('child', {
+          sessionId: 'child-44',
+          role: 'Build',
+          status: 'completed',
+          deliveredTo: ['role:review', 'main'],
+        }),
+      ],
+      vi.fn(),
+    )
+
+    const chip = host.querySelector('[data-timeline="child"]')
+    expect(chip?.getAttribute('data-child-targets')).toBe('review,main')
+    expect(chip?.textContent ?? '').toContain('đã giao cho review, main')
+  })
+
+  it('bản ghi cũ không có dữ liệu đường ống peer thì chip giữ nguyên như trước', () => {
+    const host = render(
+      [userTurn, ev('child', { sessionId: 'child-45', role: 'Explore', status: 'started' })],
+      vi.fn(),
+    )
+
+    const chip = host.querySelector('[data-timeline="child"]')
+    expect(chip?.textContent ?? '').toBe('Specialist: Explore (started)')
+    expect(chip?.getAttribute('data-child-waiting')).toBeNull()
+    expect(chip?.getAttribute('data-child-targets')).toBeNull()
+  })
 })

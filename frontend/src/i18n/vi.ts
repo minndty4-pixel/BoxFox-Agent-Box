@@ -189,6 +189,18 @@ const vi = {
     userLabel: 'Người dùng',
     agentLabel: 'Agent',
     systemLabel: 'Hệ thống',
+    // Đợt 22 / T4 + T15 — bảng Sub-agents theo từng lượt và đường ống peer.
+    subagentTurnHeader: 'Lượt {{turn}} · {{count}} con',
+    subagentTurnChip: 'Lượt {{turn}}',
+    subagentTurnUnknown: 'Lượt ? · {{count}} con',
+    subagentTurnEmpty: 'Lượt này không giao việc cho em nào',
+    subagentTurnEmptyHint: 'Chuyển sang lượt khác hoặc bật “tất cả lượt” để xem các con của lượt trước.',
+    subagentAllTurns: 'tất cả lượt',
+    subagentTurnStep: 'lượt {{turn}} · bước {{step}}',
+    subagentWaitingFor: 'đang chờ {{role}} giao kết quả',
+    subagentSafetyNet: 'lưới an toàn còn {{time}}',
+    subagentReceivedFrom: 'đã nhận từ {{role}}',
+    subagentDeliversTo: 'đã giao cho {{targets}}',
   },
   contextUsage: {
     title: 'Cửa sổ context',

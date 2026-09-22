@@ -347,6 +347,17 @@ export function AttachmentPicker({
                 <div className="text-[10px] text-muted">Chưa kết nối — không đính kèm được tài liệu Drive</div>
               </div>
             </button>
+
+            {/* Chân bảng (E5, mockup `attachments-popover-overlay`): nói trước hai điều
+                người dùng cần biết — cách đóng, và tệp chỉ thật sự đi khi lên tới box.
+                Chip trong composer là ảnh chụp lúc chọn, KHÔNG phải bằng chứng đã gửi. */}
+            <div
+              data-testid="attach-menu-hint"
+              className="px-2.5 pb-1 pt-1.5 text-[10px] leading-relaxed text-muted border-t border-line/60 mt-1"
+            >
+              Esc để đóng · tệp chỉ được gửi sau khi lên tới box (
+              <span className="font-mono text-zinc-400">/__box/file/upload</span>)
+            </div>
           </div>,
           document.body,
         )}

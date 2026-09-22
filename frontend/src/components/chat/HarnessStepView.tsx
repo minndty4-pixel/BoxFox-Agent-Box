@@ -22,14 +22,17 @@ import {
   Film,
   ShieldAlert,
   RefreshCw,
+  FolderOpen,
 } from 'lucide-react'
 import type { HarnessEvent } from '../../store/harnessChatStore'
+import { useUiStore } from '../../store/uiStore'
 import type { ProviderSnapshot } from '../../types/provider'
 import type { RouterChatSelection } from '../../store/routerChatStore'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { formatAttachmentSize } from './AttachmentPicker'
 import { absoluteWorkspacePath } from '../../lib/chat/attachmentUpload'
 import { appendStreamText } from '../../lib/streamText'
+import { peerLabels, waitFromChildRow } from '../../lib/chat/peerPipeline'
 import { ProviderIcon } from '../providers/ProviderIcon'
 import type { LightboxMediaProps } from './MediaLightboxModal'
 
@@ -852,6 +855,19 @@ export function HarnessStepView({
   )
 }
 
+/**
+ * E5 — loại tệp của chip đính kèm. Bản ghi `user.attachments` chỉ mang `name`/`path`/`sizeBytes`
+ * (không có trường loại), nên chỉ dám suy từ phần mở rộng và nói "tệp" khi không chắc — thà
+ * thiếu chữ còn hơn gán sai loại cho tệp của người dùng.
+ */
+function attachmentKindLabel(label: string): string {
+  if (/\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i.test(label)) return 'ảnh'
+  if (/\.(txt|md|markdown|log|csv|tsv|json|ya?ml|toml|ini|pdf|docx?|xlsx?|pptx?)$/i.test(label)) {
+    return 'văn bản'
+  }
+  return 'tệp'
+}
+
 function TurnBlock({
   turn,
   isTurnBusy,
@@ -870,6 +886,9 @@ function TurnBlock({
   const t = useT()
   const [copiedUser, setCopiedUser] = useState(false)
   const [copiedAssistant, setCopiedAssistant] = useState(false)
+  // E5 — "Mở trong Files" dùng đúng hành động `selectFile` đã có (mở tab Files + hiện
+  // bảng Workspace), không thêm đường mở tệp thứ hai.
+  const selectFile = useUiStore((s) => s.selectFile)
 
   // Xác định Model info và Provider
   const targetModelId =
@@ -1029,27 +1048,54 @@ function TurnBlock({
             ))}
             <MarkdownRenderer content={String(turn.userEvent.data.text ?? '')} />
             {/* A10: chip tệp đính kèm của lượt — người dùng phải thấy tệp nào ĐÃ tới box.
-                `title` là đường dẫn tuyệt đối để đối chiếu với đường dẫn agent đọc. */}
+                `title` là đường dẫn tuyệt đối để đối chiếu với đường dẫn agent đọc.
+                E5: hàng đọc `đường dẫn · dung lượng · loại` và có nút Mở trong Files. */}
             {userAttachments.length > 0 && (
               <div data-testid="user-attachments" className="mt-2 flex flex-col gap-1">
                 {userAttachments.map((file, index) => {
                   const path = typeof file.path === 'string' ? file.path : ''
                   const name = typeof file.name === 'string' && file.name ? file.name : path
                   const sizeBytes = typeof file.sizeBytes === 'number' ? file.sizeBytes : undefined
+                  const label = path || name
+                  const kind = attachmentKindLabel(label)
                   return (
                     <div
                       key={`user-attachment-${index}`}
                       data-testid="user-attachment-chip"
+                      data-attachment-path={path || undefined}
                       title={path ? absoluteWorkspacePath(path) : undefined}
                       className="flex items-center gap-1.5 rounded-lg border border-line/80 bg-panel px-2 py-1 text-[10px] text-muted"
                     >
                       <FileText className="size-3 shrink-0" />
                       <span className="truncate font-mono text-fg" data-testid="user-attachment-name">
-                        {name}
+                        {label}
                       </span>
-                      {sizeBytes !== undefined && <span className="shrink-0">{formatAttachmentSize(sizeBytes)}</span>}
-                      {path && path !== name && (
-                        <span className="truncate font-mono">{path}</span>
+                      {sizeBytes !== undefined && (
+                        <span className="shrink-0">
+                          <span className="text-zinc-600">{' · '}</span>
+                          {formatAttachmentSize(sizeBytes)}
+                        </span>
+                      )}
+                      {kind && (
+                        <span className="shrink-0">
+                          <span className="text-zinc-600">{' · '}</span>
+                          {kind}
+                        </span>
+                      )}
+                      {/* Mở đúng tệp trong tab Files — chính hành động `selectFile` mà nút
+                          [👁 View] trong chat đang dùng (mở tab Files + hiện bảng Workspace).
+                          Không có đường dẫn thật thì không có nút: không bịa đường dẫn. */}
+                      {path && (
+                        <button
+                          type="button"
+                          data-testid="user-attachment-open-files"
+                          onClick={() => selectFile(path)}
+                          title={`Mở ${path} trong tab Files`}
+                          className="ml-auto inline-flex shrink-0 cursor-pointer items-center gap-0.5 rounded border border-line/80 bg-panel2 px-1.5 py-0.5 text-[10px] text-muted transition hover:border-brand/60 hover:text-fg"
+                        >
+                          <FolderOpen className="size-3" />
+                          Mở trong Files
+                        </button>
                       )}
                     </div>
                   )
@@ -1156,11 +1202,24 @@ function TurnBlock({
               }
               if (item.kind === 'child') {
                 const childSessionId = String(item.event.data.sessionId ?? item.event.data.role ?? '')
+                // T15 — chip chuyên gia phải kể được đường ống peer: em này đang chờ ai giao
+                // kết quả, hoặc đã giao kết quả cho ai. Nguồn là hàng sổ con của CHA
+                // (`waiting_for`/`deliveredTo`) — transcript không poll luồng của từng em,
+                // nên đọc thẳng hàng sổ con là nguồn thật duy nhất ở đây.
+                const childWait = waitFromChildRow(item.event.data)
+                const childTargets = peerLabels(item.event.data.deliveredTo)
+                const pipeSuffix = childWait
+                  ? ` · ${t('chat.subagentWaitingFor', { role: childWait.roles.join(', ') || 'peer' })}`
+                  : childTargets.length > 0
+                    ? ` · ${t('chat.subagentDeliversTo', { targets: childTargets.join(', ') })}`
+                    : ''
                 return (
                   <button
                     key={item.id}
                     type="button"
                     data-timeline="child"
+                    data-child-waiting={childWait ? 'true' : undefined}
+                    data-child-targets={childTargets.length > 0 ? childTargets.join(',') : undefined}
                     aria-label={t('chat.openSubagentTab')}
                     onClick={() => onOpenTab?.('subagents', childSessionId ? { sessionId: childSessionId } : null)}
                     className="group inline-flex items-center gap-1.5 rounded-md border border-brand/30 bg-brand/5 px-2 py-0.5 text-[11px] text-brand font-medium select-none transition hover:bg-brand/10 cursor-pointer"
@@ -1168,6 +1227,7 @@ function TurnBlock({
                     <BrainCircuit className="size-3 animate-pulse" />
                     <span className="group-hover:underline">
                       Specialist: {String(item.event.data.role)} ({String(item.event.data.status)})
+                      {pipeSuffix}
                     </span>
                     <ChevronRight className="size-3 opacity-0 transition group-hover:opacity-100" />
                   </button>
