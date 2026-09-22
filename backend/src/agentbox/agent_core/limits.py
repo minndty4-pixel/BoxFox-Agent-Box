@@ -173,11 +173,6 @@ def peer_mesh_enabled():
     return switch_enabled(PEER_MESH_ENV, True)
 
 
-def peer_fanout_enabled():
-    """Nới trần fan-out theo cha lên `FANOUT_PER_PARENT_MAX` cho cả máy (mặc định `off`)."""
-    return peer_fanout_limit() == FANOUT_PER_PARENT_MAX
-
-
 def peer_fanout_limit():
     """Trần con mỗi cha do `BOXFOX_PEER_FANOUT` đặt, hoặc `None` khi biến trống.
 

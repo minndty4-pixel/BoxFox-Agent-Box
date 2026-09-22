@@ -14,7 +14,7 @@ import json
 import pytest
 
 from agentbox.agent_core.limits import (CHILDREN_PER_TURN_CODE, CHILDREN_PER_TURN_MAX, FANOUT_GLOBAL_CEILING,
-                                        FANOUT_PER_PARENT_DEFAULT, FANOUT_PER_PARENT_MAX, peer_fanout_enabled)
+                                        FANOUT_PER_PARENT_DEFAULT, FANOUT_PER_PARENT_MAX, PEER_FANOUT_ENV)
 from agentbox.agent_core.runtime import HarnessRuntime
 from agentbox.memory.session_store import SessionStore
 
@@ -178,11 +178,12 @@ def test_tran_sinh_con_trong_mot_luot(tmp_path):
     store.close()
 
 
-def test_hoi_dung_tran_hien_hanh(tmp_path):
-    """Công tắc nới trần: mặc định 3, có `BOXFOX_PEER_FANOUT=1` thì 6, `config` kẹp lại."""
-    assert peer_fanout_enabled() is False
+def test_hoi_dung_tran_hien_hanh(monkeypatch):
+    """Trần fan-out theo cha: mặc định 3, `config` của phiên kẹp vào `[1, 6]`, công tắc máy thắng."""
     assert HarnessRuntime.fanout_limit({}) == FANOUT_PER_PARENT_DEFAULT
     assert HarnessRuntime.fanout_limit({'fanoutPerParent': 5}) == 5
     assert HarnessRuntime.fanout_limit({'fanoutPerParent': 99}) == FANOUT_PER_PARENT_MAX
     assert HarnessRuntime.fanout_limit({'fanoutPerParent': 0}) == 1
     assert HarnessRuntime.fanout_limit({'fanoutPerParent': 'ba'}) == FANOUT_PER_PARENT_DEFAULT
+    monkeypatch.setenv(PEER_FANOUT_ENV, '1')
+    assert HarnessRuntime.fanout_limit({'fanoutPerParent': 5}) == 1, 'công tắc của MÁY thắng đường phiên'

@@ -25,7 +25,7 @@ from .limits import (ANSWER_LENGTH_HINT, ANSWER_LENGTH_WARN_CODE, ANSWER_MAX_CHA
                      DEADLINE_DEFAULT_SECONDS, DEADLINE_MAX_SECONDS, DEADLINE_MIN_SECONDS, DEADLINE_NOTICE_CODE,
                      DIAGNOSIS_MIN_CHARS, FANOUT_BUSY_CODE, FANOUT_GLOBAL_CEILING, FANOUT_PER_PARENT_DEFAULT,
                      FANOUT_PER_PARENT_MAX, FANOUT_QUEUE_WAIT_SECONDS, INSTRUCTIONS_MAX_CHARS,
-                     peer_fanout_enabled, peer_fanout_limit, peer_mesh_enabled, peer_wait_max,
+                     peer_fanout_limit, peer_mesh_enabled, peer_wait_max,
                      parallel_read_tools_enabled,
                      MAX_STEPS_DEFAULT, MAX_STEPS_MAX,
                      ROUTER_BODY_BUDGET, STEP_BUDGET_NOTICE_CODE, STEPS_CLAMP_NOTICE_CODE,
@@ -1755,11 +1755,13 @@ class HarnessRuntime(RuntimeCommands):
             record['diffPath'] = diff_path
         return record
 
-    def peer_turn_cost(self, sid, turn):
-        """Chi phí mesh của MỘT lượt (T13) — mỗi số đọc từ ĐÚNG MỘT nguồn.
+    def peer_turn_cost(self, sid):
+        """Chi phí mesh ghi kèm event của lượt (T13) — mỗi số đọc từ ĐÚNG MỘT nguồn.
 
         - `childCount`/`childSteps`/`childTokens` đọc từ SỔ CON (`children_summary`, một truy vấn):
-          sổ con là nguồn chân lý cho "lượt này sinh con nào", nên không cộng lại từ event.
+          sổ con là nguồn chân lý cho "phiên này sinh con nào", nên không cộng lại từ event. Ba số
+          con là số LUỸ KẾ của cả PHIÊN (`children_summary` không lọc theo lượt), chỉ hai số chờ
+          bên dưới mới là số của riêng lượt đang đóng.
         Bản trả về KHÔNG có khoá `turn`: chỗ gọi đã có số lượt của chính nó, và `system_log.write`
         nhận `turn=` như một tham số riêng nên một khoá trùng tên sẽ làm nó ném `TypeError`.
 
@@ -1770,7 +1772,6 @@ class HarnessRuntime(RuntimeCommands):
         """
         numbers = self.store.children_summary(sid)
         waited_ms = int(self.wait_extension.get(sid, 0.0) * 1000)
-        del turn  # hợp đồng: người gọi tự nói lượt nào (`system_log.write(..., turn=...)` đã có sẵn)
         return {'waitedMs': waited_ms, 'extensionMs': waited_ms,
                 'childCount': numbers['spawned'], 'childSteps': numbers['childSteps'],
                 'childTokens': numbers['childTokens'], 'childDeliveries': numbers['deliveries']}
@@ -2169,7 +2170,7 @@ class HarnessRuntime(RuntimeCommands):
             close_turn('partial', 'stop', 0, None, extra={'partial': True, 'diagnosis': True})
             self.store.emit(sid, 'finish', {'status': 'completed', 'turn': turn_no,
                                             'steps': steps_used,
-                                            **self.peer_turn_cost(sid, turn_no)})
+                                            **self.peer_turn_cost(sid)})
             elapsed_ms = round((time.time() - started) * 1000)
             notice = {'code': reason_code, 'partial': True, 'diagnosis': True,
                       'diagnosisChars': len(text), 'stepsUsed': steps_used, 'toolsRun': tools_run,
@@ -2184,7 +2185,7 @@ class HarnessRuntime(RuntimeCommands):
                              status='completed', partial=True, diagnosis=True, reason=reason_code,
                              steps=steps_used,
                              toolsRun=tools_run, textChars=len(text), deadlineUsedMs=elapsed_ms,
-                             **self.peer_turn_cost(sid, turn_no))
+                             **self.peer_turn_cost(sid))
             return text
         # B3 — cửa sổ giữ chỗ: ba bước cuối của trần bước là của việc CHẨN ĐOÁN, không phải
         # của việc mới. Đo sống vòng 21: lượt chạm trần bước (phiên `ea948649…`) chạy đủ 10/10
@@ -2523,7 +2524,7 @@ class HarnessRuntime(RuntimeCommands):
                         self.store.save(sid, messages, 'completed')
                         self.store.emit(sid, 'finish', {'status': 'completed', 'turn': turn_no,
                                                         'steps': steps_used,
-                                                        **self.peer_turn_cost(sid, turn_no)})
+                                                        **self.peer_turn_cost(sid)})
                         elapsed_ms = (time.time() - started) * 1000
                         system_log.write('turn.end', session_id=sid, turn=turn_no, turn_id=steps_used,
                                          status='completed', steps=steps_used,
@@ -2531,7 +2532,7 @@ class HarnessRuntime(RuntimeCommands):
                                          stepsUsed=steps_used, toolsRun=tools_run,
                                          deadlineUsedMs=elapsed_ms,
                                          durationMs=elapsed_ms,
-                                         **self.peer_turn_cost(sid, turn_no))
+                                         **self.peer_turn_cost(sid))
                         return text
                     if len(calls) > 16:
                         raise ValueError('Tool-call batch exceeds limit')
@@ -2611,12 +2612,12 @@ class HarnessRuntime(RuntimeCommands):
             self.store.save(sid, messages, 'cancelled')
             self.store.emit(sid, 'finish', {'status': 'cancelled', 'turn': turn_no,
                                             'steps': steps_used,
-                                            **self.peer_turn_cost(sid, turn_no)})
+                                            **self.peer_turn_cost(sid)})
             elapsed_ms = (time.time() - started) * 1000
             system_log.write('turn.end', session_id=sid, turn=turn_no, turn_id=steps_used,
                              status='cancelled', steps=steps_used,
                              stepsUsed=steps_used, toolsRun=tools_run, deadlineUsedMs=elapsed_ms,
-                             durationMs=elapsed_ms, **self.peer_turn_cost(sid, turn_no))
+                             durationMs=elapsed_ms, **self.peer_turn_cost(sid))
             raise
         except Exception as exc:
             code, error = classify_failure(exc)
@@ -2644,7 +2645,7 @@ class HarnessRuntime(RuntimeCommands):
                              errorCode=code, message=error, steps=steps_used,
                              stepsUsed=steps_used, toolsRun=tools_run, deadlineUsedMs=elapsed_ms,
                              durationMs=elapsed_ms, detail=failure_detail(exc),
-                             **self.peer_turn_cost(sid, turn_no))
+                             **self.peer_turn_cost(sid))
             return None
         finally:
             self.run_budget.pop(sid, None)
@@ -2889,7 +2890,6 @@ class HarnessRuntime(RuntimeCommands):
             # Đã chờ đủ hạn mức của lượt: KHÔNG hoãn hạn chót thêm, trả lời ngay với dữ liệu đang có.
             return 'timeout', [], list(targets), 0, True
         limit = min(timeout_seconds, PEER_WAIT_TOTAL_MAX_SECONDS - spent)
-        paused_at = started
         if paused is not None:
             try:
                 budget.reschedule(None)
@@ -2922,7 +2922,7 @@ class HarnessRuntime(RuntimeCommands):
                 finally:
                     self.peer_waiters.get(sid, set()).discard(event)
         finally:
-            waited = time.monotonic() - paused_at
+            waited = time.monotonic() - started
             self.wait_extension[sid] = self.wait_extension.get(sid, 0.0) + waited
             if paused is not None:
                 try:
@@ -3802,8 +3802,9 @@ class HarnessRuntime(RuntimeCommands):
             self.notify_peer_delivery(target)
             system_log.write('peer.delivery.queued', session_id=parent_id, child=child_id,
                              recipient=target, deliveryId=row['id'], chars=chars)
-        self.store.child_set_deliveries(child_id, self.store.child_delivery_receipts(child_id))
-        return self.store.child_delivery_receipts(child_id)
+        receipts = self.store.child_delivery_receipts(child_id)
+        self.store.child_set_deliveries(child_id, receipts)
+        return receipts
 
     def drain_peer_deliveries(self, sid, messages):
         """T12 — bơm kết quả bạn đã gửi vào transcript, ở **ranh giới bước**, đúng một lần.
@@ -3950,10 +3951,6 @@ class HarnessRuntime(RuntimeCommands):
         status = child_rec['status']
         child_events = self.store.events(child['id'])
         last_error = next((e['data'].get('message') for e in reversed(child_events) if e['type'] == 'error'), None)
-        # C2 — con bị nhà cung cấp cắt ở trần output: `_run` đã thử lại một lần rồi trả câu trả lời
-        # dở, và hàng `sessions` của con vẫn `completed` (giữ nguyên từ vựng trạng thái). Nên sự
-        # thật phải đọc từ notice BỀN của chính con, không đọc từ status — nếu không, cha sẽ nhận
-        # một "thành công" trong khi câu trả lời mới có một nửa.
         # C2 + B5 — con trả về câu trả lời DỞ vì một trong ba trần (output của nhà cung cấp, ngân
         # sách bước, hạn chót). `_run` của con đã phát notice BỀN mang ĐÚNG mã lý do, và hàng
         # `sessions` của con vẫn `completed` (giữ nguyên từ vựng trạng thái), nên sự thật phải
