@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import pytest
+from agentbox.agent_core import evidence_gate
 from agentbox.agent_core.runtime import HarnessRuntime, RouterClient
 from agentbox.agent_core.roles import ROLES, allowed_tools
 from agentbox.agent_core.compression import ContextCompressor
@@ -119,9 +120,20 @@ def test_denied_tool_and_malformed_args_never_execute(tmp_path):
         runtime = HarnessRuntime(store, executor, client)
         s = runtime.create({'skills': []}, role='review')
         await runtime.start(s['id'], 'Inspect')
-        # `session_ensure` (A1) là op hạ tầng duy nhất được phép chạm executor ở đây: nó dọn thư mục
-        # phiên lúc bắt đầu lượt, không phải một công cụ. Phép kiểm này nói về CÔNG CỤ.
-        assert [name for name, _, _ in executor.calls if name != 'session_ensure'] == []
+        # `session_ensure` (A1) là op hạ tầng được phép chạm executor ở đây: nó dọn thư mục phiên lúc
+        # bắt đầu lượt, không phải một công cụ. Cổng bằng chứng (P3.2, vòng 22) cũng vậy: nó tự chạy
+        # MỘT phép dò `find` rồi ghi kết quả dò vào thư mục bằng chứng — việc của harness, không phải
+        # công cụ của model. Nhận diện hai lời gọi đó bằng **dấu vết của chính chúng** (lệnh `find`
+        # cố định, thư mục bằng chứng), KHÔNG bằng tên op: lọc theo tên thì chính cú `file_write` mà
+        # model gọi trong lượt này cũng lọt qua phép kiểm.
+        def infra_only(name, args):
+            if name == 'session_ensure':
+                return True
+            if name == 'terminal_exec':
+                return str(args.get('command') or '').startswith('cd /home/agent/workspace && find .')
+            return str(args.get('path') or '').startswith(evidence_gate.EVIDENCE_ROOT_REL)
+
+        assert [name for name, args, _ in executor.calls if not infra_only(name, args)] == []
         results = [m for m in store.get(s['id'])['messages'] if m['role'] == 'tool']
         assert all('error' in m['content'] for m in results)
         store.close()

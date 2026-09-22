@@ -188,6 +188,21 @@ def test_the_retry_numbers_are_the_constants_of_the_policy(tmp_path):
     assert info['retry']['maxRetries'] == 3
 
 
+def test_the_evidence_gate_mode_is_the_mode_the_engine_applies(tmp_path, monkeypatch):
+    """P3.5 — `limits.gate.evidenceMode` là mức ĐANG áp, đọc env ở thời điểm gọi.
+
+    Nghiệm thu của plan là một lệnh `curl` trên harness đang chạy; ca này giữ đúng tính chất đó ở
+    mức đơn vị: `BOXFOX_EVIDENCE_GATE=enforce` ⇒ bảng nói `enforce`, và giá trị lạ ⇒ mức MẶC ĐỊNH
+    (giá trị lạ không được biến thành một mức không tồn tại).
+    """
+    monkeypatch.setenv(limits.EVIDENCE_GATE_ENV, 'enforce')
+    assert runtime_info(tmp_path)['limits']['gate']['evidenceMode'] == 'enforce'
+
+    monkeypatch.setenv(limits.EVIDENCE_GATE_ENV, 'chặt-vừa-thôi')
+    info = runtime_info(tmp_path, name='runtime-info-unknown.db')
+    assert info['limits']['gate']['evidenceMode'] == limits.EVIDENCE_DEFAULT_MODE
+
+
 def test_the_limits_are_the_numbers_the_runtime_applies(tmp_path):
     info = runtime_info(tmp_path)
     assert info['limits'] == {
@@ -213,6 +228,20 @@ def test_the_limits_are_the_numbers_the_runtime_applies(tmp_path):
             'parallelReadTools': limits.parallel_read_tools_enabled(),
             'watchdogTickSeconds': limits.WATCHDOG_TICK_SECONDS,
             'childWallMaxSeconds': limits.CHILD_WALL_MAX_SECONDS,
+        },
+        # Đợt 3 (P3.5) — cùng luật cho cổng bằng chứng: `evidenceMode` đọc qua CHÍNH hàm engine
+        # dùng (`HarnessRuntime.evidence_mode`), nên không có con số nào được chép tay ở đây và
+        # giao diện không thể hứa một mức mà engine không áp.
+        'gate': {
+            'evidenceMode': HarnessRuntime.evidence_mode(None)[0],
+            'modes': list(limits.EVIDENCE_MODES),
+            'default': limits.EVIDENCE_DEFAULT_MODE,
+            'repairMaxTokens': limits.EVIDENCE_REPAIR_MAX_TOKENS,
+            'repairTimeoutSeconds': limits.EVIDENCE_REPAIR_TIMEOUT_SECONDS,
+            'repairMinRemainingSeconds': limits.EVIDENCE_REPAIR_MIN_REMAINING_SECONDS,
+            'probeTimeoutSeconds': limits.EVIDENCE_PROBE_TIMEOUT_SECONDS,
+            'probeMaxFiles': limits.EVIDENCE_PROBE_MAX_FILES,
+            'maxArtifacts': limits.EVIDENCE_MAX_ARTIFACTS,
         },
     }
     assert info['limits']['instructionsChars'] == limits.INSTRUCTIONS_MAX_CHARS

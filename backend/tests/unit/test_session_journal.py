@@ -118,6 +118,34 @@ def test_the_brief_is_rebuilt_from_the_rows_and_replaces_itself(tmp_path):
     assert session_journal.inject_brief(once, '') == 'ROLE + HƯỚNG DẪN', 'không có khối thì bỏ khối cũ'
 
 
+"""A session whose journal holds only lookup rows must not change the system prompt.
+
+`E:` (evidence, P3.4 vòng 22) and `F:` (fact) belong to no brief group on purpose: they are there
+for the reader and for lookup, not to be repeated every turn. Before this guard, such a session
+got a block of six empty section headers injected into the system message on the SECOND turn only
+(rows exist by then), so the prompt changed for no information gain.
+"""
+
+
+def test_rows_that_belong_to_no_group_leave_the_memory_block_empty(tmp_path):
+    store, sid = _store(tmp_path)
+    executor = _Executor()
+
+    asyncio.run(session_journal.append(executor, store, sid, 'evidence', 'lượt 1: đã kiểm chứng — 1 mảnh bằng chứng',
+                                       status='info', turn=1, step=2))
+    assert session_journal.brief(store, sid) == '', 'hàng `E:` không có nhóm ⇒ không được dựng khối'
+    asyncio.run(session_journal.append(executor, store, sid, 'fact', 'ngưỡng nén 1M nay là 200 000'))
+    assert session_journal.brief(store, sid) == '', 'hàng `F:` cũng vậy'
+    assert journal.brief_has_items(journal.brief_text([{'kind': 'evidence', 'text': 'x'}])) is False
+
+    asyncio.run(session_journal.append(executor, store, sid, 'task', 'việc: nén ngữ cảnh', status='open'))
+    block = session_journal.brief(store, sid)
+    assert block.startswith(journal.JOURNAL_BRIEF_HEADER), 'có hàng thật vào nhóm thì khối phải quay lại'
+    assert 'việc: nén ngữ cảnh' in block
+    assert 'lượt 1: đã kiểm chứng' not in block, 'hàng `E:` vẫn không được lọt vào khối'
+    assert journal.brief_has_items(block) is True
+
+
 def test_a_missing_executor_skips_the_file_layer_silently(tmp_path):
     """Harness không sandbox (test, chạy ngoài box): hàng SQLite vẫn có, không notice, không ném."""
     store, sid = _store(tmp_path)

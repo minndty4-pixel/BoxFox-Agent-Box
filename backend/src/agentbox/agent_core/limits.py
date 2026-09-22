@@ -209,10 +209,51 @@ def parallel_read_tools_enabled():
     """
     return switch_enabled(PARALLEL_READ_ENV, False)
 
+# --------------------------------------------------------------------------------------------
+# Vòng 22 đợt 3 — cổng bằng chứng sống: công tắc, trần của vòng vá, trần của phép dò box
+# --------------------------------------------------------------------------------------------
+# Ba chế độ là ba mức CAN THIỆP, không phải ba mức "chặt": `off` không làm gì; `warn` ghim nhãn
+# và đếm nhưng KHÔNG gọi model, KHÔNG sửa một chữ nào của câu trả lời; `enforce` cho phép ĐÚNG
+# MỘT vòng vá. Giá trị lạ ⇒ rơi về mặc định KÈM notice (xem `evidence_mode` của runtime).
+EVIDENCE_GATE_ENV = 'BOXFOX_EVIDENCE_GATE'
+EVIDENCE_MODES = ('off', 'warn', 'enforce')
+EVIDENCE_DEFAULT_MODE = 'warn'
+# Trần của vòng vá. Ba con số này là điều kiện sống còn: vòng vá nằm TRONG `asyncio.timeout`
+# của lượt, nên nếu nó tiêu hết thời gian còn lại thì lượt chết vì `DEADLINE` mà không có câu
+# trả lời nào — ngược hẳn mục tiêu của cả đợt.
+EVIDENCE_REPAIR_MAX_TOKENS = 2048
+EVIDENCE_REPAIR_TIMEOUT_SECONDS = 60
+EVIDENCE_REPAIR_MIN_REMAINING_SECONDS = 20
+# Phép dò box (một lệnh `find`, xem `runtime.probe_workspace`): trần thời gian, trần số tệp, và
+# trần số mảnh bằng chứng mang vào câu trả lời.
+EVIDENCE_PROBE_TIMEOUT_SECONDS = 20
+EVIDENCE_PROBE_MAX_FILES = 200
+# P1.5 — dọn thư mục bằng chứng: không phải mỗi lượt (mỗi lượt là một `find`/`scandir` thừa trên
+# đường trả lời), nhưng cũng không phải "để cuối phiên" (phiên dài là chỗ thư mục phình).
+EVIDENCE_PRUNE_EVERY = 20
+EVIDENCE_PRUNE_TIMEOUT_SECONDS = 30
+EVIDENCE_PRUNE_CODE = 'EVIDENCE_PRUNE_DEGRADED'
+EVIDENCE_MAX_ARTIFACTS = 20
+EVIDENCE_EXCERPT_CHARS = 500
+# Mã notice của cổng. `X:` chỉ dành cho cổng TỰ hỏng; thiếu bằng chứng là `EVIDENCE_INSUFFICIENT`
+# và KHÔNG bao giờ làm lượt hỏng.
+EVIDENCE_INSUFFICIENT_CODE = 'EVIDENCE_INSUFFICIENT'
+EVIDENCE_GATE_FAILED_CODE = 'EVIDENCE_GATE_FAILED'
+# Giá trị lạ của công tắc: rơi về mặc định **kèm notice** — đổi hành vi trong im lặng là
+# thứ kế hoạch cấm (và là thứ đã làm vòng 21 tốn thời gian để tìm ra sự thật).
+EVIDENCE_MODE_UNKNOWN_CODE = 'EVIDENCE_GATE_MODE_UNKNOWN'
+# P1.1 — mã của dòng log nói bộ đếm lượt và transcript lệch nhau.
+TURN_INDEX_DRIFT_CODE = 'TURN_INDEX_DRIFT'
+
 ANSWER_WARN_CHARS = 60_000
 ANSWER_MAX_CHARS = 150_000
 ANSWER_LENGTH_WARN_CODE = 'ANSWER_LENGTH_WARN'
 ANSWER_TOO_LONG_CODE = 'ANSWER_TOO_LONG'
+# Tên gọi của hai mã trên trong kế hoạch đợt 3 (`ANSWER_LONG` / `ANSWER_TRUNCATED`). Đợt 1 đã
+# ship chúng dưới tên `ANSWER_LENGTH_WARN`/`ANSWER_TOO_LONG` và giao diện đang đọc hai mã đó, nên
+# ở đây chỉ có BÍ DANH — đổi tên mã đang chạy sẽ làm nhãn cũ mất nghĩa mà không thêm gì.
+ANSWER_LONG_CODE = ANSWER_LENGTH_WARN_CODE
+ANSWER_TRUNCATED_CODE = ANSWER_TOO_LONG_CODE
 # Dòng chỉ dẫn này sống ở ĐÂY, không chép tay vào từng prompt vai: `runtime.start()` là nơi
 # duy nhất dựng prompt hệ thống cho mọi vai, nên mọi prompt đều mang câu này.
 ANSWER_LENGTH_HINT = (

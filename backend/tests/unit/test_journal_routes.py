@@ -67,6 +67,27 @@ def test_the_journal_route_pages_records_with_a_cursor(tmp_path):
     assert kinds['records'] == [], 'lọc `kind` không khớp thì trả rỗng, không trả hết'
 
 
+def test_a_record_pinned_with_turn_and_step_carries_them_through_the_route(tmp_path):
+    """P1.2 — lượt/bước của bản ghi phải đi hết đường: `append` → SQLite → payload route.
+
+    Hàng cũ (ghi trước vòng này) KHÔNG có hai khoá: trả `None`, không được bịa số 0 — người đọc
+    phải phân biệt được "không có lượt" với "lượt 0".
+    """
+    async def scenario(client, store, runtime, sid):
+        await session_journal.append(runtime.executor, store, sid, 'evidence',
+                                     'lượt ba có bằng chứng', turn=3, step=2, status='info')
+        await session_journal.append(runtime.executor, store, sid, 'step',
+                                     'bước cũ không có số lượt', status='done')
+        payload = await (await client.get(f'/api/agent/sessions/{sid}/journal',
+                                          headers=HEADERS)).json()
+        return payload['records']
+
+    records = fetch(tmp_path, scenario)
+    assert (records[0]['turn'], records[0]['step']) == (3, 2)
+    assert records[1]['turn'] is None and records[1]['step'] is None, \
+        'hàng không có lượt trả None, không được bịa số 0'
+
+
 def test_a_failed_file_layer_shows_up_as_degraded(tmp_path):
     async def scenario(client, store, runtime, sid):
         store.emit(sid, 'notice', {'code': 'JOURNAL_DEGRADED', 'message': 'box đóng rồi'})

@@ -17,6 +17,11 @@ from .compression import ContextCompressor, estimate_tokens, usage_reading
 from .failures import (RETRY_BUDGET_SECONDS, classify_failure, failure_detail, level_refusal,
                        log_safe_failure, retry_advice, stop_reason)
 from .limits import (ANSWER_LENGTH_HINT, ANSWER_LENGTH_WARN_CODE, ANSWER_MAX_CHARS, ANSWER_TOO_LONG_CODE,
+                     EVIDENCE_DEFAULT_MODE, EVIDENCE_GATE_ENV, EVIDENCE_GATE_FAILED_CODE,
+                     EVIDENCE_INSUFFICIENT_CODE, EVIDENCE_MAX_ARTIFACTS, EVIDENCE_MODES,
+                     EVIDENCE_MODE_UNKNOWN_CODE, EVIDENCE_PRUNE_EVERY, EVIDENCE_PROBE_MAX_FILES,
+                     EVIDENCE_PROBE_TIMEOUT_SECONDS, EVIDENCE_REPAIR_MAX_TOKENS,
+                     EVIDENCE_REPAIR_MIN_REMAINING_SECONDS, EVIDENCE_REPAIR_TIMEOUT_SECONDS,
                      ANSWER_WARN_CHARS, CHILD_DEADLINE_SECONDS, CHILD_MAX_STEPS, CHILDREN_PER_TURN_CODE,
                      CHILDREN_PER_TURN_MAX, DEADLINE_CLAMP_NOTICE_CODE, PEER_DELIVER_MAX,
                      PEER_TARGET_GRACE_SECONDS,
@@ -29,11 +34,12 @@ from .limits import (ANSWER_LENGTH_HINT, ANSWER_LENGTH_WARN_CODE, ANSWER_MAX_CHA
                      parallel_read_tools_enabled,
                      MAX_STEPS_DEFAULT, MAX_STEPS_MAX,
                      ROUTER_BODY_BUDGET, STEP_BUDGET_NOTICE_CODE, STEPS_CLAMP_NOTICE_CODE,
-                     TRUNCATED_OUTPUT_MAX_TOKENS, TRUNCATED_OUTPUT_NOTICE_CODE, WRAP_UP_MAX_TOKENS,
+                     TRUNCATED_OUTPUT_MAX_TOKENS, TRUNCATED_OUTPUT_NOTICE_CODE, TURN_INDEX_DRIFT_CODE,
+                     WRAP_UP_MAX_TOKENS,
                      WRAP_UP_READ_TOOL_CALLS, WRAP_UP_STEPS_RESERVED, WRAP_UP_TIMEOUT_SECONDS)
 from .plan_quality import check_plan_quality
 from .roles import ROLES, allowed_tools
-from . import journal, plan_eval, plan_header, plan_registry, session_journal
+from . import evidence_gate, journal, plan_eval, plan_header, plan_registry, session_journal
 from .tool_contracts import schemas_for
 from .tool_groups import TOOL_GROUPS
 from .web import WebTools
@@ -660,7 +666,7 @@ def context_window_locked(environ=None):
     return str(raw or '').strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
-def _journal_row(store, session_id, text, numbers):
+def _journal_row(store, session_id, text, numbers, data=None):
     """Ghim MỘT hàng nhật ký kiểu `X:` (trần bước, câu trả lời bị cắt) — trả số thứ tự, hoặc `None`.
 
     Đi qua `session_journal.insert_row` chứ không gọi thẳng `store.journal_add`: bản ghi phải có mã
@@ -673,6 +679,7 @@ def _journal_row(store, session_id, text, numbers):
     try:
         item, stored = session_journal.insert_row(
             store, session_id, 'blocker', text,
+            data={key: value for key, value in (data or {}).items() if value is not None},
             numbers={key: value for key, value in numbers.items() if value is not None})
         return stored if stored else None
     except Exception:
@@ -742,7 +749,7 @@ def answer_truncation_tail():
             'file in the workspace]')
 
 
-def _journal_answer_truncated(store, session_id, chars, kept):
+def _journal_answer_truncated(store, session_id, chars, kept, path=None):
     """Một hàng `X:` cho câu trả lời bị cắt ở trần (D2) — cùng đường với `_journal_blocker`.
 
     Hàng `events` kind `notice` là bản cho giao diện; hàng này ghim cùng sự việc vào nhật ký
@@ -751,8 +758,10 @@ def _journal_answer_truncated(store, session_id, chars, kept):
     """
     return _journal_row(store, session_id,
                         f'{ANSWER_TOO_LONG_CODE}: the final answer was {chars} chars and was cut at '
+                        f'{kept} — the full content is at {path}' if path else
+                        f'{ANSWER_TOO_LONG_CODE}: the final answer was {chars} chars and was cut at '
                         f'{kept} — the full content must be written to a file in the workspace',
-                        {'chars': chars, 'keptChars': kept})
+                        {'chars': chars, 'keptChars': kept}, {'path': path})
 
 
 def resolve_context_window(model_str='', requested=None, metadata=None, declared_source=None):
@@ -1434,6 +1443,18 @@ class HarnessRuntime(RuntimeCommands):
         # dịch, xem `begin_turn`). Trước đây `turnId` trong log là số BƯỚC nên không có cách nào
         # nói một event thuộc lượt nào; BUG-43/T4 dựng trên con số này.
         turn = self.store.begin_turn(sid)
+        # P1.1 — kiểm chéo bộ đếm bằng BẢNG `events` NGAY TẠI ĐÂY, trước khi con số được phát ra:
+        # mọi thứ của lượt (`user`, `turn_start`, `turn_end`, hàng con của lượt) đọc lại số này,
+        # nên sửa muộn hơn là để lại hai con số cho cùng một lượt. Số đếm được = số hàng `user` đã
+        # có + 1 (lượt này chưa phát). Phiên CŨ có `turn_count` mặc định 0 là ca thật: thiếu dòng
+        # này thì một phiên đang ở lượt thứ N bỗng nhận số 1, và mọi thứ buộc theo lượt lệch hết.
+        counted = self._turn_index(sid) + 1
+        if counted != turn:
+            system_log.write('turn.index_drift', level='warn', code=TURN_INDEX_DRIFT_CODE,
+                             session_id=sid, turn=turn, index=counted,
+                             message=('the session turn counter and the transcript disagree; '
+                                      'using the counted index for this turn'))
+            turn = counted
         self.active_turn[sid] = turn
         event = {'text': prompt, 'turn': turn}
         if checked_attachments:
@@ -1962,7 +1983,35 @@ class HarnessRuntime(RuntimeCommands):
                 return code
         return None
 
-    def enforce_answer_length(self, sid, text):
+    async def stash_long_answer(self, sid, text, step_no=None):
+        """D-4 (§3.6) — toàn văn câu trả lời quá trần vào gốc bằng chứng, trả đường dẫn (hoặc `None`).
+
+        Đây là chỗ DUY NHẤT harness viết lại văn của model, và bản đầy đủ phải nằm ở đâu đó đọc
+        được: cắt một câu 200 000 ký tự mà không giữ bản gốc là xoá việc của model. Trần thời gian
+        riêng (không có thì lượt sắp hết hạn chót sẽ mất luôn câu trả lời vì một thao tác phụ).
+        """
+        if not text:
+            return None
+        scope = str(sid or '')[:8] or 'unknown'
+        path = f'{evidence_gate.EVIDENCE_ROOT_REL}/{scope}/{scope}_{step_no or 0}_answer.md'
+        remaining = self.seconds_left(self.run_budget.get(sid))
+        if remaining is not None and remaining <= 2:
+            return None
+        limit = EVIDENCE_PROBE_TIMEOUT_SECONDS
+        if remaining is not None:
+            limit = max(1.0, min(limit, remaining - 1))
+        try:
+            answer = await asyncio.wait_for(
+                self.executor.execute('file_write', {'path': path, 'content': text}, sid), limit)
+        except Exception as exc:
+            system_log.write('answer.stash_failed', level='warn', session_id=sid,
+                             message=f'{type(exc).__name__}: {str(exc)[:200]}')
+            return None
+        if isinstance(answer, dict) and answer.get('is_error'):
+            return None
+        return path
+
+    async def enforce_answer_length(self, sid, text, step_no=None):
         """D2 — cổng đo độ dài câu trả lời cuối (D-4). Trả `(text, partial)`.
 
         Ba mức, và mức nào cũng NÓI RA (im lặng là thứ đã làm vòng 21 tốn thời gian):
@@ -1987,12 +2036,16 @@ class HarnessRuntime(RuntimeCommands):
                              chars=chars, limit=ANSWER_WARN_CHARS)
             return text, False
         kept = text[:ANSWER_MAX_CHARS] + answer_truncation_tail()
-        journal_seq = _journal_answer_truncated(self.store, sid, chars, ANSWER_MAX_CHARS)
+        # §3.6 — bản đầy đủ vào gốc bằng chứng TRƯỚC khi phát bản cắt, để notice nói được đường dẫn.
+        full_path = await self.stash_long_answer(sid, text, step_no)
+        journal_seq = _journal_answer_truncated(self.store, sid, chars, ANSWER_MAX_CHARS, full_path)
+        where = (f'the full text is at {full_path}' if full_path
+                 else 'the full text could not be written to the workspace')
         notice = {'code': ANSWER_TOO_LONG_CODE, 'partial': True, 'chars': chars,
                   'keptChars': ANSWER_MAX_CHARS, 'limit': ANSWER_MAX_CHARS,
+                  'path': full_path, 'fullChars': chars,
                   'message': (f'{ANSWER_TOO_LONG_CODE}: the answer was {chars} chars and was cut at '
-                              f'{ANSWER_MAX_CHARS} — write the full content to a file in the workspace '
-                              'and quote the path')}
+                              f'{ANSWER_MAX_CHARS} — {where}')}
         if journal_seq is not None:
             notice['journalSeq'] = journal_seq
         self.store.emit(sid, 'notice', notice)
@@ -2024,6 +2077,9 @@ class HarnessRuntime(RuntimeCommands):
         if limit <= 1.0:
             return '', 0
         read_calls = 0
+        # P1.1 — dòng `tool.end` của lượt chốt phải mang số LƯỢT như mọi dòng khác; hàm này không
+        # nhận `turn_no` nên đọc chính sổ của phiên (chỗ `_run` cũng đọc).
+        turn = self.active_turn.get(sid)
         prompt = diagnosis_prompt(reason, out_of_time=out_of_time)
         try:
             async with asyncio.timeout(limit):
@@ -2067,7 +2123,8 @@ class HarnessRuntime(RuntimeCommands):
                                         result = await self.dispatch(self.store.get(sid), name, args, call.get('id'))
                                     except Exception as exc:
                                         result = {'is_error': True, 'error': str(exc)}
-                                    system_log.write('tool.end', session_id=sid, tool=name, wrapUp=True,
+                                    system_log.write('tool.end', session_id=sid, tool=name,
+                                                     turn=turn, wrapUp=True,
                                                      isError=bool(result.get('is_error')) if isinstance(result, dict) else False,
                                                      durationMs=(time.time() - read_started) * 1000)
                                 safe = {key: value for key, value in result.items()
@@ -2124,6 +2181,200 @@ class HarnessRuntime(RuntimeCommands):
             self.ensured_sessions.add(sid)
         return answer
 
+    # --- Cổng bằng chứng sống (vòng 22 đợt 3) ------------------------------------------------
+    def evidence_mode(self):
+        """`BOXFOX_EVIDENCE_GATE` = `off|warn|enforce`, đọc MỖI LƯỢT (env có thể đổi giữa các lượt).
+
+        Trả `(mode, unknown)`: `unknown` là giá trị lạ đã gặp, để chỗ gọi NÓI RA rồi mới rơi về
+        mặc định. Ba mức là ba mức CAN THIỆP, không phải ba mức chặt: `off` không đo gì, `warn`
+        ghim nhãn và đếm mà không sửa một chữ nào, `enforce` cho phép ĐÚNG MỘT vòng vá.
+        """
+        raw = (os.environ.get(EVIDENCE_GATE_ENV) or '').strip().lower()
+        if not raw:
+            return EVIDENCE_DEFAULT_MODE, None
+        if raw in EVIDENCE_MODES:
+            return raw, None
+        return EVIDENCE_DEFAULT_MODE, raw
+
+    @staticmethod
+    def parse_probe_output(output):
+        """`%T@ %s %p` (một dòng một tệp) -> danh sách tệp đã đổi. Dòng lạ bị bỏ, không ném."""
+        files = []
+        for line in str(output or '').splitlines():
+            parts = line.strip().split(' ', 2)
+            if len(parts) != 3:
+                continue
+            stamp, size, path = parts
+            try:
+                mtime, bytes_ = float(stamp), int(float(size))
+            except ValueError:
+                continue
+            relative = path[2:] if path.startswith('./') else path
+            if relative:
+                files.append({'path': relative, 'bytes': bytes_, 'mtime': mtime})
+        return files
+
+    async def probe_workspace(self, sid, started, step_no=None, turn_no=None, budget=None):
+        """P3.2 — MỘT lệnh `find` cố định: lượt này có đổi tệp nào trong workspace không?
+
+        Lệnh do harness soạn, chỉ nội suy epoch của lượt (container dùng chung đồng hồ với host) và
+        trần số tệp — KHÔNG nội suy văn của model vào shell, đúng luật của `executor`. Hai nhánh bị
+        loại trừ (`.generated_artifacts/`, `.session-history/`) là thứ chính harness ghi trong lượt:
+        không loại trừ thì phép dò tự báo "có đổi" ở mọi lượt.
+
+        Lỗi, timeout hay box chết ⇒ `{'ok': False, 'error': …}` — chỗ gọi biến nó thành
+        `not_measurable` (R5), **không** thành `insufficient`.
+        """
+        scope = str(sid or '')[:8] or 'unknown'
+        command = evidence_gate.EVIDENCE_PROBE_COMMAND.format(epoch=int(started),
+                                                             limit=EVIDENCE_PROBE_MAX_FILES)
+        # Trần của phép dò không được dài hơn phần đời còn lại của lượt: một phép dò vượt hạn chót
+        # sẽ xoá luôn câu trả lời mà nó đang định kiểm chứng.
+        remaining = self.seconds_left(budget) if budget is not None else None
+        limit = EVIDENCE_PROBE_TIMEOUT_SECONDS
+        if remaining is not None:
+            if remaining <= 2:
+                return {'ok': False, 'error': 'no time to probe', 'files': []}
+            limit = max(1.0, min(limit, remaining - 1))
+        try:
+            answer = await asyncio.wait_for(
+                self.executor.execute('terminal_exec', {'command': command}, sid), limit)
+        except asyncio.TimeoutError:
+            return {'ok': False, 'error': 'timeout', 'files': []}
+        except Exception as exc:
+            return {'ok': False, 'error': f'unreachable: {type(exc).__name__}', 'files': []}
+        if not isinstance(answer, dict) or answer.get('is_error'):
+            return {'ok': False, 'error': 'unreachable: probe failed', 'files': []}
+        output = answer.get('stdout') if isinstance(answer.get('stdout'), str) else ''
+        files = self.parse_probe_output(output)
+        artifact = f'{evidence_gate.EVIDENCE_ROOT_REL}/{scope}/{scope}_{step_no or 0}_changes.txt'
+        try:
+            await self.executor.execute('file_write', {'path': artifact, 'content': output}, sid)
+        except Exception:  # bản đọc được là quà, không phải điều kiện: tệp không ghi được thì thôi
+            artifact = None
+        return {'ok': True, 'error': None, 'files': files, 'artifact': artifact,
+                'turn': turn_no, 'epoch': int(started),
+                'truncated': len(files) >= EVIDENCE_PROBE_MAX_FILES, 'stdoutChars': len(output)}
+
+    async def repair_answer(self, sid, config, messages, verdict, profile, probe, budget, original):
+        """P3.3 — ĐÚNG MỘT vòng vá, và nó không bao giờ được ăn hết hạn chót của lượt.
+
+        Ba lớp chặn, tất cả đều bắt buộc: (1) còn ít hơn `EVIDENCE_REPAIR_MIN_REMAINING_SECONDS`
+        thì BỎ vá và vẫn trả câu trả lời; (2) trần lồng `min(60 s, còn lại − 10)`; (3) mọi
+        lỗi/timeout/bản rỗng nuốt tại đây và giữ văn cũ. Rủi ro lớn nhất của cả đợt 3 là vòng vá
+        biến lượt thành `DEADLINE` không có câu trả lời nào.
+
+        KHÔNG so độ dài với bản gốc: việc của vòng vá là THÊM con trỏ bằng chứng ("diff ở đâu,
+        lệnh nào, exit code nào"), nên bản vá hợp lệ thường DÀI hơn câu trả lời cũ. Trần của nó là
+        `EVIDENCE_REPAIR_MAX_TOKENS`, và văn sau vá còn bị chấm lại lần nữa — bản vá nói dối thì
+        nhãn vẫn là `insufficient` (không giả vờ).
+        """
+        remaining = self.seconds_left(budget)
+        if remaining is not None and remaining < EVIDENCE_REPAIR_MIN_REMAINING_SECONDS:
+            return None
+        limit = EVIDENCE_REPAIR_TIMEOUT_SECONDS
+        if remaining is not None:
+            limit = max(1.0, min(limit, remaining - 10))
+        prompt = evidence_gate.repair_message(verdict, profile, probe)
+        try:
+            async with asyncio.timeout(limit):
+                response = await self.client.complete(list(messages) + [prompt], [], config['route'],
+                                                      max_tokens=EVIDENCE_REPAIR_MAX_TOKENS)
+        except Exception as exc:
+            system_log.write('evidence.repair_failed', level='warn', session_id=sid,
+                             code=EVIDENCE_GATE_FAILED_CODE, message=str(exc)[:200])
+            return None
+        message = (response.get('choices') or [{}])[0].get('message') or {}
+        text = (message.get('content') or '').strip()
+        if not text:
+            return None
+        return text
+
+    @staticmethod
+    def evidence_pointers(verdict):
+        """Mảnh bằng chứng rút gọn cho event `assistant` — đủ để UI mở tệp, không phải cả fragment."""
+        pointers = []
+        for fragment in (verdict or {}).get('artifacts') or []:
+            if not isinstance(fragment, dict):
+                continue
+            pointer = {'kind': fragment.get('kind'), 'path': fragment.get('path'),
+                       'step': fragment.get('step'), 'tool': fragment.get('tool')}
+            for key in ('changed', 'command', 'sha256', 'bytes', 'target', 'role', 'status'):
+                if fragment.get(key) is not None:
+                    pointer[key] = fragment[key]
+            pointers.append(pointer)
+            if len(pointers) >= EVIDENCE_MAX_ARTIFACTS:
+                break
+        return pointers
+
+    @staticmethod
+    def evidence_journal_items(verdict):
+        """Mảnh bằng chứng theo enum của nhật ký (`file`, `command`, `image`) — con trỏ kiểm chứng."""
+        items = []
+        for fragment in (verdict or {}).get('artifacts') or []:
+            if not isinstance(fragment, dict):
+                continue
+            kind = fragment.get('kind')
+            if kind in ('diff', 'file', 'image', 'record'):
+                items.append({'type': 'image' if kind in ('image', 'record') else 'file',
+                              'path': fragment.get('path'), 'note': kind})
+            elif kind == 'command':
+                items.append({'type': 'command', 'command': fragment.get('command'),
+                              'note': f"exit {fragment.get('exitCode')}"})
+            elif kind == 'child':
+                items.append({'type': 'child', 'note': f"{fragment.get('role')}: "
+                                                        f"{fragment.get('status')}"})
+            if len(items) >= EVIDENCE_MAX_ARTIFACTS:
+                break
+        return [item for item in items if item.get('path') or item.get('command') or item.get('note')]
+
+    def pin_evidence(self, sid, turn_no, step_no, verdict, mode, repaired):
+        """P3.4 — ĐÚNG MỘT hàng `E:` cho lượt này, và nó không bao giờ ném.
+
+        Đường dẫn đi vào `evidence[]` (con trỏ kiểm chứng), `data` giữ số; `refs` để TRỐNG —
+        `journal._check_ids` từ chối mọi thứ không phải mã bản ghi, nên nhét đường dẫn vào đó là
+        biến một hàng nhật ký thành một lỗi. Ghi bằng `insert_row` (không `await`) vì cổng không
+        được phép `await` thêm gì ngoài phép dò và vòng vá.
+        """
+        missing = [item for item in (verdict or {}).get('missing') or [] if isinstance(item, dict)]
+        head = evidence_gate.verdict_label(verdict.get('verdict'))
+        line = f'lượt {turn_no}: {head} — {verdict.get("checked", 0)} mảnh bằng chứng'
+        if missing:
+            line += '; thiếu: ' + ', '.join(str(item.get('reason')) for item in missing[:4])
+        data = {'verdict': verdict.get('verdict'), 'checked': verdict.get('checked', 0),
+                'mode': mode, 'repair': bool(repaired),
+                'missing': [{'reason': item.get('reason'),
+                             'detail': str(item.get('detail') or '')[:200]} for item in missing],
+                'changedFiles': [item.get('path') for item in verdict.get('changedFiles') or []
+                                 if isinstance(item, dict)][:EVIDENCE_MAX_ARTIFACTS]}
+        item, seq = session_journal.insert_row(self.store, sid, 'evidence', line[:1000],
+                                              data=data, evidence=self.evidence_journal_items(verdict),
+                                              turn=turn_no, step=step_no)
+        return seq
+
+    def pin_gate_failed(self, sid, turn_no, step_no, message):
+        """§3.7 — hàng `X:` CHỈ khi cổng tự hỏng (không ghim cho từng lượt thiếu bằng chứng: nhật ký
+        không được biến thành bảng than phiền)."""
+        return session_journal.insert_row(
+            self.store, sid, 'blocker',
+            f'lượt {turn_no}: cổng bằng chứng tự hỏng — lượt đi tiếp bằng câu trả lời nguyên văn',
+            data={'code': EVIDENCE_GATE_FAILED_CODE, 'error': str(message)[:300]},
+            status='failed', turn=turn_no, step=step_no)
+
+    def _turn_index(self, sid):
+        """Số LƯỢT đếm được từ bảng `events` — nguồn kiểm chéo cho bộ đếm của T2.
+
+        Vì sao không dùng hai thứ sẵn có: `store.events()` cắt ở trần 500 hàng (phiên dài đếm
+        thiếu), còn `sessions.turn_count` là bộ đếm đọc–tăng–ghi — nó đúng cho phiên sinh ra SAU
+        T2, nhưng phiên cũ nhận cột mới với mặc định 0, nên lượt kế tiếp của một phiên đã có N
+        lượt trong transcript sẽ mang số 1. Đếm bằng SQL trên bảng thì luôn dựng lại được, và
+        `_run` so hai nguồn ở mỗi lượt: khớp thì im lặng, lệch thì nói ra rồi lấy số của bảng.
+        """
+        row = self.store.db.execute(
+            "SELECT COUNT(*) AS total FROM events WHERE session_id=? AND kind='user'",
+            (sid,)).fetchone()
+        return int(row['total'] or 0) if row is not None else 0
+
     async def _run(self, sid):
         session = self.store.get(sid)
         config, messages = session['config'], session['messages']
@@ -2136,6 +2387,13 @@ class HarnessRuntime(RuntimeCommands):
         # và `deadlineUsedMs`, nó nằm trong payload `turn_end` để giao diện và `rushed_index`
         # đọc được "lượt này đã tiêu bao nhiêu" mà không phải đếm lại 74 994 hàng `events`.
         tools_run = 0
+        # Đợt 3 (P3.1) — mọi lời gọi ĐÃ CHẠY trong lượt này, dưới dạng mà cổng bằng chứng đọc
+        # (`evidence_gate.classify_turn`). Gắn ngay chỗ phát `tool_end` để cổng không phải quét lại
+        # 74 994 hàng `events` của phiên, và để nó chỉ thấy việc của CHÍNH lượt này.
+        turn_calls = []
+        # Số của cổng cho `turn_end`/`turn.end` — một chỗ, để hai đường phát (lượt thường và lượt
+        # chốt dở) không nói hai câu khác nhau.
+        gate_numbers = {'last': None}
         # N6 — ranh giới LƯỢT trong dòng event. Đo sống 2026-09-21: `turn_start`/`turn_end`
         # = 0 trên 74 994 hàng `events`, nên muốn đếm số lượt phải suy từ `user`/`finish` và
         # không ai biết một bước dài bao nhiêu, ngưỡng nén lúc đó là bao nhiêu. Cặp event
@@ -2154,11 +2412,29 @@ class HarnessRuntime(RuntimeCommands):
         if not isinstance(turn_no, int) or isinstance(turn_no, bool) or turn_no < 1:
             turn_no = self.store.begin_turn(sid)
             self.active_turn[sid] = turn_no
+        # P1.1 — kiểm chéo bộ đếm bằng BẢNG `events` (không đếm trong bộ nhớ: `events()` cắt ở
+        # 500 hàng). Lệch nghĩa là bộ đếm của phiên và transcript không còn nói cùng một chuyện
+        # (phiên cũ có `turn_count` mặc định 0 là ca thật). Số của BẢNG thắng, và chuyện lệch
+        # được ghi lại — im lặng sửa số là thứ đã làm BUG-43 khó tìm.
+        index = self._turn_index(sid)
+        if index and index != turn_no:
+            system_log.write('turn.index_drift', level='warn', code=TURN_INDEX_DRIFT_CODE,
+                             session_id=sid, turn=turn_no, index=index,
+                             message=('the session turn counter and the transcript disagree; '
+                                      'using the counted index for this turn'))
+            turn_no = index
+            self.active_turn[sid] = turn_no
         # T13 — số đo thời gian chờ là số của RIÊNG lượt. Trần `PEER_WAIT_TOTAL_MAX_SECONDS` là "của
         # cả lượt", nên bộ đếm phải về 0 ở đây, ở ĐÚNG MỘT chỗ mà mọi lượt đều đi qua: không có dòng
         # này thì lượt thứ hai của một phiên từng chờ đủ 300 s sẽ không còn ngân sách chờ nào (đo
         # được khi viết T13 — bộ đếm chỉ được cộng, chưa bao giờ được đặt lại).
         self.wait_extension[sid] = 0.0
+        # P1.5 — việc phụ của cổng bằng chứng: dọn thư mục ảnh/bằng chứng mỗi
+        # `EVIDENCE_PRUNE_EVERY` lượt. Đặt ở ĐÂY vì đây là một trong hai chỗ mà mọi lượt đều đi qua
+        # (`_run`), và trước vòng model — việc dọn không được chen vào đường trả lời. Hỏng thì
+        # `prune_captures` đã ghim notice rồi đi tiếp.
+        if turn_no % EVIDENCE_PRUNE_EVERY == 0:
+            await session_journal.prune_captures(self.executor, self.store, sid)
 
         def close_turn(status, finish_reason=None, tool_calls=0, usage=None, extra=None):
             """Đóng cặp `turn_start`/`turn_end` của bước đang mở, nếu có.
@@ -2183,6 +2459,10 @@ class HarnessRuntime(RuntimeCommands):
                        'deadlineUsedMs': round((time.time() - started) * 1000)}
             if extra:
                 payload.update(extra)
+            if gate_numbers.get('last'):
+                # Số của cổng nằm trong `turn_end` của bước đóng CUỐI (cùng chỗ với `stepsUsed`):
+                # giao diện và `scripts/eval` đọc một hàng là biết lượt này đã được chấm gì.
+                payload.update(gate_numbers['last'])
             output_tokens = (usage or {}).get('completion_tokens') if isinstance(usage, dict) else None
             if not isinstance(output_tokens, int) or isinstance(output_tokens, bool):
                 output_tokens = (usage or {}).get('output_tokens') if isinstance(usage, dict) else None
@@ -2190,7 +2470,86 @@ class HarnessRuntime(RuntimeCommands):
                 payload['outputTokens'] = output_tokens
             self.store.emit(sid, 'turn_end', payload)
 
-        def finish_partial(text, reason_code, *, read_tool_calls=0):
+        async def evidence_block(text, step_no=None):
+            """Cổng bằng chứng (P3.1–P3.4) — chèn giữa câu trả lời cuối và lúc phát nó.
+
+            Không bao giờ ném (§3.7): mọi lỗi thành `not_measurable` + notice + hàng `X:`, và câu
+            trả lời đi ra NGUYÊN VĂN như trước — cổng là thứ THÊM VÀO, không phải thứ chặn đường.
+            Chỉ `await` hai thứ được phép: một phép dò box (khi bảng §2.1 đòi), và (chỉ ở `enforce`)
+            tối đa một vòng model.
+
+            Trả `(text, info)`: `info` là trường `evidence` của event `assistant`, hoặc `None` khi
+            công tắc `off` — lúc đó không đo gì, và giao diện giữ mặc định "chưa kiểm chứng".
+            """
+            mode, unknown = self.evidence_mode()
+            if mode == 'off':
+                gate_numbers['last'] = {'gateMode': 'off'}
+                return text, None
+            info = {'verdict': 'not_measurable', 'turn': turn_no, 'mode': mode, 'repair': False,
+                    'checked': 0, 'missing': [], 'artifacts': [], 'changedFiles': []}
+            try:
+                if unknown is not None and not self._notice_seen(sid, EVIDENCE_MODE_UNKNOWN_CODE):
+                    self.store.emit(sid, 'notice', {
+                        'code': EVIDENCE_MODE_UNKNOWN_CODE, 'value': unknown, 'partial': False,
+                        'message': (f'{EVIDENCE_MODE_UNKNOWN_CODE}: {EVIDENCE_GATE_ENV}='
+                                    f'{unknown!r} là giá trị lạ — dùng '
+                                    f'{EVIDENCE_DEFAULT_MODE!r} cho lượt này')})
+                    system_log.write('evidence.mode_unknown', level='warn', session_id=sid,
+                                     turn=turn_no, code=EVIDENCE_MODE_UNKNOWN_CODE, value=unknown)
+                profile = evidence_gate.classify_turn(turn_calls)
+                probe = None
+                if profile.needs_probe:
+                    probe = await self.probe_workspace(sid, started, step_no, turn_no, budget)
+                fragments = evidence_gate.artifacts_from_calls(turn_calls)
+                verdict = evidence_gate.assess(text, profile, probe, fragments, mode=mode)
+                repaired = False
+                if mode == 'enforce' and verdict['verdict'] == 'insufficient':
+                    better = await self.repair_answer(sid, config, messages, verdict, profile, probe,
+                                                      budget, text)
+                    if better:
+                        text, repaired = better, True
+                        verdict = evidence_gate.assess(text, profile, probe, fragments, mode=mode)
+                info = {'verdict': verdict['verdict'], 'turn': turn_no, 'mode': mode,
+                        'repair': repaired, 'checked': verdict['checked'],
+                        'missing': verdict['missing'], 'claims': verdict['claims'],
+                        'artifacts': self.evidence_pointers(verdict),
+                        'changedFiles': [item.get('path') for item in verdict['changedFiles']
+                                         if isinstance(item, dict)][:EVIDENCE_MAX_ARTIFACTS]}
+                info['journalSeq'] = self.pin_evidence(sid, turn_no, step_no, verdict, mode, repaired)
+                if verdict['verdict'] == 'insufficient' and (mode == 'enforce' or info['changedFiles']):
+                    self.store.emit(sid, 'notice', {
+                        'code': EVIDENCE_INSUFFICIENT_CODE, 'partial': False,
+                        'verdict': verdict['verdict'],
+                        'missing': verdict['missing'][:EVIDENCE_MAX_ARTIFACTS],
+                        'evidenceJournalSeq': info['journalSeq'],
+                        'message': (f'{EVIDENCE_INSUFFICIENT_CODE}: câu trả lời cuối chưa mang bằng '
+                                    'chứng cho việc lượt này đã làm — xem nhãn "chưa kiểm chứng"')})
+            except Exception as exc:
+                system_log.write('evidence.gate_failed', level='warn', session_id=sid,
+                                 turn=turn_no, code=EVIDENCE_GATE_FAILED_CODE,
+                                 message=f'{type(exc).__name__}: {str(exc)[:200]}')
+                try:
+                    self.pin_gate_failed(sid, turn_no, step_no, exc)
+                except Exception:  # pragma: no cover - ngay chỗ ghim hỏng thì chỉ còn dòng log
+                    pass
+                try:
+                    if not self._notice_seen(sid, EVIDENCE_GATE_FAILED_CODE):
+                        self.store.emit(sid, 'notice', {
+                            'code': EVIDENCE_GATE_FAILED_CODE, 'partial': False,
+                            'error': f'{type(exc).__name__}: {str(exc)[:200]}',
+                            'message': (f'{EVIDENCE_GATE_FAILED_CODE}: cổng bằng chứng tự hỏng — '
+                                        'lượt này không đo được, câu trả lời không bị đổi')})
+                except Exception:  # pragma: no cover - cùng lý do
+                    pass
+            gate_numbers['last'] = {'gateMode': mode, 'evidenceVerdict': info['verdict'],
+                                    'evidenceChecked': info['checked'],
+                                    'evidenceMissing': len(info['missing']),
+                                    'evidenceRepair': bool(info['repair']),
+                                    'changedFiles': len(info['changedFiles']),
+                                    'artifacts': len(info['artifacts'])}
+            return text, info
+
+        async def finish_partial(text, reason_code, *, read_tool_calls=0):
             """Đóng lượt bằng câu trả lời DỞ nhưng CÓ THẬT (B3/B4): hàng assistant, `partial`, notice.
 
             Thứ tự bốn việc là hợp đồng: transcript trước (lượt sau đọc được nó), rồi `turn_end`
@@ -2201,11 +2560,17 @@ class HarnessRuntime(RuntimeCommands):
             """
             # D-4 — câu chốt cũng qua cổng độ dài: đường chốt trong cửa sổ giữ chỗ không được
             # là đường vòng qua trần 150 000 ký tự (soát engine, phát hiện 3).
-            text, _ = self.enforce_answer_length(sid, text)
+            text, _ = await self.enforce_answer_length(sid, text, steps_used)
+            # Đợt 3 (P3.1) — câu chốt dở cũng là CÂU TRẢ LỜI CUỐI của lượt, nên cũng qua cổng:
+            # không có đường vòng nào để một lượt chốt trong cửa sổ giữ chỗ đi ra mà không đo.
+            text, evidence_info = await evidence_block(text, steps_used)
             turn_partial['code'] = reason_code
             messages.append({'role': 'assistant', 'content': text})
             self.store.save(sid, messages, 'completed')
-            self.store.emit(sid, 'assistant', {'text': text, 'thought': '', 'final': True})
+            payload = {'text': text, 'thought': '', 'final': True}
+            if evidence_info:
+                payload['evidence'] = evidence_info
+            self.store.emit(sid, 'assistant', payload)
             close_turn('partial', 'stop', 0, None, extra={'partial': True, 'diagnosis': True})
             self.store.emit(sid, 'finish', {'status': 'completed', 'turn': turn_no,
                                             'steps': steps_used,
@@ -2222,7 +2587,7 @@ class HarnessRuntime(RuntimeCommands):
             self.store.emit(sid, 'notice', notice)
             system_log.write('turn.end', level='warn', session_id=sid, turn=turn_no, turn_id=steps_used,
                              status='completed', partial=True, diagnosis=True, reason=reason_code,
-                             steps=steps_used,
+                             steps=steps_used, **(gate_numbers.get('last') or {}),
                              toolsRun=tools_run, textChars=len(text), deadlineUsedMs=elapsed_ms,
                              **self.peer_turn_cost(sid, turn_no))
             return text
@@ -2531,11 +2896,15 @@ class HarnessRuntime(RuntimeCommands):
                     # kèm notice, y như chặng 2. Ngắn hơn `DIAGNOSIS_MIN_CHARS` thì không tính là
                     # chẩn đoán — đó chỉ là một câu trả lời bình thường.
                     if not calls and not truncated_partial and step >= wrap_up_at and self.diagnosis_ok(text):
-                        return finish_partial(text, STEP_BUDGET_NOTICE_CODE)
+                        return await finish_partial(text, STEP_BUDGET_NOTICE_CODE)
                     # D2 — cổng đo độ dài của câu trả lời CUỐI (chỉ khi lượt này đã có câu trả lời).
                     answer_partial = False
+                    evidence_info = None
                     if not calls and not truncated_partial:
-                        text, answer_partial = self.enforce_answer_length(sid, text)
+                        text, answer_partial = await self.enforce_answer_length(sid, text, steps_used)
+                        # Đợt 3 (P3.1) — cổng chạy SAU cổng độ dài và TRƯỚC khi câu trả lời được
+                        # phát: bằng chứng đi KÈM văn (`assistant.evidence`), không nhét vào văn.
+                        text, evidence_info = await evidence_block(text, steps_used)
                     # Ensure the same canonical IDs in assistant row and tool results.
                     calls = copy.deepcopy(calls)
                     for call in calls:
@@ -2551,7 +2920,10 @@ class HarnessRuntime(RuntimeCommands):
                         self.store.emit(sid, 'thought', {'text': thought})
                     self.store.emit(sid, 'usage', {'usage': response.get('usage'), 'target': response.get('boxfox'), 'requestId': response.get('id')})
                     if text:
-                        self.store.emit(sid, 'assistant', {'text': text, 'thought': thought, 'final': not calls})
+                        payload = {'text': text, 'thought': thought, 'final': not calls}
+                        if evidence_info:
+                            payload['evidence'] = evidence_info
+                        self.store.emit(sid, 'assistant', payload)
                     if not calls:
                         # C2: `truncated_partial` chỉ bật khi lần thử lại thứ hai vẫn bị nhà cung
                         # cấp cắt ở trần output. Hàng `sessions` vẫn `completed` (giữ nguyên từ
@@ -2568,6 +2940,7 @@ class HarnessRuntime(RuntimeCommands):
                         system_log.write('turn.end', session_id=sid, turn=turn_no, turn_id=steps_used,
                                          status='completed', steps=steps_used,
                                          textChars=len(text or ''), partial=partial,
+                                         **(gate_numbers.get('last') or {}),
                                          stepsUsed=steps_used, toolsRun=tools_run,
                                          deadlineUsedMs=elapsed_ms,
                                          durationMs=elapsed_ms,
@@ -2618,6 +2991,12 @@ class HarnessRuntime(RuntimeCommands):
                         messages.append({'role': 'tool', 'tool_call_id': call['id'], 'name': name, 'content': tool_content})
                         self.store.save(sid, messages)
                         self.store.emit(sid, 'tool_end', {'id': call['id'], 'name': name, 'args': args, 'result': safe})
+                        # P3.1 — cùng một hàng `tool_end` mà cổng đọc, cộng số BƯỚC của lượt (P1.4
+                        # đã bảo worker gắn số bước vào ảnh/bằng chứng; ở đây harness gắn số bước
+                        # vào chính lời gọi, nên phép dò và cổng biết việc nào thuộc bước nào).
+                        turn_calls.append({'id': call['id'], 'name': name, 'args': args,
+                                           'result': safe, 'step': step + 1,
+                                           'toolCallId': call['id']})
                     # N6 — đóng bước SAU khi mọi kết quả tool đã vào transcript, nên
                     # `contextEstimate` của `turn_end` là ngữ cảnh mà bước kế tiếp thật sự gửi đi.
                     # B3 — ở bước CUỐI của trần bước, cặp `turn_start`/`turn_end` được để MỞ: đường
@@ -2644,7 +3023,7 @@ class HarnessRuntime(RuntimeCommands):
                 diagnosis, _ = await self.wrap_up_diagnosis(sid, messages, config, budget,
                                                             STEP_BUDGET_NOTICE_CODE)
                 if self.diagnosis_ok(diagnosis):
-                    return finish_partial(diagnosis, STEP_BUDGET_NOTICE_CODE)
+                    return await finish_partial(diagnosis, STEP_BUDGET_NOTICE_CODE)
                 raise ValueError(f'{STEP_BUDGET_NOTICE_CODE}: iteration budget reached; work may be incomplete')
         except asyncio.CancelledError:
             close_turn('cancelled')
@@ -2670,7 +3049,7 @@ class HarnessRuntime(RuntimeCommands):
                                                                      DEADLINE_NOTICE_CODE,
                                                                      out_of_time=True)
                 if self.diagnosis_ok(diagnosis):
-                    return finish_partial(diagnosis, DEADLINE_NOTICE_CODE, read_tool_calls=read_calls)
+                    return await finish_partial(diagnosis, DEADLINE_NOTICE_CODE, read_tool_calls=read_calls)
             close_turn('error')
             retries = getattr(exc, 'retry_attempts', 0)
             if retries:

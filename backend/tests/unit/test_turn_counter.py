@@ -119,3 +119,43 @@ def test_dong_turn_end_trong_system_log_co_ca_turn_lan_turnid(tmp_path, monkeypa
     assert [line['turnId'] for line in ends] != [line['turn'] for line in ends], \
         'hai trường khác nhau: đọc lẫn là hiểu sai lượt'
     store.close()
+
+
+def test_so_luot_lay_tu_bang_events_khi_bo_dem_cua_phien_lech(tmp_path, monkeypatch):
+    """P1.1 — bộ đếm của phiên và transcript lệch nhau thì BẢNG thắng, và chuyện lệch được ghi lại.
+
+    Phiên sinh ra TRƯỚC T2 nhận cột `turn_count` với mặc định 0: bộ đếm đọc–tăng–ghi sẽ trả số 1
+    cho lượt kế tiếp của một phiên đã có N lượt trong transcript. Ca này dựng lại đúng ca đó và
+    khoá hai tính chất: lượt đi tiếp theo số ĐẾM ĐƯỢC, và dòng `turn.index_drift` có mặt để lần
+    sau không ai phải đoán vì sao số nhảy.
+    """
+    import agentbox.observability.system_log as system_log_module
+    log = system_log_module.system_log
+    monkeypatch.setattr(log, 'directory', tmp_path)
+    monkeypatch.setattr(log, 'path', tmp_path / 'harness.jsonl')
+    monkeypatch.setattr(log, 'enabled', True)
+
+    client = FixtureModel([answer('một'), answer('hai')])
+    store, runtime, session = run_turns(tmp_path, client, ('lượt một',))
+    sid = session['id']
+    assert runtime._turn_index(sid) == 1, 'chỉ số đếm thẳng từ bảng `events`'
+
+    store.db.execute('UPDATE sessions SET turn_count=0 WHERE id=?', (sid,))
+    store.db.commit()
+    assert store.get(sid)['turn_count'] == 0, 'bộ đếm của phiên đã lệch khỏi transcript'
+
+    async def second_turn():
+        await runtime.submit(sid, 'lượt hai')
+        await runtime.tasks[sid]
+
+    asyncio.run(second_turn())
+    assert [e['turn'] for e in events_of(store, sid, 'user')] == [1, 2], \
+        'lượt kế tiếp đi theo số đếm được, không quay về 1'
+    assert [e['turn'] for e in events_of(store, sid, 'turn_start')] == [1, 2]
+    lines = [json.loads(line) for line in (tmp_path / 'harness.jsonl').read_text(
+        encoding='utf-8').splitlines() if line.strip()]
+    drift = [line for line in lines if line['event'] == 'turn.index_drift']
+    assert len(drift) == 1, 'lệch số phải nói ra, không sửa im lặng'
+    # Số dư nằm trong khối `data` (kỷ luật của system log: trường lạ đi vào `data`).
+    assert (drift[0]['turn'], drift[0]['data']['index'], drift[0]['code']) == (1, 2, 'TURN_INDEX_DRIFT')
+    store.close()

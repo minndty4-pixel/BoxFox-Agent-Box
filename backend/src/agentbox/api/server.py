@@ -16,6 +16,10 @@ from ..agent_core.limits import (CHILD_DEADLINE_SECONDS, CHILD_MAX_STEPS, DEADLI
                                  DEADLINE_MAX_SECONDS, INSTRUCTIONS_MAX_CHARS, MAX_STEPS_DEFAULT,
                                  MAX_STEPS_MAX)
 from ..agent_core.limits import parallel_read_tools_enabled, peer_mesh_enabled, peer_wait_max
+from ..agent_core.limits import (EVIDENCE_DEFAULT_MODE, EVIDENCE_MAX_ARTIFACTS, EVIDENCE_MODES,
+                                 EVIDENCE_PROBE_MAX_FILES, EVIDENCE_PROBE_TIMEOUT_SECONDS,
+                                 EVIDENCE_REPAIR_MAX_TOKENS, EVIDENCE_REPAIR_MIN_REMAINING_SECONDS,
+                                 EVIDENCE_REPAIR_TIMEOUT_SECONDS)
 from ..agent_core.roles import ORCHESTRATOR_TOOLS, ROLES
 from ..agent_core.limits import (CHILD_WALL_MAX_SECONDS, FANOUT_GLOBAL_CEILING, FANOUT_PER_PARENT_DEFAULT,
                                  FANOUT_PER_PARENT_MAX, PEER_DELIVER_MAX, PEER_WAIT_MAX_SECONDS,
@@ -225,7 +229,18 @@ def create_app(runtime):
                                 'waitMaxNow': peer_wait_max(),
                                 'parallelReadTools': parallel_read_tools_enabled(),
                                 'watchdogTickSeconds': WATCHDOG_TICK_SECONDS,
-                                'childWallMaxSeconds': CHILD_WALL_MAX_SECONDS}},
+                                'childWallMaxSeconds': CHILD_WALL_MAX_SECONDS},
+                       # Đợt 3 (P3.5) — nhóm `gate`: giao diện và DEV đọc trạng thái THẬT của cổng
+                       # bằng chứng từ đây, không chép tay con số nào.
+                       'gate': {'evidenceMode': runtime.evidence_mode()[0],
+                                'modes': list(EVIDENCE_MODES),
+                                'default': EVIDENCE_DEFAULT_MODE,
+                                'repairMaxTokens': EVIDENCE_REPAIR_MAX_TOKENS,
+                                'repairTimeoutSeconds': EVIDENCE_REPAIR_TIMEOUT_SECONDS,
+                                'repairMinRemainingSeconds': EVIDENCE_REPAIR_MIN_REMAINING_SECONDS,
+                                'probeTimeoutSeconds': EVIDENCE_PROBE_TIMEOUT_SECONDS,
+                                'probeMaxFiles': EVIDENCE_PROBE_MAX_FILES,
+                                'maxArtifacts': EVIDENCE_MAX_ARTIFACTS}},
         })
 
     async def skill_settings(request):

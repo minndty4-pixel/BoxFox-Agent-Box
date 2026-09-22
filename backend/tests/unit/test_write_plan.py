@@ -733,7 +733,10 @@ def test_an_ambiguous_refusal_leaves_a_one_shot_ticket(tmp_path):
                           'score': 0.6, 'candidates': [{'identity': MATCHED_IDENTITY, 'score': 0.6}]}
         assert 'relativePath' not in ticket, \
             'vé không được giữ kế hoạch nào: cổng xoá `--delete-orphan` chỉ đọc hàng `P:`'
-        assert [row['kind'] for row in store.journal_tail(sid)] == ['fact'], \
+        # Hàng `E:` (cổng bằng chứng, đợt 3 vòng 22) nằm cùng nhật ký và không liên quan tới phép
+        # kiểm này: thứ phải VẮNG là hàng kế hoạch `P:`, nên lọc `E:` ra rồi mới so — nếu một hàng
+        # `P:` lọt vào thì phép khẳng định vẫn đỏ.
+        assert [row['kind'] for row in store.journal_tail(sid) if row['kind'] != 'evidence'] == ['fact'], \
             'bản bị từ chối không để lại hàng `P:` nào'
         assert op_calls(executor) == [] and events_of(store, sid, 'plan_written') == []
         store.close()
