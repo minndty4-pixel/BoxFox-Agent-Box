@@ -302,7 +302,28 @@ class SessionStore:
                 (status, reason, time.time(), steps_used, output_tokens, answer_chars, child_id))
         return self.child(child_id)
 
-    def child_close_once(self, child_id, status, reason=None):
+    def child_usage_from_events(self, child_id):
+        """Số bước/token một phiên con ĐÃ tiêu, đọc từ chính luồng của nó: `(steps, tokens)`.
+
+        Đường đóng sổ bình thường (`finish` của con) tự mang bộ số này; hai đường còn lại — T7 dọn
+        con khi lượt cha đóng và T10 watchdog cắt con quá hạn — đóng một phiên con **đang chạy**,
+        nên không có `finish` nào để đọc. Bỏ qua chúng thì `childSteps`/`childTokens` của lượt cha
+        (T13) đếm thiếu đúng phần con đã tiêu trước khi bị cắt: đo được thì phải ghi được.
+        `stepsUsed` trong `turn_end` là số luỹ kế của lượt ⇒ lấy `max`; `outputTokens` là của từng
+        bước ⇒ cộng.
+        """
+        steps = tokens = 0
+        for row in self.db.execute("SELECT payload FROM events WHERE session_id=? AND kind='turn_end'",
+                                   (child_id,)):
+            try:
+                data = json.loads(row['payload'])
+            except ValueError:
+                continue
+            steps = max(steps, int(data.get('stepsUsed') or 0))
+            tokens += int(data.get('outputTokens') or 0)
+        return steps, tokens
+
+    def child_close_once(self, child_id, status, reason=None, steps_used=None, output_tokens=None):
         """Đóng hàng sổ con và CHỈ trả hàng khi chính NGƯỜI GỌI NÀY vừa đóng nó.
 
         `child_finish` nói kết quả cuối cùng; hàm này nói AI đã đóng. Hai đường cùng đóng một hàng
@@ -312,8 +333,10 @@ class SessionStore:
         """
         with self.db:
             cursor = self.db.execute(
-                "UPDATE children SET status=?, reason=?, finished=?, waiting_for='[]', waiting_since=NULL"
-                " WHERE session_id=? AND status='started'", (status, reason, time.time(), child_id))
+                "UPDATE children SET status=?, reason=?, finished=?, waiting_for='[]', waiting_since=NULL,"
+                " steps_used=COALESCE(?, steps_used), output_tokens=COALESCE(?, output_tokens)"
+                " WHERE session_id=? AND status='started'",
+                (status, reason, time.time(), steps_used, output_tokens, child_id))
             if cursor.rowcount != 1:
                 return None
         return self.child(child_id)

@@ -208,6 +208,22 @@ def test_mot_ham_chi_dong_mot_lan(tmp_path):
     store.close()
 
 
+def test_dong_so_bang_watchdog_van_ghi_lai_so_con_da_tieu(tmp_path):
+    """Đường watchdog cũng ghi chi phí: luồng của con là nguồn duy nhất còn lại sau khi nó bị cắt."""
+    store, parent, child, clock, watchdog = make(tmp_path, started_age=CHILD_WALL_MAX_SECONDS + 5)
+    store.emit(child, 'turn_end', {'turn': 1, 'step': 1, 'stepsUsed': 1, 'outputTokens': 7})
+    store.emit(child, 'turn_end', {'turn': 1, 'step': 2, 'stepsUsed': 2, 'outputTokens': 5})
+
+    report = watchdog.sweep()
+
+    assert report['timeout'] == [child]
+    row = store.child(child)
+    assert row['steps_used'] == 2 and row['output_tokens'] == 12, 'max số bước luỹ kế, tổng token'
+    finish = next(event for event in child_events(store, parent) if event['status'] != 'started')
+    assert finish['stepsUsed'] == 2 and finish['outputTokens'] == 12
+    store.close()
+
+
 def test_bon_luat_dung_chung_mot_nhip(tmp_path):
     """Một nhịp quét xử lý cả bốn luật trong cùng danh sách — và không luật nào nuốt luật khác."""
     store = SessionStore(tmp_path / 'sessions.db')

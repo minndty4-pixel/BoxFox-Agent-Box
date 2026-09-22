@@ -216,6 +216,45 @@ def test_reap_children_don_con_mo_coi_khi_luot_cha_dong(tmp_path):
     store.close()
 
 
+def test_con_bi_don_van_ghi_lai_so_buoc_va_token_da_tieu(tmp_path):
+    """Con chạy được một bước rồi bị dọn: phần ĐÃ tiêu phải vào sổ con, không được đếm thiếu.
+
+    T13 đo chi phí theo lượt bằng `children_summary` (đọc `steps_used`/`output_tokens` của sổ con),
+    nên một con bị `PARENT_TURN_ENDED` mà không ghi lại gì sẽ biến chi phí thật thành số 0 — đúng
+    loại sai số mà "đo chi phí theo lượt" không được phép có.
+    """
+    store, runtime, _model, sid = build(tmp_path, [])
+    child = store.create({'skills': []}, role='review', parent_id=sid)['id']
+    store.child_start(child, sid, 1, 1, 'review', goal=GOAL_A)
+    store.save(child, [], 'running')
+    # Bước 1 của con đã xong ⇒ có `turn_end` thật; bước 2 còn đang chạy (task ngủ dài thay cho một
+    # lượt thật): dựng thẳng trạng thái đó để ca kiểm không đua với đồng hồ.
+    store.emit(child, 'turn_end', {'turn': 1, 'step': 1, 'stepsUsed': 1, 'outputTokens': 7})
+
+    async def run():
+        runtime.tasks[child] = asyncio.ensure_future(asyncio.sleep(30))
+        return await runtime.reap_children(sid, turn=1)
+
+    reaped = asyncio.run(run())
+    assert [event['sessionId'] for event in reaped] == [child]
+
+    finishes = [event for event in child_events(store, sid) if event['status'] != 'started']
+    assert len(finishes) == 1
+    assert finishes[0]['status'] == 'failed' and finishes[0]['reason'] == TURN_ENDED_REASON
+
+    row = store.child(child)
+    assert row['steps_used'] == 1, 'một bước của con đã xong trước khi bị dọn'
+    assert row['output_tokens'] == 7, 'token của bước đó nằm trong chính luồng của con'
+    assert finishes[0]['stepsUsed'] == 1 and finishes[0]['outputTokens'] == 7
+
+    # Và bộ số theo lượt của CHA cũng thấy phần đó (`finish` lấy đúng từ `children_summary` này —
+    # hình dạng của `finish` được kiểm ở `test_peer_cost.py`).
+    summary = runtime.store.children_summary(sid)
+    assert summary['childSteps'] == 1 and summary['childTokens'] == 7
+    assert summary['failed'] == 1 and summary['running'] == 0
+    store.close()
+
+
 def test_reap_children_chi_dung_con_cua_luot_minh(tmp_path):
     store, runtime, _model, sid = build(tmp_path, [answer('không làm gì')])
     child = store.create({'skills': []}, role='review', parent_id=sid)['id']

@@ -123,7 +123,11 @@ class PeerWatchdog:
     # ------------------------------------------------------------------ ba hành động
     def _close(self, child_id, row, reason, cancel=False):
         """Đóng MỘT hàng sổ con còn `started`. `False` nghĩa là người khác đã đóng trước."""
-        closed = self.store.child_close_once(child_id, 'failed', reason=reason)
+        # Cùng lý do như T7: con bị cắt giữa đường không có `finish`, chi phí đã tiêu đọc từ luồng
+        # của nó để bộ số theo lượt của cha không đếm thiếu.
+        steps, tokens = self.store.child_usage_from_events(child_id)
+        closed = self.store.child_close_once(child_id, 'failed', reason=reason, steps_used=steps,
+                                             output_tokens=tokens)
         if closed is None:
             return False
         if cancel:
@@ -136,7 +140,8 @@ class PeerWatchdog:
             self.store.emit(parent_id, 'child', {
                 'sessionId': child_id, 'role': row.get('role'), 'status': 'failed',
                 'turn': row.get('parent_turn'), 'step': row.get('spawn_step'), 'goal': row.get('goal'),
-                'reason': reason, 'watchdog': True, 'is_error': True, 'answerChars': 0})
+                'reason': reason, 'watchdog': True, 'is_error': True, 'answerChars': 0,
+                'stepsUsed': steps, 'outputTokens': tokens})
         system_log.write('watchdog.child_closed', level='warn', session_id=child_id,
                          parent=parent_id, reason=reason, sweeps=self.sweeps)
         return True

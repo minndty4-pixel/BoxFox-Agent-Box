@@ -48,17 +48,25 @@ class FixtureModel:
 
 
 class FixtureExecutor:
+    """`slow` = những tool ngủ thật, để dựng cảnh "bạn còn đang chạy" mà không cần đồng hồ giả."""
+
+    def __init__(self, slow=(), seconds=3.0):
+        self.slow = set(slow)
+        self.seconds = seconds
+
     async def execute(self, name, args, sid):
+        if name in self.slow:
+            await asyncio.sleep(self.seconds)
         return {'content': 'observed fixture result'}
 
     async def cleanup(self, sid):
         return None
 
 
-def build(tmp_path, parent_answers=(), child_answers=()):
+def build(tmp_path, parent_answers=(), child_answers=(), slow=()):
     store = SessionStore(tmp_path / 'sessions.db')
     child_answers = [item if isinstance(item, dict) else answer(item) for item in child_answers]
-    runtime = HarnessRuntime(store, FixtureExecutor(), FixtureModel(parent_answers, child_answers))
+    runtime = HarnessRuntime(store, FixtureExecutor(slow), FixtureModel(parent_answers, child_answers))
     sid = runtime.create({'skills': []})['id']
     return store, runtime, sid
 
@@ -169,17 +177,48 @@ def test_await_children_cham_luoi_an_toan_tra_timeout_chu_khong_treo(tmp_path):
 
 
 def test_await_children_ban_da_dong_so_ma_chua_giao_thi_thoi_cho(tmp_path):
-    """Chờ một phiên đã chết mà chưa giao là chờ một việc không tới — kết thúc ngay, không đợi 300 s."""
+    """Bạn CÙNG CHA đã đóng sổ mà chưa giao là chờ một việc không tới — kết thúc ngay, không đợi 300 s."""
     store, runtime, sid = build(tmp_path)
-    peer = add_peer(store, sid, 'review', status='failed', text='')
+    waiter = add_peer(store, sid, 'testing', status='started')
+    dead = add_peer(store, sid, 'review', status='failed', text='')
 
     async def run():
         started = time.monotonic()
-        row = await runtime.wait_for_peers(sid, target_rows(runtime, [peer]), 'all', 300)
+        row = await runtime.wait_for_peers(waiter, target_rows(runtime, [dead]), 'all', 300)
         return row, time.monotonic() - started
 
     (status, done, pending, waited, exhausted), elapsed = asyncio.run(run())
-    assert status == 'timeout' and elapsed < 1.0 and [r['session_id'] for r in pending] == [peer]
+    assert status == 'timeout' and elapsed < 1.0 and [r['session_id'] for r in pending] == [dead]
+    assert done == [], 'bạn đóng sổ mà chưa giao thì không có gì để đọc'
+    store.close()
+
+
+def test_await_children_cha_khong_can_bien_nhan_tu_con_ruot_da_dong_so(tmp_path):
+    """Luật của **cha**: con ruột đóng sổ là xong.
+
+    Con ruột không ghi biên nhận nào trừ khi nó khai `deliverTo` (T11) — kết quả của nó tới cha
+    bằng event `child`. Nếu thiếu luật này thì cách gọi tự nhiên nhất của cha (`await_children()`
+    trần) trả `timeout` cho chính những đứa con đã chạy xong.
+    """
+    store, runtime, sid = build(tmp_path)
+    child = add_peer(store, sid, 'review', status='completed')
+
+    async def run():
+        started = time.monotonic()
+        row = await runtime.wait_for_peers(sid, target_rows(runtime, [child]), 'all', 300)
+        return row, time.monotonic() - started
+
+    (status, done, pending, waited, exhausted), elapsed = asyncio.run(run())
+    assert status == 'done' and pending == [] and elapsed < 1.0
+    assert [row['session_id'] for row in done] == [child]
+
+    # `done` ở tầng `wait_for_peers` là hàng mục tiêu; bản cắt của câu trả lời do `await_children`
+    # dựng — và với con ruột thì nó đọc thẳng câu trả lời cuối của con trong transcript.
+    result = asyncio.run(runtime.await_children({'id': sid}, {'targets': [f'peer:{child}'],
+                                                               'mode': 'all'}))
+    assert result['status'] == 'done' and result['pending'] == []
+    assert result['done'][0]['summary'] == CHILD_ANSWER, 'cha vẫn đọc được câu trả lời của con'
+    assert result['done'][0]['status'] == 'completed'
     store.close()
 
 
@@ -198,11 +237,13 @@ def test_await_children_vuot_han_muc_hoan_thi_noi_that(tmp_path):
 
 
 def test_await_children_trong_mot_luot_that_luot_khong_bao_gio_failed(tmp_path):
+    """Chờ hụt vì **hạn người gọi tự đặt** trong lúc bạn còn chạy: lượt vẫn xong, không lỗi nào."""
     store, runtime, sid = build(tmp_path, [
         answer(calls=[call('delegate_task', {'role': 'review', 'goal': GOAL, 'wait': False})]),
         answer(calls=[call('await_children', {'targets': ['role:review'], 'timeoutSeconds': 1})]),
         answer('chạy tiếp với dữ liệu đang có'),
-    ], child_answers=['con xong rồi'])
+    ], child_answers=[answer(calls=[call('file_read', {'path': 'soát từng tệp'}, 'a1')]),
+                      answer('con xong rồi')], slow={'file_read'})
     runtime.peer_wait_tick = 0.2
 
     async def run():

@@ -1562,14 +1562,19 @@ class HarnessRuntime(RuntimeCommands):
                 current = self.store.child(child_id)
                 if current is None or current['status'] != 'started':
                     continue
-                self.store.child_finish(child_id, 'failed', reason=reason)
+                # Con bị dọn giữa đường không có `finish` nào để đọc chi phí, nên đọc từ luồng
+                # của chính nó (T13 đo theo lượt: phần đã tiêu của con phải vào `childSteps`).
+                steps, tokens = self.store.child_usage_from_events(child_id)
+                self.store.child_finish(child_id, 'failed', reason=reason, steps_used=steps,
+                                        output_tokens=tokens)
                 session = self.store.get(child_id)
                 if session['status'] in ('running', 'idle'):
                     self.store.save(child_id, session['messages'], 'cancelled')
                 finished = {'sessionId': child_id, 'role': row['role'], 'status': 'failed',
                             'turn': row['parent_turn'], 'step': row['spawn_step'],
                             'goal': row['goal'], 'reason': reason, 'reaped': True,
-                            'is_error': True, 'answerChars': 0}
+                            'is_error': True, 'answerChars': 0,
+                            'stepsUsed': steps, 'outputTokens': tokens}
                 self.store.emit(sid, 'child', finished)
                 reaped.append(finished)
         finally:
@@ -2918,14 +2923,34 @@ class HarnessRuntime(RuntimeCommands):
                 except RuntimeError:
                     pass
 
+    def peer_is_own_closed_child(self, sid, target_id):
+        """`True` khi mục tiêu là CON RUỘT của `sid` và đã đóng sổ con.
+
+        Con ruột không cần biên nhận để cha biết mình đã xong: kết quả của nó tới cha bằng
+        event `child` ngay lúc đóng sổ, và T11 chỉ ghi biên nhận `main` khi con có khai
+        `deliverTo`. Thiếu luật này thì cách gọi tự nhiên nhất của cha — `await_children()`
+        trần, không khai gì — trả `timeout` cho chính những đứa con đã chạy xong.
+        """
+        row = self.store.child(target_id)
+        return bool(row) and row['parent_id'] == sid and row['status'] != 'started'
+
     def peer_wait_pending(self, sid, targets):
-        """Mục tiêu nào CHƯA giao kết quả cho `sid` — đọc bảng biên nhận, không đoán."""
+        """Mục tiêu nào CHƯA giao kết quả cho `sid` — đọc bảng biên nhận, không đoán.
+
+        Một mục tiêu được coi là đã xong khi (a) có biên nhận của `sid` trong `child_deliveries`,
+        hoặc (b) là con ruột của `sid` và đã đóng sổ (xem `peer_is_own_closed_child`). Bạn cùng
+        cha thì chỉ (a) — một bạn đóng sổ mà chưa giao là chưa giao, đúng luật "chờ tới lúc bạn
+        giao", và người chờ đọc tiếp bằng `peer_read`.
+        """
         pending = []
         for target in targets:
             receipts = [row for row in self.store.deliveries_of(target['session_id'])
                         if row['recipient'] == sid and row['state'] in ('pending', 'injected')]
-            if not receipts:
-                pending.append(target)
+            if receipts:
+                continue
+            if self.peer_is_own_closed_child(sid, target['session_id']):
+                continue
+            pending.append(target)
         return pending
 
     def peer_targets_dead(self, targets):
@@ -3720,7 +3745,10 @@ class HarnessRuntime(RuntimeCommands):
         Trần `PEER_DELIVER_MAX` đã chặn ở chỗ gọi; ở đây cắt lại cho chắc.
         """
         if not deliver_to:
-            # Không khai gì = chỉ cha. Cha đã có câu trả lời trong tool result / event `child`.
+            # Không khai gì = chỉ cha. Cha đã có câu trả lời trong tool result / event `child`,
+            # nên không có hàng biên nhận nào (T11). Nhưng một cha đang `await_children` chờ
+            # chính con này phải tỉnh dậy lúc con đóng sổ, chứ không phải chờ hết nhịp quét.
+            self.notify_peer_delivery(parent_id)
             return self.store.child_delivery_receipts(child_id)
         for kind, target, target_role in self.resolve_delivery_targets(parent_id, child_id, turn,
                                                                      deliver_to)[:PEER_DELIVER_MAX]:
