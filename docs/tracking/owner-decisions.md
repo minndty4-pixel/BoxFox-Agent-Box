@@ -62,13 +62,31 @@ mang `status='timeout'` và lượt **không** bị đánh `failed` (đo sống:
 kèm notice `PEER_WAIT_CLAMPED`. D-13 kèm theo: T14 (`parallelReadTools`) **không** làm trong vòng 22 — cờ này được khai thì
 trả notice `PEER_MESH_NOTICE` nói thẳng nó chưa có hiệu lực. D-14 (mốc bật `enforce`) vẫn `Đã chốt`: thuộc đợt bằng chứng sống.
 
+**Cập nhật thi công vòng 22 (2026-09-22, đợt 3 — bằng chứng sống).** **D-8 đã xong.** Cổng bằng chứng chạy trong lượt: phân loại
+lời gọi công cụ của lượt, **một** phép dò `find` khi lượt có ghi (loại trừ hai thư mục mà chính harness ghi), chấm theo R1–R5, rồi
+ghim kết quả vào nhật ký và vào `turn.end`; mọi lỗi của cổng rơi về `not_measurable` — **không** đổi văn câu trả lời, **không** đổi
+`status` phiên. Giao diện đọc khối `journal` của API (trước đây ném đi) và hiện nhãn ba trạng thái; lượt **thiếu** trường `evidence`
+(phiên cũ) được coi là `unverified`, không bao giờ xanh.
+
+**Nguyên văn quyết định đã chốt của D-14, ghi thẳng vào đây (2026-09-22):**
+
+> Bật `enforce` khi **20 phiên** đã có số trong `~/BoxFox/logs/harness.jsonl` **và** tỉ lệ báo động sai của cổng (đo ở chế độ `warn`)
+> **< 10 %**; **DEV (người bảo trì) đổi mặc định**, chủ nhà không phải làm gì.
+
+Chi tiết đã chốt kèm theo (không phải đoán): đếm **phiên** chứ không đếm lượt; "có số" nghĩa là S4 của
+`scripts/eval/rushed_index.py` trả `status='measured'` (dòng `turn.end` đã có `data.evidenceMissing`); tỉ lệ báo động sai =
+(số lượt bị S4 gắn cờ mà soi lại thấy **có** bằng chứng thật) / (tổng số lượt bị gắn cờ), DEV đối chiếu hàng `E:` và `artifacts`;
+chưa đủ điều kiện thì giữ `warn`, chạy tiếp, không đổi gì. Đổi `EVIDENCE_DEFAULT_MODE` trong `limits.py` sang `enforce` là bước duy
+nhất (env vẫn đè được), và kiểm lại bằng `curl -s -H 'X-BoxFox-Admin: 1' http://127.0.0.1:3102/api/agent/runtime-info` ⇒
+`gate.evidenceMode`. Đồng hồ đếm hiện tại: `python3 scripts/eval/rushed_index.py --json` in `sessions=` / `S4=` / `flagged=`.
+
 ## 3. Việc chủ nhà giao thêm trong cùng vòng (chưa chốt phương án, đã chốt là phải làm)
 
 | Mã | Việc | Chốt là phải làm | Số đo hiện tại | Trạng thái |
 |---|---|---|---|---|
 | D-6 | Nội dung tệp đính kèm phải đi tới box, và menu `+` phải bấm được | Có | Trước: menu có trong DOM nhưng bị cắt (BUG-39); `user` event chỉ mang tên tệp; `.uploaded_artifacts` rỗng (BUG-40). Sau (vòng 22): hit-test `true` ở **cả bốn** mục menu; `.uploaded_artifacts` **5 → 7 tệp** khớp byte; event `user` và ngữ cảnh gửi model đều mang `absolutePath` thật | Đã xong |
 | D-7 | Agent con phải **nhìn thấy nhau**: test chờ review, kết quả review về cả `main` và `test`; plan chạy song song research rồi chờ research trả; các luồng check và long task tương tự | Có | Sau (vòng 22 đợt 2): con có `peer_read` + `await_children` (chờ **tới lúc bạn giao**, lưới an toàn 300 s) + nhận giao hàng `deliverTo` với biên nhận idempotent; chuỗi sống `main → testing → review` xanh — 2 con cùng lượt, 2 biên nhận `injected`, cha chờ 10 869 ms rồi `done` (trước: con chạy tuần tự, không có công cụ peer, chỉ cha làm trung gian) | Đã xong |
-| D-8 | Câu trả lời cuối phải mang **bằng chứng sống** của việc đã làm (đặc biệt khi đổi mã hoặc đổi UI/UX) | Có | Không có cổng kiểm tra nào; nhãn `done` luôn xanh; store bỏ `session.journal` | Đã chốt |
+| D-8 | Câu trả lời cuối phải mang **bằng chứng sống** của việc đã làm (đặc biệt khi đổi mã hoặc đổi UI/UX) | Có | Sau (vòng 22 đợt 3): cổng bằng chứng chấm **mỗi lượt** (R1–R5, thuần, không I/O), mỗi lần ghi tệp sinh diff + sha256 **tại chỗ ghi**, câu trả lời cuối mang nhãn ba trạng thái `verified`/`unverified`/`not_measurable`, một hàng `E:` vào nhật ký, số của cổng vào `turn.end` (S4 của eval rời `not_measured`); mặc định `warn` — nâng `enforce` theo **đúng** mốc D-14. Trước: không có cổng nào, nhãn `done` luôn xanh, store bỏ `session.journal` | Đã xong |
 | D-9 | Bảng Sub-agents phải tách theo **từng turn** | Có | Sau (vòng 22 đợt 2): bảng đọc sổ con theo `parent_turn` — chip `Lượt 1 · 2`, nút `tất cả lượt`, khối theo lượt riêng (BUG-43 đã sửa); trước: lượt `2+2` (3 s) vẫn hiện con của lượt trước | Đã xong |
 | D-10 | Kiến trúc được phép nặng, **ưu tiên ổn định**, chấp nhận tốn thêm token/bước/thời gian | Có | — | Đã chốt |
 
@@ -97,3 +115,4 @@ trả notice `PEER_MESH_NOTICE` nói thẳng nó chưa có hiệu lực. D-14 (m
 | 2026-09-22 | Chốt D-11…D-15 (năm câu hỏi khi soạn kế hoạch thi công): không cho con tự sinh, chờ tới khi nhận output, giữ tool tuần tự, mốc `enforce` theo số S4, con 40/300 kèm chẩn đoán kẹt | Nam Nam |
 | 2026-09-22 | Đợt 1 vòng 22 thi công xong: D-1…D-5 và D-6 chuyển `Đã xong` kèm số đo thi công; D-1 bổ sung số con **40 bước / 300 s** theo D-15; D-7…D-10 giữ `Đã chốt` (thuộc đợt sau) | Nam Nam |
 | 2026-09-22 | Đợt 2 vòng 22 (mesh agent con) thi công xong: D-7 và D-9 chuyển `Đã xong` kèm số đo sống; D-11, D-12, D-13 và D-15 ghi nhận **đã áp xong**; D-14 giữ `Đã chốt` (đợt bằng chứng sống); T14 (`parallelReadTools`) để lại vòng sau theo D-13 | Nam Nam |
+| 2026-09-22 | Đợt 3 vòng 22 (bằng chứng sống) thi công xong: D-8 chuyển `Đã xong` kèm số đo sống; D-14 ghi **nguyên văn** vào D-8 kèm ngày chốt và đồng hồ đếm (`sessions=` / `S4=` / `flagged=`); cổng vẫn mặc định `warn` cho tới mốc 20 phiên | Nam Nam |

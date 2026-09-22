@@ -1022,7 +1022,7 @@ và đo lại sống. Nhật ký đầy đủ (số đo, lệnh, phiên):
 | BUG-41 | TB | `TURN_EMPTY_RESPONSE` đánh `failed` cả lượt dù model đã làm việc | `backend/src/agentbox/agent_core/runtime.py` | ĐÃ SỬA |
 | BUG-42 | Cao | Con (và lượt chính) chạm trần bước/hạn chót thì mất trắng phần đã làm | `backend/src/agentbox/agent_core/{limits,failures,runtime}.py` | ĐÃ SỬA |
 | BUG-43 | TB | Bảng Sub-agents không theo turn | — | HOÃN — thuộc đợt peer-mesh của vòng 22 (D-9) |
-| BUG-44 | TB | Câu trả lời về tệp đính kèm có thể in **nội dung cũ trong ngữ cảnh** mà không mở tệp; không cổng nào bắt | — | MỚI — thuộc đợt bằng chứng sống (D-8) của vòng 22 |
+| BUG-44 | TB | Câu trả lời về tệp đính kèm có thể in **nội dung cũ trong ngữ cảnh** mà không mở tệp; không cổng nào bắt; cùng gốc với nhãn `done` xanh luôn hiện và khối `journal` bị giao diện ném đi | `backend/src/agentbox/agent_core/{limits,runtime,evidence_gate,session_journal,journal}.py`, `backend/src/agentbox/sandbox/{executor,worker}.py`, `backend/src/agentbox/api/server.py`, `frontend/src/components/chat/HarnessStepView.tsx`, `frontend/src/store/harnessChatStore.ts` | ĐÃ SỬA (đợt 3 — §6.25; phần khẳng định thuần văn không có đường dẫn vẫn ngoài tầm cổng) |
 | BUG-45 | TB | Dọn `.uploaded_artifacts` (`uploads_prune`) nuốt `OSError` khi `unlink` ⇒ báo `removedFiles: 0` như đã dọn sạch trong khi tệp vẫn nằm trên đĩa, không ghim hàng `X:` nào | `deploy/docker/upload_files.py` (`prune`), `deploy/docker/tests/test_upload_files.py` | ĐÃ SỬA |
 | BUG-46 | TB | Hai lượt `migrate_plans.py --apply` trong cùng một giây dùng chung một thư mục sao lưu ⇒ ghi đè `manifest.json` và bản sao byte của lượt trước | `deploy/docker/migrate_plans.py` (`write_backup`), `deploy/docker/tests/test_migrate_plans.py` | ĐÃ SỬA |
 | BUG-47 | Thấp | Câu từ chối `header-mismatch` in "khai vv2" (lặp chữ `v`) và gọi khối **sai cú pháp** là "khai vVersion: v2" ⇒ model đi sửa phiên bản trong khi lỗi thật là cú pháp | `backend/src/agentbox/agent_core/{plan_registry,plan_eval}.py` + `test_plan_registry.py`, `test_plan_eval.py` | ĐÃ SỬA |
@@ -1170,3 +1170,91 @@ Lỗi lộ ra khi rà lại bộ đếm của T13 chứ không từ một triệ
 `62146c6e498d41f4b662d8295d91054e`; lượt sống chạy lại sau đó xanh. (3) Hai ca `test_cua_element_selector.py` phụ thuộc desktop
 của box (X/VNC) và mạng egress của box — không thuộc mã đợt này. (4) Không dựng lại ảnh box: `worker.py` gửi nội tuyến trong
 mỗi lần gọi.
+
+### 6.25 Vòng 22 (đợt 3 — bằng chứng sống) và hậu kiểm đợt 2: BUG-44 đã sửa, sáu lỗi mesh ghi sổ (BUG-53…BUG-58), một lỗi mới (BUG-59)
+
+Đợt 3 của `docs/plan/v22-boxfox-plan.md` (kế hoạch ba đợt, § Phần P1–P6) dựng **cổng bằng chứng**: mỗi lượt được chấm lúc đóng,
+câu trả lời cuối mang nhãn ba trạng thái, và mảnh kiểm chứng được sinh **ngay tại chỗ ghi tệp**. Cùng nhánh này còn có hậu kiểm
+đợt 2 (bốn vòng soát độc lập) — bốn lỗi mã `BUG-53…BUG-56` cộng hai lỗi nhỏ `BUG-57`/`BUG-58` đã sửa ở `d5d80c4`, nhưng mã của
+chúng mới chỉ nằm trong thông điệp commit; § này ghim chúng vào sổ. Trong lúc thi công lộ thêm **một** lỗi thật của đường ảnh
+chụp (BUG-59). Số đo, lệnh và phiên đầy đủ: `docs/tracking/test-rounds.md` § *Vòng 22 — đợt 3*.
+
+| Mã | Mức | Nội dung | Nơi sửa | Trạng thái |
+|---|---|---|---|---|
+| BUG-44 (§6.23) | TB | Cùng một lỗi gốc, nhìn từ mặt bằng chứng: câu trả lời cuối đội nhãn `done` xanh mà không có bất kỳ kiểm chứng nào; tool sửa tệp trả về chuỗi rỗng nghĩa (không diff, không hash); giao diện ném khối `journal` của API | `agent_core/{limits,runtime,evidence_gate,session_journal,journal}.py`, `sandbox/{executor,worker}.py`, `api/server.py`, `frontend/src/components/chat/HarnessStepView.tsx`, `frontend/src/store/harnessChatStore.ts` | ĐÃ SỬA |
+| BUG-53 | Cao | Slot fan-out nhả **hai lần** cho một con ⇒ trần toàn cục (8) và trần theo cha (3) bị vượt trong im lặng | `agent_core/peer_watchdog.py`, `agent_core/runtime.py` | ĐÃ SỬA |
+| BUG-54 | Thấp | Huỷ lượt ĐANG xếp hàng slot để lại permit của cha đã mua (`CancelledError` đi thẳng ra ngoài `wait_for`) | `agent_core/runtime.py` | ĐÃ SỬA |
+| BUG-55 | TB | Đường `wait=true` phát event kết thúc **sau** khi giao hàng ⇒ một lỗi giao hàng làm cha không bao giờ thấy con đã đóng | `agent_core/runtime.py` | ĐÃ SỬA |
+| BUG-56 | TB | Khối "chi phí theo lượt" thực ra là theo PHIÊN (`peer_turn_cost` bỏ qua lượt, `children_summary` không lọc `parent_turn`) | `agent_core/runtime.py`, `memory/session_store.py` | ĐÃ SỬA |
+| BUG-57 | Thấp | Một lần chờ bị huỷ để lại `waiting_for`/`waiting_since` trên hàng sổ con và cờ đánh thức sống sang lượt sau | `agent_core/runtime.py` | ĐÃ SỬA |
+| BUG-58 | Thấp | `deliverTo: ['main']` không đánh thức người đang chờ ⇒ lượt chờ thêm một nhịp quét, "không khai gì" lại nhanh hơn | `agent_core/runtime.py` | ĐÃ SỬA |
+| BUG-59 | Thấp | Ảnh chụp/ghi hình không bao giờ mang số bước: harness **không gửi** `step`/`toolCallId` dù cả hai route của box đã đọc từ lâu, nên tên tệp luôn rơi về `000` | `sandbox/executor.py` | ĐÃ SỬA |
+
+**BUG-44 — mức Trung bình — câu trả lời cuối đóng dấu "xong" mà không có gì kiểm chứng được.** Bốn bằng chứng đo được trước khi
+sửa: (1) nhãn cuối là khối `CheckCircle2` + chữ `done` **cứng** ở `HarnessStepView.tsx:1534-1537`; (2) giao diện ném khối `journal`
+API trả về — grep `journal` trong `harnessChatStore.ts:285-338` ra **0** kết quả; (3) bảng `journal` của box chỉ có **một** hàng
+`kind='plan'` trên mười phiên, tức dấu vết bền gần như không tồn tại; (4) `worker.py:345-357` — `file_write`/`file_edit_block` trả
+chuỗi rỗng nghĩa, nên *nguyên liệu* để kiểm chứng cũng không có. Sửa (đợt 3, P1.2–P1.5 + P2 + P3 + P4):
+`evidence_gate.py` chấm mỗi lượt theo R1–R5 (thuần, không I/O) trên chính các lời gọi công cụ của lượt; `runtime.py` chèn cổng giữa
+câu trả lời cuối và lúc phát nó, **một** phép dò `find` cố định khi lượt có ghi, **tối đa một** vòng vá chỉ ở `enforce`; mọi lỗi của
+cổng rơi về `not_measurable` + notice + hàng `X:`, không bao giờ đổi văn câu trả lời; `worker.py`/`executor.py` sinh diff + sha256
++ số dòng **tại chỗ ghi** vào `.generated_artifacts/captures/evidence/<sid8>/`; giao diện giờ đọc khối `journal`, hiện nhãn ba trạng
+thái (`verified`/`unverified`/`not_measurable`) kèm danh sách mảnh bằng chứng mở được, và lượt **thiếu** trường `evidence` được coi là
+`unverified` — không bao giờ xanh. Công tắc `BOXFOX_EVIDENCE_GATE` mặc định `warn`. **Còn nợ, nói thẳng:** cổng chỉ chấm được
+khẳng định máy đọc được (đường dẫn trong dấu backtick, lệnh, công cụ ghi/ảnh chụp); một khẳng định **thuần văn** về nội dung tệp
+("tệp đính kèm nói rằng…") mà lượt không mở tệp vẫn ngoài tầm R1–R5, và phần đó của BUG-44 chưa được đóng.
+
+**BUG-53 — mức Cao — một con được nhả slot hai lần.** `peer_watchdog._cancel_task` nhả slot ngay lúc huỷ task, rồi callback lúc
+task đóng nhả lần nữa; `asyncio.Semaphore` **không** cấm nhả thừa, nên hai cái trần cùng bị vượt mà không có lỗi nào được ghi. Đo
+trên bản cũ (`/var/tmp/rev2/probe_slots2.py`): ba con của một cha ⇒ `global_child_slots._value = 11` (trần là 8) và `parent_running`
+về 0 sớm nên `parent_slots` bị bỏ trong khi con vẫn chạy. Sửa: slot gắn với **đúng một** con (`child_slot_holders`, chìa khoá là
+`child_id`), mọi đường nhả đi qua `release_child_slot` và idempotent theo con. Test: `test_peer_slot_lifecycle.py` (4 ca, gồm ca
+"watchdog nhả đúng một slot").
+
+**BUG-54 — mức Thấp — huỷ lúc đang xếp hàng làm mất permit của cha.** `wait_for` chỉ bắt `TimeoutError`, còn `CancelledError` đi
+thẳng ra ngoài — mà đường thoát đó **không** nhả permit đã mua cho cha, nên mỗi lần huỷ ăn một chỗ trong trần theo cha. Sửa: nhả slot
+rồi ném tiếp. Test: ca "huỷ lúc xếp hàng slot" trong `test_peer_slot_lifecycle.py`.
+
+**BUG-55 — mức Trung bình — con đóng sổ rồi mà cha không biết, vì sự kiện bị giao hàng chặn.** Đường `wait=true` giao kết quả
+**trước** rồi mới phát event `child` kết thúc; một lỗi giao hàng (SQLite khoá, đĩa đầy) vì thế làm luồng cha không bao giờ thấy con đã
+đóng, và lỗi hạ tầng đội lốt lỗi của lời gọi công cụ — người đọc tưởng model gọi sai. Sửa: bọc `deliver_child_result` trong
+`try/except` ghi `child.delivery_failed`, và event kết thúc **luôn** được phát (kèm `deliveries: []` khi không giao được). Test: ca
+"giao hàng hỏng vẫn phát event kết thúc".
+
+**BUG-56 — mức Trung bình — "chi phí theo lượt" là chi phí cả phiên.** `peer_turn_cost` bỏ qua tham số lượt và `children_summary`
+không lọc `parent_turn`, nên `finish` của lượt thứ ba báo **mọi** con của cả phiên trong khi `waitedMs` ngay cạnh là số của riêng
+lượt — hai con số cạnh nhau nói hai chuyện khác nhau. Sửa: `children_summary(parent_id, turn=None)` và truyền `turn_no` ở bảy chỗ
+gọi; `session_metrics.peers` vẫn là số của cả phiên (giữ nguyên, đó là chủ ý). Test:
+`test_peer_cost.py::test_finish_chi_tinh_con_cua_luot_dang_dong`.
+
+**BUG-57 — mức Thấp — một lần chờ bị huỷ để lại dấu trên hàng sổ con.** `waiting_for`/`waiting_since` không được xoá khi lần chờ
+ném, nên bảng Sub-agents vẽ "đang chờ …" cho một con đã chết, và cờ đánh thức cưỡng bức sống sang lượt sau. Sửa: `child_wait(sid,
+[], None)` trong `finally`, xoá cờ khi lần chờ ném. Test: ca "huỷ lúc xếp hàng" (cùng ca với BUG-54) khẳng định hàng sổ con sạch dấu.
+
+**BUG-58 — mức Thấp — khai `deliverTo: ['main']` lại **chậm** hơn không khai gì.** Nhánh `main` của `deliver_child_result` không gọi
+`notify_peer_delivery`, nên cha đang chờ không được đánh thức và phải chờ thêm một nhịp quét — trong khi con không khai người nhận lại
+được đánh thức ngay (BUG-48). Sửa: gọi `notify_peer_delivery(target)` sau khi hàng biên nhận khép `injected`. Test: ca
+"`deliverTo: ['main']` đánh thức trong cùng nhịp" trong `test_peer_slot_lifecycle.py`.
+
+**BUG-59 — mức Thấp — ảnh chụp và ghi hình không mang số bước.** `deploy/docker/ide-proxy.py:284-285` đọc `step`/`toolCallId` từ
+payload **từ lâu**, nhưng harness (`sandbox/executor.py`) chưa bao giờ gửi hai khoá đó, nên tên tệp của mọi ảnh chụp/ghi hình rơi về
+nhánh dự phòng `000` — dấu vết sống có ảnh mà không biết ảnh thuộc bước nào. Lộ ra khi P1.4 cần đúng số bước để đặt tên mảnh bằng
+chứng (`<sid8>_<step>_<slug>.<ext>`). Sửa (`c82d9d2`): `executor.box_identity(session, step, tool_call_id)` chỉ chuyển tiếp giá trị
+**thật** (chỗ gọi cũ nhận đúng thân yêu cầu cũ, không có khoá lạ), payload gửi worker mang cả ba khoá, và hai route
+`/__box/capture` + `/__box/record/start` đọc được chúng như thiết kế ban đầu. Test: `test_worker_evidence.py` (10 ca) + hai ca payload
+của harness và hai route trong cùng tệp.
+
+**Ghi nhận, không phải lỗi.** (1) **Hai lỗi tự gây, bắt ngay trong phiên, chưa bao giờ lên commit:** bản vá P1.1 đặt `turn=turn_no`
+vào dòng `tool.end` của `wrap_up_diagnosis` — hàm **không có** biến ấy, nên mọi lượt chạm hạn chót kết thúc `failed` và **không có câu
+trả lời** (bộ test bắt: `test_turn_partial_budget.py`); và `probe_workspace` gọi `EVIDENCE_PROBE_COMMAND` khi hằng số đó chưa được
+định nghĩa ở đâu — `NameError` bên trong khối `try` của cổng sẽ âm thầm hạ **mọi** phép dò xuống `EVIDENCE_GATE_FAILED`. Cả hai sửa
+trong cùng phiên, trước khi commit. (2) **Hai phép kiểm cũ phải sửa theo hàng nhật ký mới:** `test_harness_runtime.py`
+`::test_multiturn_restart_and_isolation` khẳng định system prompt **bất động** giữa hai lượt — hàng `E:` đầu tiên làm khối ký ức A5
+xuất hiện (sáu nhóm rỗng) dù không có gì để nhớ; sửa bằng `journal.brief_has_items` để khối rỗng không được ghép, và thêm ca
+`test_rows_that_belong_to_no_group_leave_the_memory_block_empty`. Cùng tệp, `::test_denied_tool_and_malformed_args_never_execute` giờ
+lọc việc hạ tầng của cổng (`find` cố định + thư mục bằng chứng) bằng **dấu vết của chính nó**, không bằng tên op — lọc theo tên thì
+chính cú `file_write` của model cũng lọt. (3) **Đỏ môi trường, không liên quan:** `test_terminal_tools.py::test_terminal_exec_echo`
+(`bash` của box không có `Write-Output`) và `test_cua_element_selector.py::test_browser_use_navigation_and_dom_inspection` (box không ra
+được Internet). (4) **Luật §4.5 vẫn giữ:** `turn.end` chỉ mang **số** (`evidenceVerdict`, `evidenceMissing`, `evidenceChecked`,
+`changedFiles` là số đếm, `artifacts` là số đếm) — danh sách đường dẫn nằm ở event `assistant` và hàng `E:`, tức ở chỗ người đọc được,
+không phải ở nhật ký hệ thống. (5) `BUG-51` (§6.24) vẫn **CHƯA SỬA** — vòng sau, kèm test khoá thứ tự reap/finish.
