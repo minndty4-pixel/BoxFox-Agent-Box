@@ -7,6 +7,8 @@ lệch dần. Từ đây chỉ còn một con số: `runtime.py` cắt bằng n�
 và `GET /api/agent/runtime-info` trả lời bằng nó.
 """
 
+import os
+
 INSTRUCTIONS_MAX_CHARS = 12000
 
 # Trần của một phiên. `runtime.create()` kẹp giá trị người dùng gửi lên bằng đúng bốn
@@ -92,6 +94,47 @@ DIAGNOSIS_MIN_CHARS = 80
 
 # Trần độ dài câu trả lời cuối (D-4): 60 000 ký tự thì cảnh báo, 150 000 thì từ chối và trả
 # `partial` kèm tệp toàn văn. Ngưỡng của **kế hoạch** (40 000 / 150 000) là bộ số khác, không đụng.
+# --- Vòng 22 đợt 2 (T5): fan-out theo CHA --------------------------------------------------
+# Trần cũ là MỘT `Semaphore(3)` dùng chung cả tiến trình: hai phiên cha tranh nhau ba slot và
+# một cha không thể có bốn con cùng lúc. Trần giờ đặt theo từng cha (mặc định 3, trần 6) và
+# giữ một trần TOÀN CỤC 8 — đủ cho hai cha × ba con mà không tăng tải mặc định.
+FANOUT_PER_PARENT_DEFAULT = 3
+FANOUT_PER_PARENT_MAX = 6
+FANOUT_GLOBAL_CEILING = 8
+# Hết chỗ chờ quá ngần này thì trả lỗi tool cho model — một lượt không bao giờ treo vì hết slot.
+FANOUT_QUEUE_WAIT_SECONDS = 30
+# Chặn vòng lặp sinh con trong MỘT lượt (một lượt 40 bước có thể gọi `delegate_task` 40 lần).
+CHILDREN_PER_TURN_MAX = 12
+FANOUT_BUSY_CODE = 'FANOUT_BUSY'
+CHILDREN_PER_TURN_CODE = 'CHILDREN_PER_TURN_EXHAUSTED'
+
+# --- Công tắc vận hành của mesh (T5/T10/T13) -----------------------------------------------
+# Đọc env mỗi lần hỏi, không đọc một lần lúc nạp: một tiến trình harness sống lâu, nên đổi
+# công tắc phải có tác dụng ngay mà không cần khởi động lại. `off` (hoặc rỗng) ⇒ hành vi y
+# hệt bản trước đợt 2.
+PEER_MESH_ENV = 'BOXFOX_PEER_MESH'
+PEER_FANOUT_ENV = 'BOXFOX_PEER_FANOUT'
+PARALLEL_READ_ENV = 'BOXFOX_PARALLEL_READ_TOOLS'
+SWITCH_ON = {'1', 'on', 'true', 'yes'}
+
+
+def switch_enabled(name, default=False):
+    """`True`/`False` cho một công tắc môi trường, có giá trị mặc định khi env trống."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() in SWITCH_ON
+
+
+def peer_mesh_enabled():
+    """Công tắc giết của cả mesh: `BOXFOX_PEER_MESH=off` ⇒ không tool peer, uỷ thác chặn như cũ."""
+    return switch_enabled(PEER_MESH_ENV, True)
+
+
+def peer_fanout_enabled():
+    """Nới trần fan-out theo cha lên `FANOUT_PER_PARENT_MAX` cho cả máy (mặc định `off`)."""
+    return switch_enabled(PEER_FANOUT_ENV, False)
+
 ANSWER_WARN_CHARS = 60_000
 ANSWER_MAX_CHARS = 150_000
 ANSWER_LENGTH_WARN_CODE = 'ANSWER_LENGTH_WARN'

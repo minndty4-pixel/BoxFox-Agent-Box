@@ -17,9 +17,13 @@ from .compression import ContextCompressor, estimate_tokens, usage_reading
 from .failures import (RETRY_BUDGET_SECONDS, classify_failure, failure_detail, level_refusal,
                        log_safe_failure, retry_advice, stop_reason)
 from .limits import (ANSWER_LENGTH_HINT, ANSWER_LENGTH_WARN_CODE, ANSWER_MAX_CHARS, ANSWER_TOO_LONG_CODE,
-                     ANSWER_WARN_CHARS, CHILD_DEADLINE_SECONDS, CHILD_MAX_STEPS, DEADLINE_CLAMP_NOTICE_CODE,
+                     ANSWER_WARN_CHARS, CHILD_DEADLINE_SECONDS, CHILD_MAX_STEPS, CHILDREN_PER_TURN_CODE,
+                     CHILDREN_PER_TURN_MAX, DEADLINE_CLAMP_NOTICE_CODE,
                      DEADLINE_DEFAULT_SECONDS, DEADLINE_MAX_SECONDS, DEADLINE_MIN_SECONDS, DEADLINE_NOTICE_CODE,
-                     DIAGNOSIS_MIN_CHARS, INSTRUCTIONS_MAX_CHARS, MAX_STEPS_DEFAULT, MAX_STEPS_MAX,
+                     DIAGNOSIS_MIN_CHARS, FANOUT_BUSY_CODE, FANOUT_GLOBAL_CEILING, FANOUT_PER_PARENT_DEFAULT,
+                     FANOUT_PER_PARENT_MAX, FANOUT_QUEUE_WAIT_SECONDS, INSTRUCTIONS_MAX_CHARS,
+                     peer_fanout_enabled,
+                     MAX_STEPS_DEFAULT, MAX_STEPS_MAX,
                      ROUTER_BODY_BUDGET, STEP_BUDGET_NOTICE_CODE, STEPS_CLAMP_NOTICE_CODE,
                      TRUNCATED_OUTPUT_MAX_TOKENS, TRUNCATED_OUTPUT_NOTICE_CODE, WRAP_UP_MAX_TOKENS,
                      WRAP_UP_READ_TOOL_CALLS, WRAP_UP_STEPS_RESERVED, WRAP_UP_TIMEOUT_SECONDS)
@@ -1044,7 +1048,18 @@ class HarnessRuntime(RuntimeCommands):
         self.pending = {}
         # sessionId -> the asyncio.timeout budget of the live turn (paused while a decision blocks).
         self.run_budget = {}
-        self.child_slots = asyncio.Semaphore(3)
+        # T5 — fan-out theo CHA: `parent_slots` giữ một semaphore cho MỖI phiên cha (bỏ entry khi
+        # bộ đếm về 0 và không còn ai chờ, để dict không phình theo số phiên), còn
+        # `global_child_slots` là trần toàn cục của cả tiến trình. `parent_running` đếm con đang
+        # chạy của mỗi cha, `parent_waiters` đếm người đang xếp hàng — cần cả hai để biết lúc nào
+        # được phép bỏ một entry mà không làm người chờ mắc kẹt.
+        self.parent_slots = {}
+        self.parent_running = {}
+        self.parent_waiters = {}
+        self.global_child_slots = asyncio.Semaphore(FANOUT_GLOBAL_CEILING)
+        # Thời gian chờ slot. Thuộc tính chứ không phải hằng số đọc thẳng, để đo được đường
+        # `FANOUT_BUSY` mà không phải ngồi chờ 30 s.
+        self.fanout_queue_wait = FANOUT_QUEUE_WAIT_SECONDS
         self.writer_lock = asyncio.Lock()
         # web_search / web_fetch run on the HOST: the box has no Internet (only loopback).
         self.web = WebTools()
@@ -1179,6 +1194,13 @@ class HarnessRuntime(RuntimeCommands):
                   # Cắt bằng hằng số dùng chung: phía giao diện đọc đúng con số này từ
                   # `limits.py` (qua `runtime-info`), không chép tay lại lần thứ hai.
                   'instructions': str(values.get('instructions', ''))[:INSTRUCTIONS_MAX_CHARS]}
+        # T5 — trần fan-out của RIÊNG phiên này (mặc định 3, trần 6). Ghi vào config để
+        # `fanout_limit` đọc lại ở mỗi lần sinh con và để giao diện thấy đúng con số engine
+        # đang áp; giá trị ngoài dải bị BỎ (không kẹp im lặng thành một trần khác).
+        requested_fanout = values.get('fanoutPerParent')
+        if (isinstance(requested_fanout, int) and not isinstance(requested_fanout, bool)
+                and 1 <= requested_fanout <= FANOUT_PER_PARENT_MAX):
+            config['fanoutPerParent'] = requested_fanout
         if engine_clamped_deadline:
             config['deadlineClamped'] = True
         if engine_clamped_steps:
@@ -1332,6 +1354,88 @@ class HarnessRuntime(RuntimeCommands):
         if task and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+
+    # --- Fan-out theo cha (T5) -----------------------------------------------------------
+    @staticmethod
+    def fanout_limit(config=None):
+        """Trần con cùng lúc của MỘT cha: 3 mặc định, nới tới 6.
+
+        `config['fanoutPerParent']` là đường của một phiên (kẹp `[1, FANOUT_PER_PARENT_MAX]`);
+        công tắc `BOXFOX_PEER_FANOUT` nới trần cho cả máy khi vận hành cần nhiều nhánh hơn.
+        """
+        raw = (config or {}).get('fanoutPerParent')
+        if isinstance(raw, int) and not isinstance(raw, bool):
+            return max(1, min(FANOUT_PER_PARENT_MAX, raw))
+        return FANOUT_PER_PARENT_MAX if peer_fanout_enabled() else FANOUT_PER_PARENT_DEFAULT
+
+    async def acquire_child_slot(self, parent_sid):
+        """Mua slot sinh con của một cha, hoặc từ chối bằng `FANOUT_BUSY`.
+
+        Thứ tự mua: slot của CHA trước, slot toàn cục sau. Ngược lại thì một cha giữ slot toàn
+        cục trong lúc chờ trần của mình, và hai cha chờ nhau qua trần toàn cục. Hết
+        `fanout_queue_wait` giây chờ ⇒ `ValueError` mang mã `FANOUT_BUSY` để MODEL nhận lỗi
+        tool rồi đi đường khác — lượt không treo và không chết.
+        """
+        limit = self.fanout_limit(self.store.get(parent_sid).get('config'))
+        slot = self.parent_slots.get(parent_sid)
+        if slot is None:
+            slot = self.parent_slots[parent_sid] = asyncio.Semaphore(limit)
+        self.parent_waiters[parent_sid] = self.parent_waiters.get(parent_sid, 0) + 1
+        try:
+            try:
+                await asyncio.wait_for(slot.acquire(), self.fanout_queue_wait)
+            except asyncio.TimeoutError:
+                raise ValueError(
+                    f'{FANOUT_BUSY_CODE}: this session already runs {limit} children at the same time'
+                    ' — wait for one to finish (or call `await_children`) before spawning another')
+            try:
+                await asyncio.wait_for(self.global_child_slots.acquire(), self.fanout_queue_wait)
+            except asyncio.TimeoutError:
+                slot.release()
+                raise ValueError(
+                    f'{FANOUT_BUSY_CODE}: the box already runs {FANOUT_GLOBAL_CEILING} children at the'
+                    ' same time — try again when one finishes')
+            self.parent_running[parent_sid] = self.parent_running.get(parent_sid, 0) + 1
+        finally:
+            self.forget_child_waiter(parent_sid)
+
+    def release_child_slot(self, parent_sid):
+        """Nhả slot khi con đóng — chạy từ `done_callback`, nên nó chạy cả khi con bị huỷ."""
+        slot = self.parent_slots.get(parent_sid)
+        if slot is not None:
+            try:
+                slot.release()
+            except ValueError:  # nhả thừa không bao giờ được giết một lượt
+                pass
+        try:
+            self.global_child_slots.release()
+        except ValueError:  # pragma: no cover - cùng lý do
+            pass
+        left = self.parent_running.get(parent_sid, 0) - 1
+        if left > 0:
+            self.parent_running[parent_sid] = left
+            return
+        self.parent_running.pop(parent_sid, None)
+        # Không còn con nào chạy VÀ không ai đang chờ slot của cha này ⇒ bỏ semaphore, để
+        # `parent_slots` không phình theo số phiên cha từng uỷ thác. Còn người chờ thì giữ lại:
+        # bỏ entry lúc đó là bỏ mất thứ người chờ đang đợi.
+        if not self.parent_waiters.get(parent_sid):
+            self.parent_slots.pop(parent_sid, None)
+
+    def forget_child_waiter(self, parent_sid):
+        """Người xếp hàng rời đi (được slot hay bị từ chối) — và dọn entry khi rảnh hẳn.
+
+        Đây là chỗ dọn đúng đường của một lần mua THẤT BẠI: cha bị `FANOUT_BUSY` không
+        để lại semaphore nào (giữ lại chỉ làm `parent_slots` phình theo số phiên cha).
+        Bỏ được vì bất biến là: `parent_running` rỗng + không ai chờ ⇒ mọi permit đã về.
+        """
+        left = self.parent_waiters.get(parent_sid, 0) - 1
+        if left > 0:
+            self.parent_waiters[parent_sid] = left
+            return
+        self.parent_waiters.pop(parent_sid, None)
+        if not self.parent_running.get(parent_sid):
+            self.parent_slots.pop(parent_sid, None)
 
     @staticmethod
     def seconds_left(budget):
@@ -3015,15 +3119,32 @@ class HarnessRuntime(RuntimeCommands):
         if not isinstance(goal, str) or not goal.strip():
             raise ValueError('Child goal required')
         config = session['config']
-        child_route = route_for(configured.get('model')) or config['route']
-        child = self.create({**child_route,
-            'skills': sorted(set(config['skills']) & ROLE_SKILLS[role]),
-            'maxSteps': min(CHILD_MAX_STEPS, config['maxSteps']),
-            'deadlineSeconds': min(CHILD_DEADLINE_SECONDS, config['deadlineSeconds']),
-            'contextWindow': config['contextWindow'],
-            'contextWindowSource': config.get('contextWindowSource'),
-            'instructions': configured.get('systemPromptAppended', '')},
-            parent_id=session['id'], role=role, parent_tools=config['tools'])
+        # T5 — toạ độ của CHA và hai trần sinh con, tính TRƯỚC khi tạo phiên con: một hàng
+        # `sessions` không được sinh ra rồi mới bị từ chối, và một lượt không được sinh con vô hạn.
+        parent_id = session['id']
+        turn = self.active_turn.get(parent_id) or 0
+        step = self.active_step.get(parent_id) or 0
+        spawned = len(self.store.children_of(parent_id, turn=turn)) if turn else 0
+        if spawned >= CHILDREN_PER_TURN_MAX:
+            raise ValueError(f'{CHILDREN_PER_TURN_CODE}: this turn already spawned {spawned} children'
+                             f' (limit {CHILDREN_PER_TURN_MAX}) — finish or await them first')
+        # Slot mua TRƯỚC khi sinh phiên con: hết chỗ thì chỉ có một lỗi tool, không có hàng
+        # `sessions` mồ côi nằm ở `idle` mà không ai chạy.
+        await self.acquire_child_slot(parent_id)
+        try:
+            child_route = route_for(configured.get('model')) or config['route']
+            child = self.create({**child_route,
+                'skills': sorted(set(config['skills']) & ROLE_SKILLS[role]),
+                'maxSteps': min(CHILD_MAX_STEPS, config['maxSteps']),
+                'deadlineSeconds': min(CHILD_DEADLINE_SECONDS, config['deadlineSeconds']),
+                'contextWindow': config['contextWindow'],
+                'contextWindowSource': config.get('contextWindowSource'),
+                'instructions': configured.get('systemPromptAppended', '')},
+                parent_id=session['id'], role=role, parent_tools=config['tools'])
+        except BaseException:
+            # Một slot rò làm mọi lần sinh con sau của cha này `FANOUT_BUSY` vĩnh viễn.
+            self.release_child_slot(parent_id)
+            raise
         context_data = str(args.get('context', ''))[:16000] if args.get('context') else ''
         expectation = str(args.get('expect', ''))[:CHILD_EXPECT_MAX_CHARS] if args.get('expect') else ''
         prompt_parts = [goal]
@@ -3038,10 +3159,7 @@ class HarnessRuntime(RuntimeCommands):
         # T3 — hàng sổ con (T1) vào DB NGAY khi con được sinh, TRƯỚC event `child`: `peer_read`
         # (T8) và `await_children` (T9) đọc sổ, nên một con chỉ có trong event là một con không
         # tồn tại với chúng. Cặp (lượt, bước) là toạ độ của CHA — giao diện tách bảng theo lượt
-        # bằng chính nó (BUG-43/D-9).
-        parent_id = session['id']
-        turn = self.active_turn.get(parent_id) or 0
-        step = self.active_step.get(parent_id) or 0
+        # bằng chính nó (BUG-43/D-9); toạ độ đã tính ở đầu hàm (T5).
         # `deliverTo` (T11) và `wait` (T6) do hai việc sau định nghĩa; T3 chỉ nhận, cắt
         # biên và mang chúng vào payload, để hai việc đó không phải đổi hình dạng event.
         raw_targets = args.get('deliverTo')
@@ -3061,15 +3179,22 @@ class HarnessRuntime(RuntimeCommands):
             'context': echo_context,
             'prompt': echo_prompt,
         })
-        async with self.child_slots:
+        try:
             # T3 — `wallMs` đo đúng thời gian CON chạy, không tính lúc xếp hàng chờ slot.
             child_started = time.time()
             task = self.start(child['id'], child_prompt)
-            try:
-                answer = await task
-            except asyncio.CancelledError:
-                await self.stop(child['id'])
-                raise
+        except BaseException:
+            self.release_child_slot(parent_id)
+            raise
+        # T5 — slot sống bằng VÒNG ĐỜI của con, không bằng khối `async with`: con `wait=false`
+        # (T6) trả về ngay trong khi nó vẫn chạy, nên chỗ nhả duy nhất đúng là lúc task đóng
+        # (chạy cả khi con bị huỷ).
+        task.add_done_callback(lambda _task, pid=parent_id: self.release_child_slot(pid))
+        try:
+            answer = await task
+        except asyncio.CancelledError:
+            await self.stop(child['id'])
+            raise
         child_rec = self.store.get(child['id'])
         status = child_rec['status']
         child_events = self.store.events(child['id'])
