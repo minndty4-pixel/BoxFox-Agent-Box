@@ -147,7 +147,13 @@ class PeerWatchdog:
         return True
 
     def _cancel_task(self, child_id):
-        """Huỷ task của con rồi nhả slot fan-out của cha nó."""
+        """Huỷ task của con rồi nhả slot fan-out của cha nó — NHẢ THEO CON, nên chỉ một lần.
+
+        Slot mua một lần cho mỗi con nhưng có hai đường nhả (đây và callback lúc task đóng), nên
+        `release_child_slot` phải nhận `child_id`. Bản trước gọi `release_child_slot(parent_id)`
+        trần: `asyncio.Semaphore` nhận lần nhả thừa, và cả trần toàn cục lẫn trần theo cha bị vượt
+        trong im lặng (BUG-53).
+        """
         if self.runtime is None:
             return
         parent_id = None
@@ -162,7 +168,7 @@ class PeerWatchdog:
             return
         if parent_id:
             try:
-                self.runtime.release_child_slot(parent_id)
+                self.runtime.release_child_slot(parent_id, child_id)
             except Exception:  # pragma: no cover
                 pass
 

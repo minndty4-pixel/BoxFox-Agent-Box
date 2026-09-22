@@ -54,7 +54,7 @@ vào kế hoạch** (`docs/plan/v22-boxfox-plan.md`).
 > hạn chót còn lại của chính lượt đó, và phải trả về bốn thứ: đã làm gì, kẹt ở đâu, còn lại gì, thử gì tiếp.
 
 **Cập nhật thi công vòng 22 (2026-09-22, đợt 2 — mesh agent con).** D-11, D-12, D-13 và D-15 **đã áp xong** (D-15 xong từ
-đợt 1 cùng D-1): không có `spawn_peer` — cây con **phẳng một tầng**, `max_depth = 1`; `await_children` chờ **tới lúc bạn
+đợt 1 cùng D-1): không có `spawn_peer` — cây con **phẳng một tầng** (bảo đảm theo cấu trúc: vai của con không mang `delegate_task`, mã không có tham số `max_depth`); `await_children` chờ **tới lúc bạn
 giao** và tỉnh dậy bằng chính biên nhận giao hàng, ba con số 300 s chỉ là **lưới an toàn** — chạm lưới thì `peer_wait_end`
 mang `status='timeout'` và lượt **không** bị đánh `failed` (đo sống: lượt `bb142655d9634b7f86270717b985e3fb` chờ đúng
 **300 001 ms** rồi vẫn `completed`); tool trong một bước vẫn **tuần tự**, song song là fan-out **theo cha**

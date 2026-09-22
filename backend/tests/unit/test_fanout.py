@@ -94,7 +94,8 @@ def test_hai_cha_ba_con_chay_cung_luc_va_tran_toan_cuc_van_con(tmp_path):
     assert counter.peak_per_parent[sessions[1]['id']] == FANOUT_PER_PARENT_DEFAULT, \
         'và cha thứ hai KHÔNG phải chờ ba slot của cha thứ nhất'
     assert counter.peak == 6 <= FANOUT_GLOBAL_CEILING
-    assert [r['status'] for r in results] == ['idle'] * 6 or all(r['sessionId'] for r in results)
+    ids = [row['sessionId'] for row in results]
+    assert len(ids) == 6 and len(set(ids)) == 6, 'mỗi lời gọi sinh MỘT phiên con riêng'
     assert runtime.parent_running == {}, 'mọi con đã đóng ⇒ không còn bộ đếm nào'
     assert runtime.parent_slots == {}, 'entry của semaphore bị bỏ khi bộ đếm về 0'
     store.close()

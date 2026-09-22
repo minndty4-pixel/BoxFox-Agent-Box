@@ -1353,7 +1353,8 @@ Vite `:3100`, box `agentbox-box`), không ca nào chạy lại tính năng cũ k
   ba ca chuỗi đầu-cuối (`backend/tests/integration/test_peer_mesh_chain.py`: 2 ca offline + 1 ca sống opt-in); giao diện
   **2 tệp / 15 ca**. Chuỗi sống chạy xanh — hai con cùng lượt 1, hai biên nhận `injected`, cha chờ **10 869 ms** rồi `done` —
   và lượt sống đo chi phí xác nhận `children.steps_used` / `output_tokens` **bằng tổng chuỗi bước** của chính con đó.
-  **Bốn khiếm khuyết** lộ ra trong lúc thi công: BUG-48, BUG-49, BUG-50 (đã sửa) và BUG-51 (ghi nhận, chưa sửa — xem Phần 6).
+  **Năm khiếm khuyết** lộ ra trong lúc thi công: BUG-48, BUG-49, BUG-50 và BUG-52 (đã sửa) cùng BUG-51 (ghi nhận, chưa sửa —
+  xem Phần 6); bốn ca đầu đo được trên lượt **sống**, BUG-52 lộ ra khi rà lại bộ đếm của T13.
 
 ### Phần 1 — Sổ con, bộ đếm lượt, bảng Sub-agents theo từng lượt (T1–T4)
 
@@ -1397,10 +1398,12 @@ Vite `:3100`, box `agentbox-box`), không ca nào chạy lại tính năng cũ k
 
 ### Phần 4 — Giao hàng có định tuyến và wake-up (T11–T12)
 
-- `deliverTo` nhận tối đa `PEER_DELIVER_MAX = 4` địa chỉ, mỗi địa chỉ là `role:<vai>` hoặc `main`; địa chỉ **chưa tồn tại**
-  vẫn nhận được (dò mỗi `PEER_TARGET_POLL_SECONDS = 1.0` giây trong `PEER_TARGET_GRACE_SECONDS = 20` giây, vì anh em có thể
-  được sinh ngay sau người gửi). Kết quả đi vào lượt kế của người nhận **đúng một lần** nhờ khoá duy nhất; hàng biên nhận đi
-  `pending` → `injected` (hoặc `skipped` kèm `reason`).
+- `deliverTo` nhận tối đa `PEER_DELIVER_MAX = 4` địa chỉ, mỗi địa chỉ là `role:<vai>`, `peer:<sid>` hoặc `main`. Giao hàng
+  **phân giải MỘT lần** lúc con đóng sổ: một địa chỉ chưa tồn tại thành hàng `skipped` kèm `reason` và **không** được dò lại.
+  Cửa sổ dò (`PEER_TARGET_POLL_SECONDS = 1.0` giây, tối đa `PEER_TARGET_GRACE_SECONDS = 20` giây) nằm ở phía **người CHỜ**
+  (`await_children`) — nơi anh em có thể được sinh ngay sau lời gọi; người GỬI thì không dò, vì nó đã đóng sổ và không còn việc gì
+  để làm tiếp. Kết quả đi vào lượt kế của người nhận **đúng một lần** nhờ khoá duy nhất; hàng biên nhận đi `pending` → `injected`
+  (hoặc `skipped` kèm `reason`).
 - **Wake-up**: kết quả của bạn vào **vòng bước kế tiếp** của lượt đang chạy — người dùng không phải gửi thêm một câu để thấy kết quả.
   Đo sống: event `peer_delivery` mang `state='injected'` và bước kế của người nhận nhận khối kết quả trong `messages`.
 - **Luật chờ của cha** (BUG-48, xem Phần 6): cha chờ con ruột **đã đóng sổ** thì xong ngay, không cần biên nhận; bạn cùng cha
@@ -1432,7 +1435,7 @@ b4f26ca6e8c44f458cceb5ba86e87e34   failed      1    3        984       None     
   `BOXFOX_PEER_WAIT_MAX=<giây>` chỉ **hạ** trần chờ. Cờ `parallelReadTools` (Q3/T14) không đổi hành vi ⇒ đi kèm notice
   `PEER_MESH_NOTICE`.
 
-### Phần 6 — Bốn khiếm khuyết lộ ra khi thi công (BUG-48 … BUG-51)
+### Phần 6 — Năm khiếm khuyết lộ ra khi thi công (BUG-48 … BUG-52)
 
 - **BUG-48 — mức Cao — cha chờ chính con ruột đã đóng sổ, lượt treo tới lưới an toàn.** `peer_wait_pending` coi một mục tiêu là
   xong chỉ khi có biên nhận của người chờ; mà T11 chỉ ghi biên nhận cho `main` khi con **khai** `deliverTo`. Cách gọi tự nhiên
@@ -1465,13 +1468,18 @@ b4f26ca6e8c44f458cceb5ba86e87e34   failed      1    3        984       None     
   vẫn **đúng**; chỉ ảnh chụp ở `finish` thiếu. **Chưa sửa trong đợt này** (đổi thứ tự reap/finish là thay đổi cấu trúc ở đường
   đóng lượt, làm muộn vòng này là rủi ro không cần thiết); hướng sửa để vòng sau: reap trước khi phát `finish`, hoặc phát thêm
   một event hiệu chỉnh sau reap.
+- **BUG-52 — mức Trung bình — ngân sách chờ 300 s của "mỗi lượt" thực ra là mỗi PHIÊN.** `wait_extension` chỉ được cộng thêm mỗi
+  lần chờ mà **không bao giờ** đặt lại, nên lượt thứ hai của phiên thừa hưởng ngân sách đã tiêu của lượt thứ nhất: chờ đủ 300 s ở
+  lượt một thì mọi lượt sau trả `extensionExhausted` ngay. Lỗi lộ ra khi rà lại bộ đếm của T13, không từ triệu chứng người dùng
+  báo. Sửa (`a21c598`): `_run` đặt `wait_extension[sid] = 0.0` ngay sau khi xác định số lượt. Test:
+  `test_peer_cost.py::test_ngan_sach_cho_ve_khong_o_moi_luot`.
 
 ### Phần 7 — Số đo kiểm thử của đợt
 
 - Nhóm peer: `.venv/bin/python -m pytest backend/tests/unit -q -k "peer or delivery or child or delegate or watchdog or cost or async"`
   ⇒ **113 passed, 898 deselected in 38,02 s**. Riêng cụm sổ con/giao hàng/watchdog/chờ:
   `test_async_delegation.py test_peer_watchdog.py test_peer_cost.py test_peer_registry.py test_delivery_routing.py
-  test_delivery_injection.py test_await_children.py` ⇒ **71 passed in 25,35 s**; sau khi thêm hai ca chi phí:
+  test_delivery_injection.py test_await_children.py` ⇒ **71 passed in 25,35 s** (ảnh chụp **trước** khi thêm hai ca chi phí của BUG-49; chạy lại cùng bộ đó hôm nay được **73**); sau khi thêm hai ca chi phí:
   `test_peer_cost.py test_async_delegation.py` ⇒ **22 passed in 9,99 s**.
 - Chuỗi đầu-cuối trên runtime thật: `backend/tests/integration/test_peer_mesh_chain.py` ⇒ **2 passed, 1 skipped in 4,51 s**
   (ca sống bị bỏ qua khi thiếu `BOXFOX_LIVE_PEER_MESH=1`); bật `BOXFOX_LIVE_PEER_MESH=1` ⇒ **1 passed, 2 deselected in 24,39 s**.
@@ -1499,8 +1507,10 @@ b4f26ca6e8c44f458cceb5ba86e87e34   failed      1    3        984       None     
   Ảnh: `images/t17ui_15_child_wait_fixed.png`, `images/t17ui_16_receipts_after_wait.png`, `images/t17ui_14_receipt_fixed.png`,
   `images/t17ui_12_child_wait_fixed.png`, `images/t17ui_13_receipts.png`, `images/t17ui_10_child_wait.png` (trước khi sửa nhãn),
   `images/t17ui_02_waiting.png`, `images/t17ui_09_receipts.png`.
-- `peer_wait` / `peer_wait_end` là chuyện của **người chờ**: chúng nằm trong luồng của **cha**, không nằm trong luồng của con —
-  biến thể sống `test_chuoi_tren_harness_song` đọc đúng luồng đó (bản đầu đi tìm trong luồng con nên đỏ).
+- `peer_wait` / `peer_wait_end` là chuyện của **người CHỜ**, dù người chờ là cha hay là con: lượt nào gọi `await_children` thì
+  luồng của lượt đó mang hai event ấy (đo sống: con `3624ba4e…` của phiên `19271d91…`, con `6a541ef2…` của phiên `46c47921…`,
+  con `944d6bde…` của phiên `bb142655…` đều có). Bảng Sub-agents vẽ nhãn chờ từ luồng **đang mở**, nên nhãn ấy chỉ hiện cho người
+  chờ đang được xem; biến thể sống `test_chuoi_tren_harness_song` đọc luồng của cha (bản đầu đi tìm trong luồng con nên đỏ).
 - Ghi nhận: hai lượt sống chết vì lý do môi trường — `UPSTREAM_HTTP_429` ("This target is cooling down after a provider limit")
   ở phiên `b4f26ca6…` và `62146c6e…` — không liên quan mã đợt này; phiên `e94f1af0…` `failed` ở lượt UI còn giữ nguyên trong
   bảng để đối chiếu.

@@ -166,7 +166,7 @@ Controller chỉ tạo child sau khi policy cho phép. Quy tắc bắt buộc:
 
 Pha đầu nên có role read-only (nghiên cứu, phân tích, test review). Code/build sub-agent chỉ bật sau khi enforcement sandbox, grants, provenance và cancellation tree đạt test tích hợp.
 
-**Trạng thái trong BoxFox (vòng 22, đợt 2).** Cây con của BoxFox là **phẳng một tầng**: mọi con đều cùng cha, nên `max_depth = 1` và không có `lineage` sâu. Con **không** tự sinh con (`spawn_peer` không có trong phạm vi); con "nhìn thấy nhau" ở mức đọc (`peer_read`), đợi (`await_children`) và nhận giao hàng có định tuyến (`deliverTo` + biên nhận trong bảng `child_deliveries`). Mọi trần — fan-out theo cha, trần toàn cục, ngân sách con 40 bước / 300 s — do phiên chính giữ; hết lượt cha thì `reap_children` đóng mọi con còn sống bằng `PARENT_TURN_ENDED`. Quyết định và số đo: [ADR-0003 — mesh agent con](decisions/0003-peer-mesh-routing.md), `docs/tracking/test-rounds.md` § *Vòng 22 — đợt 2*.
+**Trạng thái trong BoxFox (vòng 22, đợt 2).** Cây con của BoxFox là **phẳng một tầng**: mọi con đều cùng cha, nên không có `lineage` sâu. Bảo đảm ấy là **cấu trúc** chứ không phải một tham số: mã không có `max_depth`, vì vai của con không mang `delegate_task` (không có đường nào để một con sinh ra con). Con **không** tự sinh con (`spawn_peer` không có trong phạm vi); con "nhìn thấy nhau" ở mức đọc (`peer_read`), đợi (`await_children`) và nhận giao hàng có định tuyến (`deliverTo` + biên nhận trong bảng `child_deliveries`). Mọi trần — fan-out theo cha, trần toàn cục, ngân sách con 40 bước / 300 s — do phiên chính giữ; hết lượt cha thì `reap_children` đóng mọi con còn sống bằng `PARENT_TURN_ENDED`. Quyết định và số đo: [ADR-0003 — mesh agent con](decisions/0003-peer-mesh-routing.md), `docs/tracking/test-rounds.md` § *Vòng 22 — đợt 2*.
 
 ## 7. Event store, reconnect và resume
 
@@ -191,7 +191,7 @@ Checkpoint có snapshot version của state projection, artifact graph roots, bu
 1. Schema session/task/run/turn, transactional event store, fake router/tool và resume test.
 2. Một agent Plan/Act, registry/executor và route gateway; approval/hash/budget enforcement.
 3. Typed context, artifact graph, compaction, progressive skills và supply-chain quarantine.
-4. Child session read-only với lineage/budget/cancellation/provenance; sau đó mới cân nhắc role ghi. **Đã có trong BoxFox (vòng 22, đợt 2)**: cây con phẳng một tầng `max_depth = 1`, fan-out theo cha có trần, biên nhận giao hàng và watchdog — xem [ADR-0003 — mesh agent con](decisions/0003-peer-mesh-routing.md).
+4. Child session read-only với lineage/budget/cancellation/provenance; sau đó mới cân nhắc role ghi. **Đã có trong BoxFox (vòng 22, đợt 2)**: cây con phẳng một tầng (theo cấu trúc, không phải bằng một tham số `max_depth`), fan-out theo cha có trần, biên nhận giao hàng và watchdog — xem [ADR-0003 — mesh agent con](decisions/0003-peer-mesh-routing.md).
 5. Browser/vision và desktop control sau khi giải quyết race revision và quyết định trong [ADR-0002 — điều khiển desktop đồng thời](decisions/0002-concurrent-desktop-control.md).
 
 Mỗi pha phải kiểm cả: không bypass quyền/IFC, task vẫn hoàn thành, và số lần hỏi người dùng. Không có pha nào được suy diễn rằng backend trống hiện tại đã thỏa kiến trúc này.

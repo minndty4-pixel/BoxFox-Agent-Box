@@ -1118,6 +1118,12 @@ class HarnessRuntime(RuntimeCommands):
         self.parent_slots = {}
         self.parent_running = {}
         self.parent_waiters = {}
+        # T5/T10 — slot đã mua gắn với ĐÚNG MỘT con: `child_slot_holders[child_id] = id của cha`.
+        # Hai đường cùng nhả slot cho một con (callback lúc task đóng, watchdog lúc huỷ task), và
+        # `asyncio.Semaphore` KHÔNG cấm nhả thừa — nên `release_child_slot` phải biết mình đã nhả
+        # hay chưa. Thiếu bảng này, lần nhả thứ hai nâng trần THẬT lên trên trần đã khai và câu
+        # "hộp đã chạy đủ 8 con" thành câu sai (BUG-53).
+        self.child_slot_holders = {}
         self.global_child_slots = asyncio.Semaphore(FANOUT_GLOBAL_CEILING)
         # Thời gian chờ slot. Thuộc tính chứ không phải hằng số đọc thẳng, để đo được đường
         # `FANOUT_BUSY` mà không phải ngồi chờ 30 s.
@@ -1508,8 +1514,15 @@ class HarnessRuntime(RuntimeCommands):
                                     output_tokens=output_tokens, answer_chars=answer_chars)
             # T11 — con `wait=false` tự xong cũng phải giao hàng: nếu không, người nhận khai trong
             # `deliverTo` chờ một biên nhận không bao giờ tới (chỉ `main` đọc được event này).
-            deliveries = self.deliver_child_result(child_id, parent_id, role, turn, step, deliver_to,
-                                                   chars=answer_chars)
+            try:
+                deliveries = self.deliver_child_result(child_id, parent_id, role, turn, step,
+                                                       deliver_to, chars=answer_chars)
+            except Exception as exc:
+                # Giao hàng hỏng (SQLite khoá, đĩa đầy) KHÔNG được làm mất event kết thúc: bảng
+                # Sub-agents phải thấy con đã đóng, và người đọc log phải thấy việc giao đã hỏng.
+                system_log.write('child.delivery_failed', level='warn', session_id=child_id,
+                                 parent=parent_id, message=str(exc)[:300])
+                deliveries = []
             self.store.emit(parent_id, 'child', {
                 'sessionId': child_id, 'role': role, 'status': status, 'turn': turn, 'step': step,
                 'goal': goal, 'reason': reason, 'stepsUsed': steps_used, 'outputTokens': output_tokens,
@@ -1519,7 +1532,7 @@ class HarnessRuntime(RuntimeCommands):
             system_log.write('child.detached_close_failed', level='warn', session_id=parent_id,
                              message=str(exc)[:300])
         finally:
-            self.release_child_slot(parent_id)
+            self.release_child_slot(parent_id, child_id)
 
     async def reap_children(self, sid, reason=TURN_ENDED_REASON, turn=None):
         """Dừng con còn sống của lượt này khi lượt CHA đóng (T7) — chống phiên mồ côi.
@@ -1640,12 +1653,37 @@ class HarnessRuntime(RuntimeCommands):
                 raise ValueError(
                     f'{FANOUT_BUSY_CODE}: the box already runs {FANOUT_GLOBAL_CEILING} children at the'
                     ' same time — try again when one finishes')
+            except asyncio.CancelledError:
+                # Lượt bị huỷ ĐANG lúc xếp hàng (người dùng bấm dừng, lượt cha đóng, watchdog): slot
+                # của CHA đã mua mà chưa có con nào để nhả nó. Không nhả ở đây thì permit đó mất
+                # hẳn, và cha này chỉ còn chạy được ít hơn trần của chính nó (BUG-54).
+                slot.release()
+                raise
             self.parent_running[parent_sid] = self.parent_running.get(parent_sid, 0) + 1
         finally:
             self.forget_child_waiter(parent_sid)
 
-    def release_child_slot(self, parent_sid):
-        """Nhả slot khi con đóng — chạy từ `done_callback`, nên nó chạy cả khi con bị huỷ."""
+    def track_child_slot(self, child_id, parent_sid):
+        """Gắn slot vừa mua vào id của con vừa sinh — slot mua TRƯỚC khi phiên con tồn tại.
+
+        `acquire_child_slot` chạy trước `create` (hết chỗ thì không được để lại một hàng `sessions`
+        mồ côi), nên nó chưa biết id của con. Chỗ gọi gắn id ngay khi có, và từ đó mọi lần nhả đều
+        đi qua `release_child_slot(..., child_id=...)`: một con, một lần nhả.
+        """
+        self.child_slot_holders[child_id] = parent_sid
+
+    def release_child_slot(self, parent_sid, child_id=None):
+        """Nhả slot khi con đóng — IDEMPOTENT theo con, vì có hai đường cùng nhả cho một con.
+
+        Watchdog (T10) nhả ngay lúc nó huỷ task; callback của `delegate_task`/`close_detached_child`
+        nhả khi task đóng. Bản trước nhả hai lần cho cùng một con và hi vọng `except ValueError` đỡ:
+        `asyncio.Semaphore.release()` không ném, nên lần nhả thừa nâng trần thật lên trên
+        `FANOUT_GLOBAL_CEILING` và trần theo cha bị bỏ qua (BUG-53, đo được `global = 11`).
+        Không truyền `child_id` (đường lỗi trước khi phiên con tồn tại) thì nhả thẳng: chưa có con
+        nào để nhả hai lần.
+        """
+        if child_id is not None and self.child_slot_holders.pop(child_id, None) is None:
+            return  # con này đã nhả rồi (hoặc slot của nó không thuộc tiến trình này)
         slot = self.parent_slots.get(parent_sid)
         if slot is not None:
             try:
@@ -1755,13 +1793,14 @@ class HarnessRuntime(RuntimeCommands):
             record['diffPath'] = diff_path
         return record
 
-    def peer_turn_cost(self, sid):
+    def peer_turn_cost(self, sid, turn=None):
         """Chi phí mesh ghi kèm event của lượt (T13) — mỗi số đọc từ ĐÚNG MỘT nguồn.
 
         - `childCount`/`childSteps`/`childTokens` đọc từ SỔ CON (`children_summary`, một truy vấn):
-          sổ con là nguồn chân lý cho "phiên này sinh con nào", nên không cộng lại từ event. Ba số
-          con là số LUỸ KẾ của cả PHIÊN (`children_summary` không lọc theo lượt), chỉ hai số chờ
-          bên dưới mới là số của riêng lượt đang đóng.
+          sổ con là nguồn chân lý cho "LƯỢT này sinh con nào", nên không cộng lại từ event. Bộ lọc
+          `parent_turn` là phần không được thiếu: thiếu nó thì lượt thứ ba báo luỹ kế của cả phiên
+          (BUG-56), trong khi `waitedMs` ngay cạnh là số của riêng lượt — hai câu hỏi khác nhau
+          trong cùng một payload. `turn=None` giữ nghĩa cũ (cả phiên) cho `session_metrics`.
         Bản trả về KHÔNG có khoá `turn`: chỗ gọi đã có số lượt của chính nó, và `system_log.write`
         nhận `turn=` như một tham số riêng nên một khoá trùng tên sẽ làm nó ném `TypeError`.
 
@@ -1770,7 +1809,7 @@ class HarnessRuntime(RuntimeCommands):
           chót theo cách này — nhưng chúng tách ra để khi có đường hoãn thứ hai thì hợp đồng không
           phải đổi, và để người đọc biết hai câu hỏi khác nhau đang được trả lời.
         """
-        numbers = self.store.children_summary(sid)
+        numbers = self.store.children_summary(sid, turn=turn)
         waited_ms = int(self.wait_extension.get(sid, 0.0) * 1000)
         return {'waitedMs': waited_ms, 'extensionMs': waited_ms,
                 'childCount': numbers['spawned'], 'childSteps': numbers['childSteps'],
@@ -2170,7 +2209,7 @@ class HarnessRuntime(RuntimeCommands):
             close_turn('partial', 'stop', 0, None, extra={'partial': True, 'diagnosis': True})
             self.store.emit(sid, 'finish', {'status': 'completed', 'turn': turn_no,
                                             'steps': steps_used,
-                                            **self.peer_turn_cost(sid)})
+                                            **self.peer_turn_cost(sid, turn_no)})
             elapsed_ms = round((time.time() - started) * 1000)
             notice = {'code': reason_code, 'partial': True, 'diagnosis': True,
                       'diagnosisChars': len(text), 'stepsUsed': steps_used, 'toolsRun': tools_run,
@@ -2185,7 +2224,7 @@ class HarnessRuntime(RuntimeCommands):
                              status='completed', partial=True, diagnosis=True, reason=reason_code,
                              steps=steps_used,
                              toolsRun=tools_run, textChars=len(text), deadlineUsedMs=elapsed_ms,
-                             **self.peer_turn_cost(sid))
+                             **self.peer_turn_cost(sid, turn_no))
             return text
         # B3 — cửa sổ giữ chỗ: ba bước cuối của trần bước là của việc CHẨN ĐOÁN, không phải
         # của việc mới. Đo sống vòng 21: lượt chạm trần bước (phiên `ea948649…`) chạy đủ 10/10
@@ -2524,7 +2563,7 @@ class HarnessRuntime(RuntimeCommands):
                         self.store.save(sid, messages, 'completed')
                         self.store.emit(sid, 'finish', {'status': 'completed', 'turn': turn_no,
                                                         'steps': steps_used,
-                                                        **self.peer_turn_cost(sid)})
+                                                        **self.peer_turn_cost(sid, turn_no)})
                         elapsed_ms = (time.time() - started) * 1000
                         system_log.write('turn.end', session_id=sid, turn=turn_no, turn_id=steps_used,
                                          status='completed', steps=steps_used,
@@ -2532,7 +2571,7 @@ class HarnessRuntime(RuntimeCommands):
                                          stepsUsed=steps_used, toolsRun=tools_run,
                                          deadlineUsedMs=elapsed_ms,
                                          durationMs=elapsed_ms,
-                                         **self.peer_turn_cost(sid))
+                                         **self.peer_turn_cost(sid, turn_no))
                         return text
                     if len(calls) > 16:
                         raise ValueError('Tool-call batch exceeds limit')
@@ -2612,12 +2651,12 @@ class HarnessRuntime(RuntimeCommands):
             self.store.save(sid, messages, 'cancelled')
             self.store.emit(sid, 'finish', {'status': 'cancelled', 'turn': turn_no,
                                             'steps': steps_used,
-                                            **self.peer_turn_cost(sid)})
+                                            **self.peer_turn_cost(sid, turn_no)})
             elapsed_ms = (time.time() - started) * 1000
             system_log.write('turn.end', session_id=sid, turn=turn_no, turn_id=steps_used,
                              status='cancelled', steps=steps_used,
                              stepsUsed=steps_used, toolsRun=tools_run, deadlineUsedMs=elapsed_ms,
-                             durationMs=elapsed_ms, **self.peer_turn_cost(sid))
+                             durationMs=elapsed_ms, **self.peer_turn_cost(sid, turn_no))
             raise
         except Exception as exc:
             code, error = classify_failure(exc)
@@ -2645,7 +2684,7 @@ class HarnessRuntime(RuntimeCommands):
                              errorCode=code, message=error, steps=steps_used,
                              stepsUsed=steps_used, toolsRun=tools_run, deadlineUsedMs=elapsed_ms,
                              durationMs=elapsed_ms, detail=failure_detail(exc),
-                             **self.peer_turn_cost(sid))
+                             **self.peer_turn_cost(sid, turn_no))
             return None
         finally:
             self.run_budget.pop(sid, None)
@@ -3037,18 +3076,29 @@ class HarnessRuntime(RuntimeCommands):
             'mode': mode, 'waitsUntilDelivery': True, 'safetySeconds': timeout,
             'deadline': round(wall_started + timeout, 3), 'turn': turn})
         if self.store.child(sid) is not None:
-            # Sổ con của chính người chờ: giao diện đọc `waiting_for` để ghi "đang chờ <vai> giao kết
-            # quả", và nó tự hết khi hàng này mất `waiting_for`.
+            # Sổ con của chính người chờ. Giao diện KHÔNG đọc cột này: nó vẽ theo event
+            # `peer_wait`/`peer_wait_end` của luồng đang mở. Hai nơi đọc thật: watchdog (luật 3 —
+            # `waiting_since` quá hạn thì đánh thức cưỡng bức) và người đọc DB sau này.
             self.store.child_wait(sid, [f"peer:{row['session_id']}" for row in found], wall_started)
         await session_journal.append(self.executor, self.store, sid, 'step',
                                      f'waiting for {len(found)} peer session(s) to deliver their result '
                                      f"({mode}): {', '.join(row['role'] for row in found)}",
                                      data={'mode': mode, 'targets': [row['session_id'] for row in found],
                                            'turn': turn})
-        status, done_rows, pending_rows, waited, exhausted = await self.wait_for_peers(
-            sid, found, mode, timeout)
-        if self.store.child(sid) is not None:
-            self.store.child_wait(sid, [], None)
+        try:
+            status, done_rows, pending_rows, waited, exhausted = await self.wait_for_peers(
+                sid, found, mode, timeout)
+        except BaseException:
+            # Lượt chết GIỮA lúc chờ (người dùng bấm dừng, watchdog, tiến trình sập): cờ đánh thức
+            # cưỡng bức không được sống sang lượt sau, kẻo lượt kế tiếp tự cắt ngắn lần chờ của nó.
+            self.peer_force_wake.discard(sid)
+            raise
+        finally:
+            # Hàng sổ con phải hết `waiting_for` trên MỌI đường: còn cờ đó thì lần nạp lại bảng vẽ
+            # "đang chờ <vai> giao kết quả" cho một con đã chết, và watchdog (luật 3) đánh thức
+            # cưỡng bức lượt kế tiếp của phiên (BUG-57).
+            if self.store.child(sid) is not None:
+                self.store.child_wait(sid, [], None)
         budget = [PEER_WAIT_RESULT_CHARS]
         done = [self.peer_delivery_summary(row, budget) for row in done_rows]
         forced = sid in self.peer_force_wake
@@ -3773,6 +3823,10 @@ class HarnessRuntime(RuntimeCommands):
                     # Cha nhận qua event `child`, nên biên nhận của cha khép ngay: để `pending` thì
                     # T12 bơm lại chính câu trả lời mà cha đã đọc.
                     self.store.mark_delivered(row['id'], 'injected')
+                # Biên nhận đã ghi ⇒ đánh thức NGAY người đang chờ chính con này. Thiếu dòng này thì
+                # `deliverTo: ['main']` chậm hơn đường không khai gì (đường đó vốn đã đánh thức), và
+                # lượt cha treo thêm một nhịp quét (`PEER_TARGET_POLL_SECONDS`) mỗi lần (BUG-58).
+                self.notify_peer_delivery(target)
                 continue
             if not self.child_recipient_alive(self.store.get(target)):
                 row = self.store.queue_delivery(child_id, target, 0, 'peer', chars=0)
@@ -3878,6 +3932,9 @@ class HarnessRuntime(RuntimeCommands):
             # Một slot rò làm mọi lần sinh con sau của cha này `FANOUT_BUSY` vĩnh viễn.
             self.release_child_slot(parent_id)
             raise
+        # Slot mua lúc chưa có phiên con (xem `acquire_child_slot`); gắn id NGAY khi có, để mọi
+        # đường nhả sau đó (callback, watchdog) nhả đúng một lần cho đúng con này.
+        self.track_child_slot(child['id'], parent_id)
         context_data = str(args.get('context', ''))[:16000] if args.get('context') else ''
         expectation = str(args.get('expect', ''))[:CHILD_EXPECT_MAX_CHARS] if args.get('expect') else ''
         prompt_parts = [goal]
@@ -3941,7 +3998,8 @@ class HarnessRuntime(RuntimeCommands):
                                    self.close_detached_child(pid, cid, role, turn, step, echo_goal, finished, who))
             return {'status': 'started', 'sessionId': child['id'], 'role': role,
                     'turn': turn, 'step': step, 'deliverTo': deliver_to}
-        task.add_done_callback(lambda _task, pid=parent_id: self.release_child_slot(pid))
+        task.add_done_callback(lambda _task, pid=parent_id, cid=child['id']:
+                               self.release_child_slot(pid, cid))
         try:
             answer = await task
         except asyncio.CancelledError:
@@ -4008,8 +4066,16 @@ class HarnessRuntime(RuntimeCommands):
         # T11 — giao kết quả cho những người nhận đã khai, rồi mang biên nhận vào event kết thúc:
         # giao diện đọc `deliveries[]` để vẽ mũi tên và huy hiệu, người nhận đọc hàng `pending`
         # của chính mình (T12).
-        result['deliveries'] = self.deliver_child_result(child['id'], parent_id, role, turn, step,
-                                                        deliver_to, chars=len(answer_text),
-                                                        truncated=truncated)
+        try:
+            result['deliveries'] = self.deliver_child_result(child['id'], parent_id, role, turn, step,
+                                                            deliver_to, chars=len(answer_text),
+                                                            truncated=truncated)
+        except Exception as exc:
+            # Cùng luật với đường `wait=false`: giao hàng hỏng thì GHI LẠI rồi đi tiếp. Bản trước để
+            # lỗi giao hàng ném ra khỏi tool: luồng cha không bao giờ nhận event kết thúc (bảng treo
+            # con này ở "đang chạy" vĩnh viễn) và lỗi hạ tầng đội lốt lỗi của lời gọi tool (BUG-55).
+            system_log.write('child.delivery_failed', level='warn', session_id=child['id'],
+                             parent=parent_id, message=str(exc)[:300])
+            result['deliveries'] = []
         self.store.emit(session['id'], 'child', result)
         return result

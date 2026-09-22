@@ -1111,7 +1111,7 @@ lệnh `Write-Output` (`Exited with code 127`) — không liên quan đợt này
 ### 6.24 Vòng 22 (đợt 2 — mesh agent con): ba lỗi và hai khiếm khuyết lộ ra trong chính lúc thi công (BUG-48…BUG-52)
 
 Bốn cái đầu đo được trên lượt **sống** (harness thật + giao diện thật ở `localhost:3100`), cái thứ năm lộ ra khi rà lại bộ đếm
-của T13. Ba cái đã sửa trong đợt này; BUG-51 **ghi nhận, chưa sửa** vì hướng sửa là thay đổi cấu trúc ở đường đóng lượt.
+của T13. Bốn cái đã sửa trong đợt này; BUG-51 **ghi nhận, chưa sửa** vì hướng sửa là thay đổi cấu trúc ở đường đóng lượt.
 
 **BUG-48 — mức Cao — cha chờ chính con ruột đã đóng sổ, lượt treo tới lưới an toàn.** `peer_wait_pending` coi một mục tiêu là
 xong **chỉ khi** có biên nhận của người chờ trong `child_deliveries`; mà T11 chỉ ghi biên nhận cho `main` khi con **khai**

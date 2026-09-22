@@ -375,14 +375,22 @@ class SessionStore:
                                    ' ORDER BY started', (parent_id,)).fetchall()
         return [self._child_view(r) for r in rows]
 
-    def children_summary(self, parent_id):
-        """Số của MỌI con của một cha trong MỘT truy vấn (T13) — cho khối `peers` của `session_metrics`.
+    def children_summary(self, parent_id, turn=None):
+        """Số con của một cha trong MỘT truy vấn (T13) — `turn` để đo theo LƯỢT, `None` là cả phiên.
+
+        Hai người đọc, hai câu hỏi: `session_metrics` hỏi "phiên này đã sinh bao nhiêu con" (cả
+        phiên), còn `peer_turn_cost` hỏi "LƯỢT này tốn bao nhiêu" và phải lọc `parent_turn` —
+        không lọc thì payload `finish` của lượt thứ ba báo số luỹ kế (BUG-56).
 
         Vì sao một truy vấn chứ không phải đếm bằng vòng lặp: `session_metrics` được gọi ở mỗi lần
         mở một phiên, còn một vòng lặp là một truy vấn cho mỗi con. `failed` gom mọi trạng thái cuối
         KHÔNG phải `completed`/`partial` — kể cả `cancelled`/`interrupted`/`not_found` — vì câu hỏi
         của người đọc là "bao nhiêu con không trả được kết quả", còn chi tiết nằm ở cột `reason`.
         """
+        where, args = 'parent_id=?', [parent_id]
+        if turn is not None:
+            where += ' AND parent_turn=?'
+            args.append(int(turn))
         row = self.db.execute(
             'SELECT COUNT(*) AS spawned,'
             " SUM(CASE WHEN status='started' THEN 1 ELSE 0 END) AS running,"
@@ -392,8 +400,8 @@ class SessionStore:
             ' SUM(COALESCE(steps_used,0)) AS steps, SUM(COALESCE(output_tokens,0)) AS tokens,'
             ' SUM(COALESCE(answer_chars,0)) AS answerChars,'
             ' (SELECT COUNT(*) FROM child_deliveries WHERE child_id IN'
-            '  (SELECT session_id FROM children WHERE parent_id=?)) AS deliveries'
-            ' FROM children WHERE parent_id=?', (parent_id, parent_id)).fetchone()
+            f'  (SELECT session_id FROM children WHERE {where})) AS deliveries'
+            f' FROM children WHERE {where}', tuple(args + args)).fetchone()
         numbers = {key: int(row[key] or 0) for key in
                    ('spawned', 'running', 'completed', 'partial', 'failed', 'steps', 'tokens',
                     'answerChars', 'deliveries')}
@@ -404,7 +412,11 @@ class SessionStore:
                 'deliveries': numbers['deliveries']}
 
     def child_wait(self, child_id, targets=None, since=None):
-        """Ghi/bỏ trạng thái "đang chờ" của một con (giao diện đọc `waiting_for`)."""
+        """Ghi/bỏ trạng thái "đang chờ" của một con.
+
+        `waiting_for` là bản ghi trong DB (giao diện KHÔNG đọc: nó vẽ theo event `peer_wait` của
+        luồng đang mở), `waiting_since` là mốc thời gian watchdog luật 3 đọc để đánh thức cưỡng bức.
+        """
         with self.db:
             self.db.execute('UPDATE children SET waiting_for=?, waiting_since=? WHERE session_id=?',
                             (json.dumps(list(targets or []), ensure_ascii=False), since, child_id))

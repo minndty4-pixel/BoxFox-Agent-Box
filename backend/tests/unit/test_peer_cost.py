@@ -346,3 +346,36 @@ def test_phien_khai_tran_cho_thap_hon_thi_ton_trong(tmp_path):
     assert 'peerWaitClamped' not in session['config']
     assert not [event for event in store.events(session['id']) if event['type'] == 'notice']
     store.close()
+
+
+def test_finish_chi_tinh_con_cua_luot_dang_dong(tmp_path):
+    """Lượt hai KHÔNG sinh con ⇒ `childCount` của lượt hai là 0, không phải luỹ kế của phiên.
+
+    Bản trước bỏ qua tham số `turn` và đọc `children_summary` không lọc (`FROM children WHERE
+    parent_id=?`), nên `finish` của lượt thứ ba báo mọi con mà cả phiên từng sinh — trong khi
+    `waitedMs` ngay cạnh đó là số của riêng lượt (đo sống `bb142655…`: `finish` mang
+    `childCount: 2` của lượt một). Lượt nào tiêu gì là câu hỏi của T13.
+    """
+    store, runtime, session = build(tmp_path, [
+        answer(calls=[call('delegate_task', {'role': 'review', 'goal': GOAL, 'wait': True}, 'c1')]),
+        answer('lượt một xong'),
+        answer('lượt hai xong'),
+    ], child_answers=[answer('con xong')])
+    sid = session['id']
+
+    run_turn(runtime, sid, 'lượt một')
+    run_turn(runtime, sid, 'lượt hai')
+
+    finishes = [event['data'] for event in store.events(sid) if event['type'] == 'finish']
+    assert [row['turn'] for row in finishes] == [1, 2]
+    assert finishes[0]['childCount'] == 1 and finishes[0]['childSteps'] >= 1
+    assert finishes[0]['childTokens'] == 2
+    assert finishes[1]['childCount'] == 0 and finishes[1]['childSteps'] == 0 \
+        and finishes[1]['childTokens'] == 0, 'con của lượt trước không được đếm vào lượt này'
+
+    # Không lọc lượt = số của cả PHIÊN: đó là câu hỏi của `session_metrics`, vẫn giữ nguyên.
+    summary = runtime.store.children_summary(sid)
+    assert summary['spawned'] == 1 and summary['childSteps'] >= 1
+    assert runtime.session_metrics(sid)['peers']['spawned'] == 1
+    assert runtime.store.children_summary(sid, turn=2)['spawned'] == 0
+    store.close()
