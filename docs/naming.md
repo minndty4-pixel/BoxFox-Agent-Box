@@ -139,3 +139,25 @@ Chủ nhà chốt D-5: **giữ nguyên** luật BOX-1 (`<workspace>/.session-his
 đầy đủ ở `~/BoxFox/harness/sessions.sqlite` (bảng `journal`) tra theo id phiên, và (c) `backfill_history.DEFAULT_ROOT`
 = `/home/agent/workspace/.session-history`. Ca test chống đổi tên: `deploy/docker/tests/test_session_files.py`
 → `SessionHistoryKeptTest` — khoá cả ba nơi, kể cả `box-entrypoint.sh` (`chmod 0750` + `chown 1000:1000`).
+
+## 9. Số RULE-5 do BOX cấp, và trần dọn `.uploaded_artifacts` (D-6, đợt 22)
+
+RULE-5 ở §2 vẫn đúng nguyên chữ ("số do nền tảng cấp") — đợt 22 chỉ định rõ **nền tảng = box**, và ghi
+cơ chế đó thành luật có test đỏ khi sai:
+
+| Mã | Khuôn | Ai ép | Ghi chú |
+|---|---|---|---|
+| BOX-6 | `.uploaded_artifacts/<số>.<ext>` — số do **box** cấp: `max(số đang có trong thư mục đích) + 1`, không zero-pad, bắt đầu từ **1** | `deploy/docker/workspace_files.py` (`write_upload(..., assign_number=True)`) | Không có tệp trạng thái: bộ đếm là `max + 1`. Tệp không có đuôi thì tên chỉ là số (`1`, `2`, …); tệp khác trong thư mục (`probe.md`) không tính vào dãy |
+| BOX-6 | Cấp số bằng `O_CREAT\|O_EXCL` + thử lại số kế | `deploy/docker/workspace_files.py`, gọi từ `deploy/docker/ide-proxy.py` (`POST /__box/file/upload?assign=1`) | `ide-proxy` chạy `ThreadingHTTPServer`, nên hai tab gửi cùng lúc vẫn không bao giờ trùng số; đầy 200 lần thử ⇒ `409` chứ **không** ghi đè |
+| BOX-6 | Tệp trong thư mục vừa chọn giữ nguyên cây: `<dir>/<thư mục cha>` + `mkdirs=1` (thư mục mới mode `0750`, chủ `1000:1000`) | `deploy/docker/workspace_files.py` (`_ensure_dirs`) | Không có `mkdirs` thì thư mục thiếu là `404`, không tự đoán chỗ ghi |
+| BOX-6 | Trần một lần tải: **25 MiB/tệp** cho MỌI caller của route (kể cả panel Workspace Files) | `deploy/docker/workspace_files.py` (`UPLOAD_MAX_BYTES`) | **Cố ý** (D-6), không phải hồi quy của trần 256 MiB cũ |
+| BOX-6 | Trần lưu trữ: **200 tệp / 500 MiB**, xoá **mtime cũ nhất trước**, giữ **số cao nhất của mỗi thư mục** | `deploy/docker/upload_files.py` (`UPLOAD_KEEP_MAX_FILES`, `UPLOAD_KEEP_MAX_BYTES`) | Neo số là điều kiện sống còn: xoá nó thì bộ đếm tụt và box cấp lại số đã dùng |
+
+Hai hệ quả:
+
+1. **`unlink` chỉ nằm trong `upload_files.prune`.** `upload_files.retention(...)` chỉ lập kế hoạch và
+   trả báo cáo, nên `retention(dry_run=True)` không thể xoá một byte nào (test khoá điều này ở
+   `deploy/docker/tests/test_upload_files.py`). Một lượt dọn ghim **đúng một** bản ghi `X:` (cùng luật
+   BOX-4), không bao giờ một dòng cho mỗi tệp đã xoá.
+2. **`.uploaded_artifacts` nằm trong `PROTECTED_PATHS`** (`deploy/docker/workspace_files.py`): panel
+   Workspace Files không xoá/đổi tên được cả gốc, chỉ dọn được qua đường retention ở trên.

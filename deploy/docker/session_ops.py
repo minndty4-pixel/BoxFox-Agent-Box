@@ -20,6 +20,7 @@ Bốn op:
 | `journal_append` | `{session, record}` hoặc `{session, kind, text, seq?, …}` | `{ok, relPath, mdPath, lines, seq, id}` |
 | `checkpoint_write` | `{session, messages, numbers?, note?, journalRecord?}` | `{ok, status, checkpointNumber, file, md, messagesBytes}` |
 | `captures_prune` | `{session?, captureRoot?, root?, dryRun?, protect?, updateIndex?}` | `{ok, removedFiles, removedBytes, pinned}` |
+| `uploads_prune` | `{session?, uploadRoot?, root?, dryRun?, protect?, updateIndex?}` | `{ok, removedFiles, removedBytes, pinned}` |
 
 Luật của tầng này — **một lỗi ghi file không bao giờ được giết một lượt** (kế hoạch đợt 20,
 "trung thực khi hỏng"): mọi handler **ném** `SessionFilesError` (có `code` để ánh xạ thẳng thành
@@ -39,6 +40,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import session_files  # noqa: E402  (import sau khi vá sys.path — cùng thư mục, cùng bản phát hành)
+import upload_files  # noqa: E402  (cùng thư mục: retention cho `.uploaded_artifacts`, D-6)
 from session_files import SessionFilesError  # noqa: E402
 
 # Bản ghi `X:` ghim mỗi lượt dọn dẹp — **một** bản ghi cho cả lượt, không bao giờ một dòng
@@ -241,6 +243,27 @@ def op_captures_prune(args: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# uploads_prune
+# ---------------------------------------------------------------------------
+def op_uploads_prune(args: dict) -> dict:
+    """Dọn tệp người dùng tải lên (`.uploaded_artifacts`) — trần 200 tệp / 500 MiB (D-6).
+
+    Ghim **một** hàng `X:` cho cả lượt, y như `op_captures_prune`. Hàng `X:` do `upload_files.prune`
+    ghi (nó cũng là nơi duy nhất gọi `unlink`), ở đây chỉ chuyển tham số và giữ nguyên khuôn trả về
+    `{ok, removedFiles, removedBytes, pinned}` mà `worker.py` đã biết.
+    """
+    return upload_files.prune(
+        args.get("uploadRoot"),
+        session=args.get("session"),
+        history_root=args.get("root"),
+        sid8=args.get("sid8"),
+        dry_run=bool(args.get("dryRun")),
+        protect=args.get("protect"),
+        update_index=bool(args.get("updateIndex")),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Đường gọi chung
 # ---------------------------------------------------------------------------
 OPS = {
@@ -248,6 +271,7 @@ OPS = {
     "journal_append": op_journal_append,
     "checkpoint_write": op_checkpoint_write,
     "captures_prune": op_captures_prune,
+    "uploads_prune": op_uploads_prune,
 }
 
 
