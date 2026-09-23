@@ -800,9 +800,6 @@ const vi = {
         unknown: 'không rõ mức',
       },
       fix: 'Cách sửa:',
-      fixed: 'Đã sửa ở v{{version}}',
-      unfixed: 'Chưa sửa',
-      remaining: 'Còn {{count}} lỗi mức {{severity}}',
       locked: 'Cần một phiên plan-review phản biện bản {{version}} trước khi duyệt',
       lockedAria: 'Duyệt kế hoạch — đang khoá',
       blockedTitle: 'Harness chặn duyệt',
@@ -827,11 +824,8 @@ const vi = {
         notResumed: 'Đã vào sổ duyệt nhưng chưa mở được lượt chạy nào.',
         unknown: 'Đã vào sổ duyệt. Harness không nói có mở lượt chạy hay không — ở đây không đoán.',
         turn: 'lượt {{turn}}',
-        started: 'bắt đầu {{stamp}}',
-        child: 'agent con: {{role}}',
         session: 'phiên {{session}}',
       },
-      storedNote: 'Lý do đã vào sổ duyệt của harness và đi vào lượt chạy — không còn im lặng sau khi bấm nút.',
     },
     /** Chủ sở hữu kế hoạch (vòng 25, M9): lượt mới mở ở phiên nào và khung chat đang xem phiên nào. */
     owner: {

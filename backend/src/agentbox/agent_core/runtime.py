@@ -968,6 +968,21 @@ def tool_call_failed(payload):
     return isinstance(result, dict) and bool(result.get('is_error'))
 
 
+def mode_from_env(env, modes, default):
+    """`(mode, unknown)` cho một công tắc env ba mức: giá trị lạ ⇒ mặc định KÈM cờ để chỗ gọi nói ra.
+
+    Hạ cấp một cổng trong im lặng là thứ kế hoạch cấm, nên `unknown` phải đi ra tới chỗ gọi thay vì
+    bị nuốt ở đây. Khuôn này dùng chung cho hai cổng của vòng 25 (`BOXFOX_PLAN_VERIFY`,
+    `BOXFOX_PLAN_SOURCES_GATE`).
+    """
+    raw = (os.environ.get(env) or '').strip().lower()
+    if not raw:
+        return default, None
+    if raw in modes:
+        return raw, None
+    return default, raw
+
+
 def plan_approval_target(args, tool='request_approval'):
     """`(identity, version)` của lượt xin duyệt kế hoạch, hoặc `(None, None)` khi không khai kế hoạch.
 
@@ -2365,12 +2380,7 @@ class HarnessRuntime(RuntimeCommands):
         `unknown` để chỗ gọi NÓI RA rồi mới áp mặc định — hạ cấp cổng trong im lặng là thứ kế hoạch
         cấm.
         """
-        raw = (os.environ.get(PLAN_VERIFY_ENV) or '').strip().lower()
-        if not raw:
-            return PLAN_VERIFY_DEFAULT_MODE, None
-        if raw in PLAN_VERIFY_MODES:
-            return raw, None
-        return PLAN_VERIFY_DEFAULT_MODE, raw
+        return mode_from_env(PLAN_VERIFY_ENV, PLAN_VERIFY_MODES, PLAN_VERIFY_DEFAULT_MODE)
 
     def root_session_id(self, sid):
         """Phiên GỐC của cây (đi lên theo `parent_id`), hoặc chính `sid` khi nó đã là gốc.
@@ -2407,12 +2417,7 @@ class HarnessRuntime(RuntimeCommands):
 
     def plan_sources_mode(self):
         """`BOXFOX_PLAN_SOURCES_GATE` = `enforce|warn|off`, đọc MỖI LƯỢT (cùng khuôn hai cổng kia)."""
-        raw = (os.environ.get(PLAN_SOURCES_ENV) or '').strip().lower()
-        if not raw:
-            return PLAN_SOURCES_DEFAULT_MODE, None
-        if raw in PLAN_SOURCES_MODES:
-            return raw, None
-        return PLAN_SOURCES_DEFAULT_MODE, raw
+        return mode_from_env(PLAN_SOURCES_ENV, PLAN_SOURCES_MODES, PLAN_SOURCES_DEFAULT_MODE)
 
     def plan_sources_evidence(self, sid):
         """Bằng chứng nguồn của lượt: chỉ KẾT QUẢ CÔNG CỤ của cây phiên, không văn bản model tự viết.
@@ -4471,13 +4476,14 @@ class HarnessRuntime(RuntimeCommands):
         lần ghi đó (một phê bình của bản cũ không nói gì về bản mới); (iv) câu trả lời phải đủ dài
         để có nội dung đọc được. Verdict đọc từ VĂN BẢN của chính nó, không phải từ lời khai.
         """
-        tree = [sid] + [row['session_id'] for row in self.store.children_of(sid)]
+        children = self.store.children_of(sid)
+        tree = [sid] + [row['session_id'] for row in children]
         written_at = self.store.plan_written_at(tree, identity, version)
         if written_at is None:
             raise ValueError(f'{PLAN_VERIFY_NO_CRITIC_CODE}: no plan write is recorded for '
                              f'{identity}@v{version} — write the plan first with write_plan')
         usable = []
-        for row in self.store.children_of(sid):
+        for row in children:
             if row['role'] != 'plan-review':
                 continue
             if row['status'] != 'completed':

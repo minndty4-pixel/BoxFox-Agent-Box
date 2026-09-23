@@ -549,6 +549,20 @@ def create_app(runtime):
         return {'resumed': True, 'turnId': f'{owner}#{turn_count}',
                 'wake': {'state': 'opened', 'sessionId': owner}}
 
+    def plan_wake_missing(identity, version, event, **log_fields):
+        """Kết cục `missing` cho cả hai đường đánh thức: một câu, hai route, không lệch chữ.
+
+        Quyết định của chủ nhà đã vào sổ từ trước đó — đánh thức hỏng không được làm mất nó, nhưng
+        cũng không được giả vờ là đã mở lượt.
+        """
+        message = (f'harness chưa biết phiên nào sở hữu kế hoạch {identity} — hãy mở phiên và '
+                   f'yêu cầu trực tiếp')
+        system_log.write(event, level='warn', code=PLAN_WAKE_NO_OWNER_CODE,
+                         message=f'harness chưa biết phiên nào sở hữu kế hoạch {identity}',
+                         identity=identity, version=version, **log_fields)
+        return {'resumed': False, 'wake': {'state': 'missing', 'code': PLAN_WAKE_NO_OWNER_CODE,
+                                          'message': message}}
+
     async def plan_review(request):
         """`POST /api/agent/plans/review` — người dùng duyệt/yêu cầu sửa một bản plan (§4.1).
 
@@ -635,13 +649,7 @@ def create_app(runtime):
         # M6 (D-35/Q3/Q4) — quyết định đã vào sổ, giờ mở MỘT LƯỢT THẬT trong phiên gốc. Cú bấm cũ
         # chỉ ghi sổ rồi im lặng (đo vòng 25: 3/3 lần bấm, 55-60 s không có gì xảy ra).
         if not owned:
-            system_log.write('plan.review.wake_failed', level='warn', code=PLAN_WAKE_NO_OWNER_CODE,
-                             message=f'harness chưa biết phiên nào sở hữu kế hoạch {identity}',
-                             identity=identity, version=version, decision=decision)
-            wake = {'resumed': False, 'wake': {
-                'state': 'missing', 'code': PLAN_WAKE_NO_OWNER_CODE,
-                'message': f'harness chưa biết phiên nào sở hữu kế hoạch {identity} — hãy mở phiên và '
-                           f'yêu cầu trực tiếp'}}
+            wake = plan_wake_missing(identity, version, 'plan.review.wake_failed', decision=decision)
         else:
             wake = await plan_wake(owned, identity, version, relative_path, decision, note)
         payload = {'identity': identity, 'version': version, 'decision': decision, 'note': note,
@@ -725,13 +733,9 @@ def create_app(runtime):
             raise ApiError('PLAN_VERIFY_INVALID', 'version phải là số nguyên dương (bản plan cần phản biện)', 400)
         owned = runtime.plan_ownership_view(identity)['sessionId']
         if not owned:
-            system_log.write('plan.verify.wake_failed', level='warn', code=PLAN_WAKE_NO_OWNER_CODE,
-                             message=f'harness chưa biết phiên nào sở hữu kế hoạch {identity}',
-                             identity=identity, version=version)
-            return web.json_response({'recorded': False, 'resumed': False, 'wake': {
-                'state': 'missing', 'code': PLAN_WAKE_NO_OWNER_CODE,
-                'message': f'harness chưa biết phiên nào sở hữu kế hoạch {identity} — hãy mở phiên và '
-                           f'yêu cầu trực tiếp'}})
+            return web.json_response({'recorded': False,
+                                      **plan_wake_missing(identity, version,
+                                                          'plan.verify.wake_failed')})
         prompt = '\n'.join([
             f'[Tab Plan] kế hoạch {identity}@v{version} chưa có phản biện độc lập đạt.',
             "Chạy phiên phản biện: `delegate_task` với role='plan-review' trên ĐÚNG bản đó (nêu "

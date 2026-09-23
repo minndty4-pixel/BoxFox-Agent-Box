@@ -186,6 +186,13 @@ export function usePlanFiles(
     selectionRef.current = selection
   }, [selection])
 
+  /** Dòng kết quả + dải "bị khoá" nói về MỘT bản cụ thể; đổi bản thì chúng hết đúng. */
+  const clearReviewFacts = useCallback(() => {
+    setReviewResult(null)
+    setReviewBlocked(null)
+    setReviewStatus((current) => (current === 'blocked' ? 'idle' : current))
+  }, [])
+
   const resetStatus = useCallback(() => {
     statusGenerationRef.current += 1
     statusSelectionRef.current = null
@@ -197,11 +204,8 @@ export function usePlanFiles(
     setStatusError(null)
     setVerification(UNKNOWN_VERIFICATION)
     setOwnership(NO_OWNER)
-    // Dòng kết quả + dải "bị khoá" nói về MỘT bản cụ thể; đổi bản thì chúng hết đúng.
-    setReviewResult(null)
-    setReviewBlocked(null)
-    setReviewStatus((current) => (current === 'blocked' ? 'idle' : current))
-  }, [])
+    clearReviewFacts()
+  }, [clearReviewFacts])
 
   /**
    * Đọc trạng thái duyệt thật + bản chấm P1–P8 cho đúng bản đang chọn.
@@ -219,9 +223,7 @@ export function usePlanFiles(
       const selectionKey = `${nextSelection.identity}:${nextSelection.version}`
       if (statusSelectionRef.current !== selectionKey) {
         statusSelectionRef.current = selectionKey
-        setReviewResult(null)
-        setReviewBlocked(null)
-        setReviewStatus((current) => (current === 'blocked' ? 'idle' : current))
+        clearReviewFacts()
       }
       try {
         const report = await activeStatusClient.read(nextSelection.identity, nextSelection.version)
@@ -249,7 +251,7 @@ export function usePlanFiles(
         setStatusError(messageFor(cause))
       }
     },
-    [activeStatusClient, resetStatus],
+    [activeStatusClient, resetStatus, clearReviewFacts],
   )
 
   const loadDocument = useCallback(

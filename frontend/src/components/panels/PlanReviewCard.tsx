@@ -14,7 +14,30 @@
 import { ShieldCheck } from 'lucide-react'
 import { useT, type TKey, type TVars } from '../../i18n/context'
 import { planStamp } from '../../lib/plans'
-import type { PlanIssueSeverity, PlanVerification, PlanVerificationIssue } from '../../lib/plans'
+import type {
+  PlanIssueSeverity,
+  PlanVerification,
+  PlanVerificationIssue,
+  PlanVerificationState,
+} from '../../lib/plans'
+
+/** Ba mặt phản biện CÓ dữ liệu; mặt `unknown` (harness cũ) không vẽ chip nào. */
+export type KnownVerificationState = Exclude<PlanVerificationState, 'unknown'>
+
+/**
+ * Bảng tra của mặt phản biện: nhãn + màu chip cho ba trạng thái có dữ liệu.
+ *
+ * Thanh công cụ của tab Plan và thẻ này nói CÙNG một chuyện bằng CÙNG một màu, nên chúng đọc chung
+ * một bảng — không có bản sao thứ hai để lệch.
+ */
+export const VERIFY_CHIP: Record<KnownVerificationState, { label: TKey; classes: string }> = {
+  none: { label: 'plan.verify.chip.none',
+          classes: 'bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/40' },
+  ok: { label: 'plan.verify.chip.ok',
+        classes: 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/40' },
+  revise: { label: 'plan.verify.chip.revise',
+            classes: 'bg-rose-500/15 text-rose-400 ring-1 ring-rose-500/40' },
+}
 
 interface PlanReviewCardProps {
   verification: PlanVerification
@@ -107,17 +130,11 @@ export function PlanReviewCard({ verification, version, path, runPending = false
     )
   }
 
-  const hasReview = verification.state === 'ok' || verification.state === 'revise'
-  const chipText = t(
-    hasReview ? (verification.state === 'revise' ? 'plan.verify.chip.revise' : 'plan.verify.chip.ok') : 'plan.verify.chip.none',
-    { critic: t('plan.verify.critic'), stamp: stamp ?? '' },
-  )
-  const stateClasses =
-    verification.state === 'revise'
-      ? 'bg-rose-500/15 text-rose-400 ring-1 ring-rose-500/40'
-      : hasReview
-        ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/40'
-        : 'bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/40'
+  // `unknown` đã trả về ở trên: ba mặt còn lại đều có nhãn + màu trong `VERIFY_CHIP`.
+  const face = verification.state
+  const hasReview = face !== 'none'
+  const chipText = t(VERIFY_CHIP[face].label,
+                     { critic: t('plan.verify.critic'), stamp: stamp ?? '' })
 
   return (
     <div
@@ -130,7 +147,7 @@ export function PlanReviewCard({ verification, version, path, runPending = false
         <div className="flex items-center gap-1.5">
           <span
             data-testid="plan-review-card-state"
-            className={`rounded px-1.5 py-px text-[10px] font-semibold ${stateClasses}`}
+            className={`rounded px-1.5 py-px text-[10px] font-semibold ${VERIFY_CHIP[face].classes}`}
           >
             {chipText}
           </span>
@@ -148,7 +165,7 @@ export function PlanReviewCard({ verification, version, path, runPending = false
 
       {hasReview ? (
         <>
-          {verification.state === 'ok' && verification.issues.length === 0 && (
+          {face === 'ok' && verification.issues.length === 0 && (
             <p className="text-[11px] text-muted leading-relaxed">
               {t('plan.verify.cardOk', { version: label })}
             </p>

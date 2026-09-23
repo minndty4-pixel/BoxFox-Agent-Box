@@ -26,9 +26,9 @@ import { MarkdownRenderer } from '../chat/MarkdownRenderer'
 import { usePlanFiles } from '../../hooks/usePlanFiles'
 import { useT, type TKey } from '../../i18n/context'
 import { planRejection, planStamp } from '../../lib/plans'
-import type { PlanReviewState, PlanVerificationState } from '../../lib/plans'
+import type { PlanReviewState } from '../../lib/plans'
 import { PlanEvalCard } from './PlanEvalCard'
-import { PlanReviewCard } from './PlanReviewCard'
+import { PlanReviewCard, VERIFY_CHIP, type KnownVerificationState } from './PlanReviewCard'
 import type { DiffLine } from '../../types/agent'
 
 /** Chip trạng thái duyệt thật: nguồn là sổ duyệt của harness, không phải vị trí trong dropdown. */
@@ -53,25 +53,11 @@ const STATE_CHIP_CLASSES: Record<PlanReviewState, string> = {
   unknown: 'border border-line bg-panel2 text-muted',
 }
 
-/** Ba mặt phản biện CÓ dữ liệu; mặt `unknown` (harness cũ) không vẽ chip nào. */
-type KnownVerificationState = Exclude<PlanVerificationState, 'unknown'>
-
-const VERIFY_CHIP_LABELS: Record<KnownVerificationState, TKey> = {
-  none: 'plan.verify.chip.none',
-  ok: 'plan.verify.chip.ok',
-  revise: 'plan.verify.chip.revise',
-}
-
+/** Câu giải thích cho chip phản biện — nhãn và màu ở `VERIFY_CHIP` của `PlanReviewCard`. */
 const VERIFY_CHIP_TITLES: Record<KnownVerificationState, TKey> = {
   none: 'plan.verify.chip.noneTitle',
   ok: 'plan.verify.chip.okTitle',
   revise: 'plan.verify.chip.reviseTitle',
-}
-
-const VERIFY_CHIP_CLASSES: Record<KnownVerificationState, string> = {
-  none: 'bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/40',
-  ok: 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/40',
-  revise: 'bg-rose-500/15 text-rose-400 ring-1 ring-rose-500/40',
 }
 
 /** Id của dòng lý do khoá duyệt — nút `disabled` không hiện `title`, nên nối bằng `aria-describedby`. */
@@ -451,9 +437,9 @@ export function PlanPanel() {
                   data-component-id="plan-review-chip"
                   data-testid="plan-review-chip"
                   title={t(VERIFY_CHIP_TITLES[verifyChipState])}
-                  className={`${STATE_CHIP_BASE} ${VERIFY_CHIP_CLASSES[verifyChipState]}`}
+                  className={`${STATE_CHIP_BASE} ${VERIFY_CHIP[verifyChipState].classes}`}
                 >
-                  {t(VERIFY_CHIP_LABELS[verifyChipState], {
+                  {t(VERIFY_CHIP[verifyChipState].label, {
                     critic: t('plan.verify.critic'),
                     stamp: verifyStamp ?? '',
                   })}

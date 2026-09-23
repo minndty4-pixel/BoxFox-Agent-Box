@@ -805,9 +805,6 @@ const en: SameShape<typeof vi> = {
         unknown: 'severity unknown',
       },
       fix: 'Fix:',
-      fixed: 'Fixed in v{{version}}',
-      unfixed: 'Not fixed',
-      remaining: '{{count}} {{severity}} issue(s) left',
       locked: 'A plan-review session must review version {{version}} before you approve',
       lockedAria: 'Approve plan — locked',
       blockedTitle: 'Harness blocked the approval',
@@ -832,11 +829,8 @@ const en: SameShape<typeof vi> = {
         notResumed: 'Stored in the review ledger, but no new turn was opened.',
         unknown: 'Stored in the review ledger. The harness did not say whether a turn was opened — nothing is claimed here.',
         turn: 'turn {{turn}}',
-        started: 'started {{stamp}}',
-        child: 'sub-agent: {{role}}',
         session: 'session {{session}}',
       },
-      storedNote: 'The reason went into the harness review ledger and into the next turn — no more silence after the click.',
     },
     /** Plan owner (round 25, M9): which session the new turn opens in, and which one chat is showing. */
     owner: {
