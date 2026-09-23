@@ -1345,3 +1345,75 @@ huy hiệu xanh in số mảnh CỔNG chấm trong khi hàng đầu khối in s�
 
 **§6.30 — Hai hành vi của đường chụp ảnh là CỐ Ý, không phải lỗi — ĐÓNG.** (a) Ảnh khử trùng theo **nội dung** (`capture.py:_finish_image`): cùng một màn hình chụp hai lần ⇒ giữ **một** tệp, mục thứ hai trỏ về tệp cũ kèm `deduplicateOf` ⇒ lượt chụp “trước/sau” mà màn hình không đổi thì danh sách gộp còn một hàng (đúng: không có hai tấm ảnh khác nhau để so). (b) Tên tệp bằng chứng hạ chữ thường (`worker.py:evidence_slug`, luật BOX-3 `[a-z0-9._-]`) nên `frontend/src/UiProof.tsx` thành `uiproof.tsx.diff`; đường dẫn thật vẫn nằm ở hàng `frontend/src/UiProof.tsx` của lượt — đã đọc mã để chốt, không sửa.
 
+### 6.31 Vòng 23 — bằng chứng sống giao SAI DẠNG (chủ nhà phát hiện bằng ảnh chụp): mặt câu trả lời cuối chỉ còn markdown, ảnh chụp do model viết vào câu trả lời — ĐÃ SỬA (`a4d60f9` + `db5d0ff`)
+
+**Chủ nhà chỉ ra drift, kèm ảnh chụp.** Năm ảnh: `3119.png` (câu trả lời cũ: **11 dòng chữ "the uploaded file"** —
+nền tảng gói danh sách đường dẫn literal thành chip tệp đính kèm, không mở được ảnh nào), `3120.png` (mặt **mong muốn**:
+bằng chứng là ảnh/màn hình **của dự án**), `3121.png` (ảnh nằm trong khối gập, có huy hiệu trạng thái cổng),
+`3122.png` (mặt **đúng**: lưới ảnh **mở ngay** trong câu trả lời), `3123.png` (**mặt sai bị chê**: một khối đóng trong chat).
+Nguyên văn: *"không phải block. hẳn luôn. chỉ dùng file markdown thôi"*.
+
+**Nguyên nhân gốc (đo được, không suy đoán).** Đợt 3 vòng 22 đo **đúng** nhưng **giao sai dạng**: (a) mặt câu trả lời cuối là
+**đồ của app** — khối gập `EvidenceBlock` + huy hiệu ba trạng thái (`HarnessStepView.tsx`) — còn ảnh thì bị **gom vào khối**;
+(b) model viết **đường dẫn literal** trong văn, mà nền tảng render chuỗi đường dẫn trần thành chip "the uploaded file";
+(c) `MarkdownRenderer` không có đường "ảnh ⇒ tile bấm mở lớn" và **không có** đường mở tệp bằng chứng (link tới tệp workspace
+điều hướng hỏng); (d) công cụ chụp **cứng `kind='screen'`** (`executor.py`) nên không chụp được cửa sổ/tab render của dự án;
+(e) tên tệp ảnh không mang nhãn nên hai hàng ảnh không phân biệt được (đó là **§6.29**).
+
+**Cách sửa (vòng 23, `a4d60f9`; chủ nhà chốt D-16…D-25 trong `owner-decisions.md` §4).**
+1. **P1 — khuôn câu trả lời cuối**: `FINAL_REPORT_PARTS` + `FINAL_REPORT_GUIDANCE` (`runtime.py`) và **bản sao thật sự được nạp**
+   trong `AGENT.md` §3.4 = năm mục *làm được gì / còn lại gì / chủ nhà quyết gì / khúc mắc gì / bằng chứng*; thêm **kỹ năng
+   `final-report`** (7 id mặc định) và **bản nhắc việc của lượt** (`turn_recap`) chỉ chèn vào bước tổng kết.
+2. **P2 — công cụ chụp**: `computer_screen_capture` có `target` (`window`/`tab`/`screen`) + `caption`; giá trị rác ⇒ `screen`
+   (không phá hành vi cũ); `capture.py` đưa **nhãn vào tên tệp** (`<sid8>_<step>_<kind>-<label>.png`).
+3. **P3 — cổng chỉ chỉnh kỹ thuật**: ảnh `window`/`tab` được tính là ảnh chụp của lượt; `caption` vào danh sách khoá trắng;
+   **không** thêm luật/verdict/mã lý do, payload `assistant.data.evidence` vẫn phát.
+4. **P4 — giao diện chỉ markdown**: ảnh trong câu trả lời ⇒ **tile hiện ngay** (tên tệp + nhãn của model, bấm mở khung lớn);
+   link tệp bằng chứng ⇒ mở **tab Files**; **xoá** khối `Bằng chứng`, **xoá huy hiệu trạng thái cổng**, **xoá** lưới ảnh của app
+   khỏi mặt câu trả lời (biên nhận đầu lượt vẫn đếm số).
+5. **P5 — nhãn theo ngôn ngữ câu trả lời**: `answerLang.ts` (ngưỡng 3 điểm, mặc định tiếng Anh) + `answerLabels.ts`/`dicts.ts`;
+   `en.ts` hết tiếng Việt ở 34 khoá bằng chứng.
+
+**Một lỗi CŨ lộ ra khi thi công và đã sửa cùng lượt.** `skills/runtime_commands.py::_next_turn_skills` dựng lại `messages[0]` ở
+**mỗi lượt gửi** bằng cách cắt chuỗi tại mốc `=== ENABLED SKILLS ===` rồi chỉ nối lại khối `OWNER-CONFIGURED DIRECTIVES`: đo được
+là sau `create()` prompt có `ANSWER LENGTH` + khối khuôn mới, còn **sau lượt gửi đầu tiên cả hai đã biến mất trước khi model đọc**
+(⇒ trần độ dài của D-4 lâu nay là vật trang trí). Nay hàm chỉ thay **danh sách kỹ năng**, giữ nguyên phần còn lại; ca kiểm
+`test_khuon_khong_bi_nuot_khi_danh_sach_ky_nang_duoc_dung_lai`.
+
+**§6.29 đổi nghĩa (không còn là lỗi hiển thị).** Hàng đường dẫn bị `truncate` cắt mất phần phân biệt **biến mất cùng khối**;
+bài toán phân biệt ảnh nay giải ở chỗ khác: **nhãn nằm trong tên tệp** và tile in **basename** — nên hai ảnh của cùng một việc
+đọc ra được khác nhau ngay trên mặt câu trả lời. Bản ghi cũ giữ nguyên, chỉ đổi nghĩa: từ "lỗi hiển thị chờ chủ nhà quyết" thành
+"đã giải theo D-19/D-22".
+
+**§6.30 giữ nguyên hiệu lực** (khử trùng theo nội dung sha256; tên tệp bằng chứng hạ chữ thường theo BOX-3) — hậu tố nhãn của P2.3
+nằm **trong** bảng chữ cái đó, không nới luật slug.
+
+**Số đo (cây `a4d60f9`).** `backend/tests/unit` **1 failed / 1107 passed** (đỏ duy nhất `test_terminal_tools.py::test_terminal_exec_echo`,
+thiếu PowerShell trên Linux — có từ trước); nhóm liên quan **275 passed**; `deploy/docker/tests` **501 passed**; frontend
+`npx vitest run` **124 tệp / 1036 ca đạt**; `tsc -b --noEmit` **exit 0**. Ca kiểm mới ghim hợp đồng đã chốt: khuôn năm phần trong
+prompt sống, `AGENT.md` §3.4, bản nhắc việc không lọt vào câu trả lời, `target` window/tab đi nguyên và rác ⇒ `screen`, nhãn vào
+tên tệp (ba kịch bản screen/window/tab), cổng giữ **đúng 11 mã lý do** và `CAPTURE_ARTIFACT_KINDS == ('image','record')`, mặt câu
+trả lời **không còn** hook `data-evidence-*`, tile ảnh + lightbox + link mở tab Files, `en.ts` không còn dấu tiếng Việt.
+
+**Hậu kiểm sau khi sổ được viết (hai vòng soát mã độc lập + một vòng soát dọn) — bốn lỗi/lỗ hổng đã sửa trong `7d00c35` và `db5d0ff`.**
+① Ảnh nằm trong liên kết (`[![nhãn](anh.png)](https://tài-liệu)`) dựng thành `<button>` LỒNG trong `<a target="_blank">` ⇒ markup/ARIA sai và
+một cú bấm vừa mở khung xem lớn vừa mở tab mới; nay liên kết bật `PassiveMediaContext`, ảnh trong liên kết là ảnh TĨNH.
+② Việc PHÂN LOẠI link cắt `?query`/`#fragment` nhưng giá trị trao cho `onOpenFile`/URL media là chuỗi THÔ ⇒ `…x.txt?raw=1`, `…x.txt#L12`,
+`./.generated_artifacts/a.png`, `shots/a.png` mở hỏng; nay một hàm `normalizeArtifactPath` dùng cho cả hai. ③ `answerLang` cho câu trả lời
+tiếng Anh **trích chuỗi giao diện tiếng Việt trong backtick** là `vi` (dương tính giả), và ngược lại không nhận ra tiếng Việt không dấu:
+nay `stripCode` bỏ khối mã/span mã trước khi đếm, còn giới hạn đã biết thì ghi thẳng trong docstring chứ không hứa. ④ Bản nhắc việc của lượt gọi
+**kết quả của chuyên gia con** là "owner request" (vì `drain_peer_deliveries` bơm kết quả vào transcript CÙNG bước dựng recap) rồi `RECAP_CLOSER`
+bảo model chụp lại đúng thứ đó: nay `PEER_DELIVERY_PREFIX` là một nguồn cho cả chỗ viết lẫn chỗ đọc, hết việc của chủ thì nói thẳng "not found in
+this transcript". Dọn kèm: nút mở/gấp hết viết cứng tiếng Anh (`chat.finalAnswerExpand`/`…Collapse` ở cả hai từ điển, đi theo ngôn ngữ câu trả lời),
+xoá `EvidenceBadgeState`/`EVIDENCE_VERDICT_STATE`/`AnswerEvidence.state` (không còn chỗ vẽ), gộp hai bản dự phòng từ điển vào `i18n/context.labelFrom`,
+xoá `WORKER` trùng và `CAPTURE_TARGET_KEYS` không ai dùng.
+**Số đo sau hậu kiểm.** `backend/tests/unit` **1 failed / 1109 passed**; nhóm focused 9 tệp **284 passed**; frontend `vitest run` **124 tệp / 1043 ca đạt**;
+`tsc -b --noEmit` **exit 0**. Nhánh `output_path` trong `system_media.py` **được giữ**: nó không chết — nó là chốt từ chối giá trị hình dạng
+traversal mà model có thể tự bịa (schema chỉ kiểm `required`), và `test_system_media_tools.py` đang ghim hành vi đó.
+
+**Còn lại sau vòng này (ghi để không trôi).** `docker cp` bản `capture.py` mới vào box là bước **của vòng nghiệm thu sống** (chưa
+nạp lúc viết sổ): bản trong container vẫn là `19893dde…`, bản repo là `b24541cd…`; bản cũ **vẫn chạy đúng** vì nó bỏ qua khoá `label`.
+Mặt **"tệp đã thay đổi"** (diff/hunk) và **"agent verify"** (vai hậu kiểm thật: test/review/verify/main, báo cáo md + ảnh) chuyển
+sang vòng sau theo D-19/D-20; nợ cũ BUG-66/BUG-68/BUG-69, câu bị ghim > 200 ký tự bị cắt giữa từ, và bốn khoá `subagent*` trong
+`en.ts` vẫn nguyên.
+
