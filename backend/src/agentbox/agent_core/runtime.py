@@ -2435,7 +2435,10 @@ class HarnessRuntime(RuntimeCommands):
                 payload = event['data']
                 if tool_call_failed(payload):
                     continue  # lời gọi hỏng không chứng minh được nguồn nào
-                for text in self.source_strings(payload):
+                # CHỈ `result`: `args` là văn bản CHÍNH MODEL viết trong lời gọi, nên nó không được
+                # làm bằng chứng cho chính nó (đo vòng 25: quét cả payload thì host trong tham số
+                # được tính là "công cụ đã trả về" — trái câu từ chối và trái docstring của hàm).
+                for text in self.source_strings(payload.get('result')):
                     for match in re.finditer(r'https?://([^\s/)\'"<>\]]+)', text):
                         host = plan_quality.strip_www(match.group(1))
                         if host and host not in hosts:

@@ -364,3 +364,26 @@ def test_a_title_that_contains_the_word_source_does_not_shadow_the_section(tmp_p
     # Không có mục nguồn nào có thân bài thì vẫn là thiếu (không được nới luật).
     assert 'sources-section' in plan_quality.plan_quality_issues(
         '# Plan backed by one source — checked the official docs\n\n## Sources\n')
+
+def test_a_host_the_model_named_only_in_its_own_call_args_is_not_evidence(tmp_path):
+    """Host chỉ có trong ARGS của lời gọi do CHÍNH model viết ⇒ vẫn là `sources-unbacked`.
+
+    Lỗ thật đo ở vòng kiểm thử độc lập (H7): `plan_sources_evidence` quét **cả** payload `tool_end`
+    nên một host model tự đặt vào tham số của một lời gọi THÀNH CÔNG (kết quả không hề nhắc host)
+    được tính là "công cụ đã trả về" — trái câu từ chối của cổng (*cite a host a real tool call
+    returned*) và trái docstring của chính hàm. Bản vá: cổng chỉ đọc `result`.
+    """
+    def seed(store, sid):
+        child = research_child(store, sid, 'looked at the retry contract, no link to print')
+        # Lời gọi THÀNH CÔNG nhưng host nằm ở tham số; kết quả thì không có host nào.
+        store.emit(child, 'tool_end', {
+            'id': 'c-args', 'name': 'web_search',
+            'args': {'query': 'https://blog.nowhere.example/retry contract'},
+            'result': {'content': 'nothing about that host in the answer'}})
+
+    store, _executor, sid = run_write(tmp_path, UNBACKED_PLAN, seed=seed)
+
+    result = tool_end_result(store, sid)
+    assert result.get('is_error') and result['errorCode'] == 'PLAN_QUALITY_REJECTED', result
+    assert '(sources-unbacked)' in result['error']
+    assert written(store, sid) == []
