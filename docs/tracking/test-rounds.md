@@ -1901,3 +1901,87 @@ Ca kiểm mới ghim hợp đồng đã chốt: khuôn năm phần trong prompt 
 - **Số của cổng rời khỏi mặt câu trả lời** (D-19/D-20): trước đây huy hiệu + khối in `verdict`, số mảnh, câu bị ghim, sha256, mã thoát; nay mặt đó chỉ còn markdown do model viết. Dữ liệu vẫn nằm trên event `assistant.data.evidence` và trong sổ.
 - **§ 6.29 đổi nghĩa**: bài toán "hai hàng ảnh đọc giống nhau" không giải bằng cách nới hàng đường dẫn mà bằng **nhãn nằm trong tên tệp** + tile in basename — mặt cũ biến mất cùng khối.
 - **Hai tệp `en.ts`/`vi.ts` không còn đối xứng ở khối bằng chứng**: 34 giá trị `evidence*` của `en.ts` đã dịch, **bốn khoá `subagent*` vẫn cố ý giữ tiếng Việt** (ngoài phạm vi P5.2) — người đọc sổ đừng coi là sót.
+
+## Vòng 24 — câu trả lời cuối bỏ khuôn cứng: trả lời như thường, báo cáo khi có việc, tóm tắt + "View details" chạy lại, ảnh bằng chứng khép câu trả lời (2026-09-23, chiều)
+
+Chủ nhà bác khuôn năm phần của vòng 23 bằng bốn điểm (nguyên văn ở `bug-register.md` §6.32 và `owner-decisions.md` §4.2), rồi tinh chỉnh
+"form vào 1 chút… chỉ quan trọng nhất là phần ảnh dãn chứng ở dưới". Kế hoạch **v3** (`/code/.plans/v3-answer-shape.md`, duyệt 07:45 UTC)
+chốt D-26…D-32. Ba đợt của kế hoạch: P1 prompt/kỹ năng, P2 ghim hợp đồng mới, P3 nghiệm thu sống, P4 sổ.
+
+### Phần 1 — P1: dạng câu trả lời DỜI khỏi prompt, kỹ năng `final-report` giữ nó
+
+- `runtime.py`: xoá hẳn `FINAL_REPORT_PARTS`, `FINAL_REPORT_GUIDANCE` và khối `=== FINAL REPORT ===`; thay bằng `ANSWER_EVIDENCE_LINE`
+  (một câu điều kiện, ASCII, ≤ 200 ký tự) chèn **ngay sau** `=== ANSWER LENGTH ===` và **chỉ** ở phiên chính (D-18/D-32). SOP chỉ còn
+  một dòng trung thực, không trỏ về khối nào.
+- Kỹ năng `final-report` **2.0.0**: menu năm mục nhưng là **menu, không phải khuôn** ("pick by content, not habit"), luật **không in
+  phần rỗng**, luật mở bài bằng **một đoạn văn xuôi** (để mặt gấp còn tóm tắt do model viết — D-29), mục **The evidence part closes the
+  answer** (D-30), bảng bằng chứng theo loại việc, cách chụp (`target`/`caption`), ví dụ nguyên lượt `9481bf87`. Ở lại `DEFAULT_SKILLS` (D-31).
+- **Một con trỏ** ở bước tổng kết: `RECAP_CLOSER` bảo model mở kỹ năng bằng `skill_view`; recap chỉ phiên chính, chỉ đi kèm **yêu cầu
+  của bước**, rỗng khi lượt không đổi gì ⇒ lượt chỉ hỏi không bao giờ thấy con trỏ (D-28).
+- `AGENT.md` §3.4 chỉ trỏ về kỹ năng (bản nạp thật cho **mọi** vai nên cố ý không chép menu; bullet markdown-only của D-19 giữ nguyên).
+- **Mã sản phẩm giao diện KHÔNG đổi** (`git diff -- HarnessStepView.tsx` rỗng): điểm ④ là lỗi của **prompt ép hình dạng**, không phải
+  của bộ dò tóm tắt.
+
+### Phần 2 — P2: ghim hợp đồng mới (2 tệp kiểm)
+
+- `backend/tests/unit/test_runtime_prompt.py` (LF, 17 ca): vắng khối/khuôn; `hasattr` âm cho hai hằng cũ; bốn câu `RETIRED` vắng ở **bốn
+  chỗ** (đọc thẳng tệp `runtime.py`, SOP, `AGENT.md` §3.4, kỹ năng); `ANSWER_EVIDENCE_LINE` đúng **một lần**, **sau** `=== ANSWER LENGTH ===`,
+  ASCII, ≤ 200 ký tự, **vắng** ở mọi vai con; khối kỹ năng không bị nhân đôi khi prompt được dựng lại (ghim cho lỗi `_next_turn_skills`
+  của vòng 23); kỹ năng giữ menu + luật mở bài + luật ảnh cuối + `never print an empty part`; con trỏ ở bước tổng kết trỏ tới kỹ năng,
+  recap rỗng ở lượt chỉ đọc.
+- `frontend/src/components/chat/HarnessStepView.test.tsx` (CRLF, 31 ca): ca mới — mở bài một đoạn văn xuôi + dòng trống + phần sau
+  **kể cả ảnh ở cuối** ⇒ tóm tắt ĐÚNG đoạn đó, mặt gấp không chứa chữ của phần sau, sau khi mở thì **ảnh là khối CUỐI**; và ca mở bài
+  bằng tiêu đề ⇒ rơi về lát cắt 6 dòng/600 ký tự.
+
+### Phần 3 — Hậu kiểm: một vòng soát mã + một vòng soát dọn
+
+- **Soát mã** (risk **3/10**, "ship with mitigations"): nguồn sự thật duy nhất đúng; con trỏ tới được thật; ghim mạnh, **hai chỗ mềm**
+  (menu chỉ ghim sự hiện diện của năm tên mục; ghim §3.4/SOP bám đúng định dạng `- **Tên mục**`). Tìm ra lỗ: không ghim nào chặn kỹ năng
+  **trôi ngược thành khuôn cứng**.
+- **Soát dọn**: luật "ảnh khép câu trả lời" bị chép **bốn lần**; ba bản có chủ và có ghim, bản trong `RECAP_CLOSER` là bản duy nhất không
+  ghim ⇒ bỏ vế đó (luật vẫn đi ở `runtime.py:761` cho mọi lượt phiên chính); bỏ một gạch trùng luật trong kỹ năng; gọn tệp kiểm (hai
+  tham số `tmp_path` không dùng, một assert đếm trùng).
+- **Bù lỗ của soát mã** (`68125ea`): ghim chống trôi D-26 — kỹ năng không được chứa `all five` / `five parts` / `every part` /
+  `in this order` / `must use`, và phải giữ `pick by content, not habit`.
+
+### Phần 4 — Nghiệm thu sống của vòng (testing agent, cây `37926e0`)
+
+| Trên payload gửi provider | Trước (v23 `0114.json`) | Lượt việc (`0117.json`) | Lượt hỏi (`0118.json`) |
+|---|---|---|---|
+| `=== FINAL REPORT ===` / `five parts` / `in this order` | 1 / 3 / 2 | **0 / 0 / 0** | **0 / 0 / 0** |
+| câu `ANSWER_EVIDENCE_LINE` | 0 | **1** | **1** |
+| con trỏ `` read the `final-report` skill with `skill_view` `` trong `messages` | 0 | **1** (từ bước có việc trở đi: `0115`=0 → `0116`=1 → `0117`=1) | **0** |
+
+- **Ba mặt giao diện ĐẠT** (Vite scratch → harness scratch, `agent-browser` 0.21.2): gấp = đúng một đoạn văn xuôi + nút mở; mở = phần model
+  chọn rồi **ô ảnh bằng chứng ở CUỐI** (`data-artifact-open="media"`, ảnh tải thật 1280×800 qua `/__box/file/media`, nhãn
+  `[data-capture-label="true"]` + tên tệp); lượt hỏi = văn xuôi liền mạch, **0** nút mở, **0** tiêu đề mục, **0** ảnh nội dung. Ba mặt khớp
+  cấu trúc năm mặt thiết kế `lv24-*.html` (khác chỉ ở ngôn ngữ chrome của app và số phần, vì lượt stub nhỏ hơn lượt thật trong mock).
+- **Provider thật**: model `nemotron-3.5-lightning-free` chạy `terminal_exec` rồi **gọi `skill_view {"id": "final-report"}`** và trả lời **một
+  dòng văn xuôi** (99 ký tự), không khuôn; nội dung kỹ năng nhận được đúng bản v2.0.0. Lượt thật không có ảnh nên "ảnh ở cuối" chỉ chứng minh
+  bằng lượt stub; và mới đo **một** lượt, một model.
+- Harness scratch khởi động **sau** mtime của cả sáu tệp sản phẩm (07:52:32 > 07:48–07:50) ⇒ số đo thuộc đúng mã vòng 24.
+
+### Phần 5 — Số đo kiểm thử của vòng
+
+| Bộ | Trước vòng 24 | Sau vòng 24 (`37926e0` + `68125ea`) |
+|---|---|---|
+| `backend/tests/unit -q` (bỏ ca môi trường PowerShell) | 1113 passed / 1 deselected | **1113 passed / 1 deselected** |
+| `test_runtime_prompt.py` | 4 ca | **17 passed** |
+| `frontend/src/components/chat` | — | **108 passed** |
+| `HarnessStepView.test.tsx` | 29 ca | **31 passed** |
+| `frontend npx vitest run` (kèm `VITE_BOX_API_URL`) | 124 tệp / 1045 ca | **124 tệp / 1045 ca** |
+| `npx tsc -b --noEmit` | exit 0 | **exit 0** |
+| `npx eslint` trên tệp đã đụng | — | **exit 0** |
+
+Đỏ có sẵn, không phải hồi quy: `test_terminal_tools.py::test_terminal_exec_echo` (box không có PowerShell) và
+`frontend/src/lib/workspace/index.test.ts` (cần `VITE_BOX_API_URL=http://localhost:8081` vì `frontend/.env.local` untracked đặt `VITE_BOX_API_URL=.`).
+
+### Phần 6 — Khẳng định cố ý đổi ở vòng này
+
+- **Đảo chiều vòng 23**: khuôn năm phần ra khỏi prompt; dạng câu trả lời nay nằm trong kỹ năng, prompt chỉ giữ **một dòng bằng chứng**
+  (phiên chính) và **một con trỏ** ở bước tổng kết của lượt có việc.
+- **`RECAP_CLOSER` bỏ vế "and close the answer with those images"** (kế hoạch v3 §2(d) ghi nguyên văn câu đó) theo soát dọn — luật không
+  mất vì `runtime.py:761` vẫn đi ở mọi lượt phiên chính và kỹ năng có mục *The evidence part closes the answer*.
+- **Đánh đổi đã nhận (D-31)**: model không mở kỹ năng ⇒ lượt vẫn có **ảnh bằng chứng** (nhờ dòng cứng) nhưng **thiếu menu**. Lượt provider
+  thật đã mở kỹ năng, nên rủi ro này chỉ còn trên giấy — nhưng chưa đo tỉ lệ.
+- **Sổ đổi số mục**: `owner-decisions.md` §4 nay có §4.1 (vòng 23) / §4.2 (vòng 24) thay vì một §4.1 như kế hoạch ghi, để sổ đọc được theo vòng.

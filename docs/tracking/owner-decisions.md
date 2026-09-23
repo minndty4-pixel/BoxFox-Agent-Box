@@ -96,7 +96,9 @@ nhất (env vẫn đè được), và kiểm lại bằng `curl -s -H 'X-BoxFox-
 `Đã chốt`: chúng thuộc đợt peer-mesh và đợt bằng chứng sống của vòng 22, chưa thi công. **D-10** đã được áp ngay trong đợt 1
 (ưu tiên ổn định, chấp nhận tốn thêm bước/token) nên không đổi trạng thái.
 
-## 4. Vòng 23 — mười một câu chốt về "bằng chứng sống" (2026-09-23) — D-16…D-25
+## 4. Vòng 23–24 — câu chốt về "bằng chứng sống" và dạng câu trả lời cuối (2026-09-23) — D-16…D-32
+
+### 4.1 Vòng 23 — mười một câu chốt về "bằng chứng sống" (D-16…D-25)
 
 Chủ nhà gửi **ảnh chụp giao diện** kèm câu chốt "không phải block. hẳn luôn. chỉ dùng file markdown thôi":
 câu trả lời cuối của lượt trước bị nền tảng render thành **chip "the uploaded file"**, ảnh chụp chỉ nằm trong
@@ -122,6 +124,55 @@ Vì kế hoạch thi công bị lệch mặt hiển thị, chủ nhà yêu cầu
 chủ nhà: "các phần tệp thay đổi sẽ được plan trong tương lai"; (b) **"agent verify"** — vai đi hậu kiểm thật
 (test/review/verify/main) rồi báo cáo md + ảnh, thay chỗ cho huy hiệu cổng vừa bỏ (D-20).
 
+---
+
+### 4.2 Vòng 24 — bảy câu chốt về dạng câu trả lời cuối (2026-09-23) — D-26…D-32
+
+Sau khi vòng 23 lên mã, chủ nhà bác **khuôn năm phần** của câu trả lời cuối và nêu bốn điểm (nguyên văn):
+
+1. *"tùy từng trường hợp. ví dụ như nếu user giao việc thì mới nói đã làm gì hay còn gì"* — khuôn không được áp cứng
+   cho mọi lượt.
+2. *"Nếu không còn gì, tại sao lại nói? (thừa)"* — không in mục rỗng.
+3. *"đây trả lời đang theo 1 form, chứ k linh động, harness phải trả lời được như thường, với các task kỹ thuật thì
+   mới báo cáo. nó vẫn trả lời bình thường và báo cáo chứ k phải mỗi báo cáo, và báo cáo những gì đã làm"* — trả lời
+   bình thường **cộng** báo cáo khi là việc kỹ thuật, không phải chỉ báo cáo.
+4. *"Hiện tại form đã làm hỏng cả phần tóm tắt… ở phiên bản cũ, model sinh ra theo dạng tóm tắt, nếu user ấn show
+   detail sẽ hiện cụ thể thay đổi, nhưng nếu theo form này đã làm hỏng toàn bộ"* — phải khôi phục **tóm tắt do model
+   viết** + `View details` mới ra chi tiết.
+
+Chủ nhà chỉ mặt **ĐÚNG** mẫu: lượt `9481bf87` ("Gói bằng chứng sống dạng ảnh chụp + ghi hình…", "Worked for 6m 31s").
+
+Tinh chỉnh sau đó (nguyên văn): *"giúp tôi bổ sung, form kia là custom nghĩ là agent sẽ trả lời như bình thường. nhưng
+form vào 1 chút, và nó có thể tự chọn ra ví dụ như đã làm gì. trả lời như bình thường. chỉ quan trọng nhất là phần
+ảnh dãn chứng ở dưới"* ⇒ form giữ lại nhưng thành **menu nhẹ**, model tự chọn phần; **ảnh bằng chứng ở CUỐI là quan
+trọng nhất**.
+
+Ba câu hỏi khi soạn kế hoạch thi công (bản kế hoạch v3 đã được duyệt): câu 1 chủ nhà **bỏ trống** ("no preference,
+use your best judgment") ⇒ áp phương án khuyến nghị — dạng câu trả lời nằm **trong kỹ năng**, prompt chỉ còn **một
+con trỏ** ở bước tổng kết của lượt có việc; câu 2 chọn **giữ một dòng cứng ngắn trong prompt**; câu 3 chọn **giữ
+`final-report` trong danh sách kỹ năng bật mặc định**.
+
+| Mã | Quyết định | Chốt | Lý do đo được | Việc bị ảnh hưởng | Trạng thái |
+|---|---|---|---|---|---|
+| D-26 | Form năm phần thành **menu nhẹ**, không còn là khuôn cứng: model tự chọn phần hợp lượt | Có | Bốn điểm chủ nhà nêu (1)(3) + tinh chỉnh "form vào 1 chút… nó có thể tự chọn" | `runtime.py` (xoá `FINAL_REPORT_PARTS`/`FINAL_REPORT_GUIDANCE`/khối `=== FINAL REPORT ===`), kỹ năng `final-report` 2.0.0, `AGENT.md` §3.4 | Đã xong (`37926e0`) |
+| D-27 | **Không in phần rỗng**: hết việc thì không có mục "còn lại", không có mục "cần chốt" | Có | Điểm (2): "Nếu không còn gì, tại sao lại nói? (thừa)" | kỹ năng `final-report` (mục *The menu, not a template*, luật `never print an empty part`) | Đã xong (`37926e0`) |
+| D-28 | Vẫn **trả lời như thường**; lượt chỉ hỏi thì trả lời, **không** báo cáo; có việc kỹ thuật thì trả lời **kèm** báo cáo | Có | Điểm (3): "nó vẫn trả lời bình thường và báo cáo chứ k phải mỗi báo cáo" | kỹ năng `final-report` (*When to open it*), `RECAP_CLOSER` (chỉ lượt có việc mới thấy con trỏ; lượt chỉ đọc recap rỗng) | Đã xong (`37926e0`) |
+| D-29 | Giữ **tóm tắt do model viết** ở mặt gấp + `View details` mới mở chi tiết; lượt `9481bf87` là mẫu | Có | Điểm (4): form cũ mở đầu bằng tiêu đề/danh sách nên `splitAuthoredSummary()` (`HarnessStepView.tsx:248`) trả `null` ⇒ mặt gấp thành lát cắt 6 dòng/600 ký tự (`:1078`) | kỹ năng (luật mở bài **một đoạn văn xuôi**), `HarnessStepView.test.tsx` (+2 ca DOM; **mã sản phẩm giao diện không đổi**) | Đã xong (`37926e0`) |
+| D-30 | **Ảnh bằng chứng ở CUỐI câu trả lời là phần ưu tiên nhất** | Có | Tinh chỉnh: "chỉ quan trọng nhất là phần ảnh dãn chứng ở dưới" | kỹ năng (*The evidence part closes the answer*), ca kiểm DOM khẳng định ảnh là **khối cuối** khi mở chi tiết | Đã xong (`37926e0`) |
+| D-31 | **Kỹ năng `final-report` là nơi chứa cả dạng câu trả lời**; prompt chỉ còn **một con trỏ**, ở bước tổng kết của **lượt có việc**; kỹ năng **ở lại** `DEFAULT_SKILLS` | Có | Câu hỏi 1 bỏ trống ⇒ phương án khuyến nghị; câu hỏi 3 chọn giữ ở danh sách mặc định. **Đánh đổi đã nhận**: model không mở kỹ năng thì lượt vẫn có ảnh bằng chứng (nhờ D-32) nhưng thiếu menu | `runtime.py` (`RECAP_CLOSER` đọc `skill_view`), kỹ năng, `skills/catalog.py` (chú thích), `AGENT.md` §3.4, `backend/tests/unit/test_runtime_prompt.py` | Đã xong (`37926e0`) |
+| D-32 | **Một dòng bằng chứng cứng ở lại prompt** (chỉ phiên chính), câu điều kiện, ngắn | Có | Câu hỏi 2 chọn "giữ một dòng cứng ngắn"; D-18 giữ: con không nhận dòng này | `runtime.py:761` `ANSWER_EVIDENCE_LINE`, chèn ngay sau `=== ANSWER LENGTH ===` | Đã xong (`37926e0`) |
+
+**Hậu kiểm sau khi bảy hàng trên lên mã.** Một vòng **soát mã** (risk **3/10**, "ship with mitigations": nguồn sự thật duy nhất đúng, con
+trỏ tới được thật, hai chỗ ghim còn mềm) và một vòng **soát dọn** (luật "ảnh khép câu trả lời" bị chép bốn lần — bản trong `RECAP_CLOSER`
+là bản duy nhất không có ghim nên đã bỏ vế đó; bỏ một gạch trùng luật trong kỹ năng; gọn tệp kiểm) ở commit `68125ea`, kèm **ghim chống
+trôi cho D-26** (kỹ năng không được chứa câu bắt dùng đủ năm phần, phải giữ `pick by content, not habit`). Số đo sống của vòng ở
+`test-rounds.md` § *Vòng 24*; lượt provider thật **có** gọi `skill_view {"id": "final-report"}` nên đánh đổi của D-31 không xảy ra ở lượt đo.
+
+**Điều còn treo (ghi để không trôi):** (a) footer lightbox "mở trong Files" chưa nối (`MediaLightboxModal.tsx:35`
+`artifactPath?` có, `ChatPanel.tsx:707-715` chưa truyền); (b) dòng meta của tile (`PNG · kích thước · bytes`) chưa dựng;
+(c) `frontend/vite.config.ts` vẫn bind `127.0.0.1`, preview phải đi qua `frontend/.tmp/vite.preview.config.mjs`;
+(d) "agent verify" (vai đi hậu kiểm thật) vẫn là việc của vòng sau, như đã ghi ở §4.1.
+
 ## 5. Ràng buộc kỹ thuật phải giữ khi thi công
 
 1. **Không thêm giá trị `status` mới** cho phiên: luồng đang lọc `running` / `awaiting_decision`
@@ -143,3 +194,4 @@ chủ nhà: "các phần tệp thay đổi sẽ được plan trong tương lai"
 | 2026-09-22 | Đợt 2 vòng 22 (mesh agent con) thi công xong: D-7 và D-9 chuyển `Đã xong` kèm số đo sống; D-11, D-12, D-13 và D-15 ghi nhận **đã áp xong**; D-14 giữ `Đã chốt` (đợt bằng chứng sống); T14 (`parallelReadTools`) để lại vòng sau theo D-13 | Nam Nam |
 | 2026-09-22 | Đợt 3 vòng 22 (bằng chứng sống) thi công xong: D-8 chuyển `Đã xong` kèm số đo sống; D-14 ghi **nguyên văn** vào D-8 kèm ngày chốt và đồng hồ đếm (`sessions=` / `S4=` / `flagged=`); cổng vẫn mặc định `warn` cho tới mốc 20 phiên | Nam Nam |
 | 2026-09-23 | Vòng 23: chủ nhà gửi ảnh chụp và yêu cầu kế hoạch mới cho phần bằng chứng sống; chốt D-16…D-25 (11 câu qua ba đợt hỏi) — mặt câu trả lời cuối chỉ còn markdown, cổng rời giao diện, nhãn theo ngôn ngữ câu trả lời, kho lưu giữ nguyên | Nam Nam |
+| 2026-09-23 | Vòng 24: chủ nhà bác khuôn năm phần (bốn điểm nguyên văn) rồi tinh chỉnh "form vào 1 chút, ảnh bằng chứng ở dưới là quan trọng nhất"; chốt D-26…D-32 (ba lựa chọn phỏng vấn) — dạng câu trả lời dời vào kỹ năng `final-report`, prompt còn **một dòng bằng chứng cứng** cho phiên chính + **một con trỏ** ở bước tổng kết của lượt có việc; thi công xong ở `37926e0` | Nam Nam |

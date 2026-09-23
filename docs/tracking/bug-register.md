@@ -1417,3 +1417,65 @@ Mặt **"tệp đã thay đổi"** (diff/hunk) và **"agent verify"** (vai hậu
 sang vòng sau theo D-19/D-20; nợ cũ BUG-66/BUG-68/BUG-69, câu bị ghim > 200 ký tự bị cắt giữa từ, và bốn khoá `subagent*` trong
 `en.ts` vẫn nguyên.
 
+
+### 6.32 Vòng 24 — khuôn năm phần ở câu trả lời cuối (chủ nhà bác): dạng câu trả lời dời vào kỹ năng `final-report`, prompt chỉ còn một dòng bằng chứng + một con trỏ — ĐÃ SỬA (`37926e0` + `68125ea`)
+
+**Chủ nhà bác khuôn, bốn điểm nguyên văn (2026-09-23 06:51 UTC).** ① *"tùy từng trường hợp. ví dụ như nếu user giao việc
+thì mới nói đã làm gì hay còn gì"*; ② *"Nếu không còn gì, tại sao lại nói? (thừa)"*; ③ *"đây trả lời đang theo 1 form, chứ
+k linh động, harness phải trả lời được như thường, với các task kỹ thuật thì mới báo cáo. nó vẫn trả lời bình thường và báo
+cáo chứ k phải mỗi báo cáo, và báo cáo những gì đã làm"*; ④ *"Hiện tại form đã làm hỏng cả phần tóm tắt… ở phiên bản cũ,
+model sinh ra theo dạng tóm tắt, nếu user ấn show detail sẽ hiện cụ thể thay đổi, nhưng nếu theo form này đã làm hỏng toàn
+bộ"*. Tinh chỉnh sau đó: *"form vào 1 chút, và nó có thể tự chọn ra ví dụ như đã làm gì. trả lời như bình thường. chỉ quan
+trọng nhất là phần ảnh dãn chứng ở dưới"*. Mẫu chủ nhà chỉ mặt: lượt `9481bf87`. Chốt thành D-26…D-32 (`owner-decisions.md` §4.2).
+
+**Nguyên nhân gốc của điểm ④ (đo được).** `HarnessStepView.tsx:248` `splitAuthoredSummary()` chỉ lấy **đoạn đầu** làm tóm tắt
+khi đoạn đó là văn xuôi thuần (không mở bằng `#`, `|`, `-`, `*`, `>`, `1.`, ``` ```), ≤ 6 dòng, ≤ 600 ký tự, và **còn phần sau**;
+`summarizeFinalText()` (`:1078`) rơi về **cắt thô** 6 dòng/600 ký tự. Khuôn vòng 23 bắt mở đầu bằng tiêu đề/danh sách năm phần
+⇒ bộ dò trả `null` ⇒ mặt gấp là lát cắt vô nghĩa và `View details` hết nghĩa. Điểm ①②③ đến từ cùng chỗ: hình dạng câu trả lời
+bị **áp cứng từ prompt** cho mọi lượt.
+
+**Cách sửa (vòng 24, `37926e0`; dọn theo soát mã ở `68125ea`).**
+1. **Prompt về một dòng**: xoá hẳn `FINAL_REPORT_PARTS`, `FINAL_REPORT_GUIDANCE` và khối `=== FINAL REPORT ===`; thay bằng
+   `ANSWER_EVIDENCE_LINE` (một câu điều kiện, ASCII) chèn **ngay sau** `=== ANSWER LENGTH ===` và **chỉ** ở phiên chính (D-18/D-32).
+   SOP ở `ORCHESTRATOR_SOP_GUIDANCE` chỉ còn một dòng trung thực, không trỏ về khối nào.
+2. **Kỹ năng `final-report` 2.0.0 là nơi chứa cả dạng câu trả lời** (D-31): menu **năm mục** nhưng là *menu, không phải khuôn*
+   ("pick by content, not habit"), luật **không in phần rỗng**, luật mở bài bằng **một đoạn văn xuôi** (để `View details` còn nghĩa),
+   mục **The evidence part closes the answer**, bảng bằng chứng theo loại việc, cách chụp, ví dụ nguyên lượt `9481bf87`. Ở lại `DEFAULT_SKILLS`.
+3. **Một con trỏ ở bước tổng kết**: `RECAP_CLOSER` bảo model mở kỹ năng bằng `skill_view`; recap **chỉ phiên chính**, chỉ đi kèm
+   **yêu cầu của bước**, và **rỗng** khi lượt không đổi gì ⇒ lượt chỉ hỏi **không bao giờ** thấy con trỏ (D-28).
+4. **`AGENT.md` §3.4 chỉ trỏ về kỹ năng** (bản nạp thật cho **mọi** vai, kể cả con, nên cố ý không chép menu; bullet markdown-only
+   của vòng 23 giữ nguyên theo D-19).
+5. **Dọn theo soát mã + soát dọn (`68125ea`)**: `RECAP_CLOSER` thôi nhắc lại vị trí ảnh (bản chép duy nhất không có ghim; luật
+   vị trí vẫn đi ở `runtime.py:761` cho mọi lượt phiên chính); bỏ gạch trùng luật trong kỹ năng; thêm **ghim chống trôi D-26**
+   (kỹ năng không được chứa `all five` / `five parts` / `every part` / `in this order` / `must use`, phải giữ `pick by content, not habit`).
+
+**Số đo sống (P3, cây `37926e0`; harness scratch + Vite scratch, stub 3199 và provider thật).**
+
+| Trên payload gửi provider | Trước (v23 `0114.json`) | Lượt việc (`0117.json`) | Lượt hỏi (`0118.json`) |
+|---|---|---|---|
+| `=== FINAL REPORT ===` | 1 | **0** | **0** |
+| `five parts` | 3 | **0** | **0** |
+| `in this order` | 2 | **0** | **0** |
+| câu `ANSWER_EVIDENCE_LINE` | 0 | **1** | **1** |
+| con trỏ `` read the `final-report` skill with `skill_view` `` | 0 | **1** (bước có việc trở đi) | **0** |
+
+- **Ba mặt giao diện ĐẠT**: gấp = đúng **một đoạn văn xuôi** của model + nút mở; mở = phần model chọn rồi **ô ảnh bằng chứng ở CUỐI**
+  (`data-artifact-open="media"`, ảnh tải thật 1280×800, nhãn `[data-capture-label="true"]`); lượt hỏi = văn xuôi liền mạch,
+  **0** nút mở, **0** tiêu đề mục, **0** ảnh nội dung.
+- **Provider thật**: model `nemotron-3.5-lightning-free` **có** gọi `skill_view {"id": "final-report"}` (1 lần) và trả lời **một dòng
+  văn xuôi**, không khuôn — đánh đổi D-31 ("model không mở kỹ năng") **không xảy ra ở lượt đo**, nhưng vẫn là rủi ro còn lại vì mới đo một lượt.
+
+**Số đo kiểm thử.** `test_runtime_prompt.py` **17 passed**; `HarnessStepView.test.tsx` **31 passed**; nhóm `frontend/src/components/chat`
+**108 passed**; cả bộ frontend **124 tệp / 1045 ca đạt**; `tsc -b --noEmit` **exit 0**; `eslint` **exit 0**; `backend/tests/unit -q`
+(bỏ ca môi trường PowerShell) **1113 passed, 1 deselected**.
+
+**Cố ý lệch/ghi nhận.** (a) `RECAP_CLOSER` bỏ vế "and close the answer with those images" mà kế hoạch v3 §2(d) ghi nguyên văn —
+soát dọn chỉ ra đây là bản chép trùng duy nhất không ghim, và luật không mất. (b) Ghim vẫn **chỉ** cấm ba câu `RETIRED` cũ, không
+cấm mọi cách viết lại khuôn; đã bù bằng ghim chống trôi D-26 ở trên, nhưng một tệp khác (SOP/§3.4) chép menu bằng định dạng khác
+(`1. …`, bảng) vẫn không bị bắt — chấp nhận. (c) `owner-decisions.md` §4 nay có §4.1 (vòng 23) và §4.2 (vòng 24) thay vì một §4.1
+như kế hoạch ghi, để sổ đọc được theo vòng.
+
+**Còn lại sau vòng này (ghi để không trôi).** Footer lightbox "mở trong Files" chưa nối (`MediaLightboxModal.tsx:35` `artifactPath?`
+có, `ChatPanel.tsx:707-715` chưa truyền); dòng meta tile (`PNG · kích thước · bytes`) chưa dựng; `frontend/vite.config.ts` còn bind
+`127.0.0.1` nên preview phải qua `frontend/.tmp/vite.preview.config.mjs`; nợ cũ BUG-66/BUG-68/BUG-69, câu bị ghim > 200 ký tự bị
+cắt giữa từ, và bốn khoá `subagent*` trong `en.ts` vẫn nguyên.
