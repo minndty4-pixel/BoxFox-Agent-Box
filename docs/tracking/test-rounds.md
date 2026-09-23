@@ -2199,6 +2199,10 @@ giao diện; danh sách lỗi đầy đủ ở `bug-register.md` §6.34 — BUG-
   `moh.gov.vn` 21 ký tự qua đầu đọc ⇒ **`thin`** (lần 6 ném timeout) — vẫn **không** ra `ok`, nhưng
   đây là dạng "thân bài 21 ký tự" mà trần thời gian + chính sách lượt của đợt 5 (D-40) phải xử lý;
   PDF arXiv 2,33 s với **0** lời gọi đầu đọc (tầng 3 trước tầng 4 — mục "soát mã" 4).
+- **Lưu ý về cách đếm của thước đo (bản sửa sau lượt soát mã):** một dòng NÉM LỖI bị tính là **hỏng** và
+  lượt chạy thoát mã 1. Con số "11/11" ở trên là **đo được tại thời điểm đo**, không phải một bất biến:
+  nếu lượt sau `moh.gov.vn` lại timeout thì thước đo in `10/11 … 1 dòng lỗi tính là hỏng` và thoát mã 1 —
+  đó là **đo đúng**, không phải hồi quy. Trước bản sửa, chính một lượt cắt hết đường ra vẫn in `9/11`.
 - **Bốn sửa đổi mà chính thước đo bắt được** (không nằm trong chữ của plan, đều có số đo trước/sau):
   1. **`<form>` không còn bị bỏ nội dung.** Trang ASP.NET `vanban.chinhphu.vn/?pageid=27160&docid=207396`
      bọc **toàn bộ thân bài** trong `<form id="form1">`, nên `_TextExtractor` bỏ hết: 81 697 byte HTML
@@ -2207,7 +2211,9 @@ giao diện; danh sách lỗi đầy đủ ở `bug-register.md` §6.34 — BUG-
   2. **Tên miền không phải slug.** Phép cắt chuỗi cũ lấy cả host khi đường dẫn chỉ là `/`, nên
      `https://vanban.chinhphu.vn/` sinh token `['vanban', 'chinhphu']` rồi so với tiêu đề
      "Hệ thống văn bản" ⇒ **mọi** trang của host đó ra `wrong-page` (báo sai). Nay chỉ lấy phần `path`;
-     ca đã đo của `vbpl.vn` (`vbpq-toanvan.aspx?ItemID=1` ⇒ `['vbpq','toanvan']`) vẫn ra `wrong-page`.
+     ca đã đo của `vbpl.vn` (`vbpq-toanvan.aspx?ItemID=1` ⇒ `['vbpq','toanvan']`) vẫn **bị bắt** — nhưng
+     từ lượt đo 7 nó ra `error-page` bằng dấu hiệu tường minh `'đang tải dữ liệu'`, không còn bằng phép so
+     slug (mục "soát mã" 1), nên phép so slug nay là lưới thứ hai chứ không phải chốt duy nhất.
   3. **Đầu đọc không được "rửa" trang sai thành `ok`.** Cửa hậu `reading.slug_clue` chỉ nhìn **tiêu đề**
      (`Title:` hoặc dòng `#`): đo được `r.jina.ai` trả 26 522 ký tự *site chrome* cho
      `vbpq-toanvan.aspx?ItemID=1` và không có dòng `Title:` nào. Lần chạy đầu cửa hậu vẫn lọt vì bản
@@ -2216,20 +2222,42 @@ giao diện; danh sách lỗi đầy đủ ở `bug-register.md` §6.34 — BUG-
      (`ERROR_MARKERS`) sau khi đo `thuvienphapluat.vn`; cùng lượt này hai sửa trước đó được xác nhận:
      trần PDF riêng `MAX_PDF_BYTES = 8 MiB` (tải lại **đúng một lần**) và tầng JATS nhận **theo dấu hiệu
      `table-wrap` trong thân bài** (Europe PMC trả `text/plain`, không phải `application/xml`).
+- **Nghiệm thu độc lập (`v27e1-testing`, 2026-09-23) — `OVERALL STATUS: PASSED` trên `2bfedd7`:** kiểm lại
+  bộ đơn vị **1272 passed, 1 deselected trong 217,41 s**; ca bị deselect đỏ y hệt trên cả ba SHA (chỉ Windows).
+  Ma trận công tắc (`auto`/`thin`/`off`/`decode=off`/`read-store=off`) đúng; đọc qua box (`docker exec`) nối
+  lại đúng **100 000 ký tự** với `offsetAlignedTo: 3`, **bốn** biến thể traversal bị từ chối và không rò; oracle
+  CLI thoát đúng 0/1/2. Bằng chứng: `/code/.generated_artifacts/v27e1/*` (`probe-2bfedd7.json`,
+  `switch-matrix.log`, `box_read_probe.json`, `unit-2bfedd7.log`, `oracle-out-rq1-pass.json`, …).
+- **Hai lỗi THẬT do lượt nghiệm thu tìm ra, sửa trong bản sửa SAU nghiệm thu (commit kế tiếp `2bfedd7`,
+  cùng nhánh — phép chấp nhận đứng ở `2bfedd7`, ba tệp dưới đây chỉ thêm ca ghim và sửa đúng hai nhánh ấy):**
+  1. `BOXFOX_WEB_DECODE=off` **nói dối trong payload**: `meta` được dựng TRƯỚC khi đọc header, nên một thân
+     bài gzip bị báo `contentEncoding: "identity"`. Nay đọc header/magic TRƯỚC; tắt giải nén vẫn báo
+     `gzip` + `decoded: False` — ca ghim trong `test_the_decode_switch_restores_the_old_behaviour`.
+  2. `BOXFOX_WEB_READER=thin` **không tái hiện `2add905`**: nhánh `thin` kiểm trước `direct_error` nên một
+     trang 403 vẫn tốn thêm một chuyến `r.jina.ai`. Nay nhánh `thin` gặp `direct_error` trả
+     `{'use_reader': False, 'reason': 'none'}` — ca mới `test_the_thin_switch_keeps_the_original_error_instead_of_a_reader_hop`.
+  3. Mục `[Low]` thứ ba sửa luôn: thân bài của **trang lỗi** cũng có thể nén, và `decode(errors='replace')`
+     trên byte gzip in mojibake vào chính câu báo lỗi. Nay giải nén trước — ca mới
+     `test_an_http_error_body_is_inflated_before_it_reaches_the_message`.
+  Sau ba sửa đổi và ba ca ghim: **1274 passed, 1 deselected trong 214,85 s**; `test_web_reading.py` một mình
+  **36 ca**; nhóm web (`test_web_reading.py` + `test_web_tools.py`) ⇒ **69 passed**.
 - **Chỗ lệch kỳ vọng của plan thì nói thẳng, không làm tròn:**
   - `thuvienphapluat.vn`: A-3 kỳ vọng đầu đọc cứu được **≥ 20 000 ký tự**. Đo lại cùng ngày, muộn hơn:
     `r.jina.ai` **không khoá** nhận đúng *trang chặn bot* 281 ký tự ⇒ ngưỡng ấy không còn đứng được, và
     đó là thay đổi của dịch vụ bên ngoài chứ không phải của mã. Bất biến giữ được: **không bao giờ `ok`**
     (`error-page`, `readerReason: unreachable`). Muốn đọc được trang này phải có khoá hoặc chân đọc khác
     — việc của A-7 (đợt 2).
-  - `moh.gov.vn`: 15,44 s rồi ném `WEB_FETCH_FAILED` (timeout). Không ra `ok` (đúng), nhưng cũng chưa
-    "nói thẳng" ra `error-page`; chính sách trần thời gian của lượt thuộc đợt 5 (D-40), không sửa ở đây.
+  - `moh.gov.vn`: Ở lượt 5–6 trang này ném `WEB_FETCH_FAILED` sau 15,44 s (bảng lần 6 ở trên ghi đúng
+    trạng thái **của lượt 6**). Lượt 7 nó KHÔNG ném lỗi nữa mà qua đầu đọc trả **21 ký tự** ⇒ `thin`
+    (không bao giờ `ok`) — nên hai dòng không mâu thuẫn, chúng là hai lượt khác nhau. Chính sách trần thời
+    gian của lượt thuộc đợt 5 (D-40), không sửa ở đây.
   - Europe PMC: bài `PMC3258128` dùng ở lần chạy trước **không có** `<table-wrap>` nào nên nhánh JATS
     không chạy và tầng ra `html` — lỗi ở **mẫu đo**, không ở mã. Mẫu nay là `PMC7090843` (10 thẻ, 5 khối ngoài).
 - **Bộ đơn vị đầy đủ trên cây này**: `./.venv/bin/python -m pytest backend/tests/unit -q -p no:randomly
-  --deselect backend/tests/unit/test_terminal_tools.py::test_terminal_exec_echo` ⇒ **1272 passed, 1 deselected**
-  trong 217,83 s (mốc trước đợt 1: 1219) (mốc trước bốn sửa đổi: 1247 passed). `test_web_reading.py` một mình **34 ca**;
-  `test_web_reading.py` + `test_web_tools.py` ⇒ **67 passed**; `test_runtime_info.py` ⇒ **12 passed**.
+  --deselect backend/tests/unit/test_terminal_tools.py::test_terminal_exec_echo` ⇒ **1274 passed, 1 deselected**
+  trong 214,85 s (mốc trước đợt 1: 1219) (mốc trước bốn sửa đổi: 1247 passed; tại `2bfedd7`: 1272 passed / 217,83 s,
+  lượt nghiệm thu độc lập đo lại 217,41 s). `test_web_reading.py` một mình **36 ca**;
+  `test_web_reading.py` + `test_web_tools.py` ⇒ **69 passed**; `test_runtime_info.py` ⇒ **12 passed**.
   Ca deselected là `Write-Output` PowerShell trên Linux — đỏ có sẵn từ trước, đỏ y hệt trên `git archive HEAD` sạch.
 - **Lượt sống với model (giao thức và khoá: `docs/plan/v27/research-quality-tests.md` §2)**:
   (i) job `b89d2e4b` — 3 lời gọi `web_fetch` (`nhandan.vn`, `vanban.chinhphu.vn`, PDF arXiv), **0 lỗi**,

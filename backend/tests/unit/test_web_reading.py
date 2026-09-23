@@ -8,6 +8,7 @@ văn xuôi thật 0,0000.
 """
 import email.message
 import gzip
+import io
 import zlib
 
 import pytest
@@ -137,6 +138,9 @@ def test_the_decode_switch_restores_the_old_behaviour():
     text, meta = reading.decode_body(body, _headers(encoding='gzip'), mode='off')
     assert meta['decoded'] is False
     assert reading.junk_ratio(text) > 0.10, 'tắt giải nén nghĩa là quay lại đúng rác như trước'
+    # Chốt bằng lượt kiểm thử độc lập 2026-09-23: công tắc lùi chỉ được tắt việc GIẢI NÉN, không
+    # được nói sai host đã gửi gì (`nhandan.vn` gửi `gzip` kể cả khi bị xin `identity`).
+    assert meta['contentEncoding'] == 'gzip', 'payload không được báo `identity` cho một thân bài gzip'
 
 
 def test_a_body_that_stops_early_is_kept_as_partial(tools, monkeypatch):
@@ -288,6 +292,51 @@ def test_the_old_thin_page_policy_is_still_reachable_by_switch(tools, monkeypatc
     short_body = tools.fetch({'url': 'https://example.com/ngan'})
     assert any(url.startswith(web_module.READER_PREFIX) for url in seen)
     assert short_body['reader'] == 'r.jina.ai', 'thân bài < 200 ký tự vẫn đi qua đầu đọc như trước'
+
+
+def test_an_http_error_body_is_inflated_before_it_reaches_the_message(tools, monkeypatch):
+    """Thân bài của một trang LỖI cũng có thể nén: thông điệp lỗi không được là mojibake.
+
+    Chốt bằng lượt kiểm thử độc lập 2026-09-23 (một mục `[Low]`): `decode(errors='replace')` trên
+    byte gzip in ra rác nhị phân trong chính câu báo lỗi mà người đọc phải đọc.
+    """
+    raw = gzip.compress('<html><body>Văn bản không tồn tại</body></html>'.encode())
+
+    def handler(url: str):
+        raise web_module.urllib.error.HTTPError(url, 404, 'Not Found', _headers(encoding='gzip'),
+                                                io.BytesIO(raw))
+
+    _serve(monkeypatch, handler)
+    with pytest.raises(WebError) as caught:
+        tools.fetch({'url': 'https://vbpl.vn/van-ban/chi-tiet/x.aspx'})
+    message = str(caught.value)
+    assert 'HTTP 404' in message
+    assert 'không tồn tại' in message, f'thân bài lỗi phải được giải nén trước khi vào thông điệp: {message!r}'
+    assert '\ufffd' not in message and '\x1f' not in message
+
+
+def test_the_thin_switch_keeps_the_original_error_instead_of_a_reader_hop(tools, monkeypatch):
+    """`BOXFOX_WEB_READER=thin` phải là ĐÚNG `2add905`, kể cả ở nhánh lỗi.
+
+    Chốt bằng lượt kiểm thử độc lập 2026-09-23: bản `2add905` ném lỗi TRƯỚC khi đầu đọc có cơ hội
+    (`thuvienphapluat.vn` 403 ⇒ `WEB_FETCH_FAILED`, đo được 11,66 s và 0 lời gọi `r.jina.ai`). Nếu
+    mức `thin` vẫn cho đầu đọc một lượt thì bản cũ không còn tái lập được, và một trang chặn bot lại
+    tốn thêm một lời gọi ra ngoài.
+    """
+    monkeypatch.setenv('BOXFOX_WEB_READER', 'thin')
+    seen: list[str] = []
+
+    def handler(url: str):
+        seen.append(url)
+        raise WebError('WEB_FETCH_FAILED', f'{url} answered HTTP 403')
+
+    _serve(monkeypatch, handler)
+    with pytest.raises(WebError) as caught:
+        tools.fetch({'url': 'https://thuvienphapluat.vn/van-ban/x.aspx'})
+    assert 'HTTP 403' in str(caught.value)
+    assert seen == ['https://thuvienphapluat.vn/van-ban/x.aspx'], 'đầu đọc không được gọi ở mức thin'
+    assert reading.ladder_plan(direct_error=True, mode='thin') == {'use_reader': False, 'reason': 'none'}
+    assert reading.ladder_plan(mode='thin', text_chars=10) == {'use_reader': True, 'reason': 'thin'}
 
 
 def test_an_unknown_reader_mode_falls_back_to_the_default(monkeypatch):

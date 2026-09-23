@@ -188,7 +188,17 @@ def http_request_meta(url: str, *, method: str = 'GET', body: bytes | None = Non
     except urllib.error.HTTPError as exc:
         detail = ''
         try:
-            detail = exc.read(400).decode(errors='replace').strip().splitlines()[0][:200]
+            raw_detail = exc.read(400)
+            # Thân bài của một trang LỖI cũng có thể nén (`Content-Encoding: gzip`): đọc thô rồi
+            # `decode(errors='replace')` là in ra mojibake trong CHÍNH thông điệp lỗi (đo được
+            # 2026-09-23 ở lượt kiểm thử độc lập). Giải nén trước, và nếu chính việc đó hỏng thì
+            # mới chịu thua — một thân bài hỏng không được che mất mã trạng thái.
+            try:
+                detail = reading.decode_body(raw_detail, exc.headers or {}, mode='on',
+                                            max_inflated_bytes=MAX_INFLATED_BYTES)[0]
+            except Exception:
+                detail = raw_detail.decode(errors='replace')
+            detail = detail.strip().splitlines()[0][:200] if detail.strip() else ''
         except Exception:  # pragma: no cover - a broken error body must not hide the status
             detail = ''
         raise WebError('WEB_FETCH_FAILED', f'{url} answered HTTP {exc.code}{f": {detail}" if detail else ""}',

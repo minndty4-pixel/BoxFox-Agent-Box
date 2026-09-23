@@ -266,13 +266,21 @@ def decode_body(raw: bytes, headers, *, charset: str = 'utf-8', mode: str = 'on'
     error instead of a wall of junk: the standard library cannot decode it.
     """
     meta = {'contentEncoding': 'identity', 'decoded': False, 'decodeTruncated': False}
-    if mode == 'off':
-        return raw.decode(charset, errors='replace'), meta
     encoding = ''
     try:
         encoding = str(headers.get('Content-Encoding') or '').strip().lower()
     except AttributeError:  # a plain dict without .get on the header object
         encoding = ''
+    if mode == 'off':
+        # Công tắc lùi chỉ tắt việc GIẢI NÉN, không được phép nói sai host đã gửi gì: đo được
+        # 2026-09-23 là `nhandan.vn` trả `Content-Encoding: gzip` kể cả khi bị xin `identity`,
+        # nên báo `identity` ở đây là payload nói dối người đọc (mà còn hỏi gzip qua
+        # `Accept-Encoding` ở `http_request_meta`). Vẫn giữ `decoded: False` — đúng sự thật.
+        if 'gzip' in encoding or raw[:2] == b'\x1f\x8b':
+            meta.update(contentEncoding='gzip')
+        elif encoding and encoding not in ('identity', 'none'):
+            meta.update(contentEncoding=encoding)
+        return raw.decode(charset, errors='replace'), meta
     gzip_like = 'gzip' in encoding or raw[:2] == b'\x1f\x8b'
     if gzip_like:
         try:
@@ -322,6 +330,11 @@ def ladder_plan(*, status: int | None = None, content_type: str = '', verdict: s
     if mode == 'off':
         return {'use_reader': False, 'reason': 'none'}
     if mode == 'thin':
+        # `2add905` ném lỗi TRƯỚC khi đầu đọc có cơ hội (đo được 2026-09-23: thuvienphapluat.vn
+        # 403 ⇒ `WEB_FETCH_FAILED`, đầu đọc không được gọi). Không giữ đường đó thì công tắc hồi
+        # quy vẫn thêm một lời gọi ra ngoài mà bản cũ không có — tức không còn là bản cũ.
+        if direct_error:
+            return {'use_reader': False, 'reason': 'none'}
         use_reader = text_chars is not None and text_chars < 200
         return {'use_reader': use_reader, 'reason': 'thin' if use_reader else 'none'}
     if pdf_rebuilt:
