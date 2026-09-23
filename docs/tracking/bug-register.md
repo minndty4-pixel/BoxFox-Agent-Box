@@ -1540,3 +1540,49 @@ không được hỏi, sổ ghi rõ như vậy.
 (2) Nhãn `v1 (approved)` do box gán theo vị trí (BUG-76) vẫn còn trong API thô của box vì không rebuild box. (3) Con `plan-review`
 không có `terminal_exec`. (4) Nợ cũ BUG-66/BUG-68/BUG-69 và bốn khoá `subagent*` trong `en.ts` vẫn nguyên.
 
+### 6.34 Vòng 25 hậu kiểm — hai vòng soát mã độc lập + một vòng soát dọn + một vòng kiểm thử: **tám lỗi tìm ra, cả tám đã sửa** (2026-09-23)
+
+**Ai soát cái gì.** Một vòng soát **nửa harness** (`runtime.py`, `api/server.py`, `plan_quality.py`, `roles.py`, `failures.py`,
+`limits.py`, `session_store.py`; verdict **4/10 — Medium, *Ship with mitigations***), một vòng soát **nửa giao diện** (`PlanPanel.tsx`,
+`PlanReviewCard.tsx`, `usePlanFiles.ts`, `planState.ts`, i18n; verdict **4/10 — Low, *Ship with mitigations***), một vòng **soát dọn**
+(`ef4517d`) và một vòng **kiểm thử độc lập** trên cây đã đóng băng. Hai vòng soát mã chạy **chỉ-đọc**: không tệp nào bị sửa, mỗi phát
+hiện đều có số đo tái hiện được (probe ngoài repo ở `/var/tmp/v25-probe`, SQLite đọc bằng stdlib).
+
+**Ba lỗi phía harness — và vì sao chúng quan trọng hơn vẻ ngoài của chúng.**
+
+| Mã | Lỗi | Đo được | Căn (đo ở `9e6b55d`) | Cách sửa |
+|---|---|---|---|---|
+| **BUG-80** | **(nặng, fail-open)** `ask_user` duyệt một bản chưa phản biện vẫn ghi hàng `approved` | Probe: `request_approval` bị từ chối `PLAN_APPROVAL_UNVERIFIED` (0 hàng), **cùng cặp khoá plan** đi qua `ask_user` + "Duyệt" ⇒ hàng `approved` (không có hàng `plan_verifications` nào) | `runtime.py:4002` cổng chỉ đứng ở nhánh `kind == 'approval'` (đường HỎI), còn `record_plan_decision` (`runtime.py:4137`) ghi cho **cả hai** đường — mà `tool_contracts.py:157` lại khuyên model truyền `planIdentity`/`planVersion` cho `ask_user` | Cổng đứng luôn ở **chỗ GHI**: `record_plan_decision` từ chối sinh hàng khi bản chưa có `ok` (chế độ `enforce`), phát `plan_decision_skipped` + dòng `plan.review.unverified_approval`; ở `warn` hàng **vẫn** vào (đúng nghĩa công tắc); quyết định của chủ nhà vẫn được trả vì sổ không được giết một quyết định. Ca mới: `test_an_ask_user_approval_of_an_unverified_plan_writes_no_row` + ca `warn` |
+| **BUG-81** | **(nặng, fail-closed nhưng SAI)** cổng nguồn từ chối kế hoạch viện dẫn host bắt đầu bằng `w` | Probe: `web.dev` → `eb.dev`, `w3.org` → `3.org`; bằng chứng `https://web.dev/…` + kế hoạch viện dẫn `web.dev` ⇒ `PLAN_QUALITY_REJECTED (sources-unbacked)`, **không ghi gì** | `plan_quality.py:340` `known_hosts` dùng `str.lstrip('www.')` — `lstrip` cắt theo **TẬP ký tự**, không theo **tiền tố**; cùng họ lỗi ở `known_paths`/`plan_sources_evidence` với `lstrip('./')` (`.github/workflows/ci.yml` mất dấu chấm đầu) | Hai hàm dùng chung `strip_www()` / `normalize_path()` (tiền tố), ba chỗ chuẩn hoá đi qua chúng; ca mới ở `test_plan_sources_gate.py` (cả mức hàm thuần lẫn đường sống) + `test_plan_quality.py` |
+| **BUG-82** | **(vừa)** verdict phản biện đọc theo "lần khớp cuối ở BẤT KỲ ĐÂU", không theo dòng cuối | Một bài **thuật lại** verdict vòng trước (`VERDICT: revise` nằm giữa bài, kết thúc bằng văn xuôi) quyết định kết quả — im lặng, không kiểm chứng được | `runtime.py` `plan_critique()` lặp `re.finditer(r'(?im)^\s*VERDICT:…', text)` rồi lấy lần khớp **cuối**, trong khi SOP (`roles.py:167`) đã hứa *"END with exactly one final line … No text after that line"* | Luật siết **đúng bằng lời hứa**: verdict phải là **dòng cuối** (`^VERDICT:\s*(ok|revise)$`), ngược lại vẫn `PLAN_VERIFY_VERDICT_MISSING`; dòng trống ở cuối bài hợp lệ vẫn qua. Hai ca mới ở `test_plan_verify.py` |
+
+**Bảy điểm phía giao diện — không điểm nào ghi sai dữ liệu, nhưng ba điểm nói dối bằng sự im lặng.**
+
+| Mã | Lỗi | Căn (đo ở `6dfbd6c`) | Cách sửa (`f7a8e9e`) |
+|---|---|---|---|
+| **BUG-83** | Bản có verdict `revise` vẫn hiện nút Duyệt **bấm được**, mà harness chắc chắn trả 409 — mời chủ nhà vào một cú bấm hỏng | `usePlanFiles.ts:457` `approvalLocked = verification.state === 'none'`; harness chỉ cho qua khi verdict **đúng bằng** `ok` | `/plans/status` mang thêm `gate` (`verifyMode`, `sourcesMode`, cờ `*Unknown`) — commit `9e6b55d`; tab Plan đọc công tắc và khoá Duyệt khi `revise` + `enforce`, **không** khoá ở `warn`/`off`; dòng lý do khoá dịch ra ở cả ba nhánh (chưa đọc xong sổ / `revise` / `none`) |
+| **BUG-84** | Câu giải thích THẬT của `plan_wake` bị bỏ, giao diện in câu chung chung "no new turn was opened" cho mọi kết cục | `planState.ts:380-399` chỉ giữ `resumed`/`turnId`/`recorded`/`forwarded`; harness đã gửi `wake {state, code, message}` + `approvalWarning` ở **mọi** đường | Mang nguyên `wake` + `approvalWarning` tới panel: `failed`/`missing`/`busy` in **nguyên văn** câu của harness kèm mã; chỉ `opened` mới nói là đã mở lượt |
+| **BUG-85** | Cú bấm *Run review session* hỏng **im lặng** | `usePlanFiles.ts:376-388` đặt `verifyError` nhưng `PlanPanel.tsx:1013` không vẽ nó — nút tự bật lại, mặt vàng y như chưa bấm | Vẽ `verifyError` dưới nút bằng đúng khuôn dải `role="status"` đã dùng hai lần trong panel |
+| **BUG-86** | Đổi bản kế hoạch ⇒ mặt/bản nháp của **bản cũ** sống thêm một nhịp; điều kiện gõ cho v1 gửi kèm quyết định cho v2 | `usePlanFiles.ts:219-225` chỉ xoá `reviewResult`/`reviewBlocked`/`blocked`; `PlanPanel.tsx:215-219` không xoá `approveNote`/`changesNote` | Đổi bản ⇒ xoá **ngay** `verification`/`ownership`/`evaluation`/`selectedReview`/`reviewStale`/`planState` + cả hai bản nháp và cờ mở popup; `verification = null` = *chưa đọc xong* (một mặt thứ ba, **khác** `unknown`, để không mượn câu "sổ không đọc được") |
+| **BUG-87** | Hai ô nhập mới chỉ có `placeholder`; popup "duyệt kèm điều kiện" không đóng được bằng Escape/bấm ra ngoài | `PlanPanel.tsx:589`, `:653` (tiêu đề là phần tử trần, không `id`/`aria-labelledby`); menu identity/version đã có khuôn `mousedown` mà popup không có | `aria-labelledby` trỏ đúng tiêu đề đang thấy; Escape + bấm ra ngoài đóng popup, **giữ** chữ đã gõ |
+
+**Ba ghi chú hậu kiểm ĐỂ NGUYÊN (có lý do, không phải bỏ sót).** (a) `record_plan_verification` là chỗ ghi sổ **duy nhất** không nằm
+trong `try/except`: đo được là nó đi ra thành `is_error` + `errorCode` của công cụ nên lượt **không** chết và model đọc được lỗi — đó là
+chủ ý của tác giả ("mọi thứ sau hàng sổ đều là best-effort"), ghi lại để lần sau không ai "sửa" thành im lặng. (b) `plan_wake.turnId` đọc
+`turn_count` **sau** `runtime.submit(...)`: đúng số vì lượt được cấp ngay trong `start()`, và trường này là **thông tin**, không phải hợp
+đồng. (c) `PlanReviewCard.tsx` + `.test.tsx` + `agentApi.ts` giữ **LF** trong thư mục nhiều CRLF — cố ý không đổi (đổi là diff toàn tệp,
+không mang lại gì); mọi tệp khác giữ đúng kiểu xuống dòng của chính nó.
+
+**Số đo sau hậu kiểm.** Toàn bộ backend (từ gốc repo, `--deselect test_terminal_exec_echo`): **1218 passed, 1 deselected in 212.42 s**
+(trước hậu kiểm: 1210 — tám ca mới: 1 ở `test_plan_routes`, 2 ở `test_plan_approval_ledger`, 1 ở `test_plan_quality`, 2 ở
+`test_plan_sources_gate`, 2 ở `test_plan_verify`). Frontend (`build-ui`): **126 tệp / 1113 ca đạt** (trước: 1086), `tsc -b --noEmit`
+**exit 0**. Ba ca then chốt của hậu kiểm được chứng minh **đỏ trước / xanh sau** bằng cách hoàn nguyên từng bản vá
+(`/var/tmp/v25c/redcheck.py`): thiếu bản vá ⇒ mỗi ca **1 failed**; có bản vá ⇒ xanh.
+
+**Còn lại sau hậu kiểm (ghi để không trôi).** (1) Chủ nhà **không thể** duyệt một bản đang `revise` khi công tắc ở `enforce` — đó đúng là
+luật đã chốt (D-34) và là lý do có công tắc, nhưng nghĩa là: model chạm trần 2 vòng sửa mà vẫn `revise` thì đường duy nhất để đi tiếp là
+hạ công tắc hoặc yêu cầu sửa tiếp; **cân nhắc** một đường "chủ nhà chấp nhận rủi ro" ở vòng sau, cần chủ nhà chốt. (2) Câu hỏi mở về
+`VERDICT:` nằm ở **cuối** bài phản biện: câu trả lời bị cắt cụt thì mất luôn phán quyết ⇒ nay bị từ chối thẳng (đúng, không đoán), nhưng
+đặt verdict ở **đầu** bài sẽ chống cụt tốt hơn — cần đổi SOP + kỹ năng, để vòng sau. (3) Nợ cũ giữ nguyên: BUG-66/BUG-68/BUG-69, nhãn
+version của box (BUG-76 vế hai), bốn khoá `subagent*` trong `en.ts`.
+

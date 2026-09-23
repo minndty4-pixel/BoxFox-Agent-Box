@@ -2078,3 +2078,34 @@ Ghim: `PlanReviewCard.test.tsx` giữ điều kiện của D-38 (không nhập g
 - **Không nới cổng cho xanh**: ba bản kế hoạch của lượt đo đều `revise` và **không** có hàng `ok` nào được ghi; mặt "duyệt bản đã `ok`"
   đo bằng hàng gieo có nhãn, ghi rõ trong sổ — chủ nhà đọc được đâu là **số đo thật**, đâu là **đồ giả để đo đường đi của cổng**.
 - **BUG-76 chỉ sửa một nửa (cố ý)**: nhãn version theo vị trí còn trong API thô của box vì vòng này không rebuild box.
+
+### Phần 7 — Hậu kiểm sau thi công: hai vòng soát mã, một vòng soát dọn, một vòng kiểm thử độc lập
+
+Hai vòng soát mã chạy **chỉ-đọc** trên cây đã đóng băng, mỗi phát hiện phải kèm số đo tái hiện được; ba bản vá tiếp theo đều là
+commit riêng, đẩy ngay lên nhánh PR (`ef4517d` soát dọn, `9e6b55d` phơi công tắc cổng, `9f2fb95` ba lỗi harness, `f7a8e9e` bảy điểm
+giao diện; danh sách lỗi đầy đủ ở `bug-register.md` §6.34 — BUG-80…BUG-87).
+
+- **Vòng soát nửa harness** (`runtime.py`, `api/server.py`, `plan_quality.py`, `roles.py`, `failures.py`, `limits.py`,
+  `session_store.py`) — verdict **4/10, Medium, *Ship with mitigations***. Đã kiểm và thấy đứng vững: cổng fail-closed ở **cả hai** đường
+  chính (409 trả **trước** `record_plan_review`, không ghi hàng, không chuyển tiếp box); thứ tự **ghi sổ → chuyển tiếp → đánh thức**;
+  khử trùng `plan_wake` theo `sha1(identity@version:decision:note)` với mã riêng cho `busy`/`duplicate`/`missing`/`failed`; cổng tất định
+  P1–P8 + `HARD_GATES` **vẫn chạy trước** khi ghi; bản vá BUG-79 giữ đúng phán quyết `UPSTREAM_HTTP_502` và đường thử lại. Ba lỗi tìm ra
+  (BUG-80 fail-open qua `ask_user`, BUG-81 `lstrip('www.')` ở cổng nguồn, BUG-82 verdict đọc theo vị trí) đều đã sửa kèm ca mới.
+- **Vòng soát nửa giao diện** (`PlanPanel.tsx`, `PlanReviewCard.tsx`, `usePlanFiles.ts`, `planState.ts`, i18n) — verdict **4/10, Low,
+  *Ship with mitigations***. Đã kiểm và thấy đứng vững: `unknown` **không bao giờ** bị hạ thành `none`; nhánh 409 in **nguyên văn**
+  `reason`/`remedy`; không đường nào ghi `approved` cho bản v2 từ quyết định của v1; `en.ts`/`vi.ts` **cùng tập khoá** (856 khoá lá);
+  ghi chú của chủ nhà sống qua cả hai quyết định. Năm lỗi tìm ra (BUG-83…BUG-87) đã sửa.
+- **Vòng soát dọn** (`ef4517d`, 7 tệp, +85/−82, **không đổi hành vi**): gộp khuôn env ba mức thành `mode_from_env()`, `plan_critique()`
+  đọc sổ con **một lần**, gộp câu "mất chủ" của hai route đánh thức thành `plan_wake_missing()`, bảng chip phản biện sống **một chỗ**
+  (`PlanReviewCard.VERIFY_CHIP`), `usePlanFiles.clearReviewFacts()`, bỏ **6 khoá i18n chết**. Cố ý để nguyên: hai khối notice "mode
+  unknown" (test ghim **mã đơn lẻ**, gộp là đổi số notice), hai bản regex host giữa `plan_quality.py` (thuần) và runtime, biểu thức nhãn
+  `v{n}` ở hai component, và kiểu xuống dòng của các tệp mới.
+- **Số đo sau hậu kiểm**: toàn bộ backend **1218 passed, 1 deselected in 212.42 s** (trước: 1210; tám ca mới); frontend **126 tệp /
+  1113 ca đạt** (trước: 1086) + `tsc -b --noEmit` exit 0; `test_plan_routes` 22, `test_plan_approval_ledger` 13, `test_plan_quality` 15,
+  `test_plan_sources_gate` 12, `test_plan_verify` 23.
+- **Ba ca then chốt chứng minh ĐỎ TRƯỚC / XANH SAU** (hoàn nguyên từng bản vá rồi chạy lại, `/var/tmp/v25c/redcheck.py`): BUG-80,
+  BUG-81, BUG-82 mỗi ca **1 failed** khi thiếu bản vá và xanh khi có. Đây là bằng chứng ca kiểm **thật sự** ghim hành vi, không chỉ
+  chạy qua.
+- **Hai lỗi `probe` tìm ra mà vòng thi công không thấy** — đáng nhớ cho lần sau: (i) một cổng đặt ở chỗ **hỏi** mà không đặt ở chỗ
+  **ghi** thì fail-open trên đường thứ hai (`ask_user`); (ii) `str.lstrip()` cắt theo **tập ký tự** nên hai chỗ "cùng một luật" vẫn nói
+  hai chuyện khác nhau (`web.dev` vs `docs.example.com`) — muốn chắc thì gom một hàm dùng chung, đừng chép luật.
