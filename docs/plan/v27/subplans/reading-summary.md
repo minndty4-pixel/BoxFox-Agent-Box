@@ -52,7 +52,10 @@
 - Nhật ký DEV không chứa truy vấn/URL; mọi payload giữ `untrusted: true` + `note`.
 - Box vẫn **không** có Internet mặc định; không cài gói, không rebuild, không restart tiến trình chủ nhà.
 
-## [MỞ — chờ phỏng vấn]
+## [ĐÃ CHỐT — vòng 9–13, phỏng vấn đã đóng]
+
+> Khuyến nghị dưới đây **đã thành chốt** (bảng MỞ-A…MỞ-H duyệt nguyên bảng ở **#6020**; MỞ-C đổi hướng **tự dựng, không mua
+> khoá**; trần thời gian theo **#6021/D-40**). Giữ nguyên hàng cũ làm biên bản.
 
 | # | Câu hỏi | Khuyến nghị |
 | --- | --- | --- |

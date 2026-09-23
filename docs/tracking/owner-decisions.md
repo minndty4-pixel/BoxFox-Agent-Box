@@ -207,6 +207,17 @@ kiểm *hình dạng* lệnh nghiệm thu, việc chạy thật vẫn thuộc va
 vị trí (`deploy/docker/plan_files.py:841-844`) vẫn còn trong API của box — tab Plan đã ngừng in `draft/approved` của box và đọc sổ
 harness, nhưng API thô thì chưa.
 
+### 4.4 Vòng 27 — cải tổ research agent (2026-09-23) — D-40…D-42
+
+Ba quyết định này thuộc kế hoạch vòng 27 (`docs/plan/v27/research-rework.md`, bản 3), chốt qua phỏng vấn #6021–#6023.
+Chúng sẽ được cài khi kế hoạch được duyệt (D-42 ở đợt 2; D-40/D-41 ở đợt 5).
+
+| ID | Quyết định | Có hỏi chủ nhà không | Lý do / số đo | Tệp phải sửa | Trạng thái |
+|---|---|---|---|---|---|
+| D-40 | **Trần thời gian research**: **trần mềm theo việc** (main tự ước lượng, khai trong thẻ mốc) + **trần cứng an toàn 30 phút (mức 2) / 120 phút (mức 3)**; chạm trần cứng ⇒ **báo + hỏi chủ nhà**, không tự chạy tiếp; **lượt mức 3 được cấp trần lượt 3 600 s**; **trần chờ của con giữ nguyên** | Có (#6021, phương án A) | Trần lượt hiện tại **1 200 s**, trần con `min(420 s, cha)` (`limits.py:30-31`); việc "có thể tới cả ngày" của chủ nhà không lọt trần cũ ⇒ lượt chết giữa lúc nghiên cứu (rủi ro đã ghi ở §10 kế hoạch). Chủ nhà trước đó nói *"còn tùy task"* (#6018) nên trần chính là **mềm**, trần cứng chỉ là lưới an toàn | `limits.py` (bảng trần theo mức), `runtime.py` (`extend_turn_budget`, thẻ mốc), SOP `research-team` | Đã chốt (cài ở đợt 5 vòng 27) |
+| D-41 | **Nhánh con chạy theo sóng 3–5**: hết sóng mới mở sóng tiếp; mức 2 = **1 sóng** · mức 3 = **tối đa 3 sóng** (≈9–15 nhánh); **không mở toàn bộ cùng lúc** | Có (#6017, #6022) | Chủ nhà nguyên văn: *"…3 đến 5 sub agent, xong việc thì spam tiếp dạng parallel, chứ không spam cùng lúc toàn bộ vì gây lag box"*; trần kỹ thuật 12 con/lượt (`limits.py:111`) vẫn là trần cứng phía dưới | `limits.py`, luồng mức (đợt 5), ca `R10` | Đã chốt (cài ở đợt 5 vòng 27) |
+| D-42 | **Không mua khoá tìm kiếm**: **tự dựng công cụ tìm kiếm/tải** trong harness gộp nhiều chân keyless; chỗ cắm khoá giữ trong mã nhưng **mặc định tắt** | Có (#6020 chỉ thị; #6023 chủ nhà uỷ quyền *"use your best judgment"*) | Chủ nhà nguyên văn: *"cần tự build tool search, fetch, ... thay vì mua key gây tốn kém"*; đo vòng 27: chỉ **một** nhà cung cấp general keyless (Firecrawl) — hỏng một cái là mất tìm kiếm | `web.py` (nhiều chân + thứ tự dự phòng), `scripts/eval/research_checks.py` | Đã chốt (cài ở đợt 2 vòng 27) |
+
 ## 5. Ràng buộc kỹ thuật phải giữ khi thi công
 
 1. **Không thêm giá trị `status` mới** cho phiên: luồng đang lọc `running` / `awaiting_decision`
@@ -231,3 +242,4 @@ harness, nhưng API thô thì chưa.
 | 2026-09-23 | Vòng 24: chủ nhà bác khuôn năm phần (bốn điểm nguyên văn) rồi tinh chỉnh "form vào 1 chút, ảnh bằng chứng ở dưới là quan trọng nhất"; chốt D-26…D-32 (ba lựa chọn phỏng vấn) — dạng câu trả lời dời vào kỹ năng `final-report`, prompt còn **một dòng bằng chứng cứng** cho phiên chính + **một con trỏ** ở bước tổng kết của lượt có việc; thi công xong ở `37926e0` | Nam Nam |
 | 2026-09-23 | Vòng 25: chủ nhà giao ba việc về khả năng lên kế hoạch; đo được **bảy lỗi** rồi chốt năm phương án (#5927…#5931) — vai `plan-review` độc lập, cổng chặn cứng có công tắc, cú bấm ở tab Plan mở lượt thật, duyệt kèm điều kiện (chủ nhà tự thêm). Ghi D-33…D-38, trong đó D-35/D-37 là cách hiểu đã thi công của hai điểm chủ nhà không được hỏi | Nam Nam |
 | 2026-09-23 | Vòng 25 hậu kiểm: hai vòng soát mã độc lập (harness 4/10 Medium, giao diện 4/10 Low) tìm ra **tám lỗi** và cả tám đã sửa ở `9f2fb95` + `f7a8e9e`, vòng kiểm thử độc lập tìm thêm **một lỗ** (BUG-88, cổng nguồn đọc cả tham số) và nó đã sửa ở `a93ebd6`; vòng soát dọn ở `ef4517d`; ghi thêm **D-39** (khoá nút Duyệt đúng bằng harness) | Nam Nam (chỉ D-33…D-38) |
+| 2026-09-23 | Vòng 27 (kế hoạch, chưa thi công): **13 vòng phỏng vấn** (#5955–#6025) chốt hết thị trường, học thuật/kỹ thuật và phương pháp cho kế hoạch "research agent đọc nguồn thật"; ghi thêm **D-40** (trần research mềm theo việc + trần cứng 30/120 phút, lượt mức 3 = 3 600 s), **D-41** (sóng nhánh 3–5: mức 2 một sóng, mức 3 ≤ 3 sóng), **D-42** (tự dựng công cụ tìm kiếm/tải, không mua khoá) | Nam Nam (D-42 theo uỷ quyền #6023) |

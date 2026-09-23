@@ -114,15 +114,27 @@ viết ADR + kế hoạch. Số đo kèm theo nằm ở `/var/tmp/v27/feasibilit
   mua key gây tốn kém"* ⇒ **không mua khoá**; hướng đi là **tự dựng công cụ tìm kiếm/tải trong harness**; chỗ cắm khoá
   vẫn giữ trong mã nhưng **mặc định tắt**; hình dạng công cụ chốt ở vòng 13.
 
-## 3. CÒN ĐỂ MỞ — sẽ phỏng vấn tiếp
-Chủ nhà nói ở #5998: *"chúng ta mới xong cho phần luật, y tế,... còn thị trường và paper/kỹ thuật, phương pháp thì chưa"*.
-**Thị trường: ĐÃ CHỐT** (§2.11). **Học thuật & kỹ thuật: ĐÃ CHỐT** (§2.12, §2.13 phần đọc). **Luật gap: ĐÃ CHỐT** (§2.14 #6016).
-**Hồ sơ mẫu: ĐÃ CHỐT** (§2.14 #6019). **Bảng MỞ: ĐÃ DUYỆT** (§2.14 #6020).
-1. **Trần thời gian (vòng 13, hỏi lại bằng ví dụ):** ba loại trần — lượt · con · ngân sách việc — và cách nới khi chạm.
-2. **Số sóng nhánh mỗi mức** (vòng 13, xác nhận sau #6017).
-3. **Hình dạng công cụ tìm kiếm/tải tự dựng** (vòng 13, sau chỉ thị #6020).
-4. **Nhịp kiểm chứng:** pha 4 chạy cho mức nào; khi nào bật **phản biện ý kiến chủ nhà** (#6019).
-5. **Cách chạy bốn pha:** cổng giữa các pha (khi nào chờ ai), nếu còn cần chốt sau vòng 13.
+### 2.15 Phương pháp — lượt 2 của vòng 13 (#6021–#6025) — CHỐT XONG
+- **#6021 — Trần thời gian: chọn A.** **Trần mềm theo việc** (main tự ước lượng, khai trong thẻ mốc) **+ trần cứng an toàn**
+  30 phút (mức 2) / 120 phút (mức 3); chạm trần cứng ⇒ **báo chủ nhà rồi hỏi**. **Lượt mức 3 có trần lượt mới 3 600 s**
+  (D-40); **trần chờ của con giữ nguyên**.
+- **#6022 — Số sóng nhánh:** mức 2 = **1 sóng** (3–5 nhánh) · mức 3 = **tối đa 3 sóng** (khoảng 9–15 nhánh).
+- **#6023 — Công cụ tìm kiếm tự dựng: chủ nhà SKIP** (*"no preference, use your best judgment"*) ⇒ **tôi tự quyết**: một công cụ
+  gộp nhiều chân keyless (Firecrawl keyless + OpenAlex/Europe PMC/arXiv/Crossref + trang tìm kiếm chính thức của site);
+  không mua khoá; SearXNG/crawler giá **hoãn**.
+- **#6024 — Nhịp kiểm chứng: chủ nhà SKIP** ⇒ **tôi tự quyết**: mức 2 = cổng máy tự kiểm · mức 3 = **luôn có con phản biện
+  độc lập** mở lại nguồn trước khi giao.
+- **#6025 — Phản biện ý kiến chủ nhà: CHỐT.** **Tự động** khi brief có ý kiến/giả định/khẳng định; mục riêng ba nhãn:
+  **ủng hộ / phản bác / chưa chắc**.
+
+## 3. KẾT THÚC PHỎNG VẤN (13 vòng, #5955–#6025)
+Ba mảng chủ nhà nêu ở #5998 (thị trường · học thuật/kỹ thuật · phương pháp) **đã chốt hết**. Ba mục nhỏ **tôi tự quyết
+theo uỷ quyền "use your best judgment"**, ghi rõ để chủ nhà chỉnh nếu cần:
+1. **Hình dạng công cụ tìm kiếm tự dựng** = gộp chân keyless trong harness (không SearXNG, không crawler giá vòng này).
+2. **Nhịp kiểm chứng** = mức 2 cổng máy · mức 3 con phản biện độc lập.
+3. **Ảnh chụp trang giá** = bắt buộc với **TM-1** khi giá là số sống và ở **mức 3**; **luật cross-nhóm** theo **#5995**
+   (main tự mở nhánh và nói rõ trong báo cáo).
+⇒ Bước kế: **bảng khai báo + kế hoạch bản 3** rồi re-submit cho chủ nhà duyệt trước khi thi công.
 
 ## 4. Số đo đã có (không phải giả định)
 Chi tiết ở `/var/tmp/v27/feasibility-probes.md`; tóm tắt:

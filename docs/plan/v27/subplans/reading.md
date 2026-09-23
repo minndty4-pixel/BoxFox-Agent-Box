@@ -317,6 +317,12 @@ Nguyên tắc test: **không ca nào cần mạng** — mọi thứ đi qua `mon
 
 ### [MỞ — chờ phỏng vấn]
 
+> **ĐÃ CHỐT (vòng 9–13) — không còn chờ phỏng vấn.** Sáu khuyến nghị dưới đây **đã thành chốt** qua bảng MỞ-A…MỞ-H của kế hoạch
+> `v1-research-rework.md` §1 hàng 25 (**#6020 duyệt nguyên bảng**) và các vòng sau: MỞ-A giữ trần **20 000 ký tự/đoạn** ·
+> MỞ-B **không** bật mạng box · MỞ-C **đổi hướng: tự dựng công cụ, không mua khoá** (#6020, #6023) · MỞ-D bão hoà **3 vòng**
+> (#6008) · MỞ-E mở `blocked-page-recovery` → `rss-feeds`, đóng `duckduckgo-search`/`searxng-search` · MỞ-F bộ đệm **không** ghi
+> đĩa. Trần thời gian của lượt đọc theo **#6021/D-40** (xem Phụ lục 2). Phần dưới giữ nguyên làm biên bản lúc chưa chốt.
+
 Sáu điều dưới đây **chặn hoặc đổi hình dạng** thi công; không tự chốt thay chủ nhà. MỞ-A…MỞ-D là câu hỏi kỹ thuật, phải chốt trước hoặc trong lúc thi công; MỞ-E gắn với mục 2 của `v27-owner-answers.md` §3 (kỹ thuật/học thuật), MỞ-B gắn với mục "phương pháp nghiên cứu" cùng mục (vì nó quyết định có đọc được trang JS hay không).
 
 **MỞ-A — Ngân sách đọc theo từng mức và trần mỗi đoạn.** Câu hỏi: mức 1/2/3 được đọc bao nhiêu?
@@ -454,3 +460,16 @@ Nếu main muốn có **chỉ báo "đang đọc nguồn"**, đó là mục nh�
 3. **Bão hoà săn đuổi trích dẫn = 3 vòng** liên tiếp không thêm bài mới (#6008), không phải 2 vòng.
 4. Sổ nguồn (Phạm vi B) thêm trường **loại bản đã đọc**: `html` · `jats` · `pdf-table` · `reader-text` · `page-image`;
    khẳng định dựa vào bảng phải ghi rõ nguồn bảng.
+
+---
+
+## Phụ lục 2 — điều chỉnh đã chốt ở vòng 12–13 (#6020, #6023, #6021, 2026-09-23)
+
+1. **Công cụ tìm kiếm/tải do TA tự dựng, KHÔNG mua khoá** (#6020 + #6023 uỷ quyền): một công cụ trong harness gộp nhiều chân
+   keyless — Firecrawl keyless (tìm kiếm) · OpenAlex/Europe PMC/arXiv/Crossref (học thuật) · trang tìm kiếm chính thức của site ·
+   đầu đọc `r.jina.ai` (đường 4 của thang đọc). Chỗ cắm khoá giữ trong mã nhưng **mặc định tắt**. SearXNG và crawler giá **hoãn**.
+2. **Mỗi lần tìm phải ghi vết chân nào trả kết quả** (`via`) vào sổ nguồn, để khi một chân 429/400 thì biết ngay đang mất gì
+   (đo vòng 27: Semantic Scholar 429 lặp lại, Crossref 429→200, `sources=['news']` ⇒ 400).
+3. **Trần thời gian (#6021, D-40)** không đổi đường đọc, nhưng lượt mức 3 có trần lượt **3 600 s** ⇒ đọc trọn nhiều nguồn hơn
+   trong một lượt; chạm trần cứng 30/120 phút thì **dừng, báo + hỏi** — không cắt bộ đệm dở dang.
+4. **Đọc đúng phần cần tìm** (đã có ở đợt 2) là cách giữ thời gian trong trần: `read_source(find=…)` trước, rồi đọc theo đoạn.

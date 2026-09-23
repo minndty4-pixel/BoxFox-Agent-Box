@@ -440,6 +440,11 @@ Lưu ý: `pytest.ini` ở gốc repo đặt `pythonpath = backend/src`, nên ch�
 Chủ nhà nguyên văn (#5998): *"chúng ta mới xong cho phần luật, y tế,… còn thị trường và paper/kỹ thuật, phương pháp thì chưa. tạo plan trước, ghi vào plan trước rồi tiếp tục interview"*. Cơ chế ở A3/A4/A5 **đã dựng xong và test được** với các giá trị **nháp** dưới đây; chốt xong chỉ là đổi **một bảng khai báo**, không đổi kiến trúc.
 
 ### MỞ-1 — Nhóm 3 Thị trường (giá, đối thủ, người dùng)
+
+> **ĐÃ CHỐT (vòng 9–13) — không còn chờ phỏng vấn.** Nhóm 3 thị trường chốt ở **#6005–#6008** + bảng `C2′`; nhóm 2 học thuật/kỹ
+> thuật chốt ở **#6010–#6014** (thang đọc năm tầng, `pdfplumber`, hai tầng số, tài liệu hãng cần **phiên bản + ngày truy cập**);
+> nhóm phương pháp chốt ở **#6016–#6025** (luật gap hai tầng số, sóng 3–5, hồ sơ 1/3/6 + hai loại phản biện, trần mềm/cứng
+> 30/120, nhịp kiểm chứng theo mức, tự dựng công cụ tìm kiếm). Ba mục dưới giữ nguyên làm biên bản lúc chưa chốt.
 1. **Nguồn gốc của giá**: (a) trang giá/niêm yết của hãng + sàn TMĐT + báo cáo thị trường trả tiền; (b) chỉ trang chính thức + báo chí chính thống; (c) thêm diễn đàn/khảo sát người dùng là nguồn tầng 3. *Trade-off:* (a) phủ rộng nhưng dễ lẫn giá cũ/khuyến mãi; (c) phủ nhu cầu người dùng nhưng tầng 3 nên không đỡ được khẳng định then chốt.
 2. **Trường bắt buộc của một dòng giá**: (a) `capturedAt` + `region` + `currency`; (b) thêm `product/version` + `channel` (kênh bán); (c) tối thiểu `capturedAt` + URL sản phẩm. *Trade-off:* (b) kiểm được chặt nhưng làm mỗi dòng sổ nặng; (c) nhẹ nhưng khó so sánh chéo.
 3. **Số ước lượng/khảo sát**: (a) cho phép nhưng bắt buộc ghi "ước lượng" + phương pháp + cỡ mẫu; (b) cấm dùng cho khẳng định then chốt, chỉ dùng làm bối cảnh; (c) hạ xuống nguồn dẫn đường (không tính là nguồn độc lập). *Trade-off:* (a) gần nghề nghiên cứu thật; (b) an toàn nhưng có thể mất dữ liệu thị trường quý.
@@ -539,3 +544,17 @@ Chủ nhà nguyên văn (#5998): *"chúng ta mới xong cho phần luật, y t�
    dữ liệu đủ; hết trần thử ⇒ kết luận, đi tiếp. Cổng chất lượng cần mã lỗi riêng cho **"tín hiệu, chưa kiểm"**.
 2. **Hồ sơ CHỐT** (#6019): 1/3/6 tệp theo mức; `review.md` ghi **hai loại phản biện** — kiểm lại nguồn và **soi ý kiến chủ nhà**.
 3. **Công cụ tìm kiếm/tải: tự dựng, KHÔNG mua khoá** (#6020); chỗ cắm khoá giữ trong mã nhưng mặc định tắt.
+
+---
+
+## Phụ lục 3 — điều chỉnh đã chốt ở vòng 13 (#6021, #6024, #6025, 2026-09-23)
+
+1. **Nhịp kiểm chứng theo mức** (#6024, tự quyết): mức 2 = **cổng máy tự kiểm** · mức 3 = **luôn có con phản biện độc lập**; sổ
+   `research_verifications` nhận **cả hai** nguồn biên bản. Mức 1 không mở con phản biện nhưng vẫn qua **cổng máy**.
+2. **`review.md` thêm mục soi ý kiến chủ nhà** (#6025) — ba nhãn `ủng hộ` / `phản bác` / `chưa chắc`, mỗi nhãn kèm nguồn; chỉ
+   sinh khi brief có ý kiến/giả định/khẳng định.
+3. **Trần cứng 30 phút (mức 2) / 120 phút (mức 3)** (#6021, D-40) đọc từ sổ việc: quá trần ⇒ ghi trạng thái vào sổ rồi
+   **báo + hỏi**, không tự chạy tiếp.
+4. **Hai mục nhỏ thị trường đã chốt** (hàng 33 của kế hoạch): ảnh chụp trang giá **bắt buộc với TM-1 ở mức 3**; luật cross-nhóm
+   theo **#5995** (main tự mở nhánh + nói rõ trong báo cáo).
+5. **Luật gap hai tầng số giữ nguyên** như Phụ lục 2 (#6016) — vòng 13 không đổi luật này.

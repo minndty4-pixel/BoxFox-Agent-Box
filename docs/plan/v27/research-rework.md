@@ -9,14 +9,15 @@
 > nghiên cứu, bốn pha, nhịp báo, can thiệp giữa lượt và **đầu ra 100 % là tệp** (đợt 4–6), cuối cùng là đo được bằng
 > bộ ca + oracle máy (đợt 8). Ba mảng **thị trường**, **học thuật/kỹ thuật**, **phương pháp** được phỏng vấn tiếp sau khi
 > kế hoạch này được duyệt; cơ chế dựng sẵn với giá trị nháp nên chốt xong chỉ đổi **bảng khai báo**.
-> **Cập nhật bản 2 (vòng 9–12, #5999–#6020):** thị trường và học thuật/kỹ thuật **đã chốt** — thang đọc FULL năm tầng
-> (HTML/JATS → PDF + `pdfplumber` → đầu đọc chỉ chữ → ảnh trang), luật gap **hai tầng số** (sàn 20/10/≥2 + đích 30–50/15/3,
-> thiếu mẫu thì nói rõ chứ không deadlock), bão hoà săn đuổi **3 vòng**, trần đối thủ **10–15**, tài liệu hãng cần
-> **phiên bản + ngày truy cập**; phương pháp lượt 1: **nhánh con theo sóng 3–5**, hồ sơ **1/3/6 tệp** với **hai loại phản
-> biện**, **duyệt nguyên bảng MỞ-A…MỞ-H** và chỉ thị **tự dựng công cụ tìm kiếm/tải, KHÔNG mua khoá**. Còn lại: trần thời
-> gian (hỏi lại bằng ví dụ), số sóng mỗi mức, hình dạng công cụ tự dựng, nhịp kiểm chứng — vòng 13.
+> **Cập nhật bản 3 (vòng 9–13, #5999–#6025):** thị trường, học thuật/kỹ thuật và **phương pháp đã chốt hết** — thang đọc FULL
+> năm tầng (HTML/JATS → PDF + `pdfplumber` → đầu đọc chỉ chữ → ảnh trang), luật gap **hai tầng số** (sàn 20/10/≥2 + đích
+> 30–50/15/3, thiếu mẫu thì nói rõ chứ không deadlock), bão hoà săn đuổi **3 vòng**, trần đối thủ **10–15**, tài liệu hãng
+> cần **phiên bản + ngày truy cập**; **trần thời gian mềm theo việc + trần cứng an toàn 30/120 phút** (chạm thì báo + hỏi;
+> lượt mức 3 được **3 600 s**), **nhánh con theo sóng 3–5** (mức 2 = 1 sóng · mức 3 ≤ 3 sóng), hồ sơ **1/3/6 tệp** với **hai
+> loại phản biện**, nhịp kiểm chứng (mức 2 cổng máy · mức 3 con phản biện độc lập + **mục soi ý kiến chủ nhà**), **bảng
+> MỞ-A…MỞ-H duyệt nguyên bảng** và **tự dựng công cụ tìm kiếm/tải, KHÔNG mua khoá**. Phỏng vấn đã đóng.
 
-**Trạng thái:** bản 2 — cập nhật sau vòng 9–11 · chờ chủ nhà duyệt · **Nhánh:** `vorflux/v22-peer-mesh` · **HEAD khi viết:** `2add905` (cây sạch)
+**Trạng thái:** bản 3 — phỏng vấn đã đóng (13 vòng) · chờ chủ nhà duyệt · **Nhánh:** `vorflux/v22-peer-mesh` · **HEAD khi viết:** `2add905` (cây sạch)
 **Chủ nhà chốt:** *"tạo plan trước, ghi vào plan trước rồi tiếp tục interview"* (#5998)
 
 **Kế hoạch con (chi tiết tới tệp/hàm/test):**
@@ -61,7 +62,13 @@
 | 24 | **Hồ sơ mẫu — CHỐT**: mức 1 = 1 tệp · mức 2 = báo cáo + sổ · mức 3 = báo cáo + sổ + `tables/` + `review.md`; **`review.md` ghi rõ hai loại phản biện**: (a) kiểm lại nguồn (gửi con check tiếp), (b) **soi ý kiến/giả định của chủ nhà** | #6019 |
 | 25 | **Bảng MỞ-A…MỞ-H: DUYỆT NGUYÊN BẢNG** (box kín, bộ đệm không ghi đĩa, trần đọc 20 000 ký tự/đoạn, công cụ `paper_citations`, mở skill `blocked-page-recovery` → `rss-feeds`, trần USD để mở sau) | #6020 |
 | 26 | **KHÔNG mua khoá tìm kiếm** — chỉ thị mới: **tự dựng công cụ tìm kiếm/tải trong harness**; chỗ cắm khoá vẫn giữ trong mã nhưng **mặc định tắt**; hình dạng công cụ chốt ở vòng 13 | #6020 |
-| 27 | **Trần thời gian phải phụ thuộc việc** (chủ nhà chưa nhận câu hỏi cũ): ba loại trần — **trần lượt · trần con · ngân sách việc** — sẽ hỏi lại ở vòng 13 bằng ví dụ cụ thể | #6018 |
+| 27 | **Trần thời gian phải phụ thuộc việc** (chủ nhà chưa nhận câu hỏi cũ): ba loại trần — **trần lượt · trần con · ngân sách việc** | #6018 |
+| 28 | **Trần thời gian — CHỐT (phương án A):** **trần mềm theo việc** (main tự ước lượng, khai trong thẻ mốc) **+ trần cứng an toàn 30 phút (mức 2) / 120 phút (mức 3)**; chạm trần cứng ⇒ **báo chủ nhà rồi hỏi**, không tự chạy tiếp; **lượt mức 3 có trần lượt mới 3 600 s** (D-40); **trần chờ của con giữ nguyên** | #6021, D-40 |
+| 29 | **Số sóng nhánh — CHỐT:** mức 2 = **1 sóng** (3–5 nhánh) · mức 3 = **tối đa 3 sóng** (khoảng 9–15 nhánh), mở sóng tiếp khi còn thiếu bằng chứng (D-41) | #6022, D-41 |
+| 30 | **Công cụ tìm kiếm tự dựng — chủ nhà SKIP ⇒ tôi tự quyết:** một công cụ trong harness gộp **nhiều chân keyless** (Firecrawl keyless + OpenAlex/Europe PMC/arXiv/Crossref + trang tìm kiếm chính thức của site); **không mua khoá**; SearXNG/crawler giá **hoãn** (D-42) | #6023, D-42 |
+| 31 | **Nhịp kiểm chứng — chủ nhà SKIP ⇒ tôi tự quyết:** mức 2 = **cổng máy tự kiểm** (không mở con phản biện) · mức 3 = **luôn có một con phản biện độc lập** mở lại nguồn trước khi giao | #6024 |
+| 32 | **Phản biện ý kiến chủ nhà — CHỐT:** **tự động** khi brief có ý kiến/giả định/khẳng định; pha 4 luôn có **mục riêng ba nhãn**: bằng chứng **ủng hộ / phản bác / chưa chắc** | #6025 |
+| 33 | **Ba mục nhỏ tôi tự quyết:** ảnh chụp trang giá **bắt buộc với TM-1** khi giá là số sống và ở **mức 3**; luật cross-nhóm theo **#5995** (main tự mở nhánh + nói rõ trong báo cáo); cổng giữa bốn pha = **ba mốc báo tiến độ** đã có, không thêm cổng chờ người | ghi rõ để chủ nhà chỉnh |
 
 ## 2. Vấn đề — số đo hôm nay (2026-09-23, HEAD `2add905`, không dùng khoá API)
 
@@ -119,7 +126,9 @@ http_request (xin gzip/deflate)  →  reading.decode_body (giải nén, trần c
 - Đếm nguồn **độc lập máy kiểm được**: cùng nguồn tin gốc ⇒ một nguồn; tầng 1 một nguồn là đủ.
 
 ### 3.3 Lớp C — luồng chạy (đợt 5–6)
-- **`research_brief`** chốt **một mức cho cả việc** + bảng trần theo mức; skill `research-team` giữ danh mục nhắc nhánh và SOP bốn pha.
+- **`research_brief`** chốt **một mức cho cả việc** + **bảng trần**: trần **mềm theo việc** (main ước lượng, khai trong thẻ
+  mốc) với **trần cứng an toàn 30 phút (mức 2) / 120 phút (mức 3)**, chạm là báo + hỏi; lượt mức 3 được **3 600 s** (D-40);
+  **sóng nhánh 3–5** (mức 2 = 1 sóng · mức 3 ≤ 3 sóng, D-41); skill `research-team` giữ danh mục nhắc nhánh và SOP bốn pha.
 - **`dossier_write`** + phòng `.research/<slug>/` trong workspace: `v1-<slug>.md` (hồ sơ), `sources.jsonl` (sổ), `sources.md` (bản người đọc) — **đầu ra 100 % là tệp**; chat chỉ còn báo cáo ngắn, có **hàng tệp** mở sang panel Tệp.
 - **Nhịp báo tiến độ** theo mốc (mỗi nhánh con xong **hoặc** ~10 phút) bằng **văn bản model viết** trong mạch chat — không khối, không dải, không huy hiệu (D-19…D-25).
 - **Steer giữa lượt**: bảng `session_steers` + `drain_steers` cạnh `drain_peer_deliveries` (tiền lệ đã có), công cụ `cancel_child`; giao diện: ô nhập nói rõ "xếp hàng · áp ở bước kế" (mockup `v27-run-queue.html`).
@@ -146,11 +155,11 @@ chủ nhà hỏi → main đọc tín hiệu, chốt MỘT mức + hồ sơ vi�
 | Đợt | Nội dung | Mã việc | Phụ thuộc | **Điều kiện dừng / cách đo** |
 |---|---|---|---|---|
 | **1** | Lớp đọc sống lại: giải nén `Content-Encoding`, `reading.body_check`, **thang đọc FULL năm tầng (HTML/JATS → PDF + `pdfplumber` → đầu đọc chỉ chữ → ảnh trang)**, ba công tắc | A-1, A-2, A-3, A-9, **A-10** | — | Ba trang gzip ra **junk 0,0000** (`textChars` ≈ 8 264 / 8 079 / 16 455); 403 (`thuvienphapluat.vn`) và PDF arXiv đọc được (**bảng dựng lại** kèm nhãn "bảng trích tự động"); HTML arXiv `1706.03762v7` giữ **10 bảng**; `vbpl.vn`/`moh.gov.vn` **không** ra `ok`; `BOXFOX_WEB_READER=thin` xanh **toàn bộ** test cũ |
-| **2** | Đọc trọn tài liệu: bộ đệm + `read_source(offset/find)` + `file_read` có `offset` | A-4, A-5 | 1 | `docs.python.org` (113 936 ký tự) đọc trọn bằng **6 lời gọi**, ghép lại đúng bản gốc; tệp 100 000 ký tự trong box đọc trọn; ảnh PNG giữ nguyên hình dạng cũ |
+| **2** | Đọc trọn tài liệu: bộ đệm + `read_source(offset/find)` + `file_read` có `offset` + **công cụ tìm kiếm tự dựng gộp nhiều chân keyless** (D-42) | A-4, A-5, A-6 | 1 | `docs.python.org` (113 936 ký tự) đọc trọn bằng **6 lời gọi**, ghép lại đúng bản gốc; tệp 100 000 ký tự trong box đọc trọn; hai chân tìm kiếm độc lập trả kết quả cho cùng một truy vấn; ảnh PNG giữ nguyên hình dạng cũ |
 | **3** | Sổ nguồn + thang nguồn 4 tầng (+ tầng 0 tài liệu chủ nhà, nhánh `official-social`) + trường **loại bản đã đọc** và **phiên bản/commit/ngày truy cập** | B-1, B-2 | 1 | Chạy lại 5 URL đã đo ⇒ `fakeSuccess`/`unreachable` đúng ca; sổ ghi/đọc được 3 dòng sống **có `bản đã đọc`**; test `test_source_ledger_store.py`, `test_source_tiers.py` xanh |
 | **4** | Ba nhóm hồ sơ việc + cổng chất lượng + `dossier_write` (phòng `.research/`) + bảng khai báo thị trường (**TM-2 trần 10–15**, **TM-3 archetype C2′** hai tầng số + luật "không đủ mẫu ⇒ tín hiệu, chưa kiểm") | B-3a, B-3b, C-2 | 3 | 6 ca hàm thuần + **3 ca vi phạm bị từ chối và KHÔNG tạo tệp**; hồ sơ nháp ra đủ 3 tệp (`v1-*.md`, `sources.jsonl`, `sources.md`); ca gap thiếu mẫu ghi đúng "tín hiệu, chưa kiểm" |
-| **5** | Ba mức + `research_brief` + skill `research-team` + SOP bốn pha + nhịp báo mốc + săn đuổi trích dẫn mức 3 (**bão hoà 3 vòng**) + **nhánh con theo sóng 3–5** | C-1, C-3, C-4 | 4 | Một lượt thật chạy mức 2 và một lượt mức 3; mốc báo xuất hiện đúng nhịp; bảng trần theo mức khai được; ca `R1–R4`, `R10` xanh |
-| **6** | Pha phản biện độc lập: vai `research-review`, `research_verify`, sổ `research_verifications`, nhãn "CHƯA ĐẠT" | B-4 | 4 | 4 ca sống: `ok` ⇒ giao hồ sơ; `revise` ⇒ sửa **một** vòng; còn `revise` ⇒ giao kèm nhãn do **máy** viết; phản biện giả (không có phiên con hợp lệ) bị chặn |
+| **5** | Ba mức + `research_brief` + skill `research-team` + SOP bốn pha + nhịp báo mốc + săn đuổi trích dẫn mức 3 (**bão hoà 3 vòng**) + **nhánh con theo sóng 3–5** (mức 2 = 1 sóng · mức 3 ≤ 3 sóng) + **trần mềm theo việc + trần cứng 30/120**, lượt mức 3 = **3 600 s** (D-40) | C-1, C-3, C-4 | 4 | Một lượt thật chạy mức 2 và một lượt mức 3; mốc báo xuất hiện đúng nhịp; thẻ mốc khai đúng trần mềm + trần cứng; ca `R1–R4`, `R10` xanh |
+| **6** | Pha phản biện độc lập: vai `research-review`, `research_verify`, sổ `research_verifications`, nhãn "CHƯA ĐẠT"; **mức 2 = cổng máy tự kiểm · mức 3 = luôn có con phản biện**; `review.md` ghi **hai loại phản biện** + **mục soi ý kiến chủ nhà** (ủng hộ / phản bác / chưa chắc — #6019, #6025) | B-4 | 4 | 4 ca sống: `ok` ⇒ giao hồ sơ; `revise` ⇒ sửa **một** vòng; còn `revise` ⇒ giao kèm nhãn do **máy** viết; phản biện giả (không có phiên con hợp lệ) bị chặn; ca brief có ý kiến chủ nhà ⇒ `review.md` có đủ ba nhãn |
 | **7** | Can thiệp giữa lượt (`session_steers`, `drain_steers`, `cancel_child`) + ngân sách/duyệt việc lớn + hai mặt giao diện | C-5, C-6 | 5 | Gõ "dừng nhánh luật" giữa lượt ⇒ nhánh dừng ở bước kế, có dòng xác nhận; việc lớn ra thẻ duyệt đúng mức + trần; `extend_turn_budget` theo mức chạy |
 | **8** | Sửa skill chết + tài liệu lệch + bộ ca `R1–R9` + oracle máy + ghi sổ theo dõi | B-5, B-6, C-7, C-8 | 1–7 | `test_skill_tool_names.py` xanh (không còn `web_extract`); hai tài liệu lệch đã sửa; `scripts/eval/research_checks.py` chạy được và **số** ghi vào `docs/tracking/test-rounds.md` |
 
@@ -174,7 +183,9 @@ Ghi chú thi công:
 | R7 | Giao hồ sơ: tệp ra đủ, chat chỉ có báo cáo ngắn + hàng tệp; phản biện `revise` để lại nhãn | Kiểm tệp trên đĩa + phần đầu hồ sơ + sổ `research_verifications` |
 | R8 | **Bảng biểu**: paper có bản HTML/JATS ⇒ bảng lấy từ bản cấu trúc; chỉ có PDF ⇒ `pdfplumber` dựng lại **kèm nhãn "bảng trích tự động"**; khẳng định dựa vào bảng có đối chiếu câu văn quanh bảng hoặc bản cấu trúc | Đếm bảng trong hồ sơ + trường *loại bản đã đọc* trong sổ (`html`/`jats`/`pdf-table`) |
 | R9 | **Gap hai tầng số**: đủ sàn ⇒ "đã kiểm"; chưa đủ sàn mà hết trần thử ⇒ ghi **"tín hiệu, chưa kiểm" + lý do**, **không** treo lượt | `research_quality` mã lỗi tương ứng + không có vòng lặp thử vô hạn |
-| R10 | **Sóng nhánh**: con chỉ mở theo sóng **3–5**, sóng sau chỉ mở khi sóng trước xong; **không** mở toàn bộ cùng lúc (tránh lag box) | Đếm nhánh đồng thời theo thời gian trong nhật ký (`T/P/S/D/E/C/F/X`) |
+| R10 | **Sóng nhánh**: con chỉ mở theo sóng **3–5**, sóng sau chỉ mở khi sóng trước xong; **không** mở toàn bộ cùng lúc (tránh lag box); mức 2 = 1 sóng, mức 3 ≤ 3 sóng | Đếm nhánh đồng thời theo thời gian trong nhật ký (`T/P/S/E/D/C/F/X`) |
+| R11 | **Trần mềm + trần cứng**: thẻ mốc khai trần ước lượng của việc; chạm trần cứng (30 phút mức 2 / 120 phút mức 3) ⇒ **báo + hỏi chủ nhà**, không tự chạy tiếp; lượt mức 3 có trần lượt 3 600 s | Đọc thẻ mốc + dòng báo; đo lượt mức 3 không bị cắt ở 1 200 s |
+| R12 | **Soi ý kiến chủ nhà**: brief có ý kiến/giả định ⇒ `review.md` có mục riêng đủ ba nhãn **ủng hộ / phản bác / chưa chắc**, mỗi nhãn kèm nguồn | Kiểm tệp `review.md` của ca có brief chứa ý kiến |
 
 **Trung thực về đo lường:** `benchmark/cases/*` đang rỗng và judge runner là `NotImplementedError` ⇒ vòng này **tự dựng** oracle máy (`scripts/eval/research_checks.py`), **không** tuyên bố "đã có benchmark research". Mọi số phải ghi **ngày đo + tệp đo**.
 
@@ -211,16 +222,13 @@ Chủ nhà đã chốt: *"còn thị trường và paper/kỹ thuật, phương 
 | **Học thuật & kỹ thuật** | **ĐÃ CHỐT** (vòng 9, 11) | §1 hàng 15, 18, 20; `v27-full-read-and-pain-count.md` |
 | **Đọc FULL tài liệu** | **ĐÃ CHỐT** (vòng 11) | §1 hàng 15, 16; §3.1 thang năm tầng |
 | **Đếm nỗi đau (gap)** | **ĐÃ CHỐT** (vòng 10–11) | §1 hàng 17; luật hai tầng số |
-| **Phương pháp** | **ĐANG CHỐT — vòng 12–13** | §1 hàng 22–27 |
+| **Phương pháp** | **ĐÃ CHỐT** (vòng 12–13) | §1 hàng 22–33; §3.3 bảng trần; D-40…D-42 |
 
-**Phương pháp — vòng 12 đã chốt:** luật gap hai tầng số (#6016) · **nhánh con chạy theo sóng 3–5**, hết sóng mới mở sóng
-tiếp và **không mở toàn bộ cùng lúc** (#6017) · **hồ sơ 1/3/6 tệp** + `review.md` ghi **hai loại phản biện** — kiểm lại nguồn
-và **soi ý kiến chủ nhà** (#6019) · **bảng MỞ duyệt nguyên bảng** + **tự dựng công cụ tìm kiếm/tải, không mua khoá** (#6020).
-
-**Vòng 13 còn lại:** trần thời gian — hỏi lại bằng **ví dụ cụ thể** với ba loại trần: **trần lượt** (cả lượt chat, hiện 1 200 s) ·
-**trần con** (mỗi nhánh, hiện `min(420 s, cha)`) · **ngân sách việc** (tổng thời gian/token của một việc, dùng cho nút xin duyệt) ·
-số sóng tối đa mỗi mức · hình dạng công cụ tìm kiếm/tải tự dựng · nhịp kiểm chứng (pha 4 chạy cho mức nào) · khi nào bật
-phản biện ý kiến chủ nhà.
+**Phương pháp — ĐÃ CHỐT (vòng 12–13):** luật gap hai tầng số (#6016) · **sóng 3–5** với mức 2 = 1 sóng / mức 3 ≤ 3 sóng
+(#6017, #6022) · **hồ sơ 1/3/6 tệp** + hai loại phản biện (#6019) · **trần mềm theo việc + trần cứng 30/120**, lượt mức 3
+= 3 600 s (#6021, D-40) · **công cụ tìm kiếm tự dựng gộp chân keyless, không mua khoá** (#6020, #6023, D-42) · **nhịp kiểm
+chứng** mức 2 cổng máy / mức 3 con phản biện (#6024) · **tự động soi ý kiến chủ nhà** (#6025) · ba mục nhỏ do tôi tự quyết
+(§1 hàng 33). **Phỏng vấn đã đóng; chờ chủ nhà duyệt bản 3.**
 
 **Bảy câu kỹ thuật MỞ-A…MỞ-H — chủ nhà DUYỆT NGUYÊN BẢNG ở #6020** (riêng MỞ-C đổi hướng: tự dựng, không mua khoá):
 
@@ -232,7 +240,7 @@ phản biện ý kiến chủ nhà.
 | MỞ-D | "Bão hoà" săn đuổi: ngưỡng nào, và săn đuổi là **công cụ riêng** hay tham số? | **3 vòng** liên tiếp không thêm bài mới (#6008); công cụ riêng `paper_citations` | Đã duyệt (#6020) |
 | MỞ-E | Mở skill web/research nào | Mở `blocked-page-recovery` → `rss-feeds`; `duckduckgo-search`/`searxng-search` **đóng vĩnh viễn** kèm lý do đo được; `pdf`/`scrapling` sau | Đã duyệt (#6020) |
 | MỞ-F | Bộ đệm đọc có ghi ra đĩa không | **Không** — trong bộ nhớ tiến trình (không để nội dung không tin cậy trên đĩa) | Đã duyệt (#6020) |
-| MỞ-G | **Trần lượt cho mức 3**: trần lượt hiện tại 1 200 s có thể chặn việc dài | Trần phải **phụ thuộc việc** (#6018); hỏi lại vòng 13 bằng ví dụ ba loại trần | **Còn mở — vòng 13** |
+| MỞ-G | **Trần lượt cho mức 3**: trần lượt hiện tại 1 200 s có thể chặn việc dài | **Đã chốt #6021**: trần **mềm theo việc** + **trần cứng an toàn 30 phút (mức 2) / 120 phút (mức 3)**, chạm thì báo + hỏi; lượt mức 3 được **3 600 s** (D-40); trần chờ của con **giữ nguyên** | Đã chốt (#6021) |
 | MỞ-H | **Trần chi phí USD**: router có `cost`/`costBasis` nhưng harness **chưa nhận** trường đó | Nêu trần bằng **giây + token** trước; USD để mở sau khi harness nhận được số | Đã duyệt (#6020) |
 
 ## 9. Không làm trong vòng này
@@ -248,7 +256,7 @@ phản biện ý kiến chủ nhà.
 
 | Rủi ro | Cách chặn |
 |---|---|
-| Mức 3 dài hơn trần lượt ⇒ lượt chết giữa lúc nghiên cứu | MỞ-G: xin D-number mới cho lượt research dài; `extend_turn_budget` theo mức; **không** nới trần chờ của con |
+| Mức 3 dài hơn trần lượt ⇒ lượt chết giữa lúc nghiên cứu | **Đã chốt #6021 (D-40)**: lượt mức 3 được **3 600 s**; trần **mềm theo việc** + trần cứng 120 phút, chạm là báo + hỏi; `extend_turn_budget` theo mức; **không** nới trần chờ của con |
 | Mảng **phương pháp** còn mở, chốt muộn ⇒ phải sửa nhiều chỗ | Mọi luật hồ sơ nằm trong **bảng khai báo**; đợt 1–3 độc lập với mảng đó; phần đã chốt (thị trường, học thuật, đọc FULL) đã vào bản 2 |
 | Trần 8 000 ký tự của con vẫn cắt hồ sơ | Đường chính là **ghi tệp** (`dossier_write`) + `read_source` đọc theo đoạn; trần câu trả lời chỉ dùng cho báo cáo ngắn |
 | Nguồn keyless chập chờn (arXiv 406, Crossref 429, Semantic Scholar 429) | Retry/backoff + nhiều nhà cung cấp + ghi rõ nguồn nào chập chờn; Semantic Scholar **chỉ bật khi có khoá** |
@@ -258,9 +266,9 @@ phản biện ý kiến chủ nhà.
 
 ## 11. Điều kiện bắt đầu thi công
 
-1. Chủ nhà **duyệt kế hoạch này** (bản 3 sau khi chốt trần thời gian) — đợt 1–3 có thể bắt đầu ngay vì không phụ thuộc mảng phương pháp.
-2. **Vòng 13** hỏi lại: trần thời gian (ba loại trần, bằng ví dụ) · số sóng mỗi mức · hình dạng công cụ tự dựng · nhịp kiểm chứng.
-   Chốt xong thì cập nhật **bảng khai báo** và re-submit **bản 3** trước khi thi công các đợt phụ thuộc (5–7).
-   *Thị trường, học thuật/kỹ thuật, đọc FULL, luật gap, sóng nhánh, hồ sơ và bảng MỞ đã chốt ở vòng 9–12 — đã nằm trong bản 2 này.*
+1. Chủ nhà **duyệt kế hoạch này** (bản 3 — phỏng vấn đã đóng) ⇒ **đợt 1–3 bắt đầu ngay** (không phụ thuộc gì thêm).
+2. Đã chốt hết ba mảng của #5998 (thị trường · học thuật/kỹ thuật · phương pháp) trong **13 vòng**; ba mục nhỏ do tôi tự quyết
+   ghi rõ ở §1 hàng 33 — chủ nhà chỉnh lúc nào cũng được.
+3. Mỗi đợt xong: chạy test đầy đủ, ghi số vào `docs/tracking/test-rounds.md`, cập nhật `docs/tracking/bug-register.md` nếu phát hiện lỗi, ghi quyết định mới vào `docs/tracking/owner-decisions.md`.
 3. Mỗi đợt xong: chạy test đầy đủ, ghi số vào `docs/tracking/test-rounds.md`, cập nhật `docs/tracking/bug-register.md` nếu phát hiện lỗi, ghi quyết định mới vào `docs/tracking/owner-decisions.md`.
 

@@ -1,9 +1,8 @@
 # ADR — Cải tổ research agent và công cụ tìm kiếm (Vòng 27)
 
-**Trạng thái:** các phần đã chốt (luật, y tế, tài chính; thang nguồn; số nguồn; đầu ra; điều phối) **đã được chủ nhà
-duyệt bằng 12 vòng phỏng vấn** (#5955–#6020). **Thị trường, học thuật/kỹ thuật, đọc FULL, luật gap, hình dạng hồ sơ và bảng
-MỞ: ĐÃ CHỐT** (vòng 9–12, xem §C-bis). Mảng **phương pháp** còn hai mục: **trần thời gian** và **nhịp kiểm chứng** — chủ nhà
-yêu cầu *"tạo plan trước, ghi vào plan trước rồi tiếp tục interview"* (#5998).
+**Trạng thái:** **phỏng vấn ĐÃ ĐÓNG — 13 vòng (#5955–#6025)**; ba mảng chủ nhà nêu ở #5998 (thị trường · học thuật/kỹ thuật ·
+phương pháp) **đã chốt hết**; ba mục nhỏ do agent tự quyết theo uỷ quyền *"use your best judgment"* (#6023, #6024) và một mục
+ghi rõ để chủ nhà chỉnh (ảnh chụp trang giá TM-1). Kế hoạch **bản 3** chờ chủ nhà duyệt để bắt đầu đợt 1–3.
 
 **Ngày:** 2026-09-23 · **Nhánh:** `vorflux/v22-peer-mesh` · **HEAD khi viết:** `2add905`
 
@@ -69,7 +68,11 @@ con research làm việc nặng** (#5957).
 | C-13 | **Nhánh con chạy theo SÓNG 3–5**; hết sóng mới mở sóng tiếp; **không mở toàn bộ cùng lúc** | Chủ nhà chốt #6017: *"…3 đến 5 sub agent, xong việc thì spam tiếp dạng parallel, chứ không spam cùng lúc toàn bộ vì gây lag box"* | Bộ điều phối sóng nằm trong luồng mức (đợt 5); ca `R10` kiểm nhánh đồng thời |
 | C-14 | **Hồ sơ 1/3/6 tệp CHỐT** + `review.md` ghi **hai loại phản biện**: (a) kiểm lại nguồn (gửi con check tiếp), (b) **soi ý kiến/giả định của chủ nhà** | Chủ nhà chốt #6019 | Đợt 4 (hồ sơ) + đợt 6 (pha phản biện) thêm trường `loai_phan_bien` |
 | C-15 | **Bảng MỞ-A…MỞ-H: duyệt nguyên bảng**, riêng **MỞ-C đổi hướng**: **không mua khoá** — **tự dựng công cụ tìm kiếm/tải** trong harness; chỗ cắm khoá giữ trong mã nhưng **mặc định tắt** | Chủ nhà chốt #6020: *"cần tự build tool search, fetch, ... thay vì mua key gây tốn kém"* | Đợt 2 (tìm kiếm) đổi trọng tâm sang công cụ tự dựng; hình dạng chốt vòng 13 |
-| C-16 | **Trần thời gian phải phụ thuộc việc** — chủ nhà không nhận câu hỏi dạng trần cứng theo mức | Chủ nhà #6018: *"còn tùy task nó nghiên cứu, main cũng thế"* | Vòng 13 phải hỏi lại bằng ví dụ ba loại trần (lượt · con · ngân sách việc) |
+| C-16 | **Trần thời gian phải phụ thuộc việc** — chủ nhà không nhận câu hỏi dạng trần cứng theo mức | Chủ nhà #6018: *"còn tùy task nó nghiên cứu, main cũng thế"* | Vòng 13 hỏi lại bằng ví dụ ba loại trần (lượt · con · ngân sách việc) |
+| C-17 | **Trần thời gian CHỐT — phương án A**: **trần mềm theo việc** (main ước lượng, khai trong thẻ mốc) + **trần cứng an toàn 30 phút (mức 2) / 120 phút (mức 3)**; chạm trần cứng ⇒ **báo + hỏi chủ nhà**; **lượt mức 3 được 3 600 s** (D-40); **trần chờ của con giữ nguyên** | Chủ nhà chốt #6021 | Bảng trần trong `research_brief`; `extend_turn_budget` theo mức; ca `R11` |
+| C-18 | **Số sóng nhánh CHỐT**: mức 2 = **1 sóng** (3–5 nhánh) · mức 3 = **tối đa 3 sóng** (≈9–15 nhánh) | Chủ nhà chốt #6022 (nối #6017) | Bộ điều phối sóng ở đợt 5; ca `R10` |
+| C-19 | **Công cụ tìm kiếm tự dựng**: một công cụ trong harness gộp **nhiều chân keyless** (Firecrawl keyless + OpenAlex/Europe PMC/arXiv/Crossref + trang tìm kiếm chính thức của site); **không mua khoá** (D-42); SearXNG + crawler giá **hoãn** | Chủ nhà uỷ quyền #6023 (*"no preference, use your best judgment"*) trên chỉ thị #6020 | Đợt 2 đổi trọng tâm sang công cụ tự dựng; chỗ cắm khoá mặc định tắt |
+| C-20 | **Nhịp kiểm chứng**: mức 2 = cổng máy tự kiểm · mức 3 = **luôn có con phản biện độc lập**; **tự động soi ý kiến chủ nhà** khi brief có ý kiến/giả định, ba nhãn **ủng hộ / phản bác / chưa chắc** | Mức 3 theo uỷ quyền #6024; soi ý kiến chốt #6025 | Đợt 6: `review.md` thêm mục soi ý kiến; ca `R12` |
 
 
 
@@ -105,16 +108,14 @@ con research làm việc nặng** (#5957).
 4. **Hợp đồng delegation phải đổi** — "đầu ra 100% là tệp" không thể thực hiện khi con research không ghi được tệp.
 5. **Đo được mới tin** — benchmark research đang trống; không có case + điểm thì không chứng minh được "thật kỹ".
 
-## F. Câu hỏi còn mở (sẽ phỏng vấn tiếp)
+## F. Câu hỏi còn mở
 
-1. **Trần thời gian (vòng 13):** ba loại trần — **trần lượt** (cả lượt chat, hiện 1 200 s) · **trần con** (mỗi nhánh, hiện
-   `min(420 s, cha)`) · **ngân sách việc** (tổng thời gian/token của một việc, dùng cho nút xin duyệt) — hỏi lại **bằng ví dụ**
-   vì chủ nhà chốt *"còn tùy task"* (#6018).
-2. **Số sóng nhánh mỗi mức** (sóng 3–5 đã chốt ở #6017; tổng số sóng còn tuỳ việc).
-3. **Hình dạng công cụ tìm kiếm/tải tự dựng** (chỉ thị #6020: không mua khoá).
-4. **Nhịp kiểm chứng:** pha 4 chạy cho mức nào; **khi nào bật phản biện ý kiến chủ nhà** (#6019).
-5. **Cách chạy bốn pha:** cổng giữa các pha (nếu còn cần chốt).
-6. **Hai mục nhỏ của thị trường** (không chặn): ảnh chụp trang giá kèm hồ sơ; luật cross-nhóm (đã có #5995 làm mặc định).
+**Không còn mục mở nào chặn thi công.** 13 vòng phỏng vấn đã đóng (#5955–#6025). Ba mục nhỏ do agent tự quyết theo uỷ quyền
+(#6023, #6024) hoặc ghi rõ để chủ nhà chỉnh — xem §1 hàng 33 của kế hoạch:
+
+1. **Ảnh chụp trang giá** — bắt buộc với **TM-1** khi giá là số sống và ở **mức 3**; mức 1–2 khuyến khích.
+2. **Luật cross-nhóm** — theo **#5995**: main tự mở nhánh và nói rõ trong báo cáo, không hỏi lại trước khi chạy.
+3. **Cổng giữa bốn pha** — giữ **ba mốc báo tiến độ** đã chốt (#5969), không thêm cổng chờ người mới.
 
 ## G. Ràng buộc không được phá
 

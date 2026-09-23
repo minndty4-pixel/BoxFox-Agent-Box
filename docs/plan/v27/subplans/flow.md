@@ -318,6 +318,12 @@ Frontend: khi `child` event có `cancelledBy === 'owner'`, panel nhánh hiện "
 
 ### [MỞ — chờ phỏng vấn]
 
+> **ĐÃ CHỐT (vòng 9–13) — không còn chờ phỏng vấn.** **M1** ⇒ **#6021/D-40**: trần mềm theo việc + trần cứng 30 phút (mức 2) /
+> 120 phút (mức 3), lượt mức 3 = **3 600 s** (đúng phương án 2 + 1 làm mặc định như khuyến nghị) · **M2** ⇒ **#6019**: hồ sơ
+> **1/3/6 tệp** · **M3** ⇒ **#6008/#6020**: bão hoà **3 vòng** · **M4** và **M5** giữ **khuyến nghị (a)** của tệp này (chủ nhà
+> không bác câu nào) · **M6** ⇒ **MỞ-H**: nêu trần bằng **giây + token** trước, USD để mở sau (#6020) · số sóng nhánh ⇒
+> **#6022/D-41** (mức 2 = một sóng · mức 3 ≤ 3 sóng). Phần dưới giữ nguyên làm biên bản lúc chưa chốt.
+
 Owner đã chốt: *"tạo plan trước, ghi vào plan trước rồi tiếp tục interview"* (#5998). Các mục dưới đây **không** được tự quyết; plan dùng số tạm và phải sửa khi owner trả lời.
 
 - **M1 — Trần lượt cho mức 3.** `DEADLINE_MAX_SECONDS = 1200` (`limits.py:29`) chặn mọi lượt ở 20 phút. Kéo dài là **quyết định kiến trúc mới** (F9/D-12 cấm nới trần chờ của con để "chữa" việc này).
@@ -422,3 +428,27 @@ Ba khung cần mockup ở tab Design trước khi build C-5/C-2: (1) **composer 
 4. **Trần thời gian**: chủ nhà không nhận câu hỏi dạng trần cứng theo mức (#6018) — trần phải **phụ thuộc việc**; vòng 13 hỏi
    lại bằng ví dụ với ba loại trần (lượt · con · ngân sách việc). Bảng trần trong tệp này **vẫn là nháp**.
 5. **Bảng MỞ-A…MỞ-H duyệt nguyên bảng** (#6020), riêng **MỞ-C đổi hướng: không mua khoá** — tự dựng công cụ tìm kiếm/tải.
+
+---
+
+## Phụ lục 3 — điều chỉnh đã chốt ở vòng 13 (#6021–#6025, 2026-09-23)
+
+1. **Trần thời gian CHỐT — phương án A, ba lớp (#6021, D-40):**
+   - **Trần mềm theo việc**: main tự ước lượng thời gian cho việc, khai trong **thẻ mốc** (chỉ là ước lượng, không tự áp).
+   - **Trần cứng an toàn**: **30 phút (mức 2)** · **120 phút (mức 3)** cho tổng thời gian một việc; chạm ⇒ **báo chủ nhà rồi
+     hỏi**, KHÔNG tự chạy tiếp (cùng khuôn "chạm ngân sách thì hỏi" ở đợt 7).
+   - **Trần lượt**: lượt mức 3 được cấp trần lượt **3 600 s** (`extend_turn_budget` theo mức); lượt mức 1–2 giữ **1 200 s**.
+   - **Trần con giữ nguyên** `min(420 s, cha)` — không nới (D-12/D-10 vẫn hiệu lực: trần chờ là lưới an toàn).
+   ⇒ Mục 4 của Phụ lục 2 (bảng trần còn nháp) **không còn hiệu lực**; bảng trần trong tệp này chốt theo hàng trên.
+   - **Kiểm bằng số đo:** đọc dài 246 KB/1 lời gọi, mỗi PDF 15 trang qua `pdfplumber` ≈ 10–40 s ⇒ 30 phút mức 2 đủ cho **≥ 20
+     nguồn**; chạm 30 phút nghĩa là bất thường (mạng treo) ⇒ báo + hỏi là đúng.
+2. **Số sóng nhánh CHỐT (#6022, D-41):** mức 2 = **1 sóng (3–5 nhánh)** · mức 3 = **tối đa 3 sóng (≈9–15 nhánh)**; sóng sau chỉ
+   mở khi sóng trước xong, hoặc khi còn thiếu bằng chứng nặng. Trần cứng 12 con/lượt (`limits.py:111`) vẫn chặn trên.
+3. **Nhịp kiểm chứng CHỐT (#6024, tự quyết):** mức 2 = **cổng máy tự kiểm** (không mở con phản biện) · mức 3 = **luôn có một con
+   phản biện độc lập** mở lại nguồn trước khi giao. Cả hai đường ghi vào sổ `research_verifications`.
+4. **Tự động soi ý kiến chủ nhà CHỐT (#6025):** brief có **ý kiến/giả định/khẳng định** ⇒ pha 4 luôn có **mục riêng ba nhãn
+   `ủng hộ` / `phản bác` / `chưa chắc`**, mỗi nhãn kèm nguồn; máy chỉ kiểm **sự hiện diện** của ba nhãn, model viết nội dung.
+5. **Công cụ tìm kiếm tự dựng (#6023, tự quyết — chi tiết ở Phụ lục 2 của Phạm vi A):** gộp nhiều chân keyless trong harness;
+   **không** SearXNG, **không** crawler giá trong vòng 27; chỗ cắm khoá giữ trong mã nhưng mặc định tắt.
+6. **Ca kiểm bổ sung:** `R11` (thẻ mốc khai trần mềm + chạm trần cứng thì có dòng báo/hỏi; lượt mức 3 không bị cắt ở 1 200 s) và
+   `R12` (`review.md` có đủ ba nhãn khi brief chứa ý kiến). Phỏng vấn **đã đóng ở vòng 13** ⇒ tệp này không còn mục "MỞ" nào chờ.

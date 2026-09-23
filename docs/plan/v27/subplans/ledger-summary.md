@@ -47,7 +47,10 @@ Quyết định theo chủ nhà: **hai nguồn độc lập cho khẳng định 
 
 Test mới (tên ca cụ thể ở plan chi tiết): `test_research_ledger.py`, `test_source_ledger_store.py`, `test_source_tiers.py`, `test_research_verify_source.py`, `test_research_profiles.py`, `test_research_quality.py`, `test_research_write.py`, `test_research_gate_runtime.py`, `test_research_review_role.py`, `test_research_critique.py`, `test_research_verify.py`, `test_skill_tool_names.py` (backend), `test_research_files.py` (box), `harnessRoles.test.ts` (frontend). Test hiện có phải cập nhật: số công cụ 25 → 31 (`test_journal_tools.py:63`, `test_runtime_info.py:141,154,164`) và danh sách vai (`test_plan_review_role.py:72-74`).
 
-## [MỞ — chờ phỏng vấn] (không chặn thi công)
+## [ĐÃ CHỐT — vòng 9–13, phỏng vấn đã đóng] (không chặn thi công)
+
+> Ba nhóm câu hỏi dưới đây **đã được chủ nhà chốt**: thị trường #6005–#6008 · học thuật/kỹ thuật #6010–#6014 · phương pháp
+> #6016–#6025 (xem `v27-owner-answers.md` §2.11–§2.15). Giữ nguyên hàng cũ làm biên bản.
 
 - **Hồ sơ nhóm 3 Thị trường**: nguồn gốc của giá, trường bắt buộc (`capturedAt`/`region`/`currency`?), số ước lượng/khảo sát xử lý thế nào, ngưỡng "đủ kỹ" (2–3 kênh?).
 - **Hồ sơ nhóm 2 Học thuật/kỹ thuật**: trường bắt buộc của paper (DOI/năm/venue/tác giả, có bắt mở PDF?), bão hoà khi săn đuổi trích dẫn, phiên bản tài liệu hãng, đọc PDF/bảng biểu (đầu đọc keyless mất cấu trúc bảng).

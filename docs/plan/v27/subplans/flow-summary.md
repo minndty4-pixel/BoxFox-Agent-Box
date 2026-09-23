@@ -38,7 +38,9 @@ Owner: agent research hôm nay "chỉ tìm được phần nổi, không đọc 
 ## Chốt gì · mở gì
 
 - **Đã chốt, chỉ hiện thực:** ba mức + tự chọn mức, mơ hồ ⇒ mức 2 (#5960/#5965) · đọc nguồn bắt buộc ở mọi mức (#5966) · mức 3 luôn đuổi trích dẫn + bão hoà (#5967) · chỉ main nói với chủ nhà + gộp nhánh liên quan (#5961/#5982) · nhịp mỗi mốc hoặc ~10 phút (#5969) · đầu ra 100% tệp (#5973/#5980) · phản biện độc lập `revise` chặn 1 vòng (#5968 — việc của B, C chỉ nối).
-- **[MỞ — chờ phỏng vấn]:** trần thời gian/chi phí mặc định mỗi mức; hình dạng hồ sơ mẫu mỗi mức; số nhánh tối đa mỗi mức; "bão hoà" ở mức 3 là mấy vòng; nhóm 3 (thị trường) và nhóm 2 (học thuật/kỹ thuật) như §3 của `v27-owner-answers.md`; cơ chế hạ/cắt nhánh của chủ nhà; ranh giới chi phí USD (router có `cost`/`costBasis` nhưng harness **chưa nhận** trường đó ⇒ trần nêu bằng giây + token trước, USD để mở). Owner đã chốt: *"tạo plan trước, ghi vào plan trước rồi tiếp tục interview"* (#5998).
+- **[ĐÃ CHỐT — vòng 9–13, phỏng vấn đã đóng]:** khối câu hỏi cũ nay đã có đáp án — trần thời gian **#6021/D-40** (mềm theo việc +
+cứng 30/120 phút, lượt mức 3 = 3 600 s) · hồ sơ mẫu mỗi mức **#6019** (1/3/6 tệp) · số nhánh theo **sóng 3–5** (#6017/#6022)
+· bão hoà **3 vòng** (#6008) · nhóm 3 và nhóm 2 chốt ở #6005–#6014 · ranh giới USD **MỞ-H** (giây + token trước). Nội dung cũ: trần thời gian/chi phí mặc định mỗi mức; hình dạng hồ sơ mẫu mỗi mức; số nhánh tối đa mỗi mức; "bão hoà" ở mức 3 là mấy vòng; nhóm 3 (thị trường) và nhóm 2 (học thuật/kỹ thuật) như §3 của `v27-owner-answers.md`; cơ chế hạ/cắt nhánh của chủ nhà; ranh giới chi phí USD (router có `cost`/`costBasis` nhưng harness **chưa nhận** trường đó ⇒ trần nêu bằng giây + token trước, USD để mở). Owner đã chốt: *"tạo plan trước, ghi vào plan trước rồi tiếp tục interview"* (#5998).
 
 ## Chia đợt (mỗi đợt có điều kiện dừng + số để lượng giá)
 

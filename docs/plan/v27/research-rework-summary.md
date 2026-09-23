@@ -26,7 +26,7 @@
 | Không cổng nào kiểm nguồn, không vòng phản biện nào cho nghiên cứu | — |
 | **Không có case đo** | thư mục ca benchmark rỗng; judge còn `NotImplementedError` |
 
-## Đã chốt (30 quyết định qua 12 vòng phỏng vấn — ghi đủ trong ADR kèm kế hoạch)
+## Đã chốt (35 quyết định qua 13 vòng phỏng vấn — ghi đủ trong ADR kèm kế hoạch)
 
 Ba mức nghiên cứu với **một con số mức cho cả việc** (mơ hồ ⇒ mức 2) · **đọc nguồn bắt buộc ở mọi mức** (mở thật, lấy
 đoạn liên quan, lưu trích nguyên văn) · **bốn pha** bản đồ → chốt → đào sâu → **phản biện độc lập** · mức 3 luôn **săn
@@ -104,12 +104,15 @@ mới; hồ sơ đọc bằng panel Tệp có sẵn; câu trả lời cuối v�
 | 7 | Chỉ thị giữa lượt + duyệt ngân sách + hai mặt giao diện | gõ "dừng nhánh luật" ⇒ nhánh dừng ở bước kế |
 | 8 | Sửa skill chết, hai tài liệu lệch, bộ ca **R1–R9** + oracle | script chấm chạy được, số vào sổ theo dõi |
 
-## Còn mở — sẽ phỏng vấn tiếp
+## Phỏng vấn đã đóng — không còn mục mở
 
-**Vòng 13:** trần thời gian — ba loại trần (**trần lượt** cả lượt chat · **trần con** mỗi nhánh · **ngân sách việc**) hỏi lại
-bằng ví dụ cụ thể vì chủ nhà chốt *"còn tùy task"* (#6018) · **số sóng nhánh** tối đa mỗi mức (sóng 3–5 đã chốt ở #6017) ·
-**hình dạng công cụ tìm kiếm/tải tự dựng** (chủ nhà chỉ thị tự build, không mua khoá — #6020) · **nhịp kiểm chứng**
-(pha 4 chạy cho mức nào) và **khi nào bật phản biện ý kiến chủ nhà** (#6019).
+**Vòng 13 chốt nốt phương pháp:** **trần mềm theo việc + trần cứng an toàn** 30 phút (mức 2) / 120 phút (mức 3), chạm trần thì
+**báo + hỏi chủ nhà**, lượt mức 3 được **3 600 s** (D-40) · mức 2 = **1 sóng** nhánh (3–5) · mức 3 = **tối đa 3 sóng** (D-41) ·
+**công cụ tìm kiếm tự dựng gộp chân keyless, không mua khoá** (D-42, chủ nhà uỷ quyền tự quyết) · **nhịp kiểm chứng**: mức 2
+cổng máy, mức 3 con phản biện độc lập · **tự động soi ý kiến chủ nhà** (ủng hộ / phản bác / chưa chắc).
+
+*Ba mục nhỏ do tôi tự quyết theo uỷ quyền (chủ nhà chỉnh được — §1 hàng 33 kế hoạch):* ảnh chụp trang giá bắt buộc với TM-1 khi
+giá là số sống và ở mức 3 · luật cross-nhóm theo #5995 · cổng giữa bốn pha là ba mốc báo đã có, không thêm cổng chờ người.
 
 *Đã chốt ở vòng 9–12:* thị trường · học thuật/kỹ thuật · đọc FULL · luật gap hai tầng số · sóng nhánh 3–5 · hồ sơ 1/3/6 tệp
 với hai loại phản biện · bảng MỞ-A…MỞ-H (duyệt nguyên bảng).
@@ -124,5 +127,5 @@ trạng thái mới · không nâng cổng lên `enforce` · không bật mạng
 
 ## Điều kiện bắt đầu
 
-Duyệt kế hoạch (bản 2) ⇒ đợt 1–3 chạy được ngay (không phụ thuộc mảng phương pháp). Mảng phương pháp phỏng vấn tiếp ở
-vòng 12+; chốt xong thì cập nhật **bảng khai báo** và re-submit **bản 3** trước khi thi công các đợt phụ thuộc.
+Duyệt kế hoạch (**bản 3 — phỏng vấn đã đóng**) ⇒ **đợt 1–3 chạy được ngay** (lớp đọc + sổ nguồn, không phụ thuộc gì thêm).
+Ba mục nhỏ do tôi tự quyết nằm ở §1 hàng 33; chủ nhà chỉnh lúc nào cũng được, không chặn thi công.
