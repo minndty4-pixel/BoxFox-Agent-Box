@@ -2228,8 +2228,9 @@ giao diện; danh sách lỗi đầy đủ ở `bug-register.md` §6.34 — BUG-
   lại đúng **100 000 ký tự** với `offsetAlignedTo: 3`, **bốn** biến thể traversal bị từ chối và không rò; oracle
   CLI thoát đúng 0/1/2. Bằng chứng: `/code/.generated_artifacts/v27e1/*` (`probe-2bfedd7.json`,
   `switch-matrix.log`, `box_read_probe.json`, `unit-2bfedd7.log`, `oracle-out-rq1-pass.json`, …).
-- **Hai lỗi THẬT do lượt nghiệm thu tìm ra, sửa trong bản sửa SAU nghiệm thu (commit kế tiếp `2bfedd7`,
-  cùng nhánh — phép chấp nhận đứng ở `2bfedd7`, ba tệp dưới đây chỉ thêm ca ghim và sửa đúng hai nhánh ấy):**
+- **Hai lỗi THẬT do lượt nghiệm thu tìm ra, sửa trong bản sửa SAU nghiệm thu (commit `8b0868b`, ngay sau
+  `2bfedd7` trên cùng nhánh — phép chấp nhận đứng ở `2bfedd7`; `8b0868b` chỉ sửa đúng hai nhánh ấy, sửa một
+  mục `[Low]`, thêm ba ca ghim và ba dòng tài liệu):**
   1. `BOXFOX_WEB_DECODE=off` **nói dối trong payload**: `meta` được dựng TRƯỚC khi đọc header, nên một thân
      bài gzip bị báo `contentEncoding: "identity"`. Nay đọc header/magic TRƯỚC; tắt giải nén vẫn báo
      `gzip` + `decoded: False` — ca ghim trong `test_the_decode_switch_restores_the_old_behaviour`.
@@ -2239,8 +2240,8 @@ giao diện; danh sách lỗi đầy đủ ở `bug-register.md` §6.34 — BUG-
   3. Mục `[Low]` thứ ba sửa luôn: thân bài của **trang lỗi** cũng có thể nén, và `decode(errors='replace')`
      trên byte gzip in mojibake vào chính câu báo lỗi. Nay giải nén trước — ca mới
      `test_an_http_error_body_is_inflated_before_it_reaches_the_message`.
-  Sau ba sửa đổi và ba ca ghim: **1274 passed, 1 deselected trong 214,85 s**; `test_web_reading.py` một mình
-  **36 ca**; nhóm web (`test_web_reading.py` + `test_web_tools.py`) ⇒ **69 passed**.
+  Sau ba sửa đổi và ba ca ghim (`8b0868b`): **1274 passed, 1 deselected trong 214,85 s**; `test_web_reading.py`
+  một mình **36 ca**; nhóm web (`test_web_reading.py` + `test_web_tools.py`) ⇒ **69 passed**.
 - **Chỗ lệch kỳ vọng của plan thì nói thẳng, không làm tròn:**
   - `thuvienphapluat.vn`: A-3 kỳ vọng đầu đọc cứu được **≥ 20 000 ký tự**. Đo lại cùng ngày, muộn hơn:
     `r.jina.ai` **không khoá** nhận đúng *trang chặn bot* 281 ký tự ⇒ ngưỡng ấy không còn đứng được, và
