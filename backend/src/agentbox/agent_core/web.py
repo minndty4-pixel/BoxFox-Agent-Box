@@ -32,7 +32,6 @@ from __future__ import annotations
 import asyncio
 import html
 import http.client
-import inspect
 import ipaddress
 import json
 import os
@@ -49,7 +48,7 @@ from ..observability.system_log import system_log
 from . import reading
 from .limits import (OPENALEX_MAILTO_DEFAULT, OPENALEX_MAILTO_ENV, PAPER_CITATIONS_LIMIT_MAX,
                      PAPER_CITATIONS_RESOLVE_MAX, READ_FIND_MAX_TERMS, READ_OFFSET_MAX,
-                     SEARCH_CACHE_MAX_ENTRIES,
+                     SEARCH_CACHE_MAX_ENTRIES, SEARCH_PAYLOAD_CHARS,
                      SEARCH_CACHE_TTL_SECONDS, SEARCH_QUERY_MAX, SEARCH_RETRY_ATTEMPTS,
                      web_decode_mode, web_read_store_mode, web_reader_mode)
 
@@ -429,26 +428,28 @@ def _missing_search_keys() -> list[str]:
     return ['|'.join(group) for group in SEARCH_KEY_GROUPS if not any(os.environ.get(name) for name in group)]
 
 
-def _call_provider(provider, query: str, count: int, options: dict) -> list[dict]:
-    """Gọi một chân, có hay không có `options`.
+def _row_chars(row: dict) -> int:
+    """Ước lượng ký tự một hàng mang vào payload (khung JSON tính chung một hằng số)."""
+    return sum(len(str(row.get(key) or '')) for key in ('title', 'url', 'snippet', 'provider')) + 60
 
-    Chân cũ (và chân giả trong test) chỉ nhận `(query, count)`; chân hiểu bộ lọc nhận thêm
-    `options`. Đọc chữ ký MỘT lần thay vì thử rồi bắt `TypeError` — bắt `TypeError` sẽ nuốt cả
-    lỗi thật bên trong chân.
+
+def _fit_results(rows: list[dict]) -> tuple[list[dict], int]:
+    """Giữ các hàng ĐẦU trong ngân sách `SEARCH_PAYLOAD_CHARS`, đếm số hàng bị bỏ.
+
+    Cắt ở ĐUÔI (không cắt giữa một hàng) và nói ra bằng `dropped`: runtime cắt kết quả công cụ ở
+    24 000 ký tự giữ 20 000, nên một payload dài hơn ngân sách này sẽ bị cắt giữa JSON — model nhận
+    được một chuỗi JSON hỏng thay vì "ít kết quả hơn". Hàng đầu là hàng của chân chính (`query`),
+    nên cắt đuôi là cắt phần ít liên quan nhất.
     """
-    accepts = _PROVIDER_OPTIONS.get(provider)
-    if accepts is None:
-        try:
-            parameters = inspect.signature(provider).parameters.values()
-            accepts = len([item for item in parameters
-                           if item.kind in (item.POSITIONAL_ONLY, item.POSITIONAL_OR_KEYWORD)]) >= 3
-        except (TypeError, ValueError):  # pragma: no cover - a builtin or a partial without a signature
-            accepts = False
-        _PROVIDER_OPTIONS[provider] = accepts
-    return provider(query, count, options) if accepts else provider(query, count)
-
-
-_PROVIDER_OPTIONS: dict = {}
+    kept: list[dict] = []
+    used = 0
+    for row in rows:
+        size = _row_chars(row)
+        if kept and used + size > SEARCH_PAYLOAD_CHARS:
+            break
+        kept.append(row)
+        used += size
+    return kept, len(rows) - len(kept)
 
 
 def _tokens_for_dedupe(text: str) -> set[str]:
@@ -592,7 +593,7 @@ def _provider_tavily(query: str, count: int, options: dict | None = None) -> lis
             for item in (payload.get('results') or []) if item.get('url')][:count]
 
 
-def _provider_wikipedia(query: str, count: int) -> list[dict]:
+def _provider_wikipedia(query: str, count: int, options: dict | None = None) -> list[dict]:
     lang = _wiki_language(query)
     url = f'https://{lang}.wikipedia.org/w/api.php?' + urllib.parse.urlencode(
         {'action': 'query', 'list': 'search', 'srsearch': query, 'format': 'json',
@@ -612,7 +613,7 @@ def _provider_wikipedia(query: str, count: int) -> list[dict]:
     return results
 
 
-def _provider_stackexchange(query: str, count: int) -> list[dict]:
+def _provider_stackexchange(query: str, count: int, options: dict | None = None) -> list[dict]:
     url = 'https://api.stackexchange.com/2.3/search/advanced?' + urllib.parse.urlencode(
         {'order': 'desc', 'sort': 'relevance', 'q': query, 'site': 'stackoverflow',
          'pagesize': count, 'filter': 'withbody'})
@@ -631,7 +632,7 @@ def _provider_stackexchange(query: str, count: int) -> list[dict]:
     return results
 
 
-def _provider_github(query: str, count: int) -> list[dict]:
+def _provider_github(query: str, count: int, options: dict | None = None) -> list[dict]:
     url = 'https://api.github.com/search/repositories?' + urllib.parse.urlencode({'q': query, 'per_page': count})
     _, _, text, _ = http_request(url, headers={'Accept': 'application/vnd.github+json'})
     payload = json.loads(text or '{}')
@@ -697,7 +698,7 @@ def _paper_row(item: dict, provider: str) -> dict:
             'provider': provider}
 
 
-def _provider_papers(query: str, count: int) -> list[dict]:
+def _provider_papers(query: str, count: int, options: dict | None = None) -> list[dict]:
     url = 'https://api.openalex.org/works?' + urllib.parse.urlencode(
         {'search': query, 'per-page': count, 'mailto': _openalex_mailto(), 'select': PAPER_SELECT})
     _, _, text, _ = http_request(url)
@@ -708,7 +709,7 @@ def _provider_papers(query: str, count: int) -> list[dict]:
     return results
 
 
-def _provider_crossref(query: str, count: int) -> list[dict]:
+def _provider_crossref(query: str, count: int, options: dict | None = None) -> list[dict]:
     """Crossref: hồ sơ DOI đầy đủ nhất, và có `mailto` thì 429 biến mất (đo 2026-09-23)."""
     url = 'https://api.crossref.org/works?' + urllib.parse.urlencode(
         {'query.bibliographic': query, 'rows': count, 'mailto': _openalex_mailto()})
@@ -733,7 +734,7 @@ def _provider_crossref(query: str, count: int) -> list[dict]:
     return results
 
 
-def _provider_europepmc(query: str, count: int) -> list[dict]:
+def _provider_europepmc(query: str, count: int, options: dict | None = None) -> list[dict]:
     """Europe PMC: nguồn y–sinh keyless, và toàn văn JATS (`fullTextXML`) đọc được ở tầng 2."""
     url = 'https://www.ebi.ac.uk/europepmc/webservices/rest/search?' + urllib.parse.urlencode(
         {'query': query, 'format': 'json', 'pageSize': count, 'resultType': 'core'})
@@ -759,7 +760,7 @@ def _provider_europepmc(query: str, count: int) -> list[dict]:
 _ARXIV_ENTRY = re.compile(r'(?s)<entry>(.*?)</entry>')
 
 
-def _provider_arxiv(query: str, count: int) -> list[dict]:
+def _provider_arxiv(query: str, count: int, options: dict | None = None) -> list[dict]:
     """arXiv là đường PHỤ: đo được 406 cho `all:referral` (3 lần) mà 200 cho `all:electron` cùng phiên."""
     url = 'https://export.arxiv.org/api/query?' + urllib.parse.urlencode(
         {'search_query': f'all:{query}', 'max_results': count})
@@ -836,7 +837,7 @@ def _now() -> str:
 def _openalex_work_id(work_id: str, doi: str) -> str:
     """Mã dùng được trong URL OpenAlex: `W…` (nhận cả URL đầy đủ), hoặc `doi:10…` khi chỉ có DOI."""
     if work_id:
-        return work_id.rstrip('/').rsplit('/', 1)[-1] if '/' in work_id.rstrip('/') else work_id
+        return work_id.rstrip('/').rsplit('/', 1)[-1]   # 'W1' → 'W1'; 'https://openalex.org/W1/' → 'W1'
     return f'doi:{doi}'
 
 
@@ -995,8 +996,8 @@ class WebTools:
         cache_key = _search_cache_key(queries, source, count, site, freshness, lang, exclude)
         cached = self._cache_get(cache_key)
         if cached is not None:
-            self.log.write('web.search', source=source, queries=len(queries), resultCount=cached.get('count'),
-                           cached=True)
+            # KHÔNG tự ghi nhật ký ở đây: `run()` → `_log_ok` đã ghi đúng một dòng `web.search`
+            # (kèm `cached`, `sessionId`, `durationMs`); tự ghi thêm là hai dòng cho một lời gọi.
             return {**cached, 'cached': True}
 
         options = {'freshness': freshness, 'lang': lang, 'exclude': exclude}
@@ -1020,6 +1021,7 @@ class WebTools:
             # `exclude` chạy ở phía ta — nó chỉ lọc kết quả, không cắt bớt truy vấn.
             rows = [row for row in rows if _host_of(str(row.get('url') or '')) not in exclude]
         results, deduped = _dedupe_results(rows)
+        results, dropped = _fit_results(results)
         if not results:
             hint = ('Every provider was refused or empty. Try source="wikipedia", "stackoverflow", '
                     'or "github", or fetch a known URL with web_fetch.')
@@ -1030,7 +1032,7 @@ class WebTools:
                            f'every provider refused or returned nothing for {len(queries)} quer'
                            f'{"y" if len(queries) == 1 else "ies"} ({len(errors)} attempt(s))')
         payload = {'query': queries[0], 'queries': queries, 'source': source, 'count': len(results),
-                   'results': results, 'perQuery': per_query, 'deduped': deduped,
+                   'results': results, 'perQuery': per_query, 'deduped': deduped, 'dropped': dropped,
                    'untrusted': True, 'note': UNTRUSTED_NOTE, 'cached': False,
                    'fetchedAt': _now()}
         self._cache_put(cache_key, payload)
@@ -1041,7 +1043,9 @@ class WebTools:
         errors: list[str] = []
         for provider in providers:
             try:
-                results = _retry(lambda: _call_provider(provider, query, count, options),
+                # MỌI chân nhận cùng ba tham số: chân không hiểu bộ lọc vẫn có `options` với mặc định
+                # `None` — không còn lớp dò chữ ký (dò kiểu ấy nuốt `TypeError` thật của chân).
+                results = _retry(lambda: provider(query, count, options),
                                  attempts=SEARCH_RETRY_ATTEMPTS, on_retry=self._log_retry)
             except WebError as exc:
                 errors.append(str(exc))
@@ -1195,7 +1199,7 @@ class WebTools:
                    'contentEncoding': meta.get('contentEncoding', 'identity'),
                    'decoded': bool(meta.get('decoded')), 'partial': bool(meta.get('partial')),
                    'untrusted': True, 'note': UNTRUSTED_NOTE,
-                   'fetchedAt': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
+                   'fetchedAt': _now()}
         payload.update(extra)
         stored = self._remember(payload, url=url, final=final, text=text)
         payload.update({'ref': stored.get('ref'), 'offset': offset, 'more': more,

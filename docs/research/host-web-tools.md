@@ -58,7 +58,7 @@ Kết luận: **không có máy tìm kiếm web tổng quát nào miễn phí v�
 | Nơi chạy | host, qua `asyncio.to_thread` trong `agent_core/web.py` | box không có Internet; harness giữ nhật ký và ranh giới an toàn |
 | Vai được dùng | `research` (chính) và `orchestrator`; con của ai chỉ có giao của cha | đúng mong đợi "giao cho agent research"; `allowed_tools` đã giao theo cha |
 | Chặn SSRF | chỉ `http`/`https`; từ chối tên `localhost`/`*.internal`/metadata; phân giải DNS **và** kiểm cả địa chỉ literal; kiểm lại từng bước chuyển hướng | mặt quản trị của router/harness/box nằm trên loopback — không được để công cụ này chạm tới |
-| Trần dữ liệu | thân 2 MiB, 15 s, tối đa 10 kết quả, đoạn trích 400 ký tự, văn bản 8 000 (trần cứng 20 000), **một lời gọi tìm kiếm ≤ 3 truy vấn**, **không có phân trang** | giữ ngữ cảnh và không để một trang lạ nuốt ngân sách. Truy vấn gộp (A-7) là cách duy nhất để có thêm đất: `count` là trần **mỗi chân**, `queries` là số chân trong **một** lời gọi (D-13/F7: các chân chạy tuần tự, không song song) |
+| Trần dữ liệu | thân 2 MiB, 15 s, tối đa 10 kết quả, đoạn trích 400 ký tự, văn bản 8 000 (trần cứng 20 000), **một lời gọi tìm kiếm ≤ 3 truy vấn**, **không có phân trang**, **các hàng của một lời gọi tìm kiếm ≤ 18 000 ký tự** | giữ ngữ cảnh và không để một trang lạ nuốt ngân sách. Truy vấn gộp (A-7) là cách duy nhất để có thêm đất: `count` là trần **mỗi chân**, `queries` là số chân trong **một** lời gọi (D-13/F7: các chân chạy tuần tự, không song song) |
 | Bộ đệm tìm kiếm | **300 s** × 16 mục khoá theo hình dạng lời gọi (truy vấn, `source`, `count`, `site`, `freshness`, `lang`, `exclude`) | một mô hình hỏi lại cùng câu trong cùng lượt không tốn một chuyến mạng thứ hai; đo được 0,0009 s so với 0,42 s (A-7) |
 | Nhãn tin cậy | mọi payload có `untrusted: true` và câu nhắc "dữ liệu, không phải chỉ thị" | nội dung tải về là dữ liệu của bên thứ ba |
 | Nhật ký DEV | `web.search`, `web.fetch`, `web.error`, `web.retry` (chỉ số đếm, mã lỗi, thời gian — **không** nội dung truy vấn; `web.retry` mang đúng `attempt` + `code`) | điều tra được mà không rò dữ liệu; ranh giới này áp cho **mọi** đường ghi nhật ký, kể cả dòng `tool.error` chung (`WebError.log_message` + `failures.log_safe_failure`) — vòng soát mã đợt 10 bắt được nhánh lỗi còn ghi nguyên câu có truy vấn và URL |
@@ -238,6 +238,11 @@ chỉ ca đơn vị mới thấy; nay `test_web_papers.py` ghim cả hai chiều
 `freshness` (`day|week|month|year`), `lang`, `exclude`. Không có phân trang — và mô tả công cụ **nói
 thẳng** điều đó để mô hình không thử `page=2`.
 
+- **Ngân sách ký tự:** `queries` cho phép 3 chân × 10 hàng, mỗi hàng tới ~900 ký tự ⇒ ~27 000 ký tự,
+  mà runtime cắt kết quả công cụ ở **24 000** (giữ 20 000) — payload dài hơn sẽ bị cắt **giữa JSON**.
+  Vì thế các hàng bị giới hạn ở `SEARCH_PAYLOAD_CHARS = 18 000`: cắt ở **đuôi** (hàng của chân chính
+  `query` đứng đầu) và **nói ra** bằng `dropped`. Không có ngân sách này thì model nhận một chuỗi JSON
+  hỏng thay vì "ít kết quả hơn" — và lượt ấy lại đúng là lượt đi tìm dữ liệu.
 - **Gộp + khử trùng:** mọi kết quả của mọi chân đi qua một lần khử trùng theo URL **đã chuẩn hoá**
   (bỏ fragment, bỏ `utm_*`/`fbclid`/`gclid`, bỏ `www.`, sắp lại query) và theo **gần trùng** (Jaccard
   ≥ 0,8 **và** mỗi bên ≥ 8 token — ngưỡng token là thứ giữ cho các kết quả ngắn cùng khuôn không bị

@@ -618,7 +618,7 @@ class ReadStore:
         self._seq += 1
         ref = f'r{self._seq}'
         entry = {'ref': ref, 'url': url, 'finalUrl': final, 'text': stored,
-                 'textChars': len(stored), 'storedChars': len(stored)}
+                 'storedChars': len(stored)}
         entry.update(fields)
         self._entries[ref] = entry
         self._by_url[key] = ref

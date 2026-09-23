@@ -225,6 +225,57 @@ def test_the_cache_expires_after_the_ttl(tools, monkeypatch):
     assert len(calls) == 2, 'quá TTL thì phải hỏi lại'
 
 
+def test_a_cached_call_writes_exactly_one_dev_log_line(tools, tmp_path, monkeypatch):
+    """Một lời gọi = MỘT dòng `web.search`: nhánh cache từng tự ghi thêm một dòng nữa."""
+    import asyncio
+
+    calls: list[int] = []
+
+    def provider(query, count, options=None):
+        calls.append(1)
+        return [_row('https://example.com/a')]
+
+    _chain(monkeypatch, provider)
+    asyncio.run(tools.run('web_search', {'query': 'x'}, 'sess-cache'))
+    second = asyncio.run(tools.run('web_search', {'query': 'x'}, 'sess-cache'))
+    assert second['cached'] is True and len(calls) == 1
+    lines = _errors(tmp_path)
+    assert [line['event'] for line in lines] == ['web.search', 'web.search']
+    assert lines[-1]['data'].get('cached') is True and lines[-1]['sessionId'] == 'sess-cache'
+
+
+def test_a_wide_search_stays_under_the_runtime_cap_and_reports_dropped_rows(tools, monkeypatch):
+    """3 chân × 10 hàng × đoạn trích 400 ký tự phải KHÔNG vượt ngân sách, và phải NÓI RA số hàng bỏ.
+
+    Runtime cắt kết quả công cụ ở 24 000 ký tự (giữ 20 000): payload dài hơn sẽ bị cắt giữa JSON.
+    """
+    def provider(query, count, options=None):
+        return [_row(f'https://example.com/{query}/{index}', title='T' * 400, snippet='S' * 400)
+                for index in range(count)]
+
+    _chain(monkeypatch, provider)
+    payload = tools.search({'query': 'a', 'queries': ['b', 'c'], 'count': 10})
+    assert payload['count'] == len(payload['results']) and payload['dropped'] > 0
+    assert len(json.dumps(payload, ensure_ascii=False)) < 24_000
+    kept = {row['url'] for row in payload['results']}
+    assert kept <= {row['url'] for row in provider('a', 10)} | \
+        {row['url'] for row in provider('b', 10)} | {row['url'] for row in provider('c', 10)}
+    assert payload['results'][0]['url'].endswith('/a/0'), 'cắt ở ĐUÔI, hàng của chân chính đứng đầu'
+
+
+def test_a_pair_just_over_the_threshold_merges_and_keeps_the_lost_url(tools, monkeypatch):
+    """Biên của luật gần trùng: cặp VỪA qua ngưỡng vẫn gộp, nhưng URL không mất (nằm trong `alsoFrom`)."""
+    shared = 'ho so chuyen tuyen bao hiem y te can gi'
+    first = _row('https://benhvien-a.vn/bai', title=shared,
+                 snippet='cau mo ta chung cua hai trang khac nhau ve thu tuc hanh chinh')
+    second = _row('https://benhvien-b.vn/bai', title=shared,
+                  snippet='cau mo ta chung cua hai trang khac nhau ve thu tuc hanh chinh dai hon')
+    _chain(monkeypatch, lambda query, count, options=None: [first, second])
+    payload = tools.search({'query': 'x'})
+    assert payload['count'] == 1 and payload['deduped'] == 1
+    assert payload['results'][0]['alsoFrom'] == ['https://benhvien-b.vn/bai']
+
+
 # -------------------------------------------------------------------------- thử lại
 
 def test_a_rate_limited_leg_is_retried_and_the_retry_is_logged(tools, tmp_path, monkeypatch):

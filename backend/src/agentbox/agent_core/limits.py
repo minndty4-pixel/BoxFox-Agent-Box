@@ -350,6 +350,12 @@ PAPER_CITATIONS_RESOLVE_MAX = 50
 SEARCH_CACHE_TTL_SECONDS = 300
 SEARCH_CACHE_MAX_ENTRIES = 16
 SEARCH_QUERY_MAX = 3
+# Ngân sách ký tự cho CÁC HÀNG của một lời gọi `web_search`.
+# VÌ SAO CÓ: `queries` cho phép 3 chân × `count` 10 hàng, mỗi hàng tới ~900 ký tự (tiêu đề 400 +
+# đoạn trích 400 + URL + khung JSON) ⇒ ~27 000 ký tự, mà runtime cắt kết quả công cụ ở 24 000
+# (giữ 20 000) ⇒ JSON bị cắt GIỮA CHỪNG và các hàng cuối biến mất im lặng. Ngân sách này giữ
+# payload dưới trần ấy và nói ra số hàng bị bỏ (`dropped`).
+SEARCH_PAYLOAD_CHARS = 18_000
 SEARCH_RETRY_ATTEMPTS = 2
 
 

@@ -336,11 +336,11 @@ def test_the_provider_chain_survives_a_challenge_page(tools, monkeypatch):
     """
     calls = []
 
-    def firecrawl(query, count):
+    def firecrawl(query, count, options=None):
         calls.append('firecrawl')
         json.loads('<html>Just a moment…</html>')  # giống hệt một trang chặn thật
 
-    def brave(query, count):
+    def brave(query, count, options=None):
         calls.append('brave')
         return [{'title': 'kết quả thật', 'url': 'https://example.com/ok', 'snippet': 'x', 'source': 'brave'}]
 
