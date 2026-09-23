@@ -325,6 +325,32 @@ WEB_READER_MODE_UNKNOWN_CODE = 'WEB_READER_MODE_UNKNOWN'
 WEB_READ_STORE_MODE_UNKNOWN_CODE = 'WEB_READ_STORE_MODE_UNKNOWN'
 # Trần của bộ đệm đọc (A-4 dựng `ReadStore` theo đúng con số này); đợt 1 chỉ phơi ra cho giao diện.
 READ_STORE_MAX_ENTRIES = 24
+# ĐO ĐƯỢC 2026-09-23: trang dài nhất đã đo là `docs.python.org/3/whatsnew/3.13.html`
+# (113 936 ký tự) — trần 400 000 ký tự/một bản chứa được nó và cả một bài báo dài, còn trần
+# tổng 4 000 000 ký tự là 24 bản đầy (≈ 16 MB nếu là tiếng Việt UTF-8) trong bộ nhớ tiến trình.
+READ_STORE_ENTRY_MAX_CHARS = 400_000
+READ_STORE_MAX_CHARS = 4_000_000
+# `offset` của `read_source`/`web_fetch`: kẹp trần để một con số sai không thành phép cắt im lặng.
+READ_OFFSET_MAX = 5_000_000
+# `find` nhận tối đa bốn từ khoá một lời gọi (nhiều hơn thì mỗi từ chỉ còn một mẩu vụn).
+READ_FIND_MAX_TERMS = 4
+# --- Vòng 27 (đợt 2, A-6/A-7) — nguồn học thuật và lớp tìm kiếm -------------------------------
+# OpenAlex 'polite pool': `mailto` là địa chỉ liên hệ, KHÔNG phải khoá. Mặc định là một địa chỉ
+# trung tính của dự án — không lấy địa chỉ cá nhân của ai (đo 2026-09-23: Crossref 429 rồi 200 khi
+# có `mailto`; OpenAlex trả lời nhanh hơn cùng lúc).
+OPENALEX_MAILTO_ENV = 'BOXFOX_OPENALEX_MAILTO'
+OPENALEX_MAILTO_DEFAULT = 'boxfox-agent@example.invalid'
+# `paper_citations`: `limit` là số hàng trả về (1–25); một lời gọi `backward` phân giải tối đa 50
+# mã tham chiếu trong MỘT request `filter=openalex_id:…` (đo: 54 tham chiếu cho W2741809807).
+PAPER_CITATIONS_LIMIT_MAX = 25
+PAPER_CITATIONS_RESOLVE_MAX = 50
+# Lớp tìm kiếm (A-7): một cache trong tiến trình là chỗ duy nhất chống đốt chân keyless (đo: cùng
+# truy vấn tốn ~0,7 s mỗi lần), và `web_search` chạy tối đa ba truy vấn TUẦN TỰ (D-13/F7: không
+# tool song song trong một bước).
+SEARCH_CACHE_TTL_SECONDS = 300
+SEARCH_CACHE_MAX_ENTRIES = 16
+SEARCH_QUERY_MAX = 3
+SEARCH_RETRY_ATTEMPTS = 2
 
 
 def _web_switch(name, modes, default):

@@ -3535,7 +3535,7 @@ class HarnessRuntime(RuntimeCommands):
             return await self.await_children(session, args)
         if name == 'delegate_task':
             return await self.delegate(session, args)
-        if name in {'web_search', 'web_fetch'}:
+        if name in {'web_search', 'web_fetch', 'read_source', 'paper_citations'}:
             self.web_switch_notices(sid)
             return await self.web.run(name, args, sid)
         if name == 'browser_use' and session['role'] == 'research' and args.get('action') not in {'navigate', 'snapshot', 'screenshot'}:

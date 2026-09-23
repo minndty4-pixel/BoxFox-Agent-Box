@@ -2307,3 +2307,54 @@ giao diện; danh sách lỗi đầy đủ ở `bug-register.md` §6.34 — BUG-
   `--sources` (sổ nguồn JSONL), `--transcript` (nhật ký: nhận cả dòng `tool_end` của bảng `events` lẫn
   dòng trần), `--answer`, `--rq`. Chạy **sống** `RQ1–RQ8` còn chờ đợt 3 (chưa có `sources.jsonl` thật)
   — ghi ở `docs/plan/v27/research-quality-tests.md` §5.
+
+## Vòng 27 — đợt 2: bộ đệm đọc, tham chiếu học thuật, tìm kiếm gộp nhiều chân (2026-09-23, tối)
+
+- Phạm vi: A-4 (`ReadStore` + `read_source`), A-6 (`paper_citations` + chuỗi học thuật bốn chân +
+  `_retry`), A-7 (`web_search` nhiều truy vấn, khử trùng, `site`/`freshness`/`lang`/`exclude`, cache,
+  kể tên khoá thiếu). Cây mã: cùng nhánh `vorflux/v27-research-rework`, tiếp sau `8b0868b`.
+- **A-4 — ĐO ĐƯỢC (thước đo lần 8, `--only store`)**: `docs.python.org/3/whatsnew/3.13.html` ⇒
+  `stored=113936`, ghép **15 mẩu** ra `joined=113936` (**khớp từng ký tự**), `find='asyncio'` ⇒ **1**
+  vị trí khớp, **0,14 s**. Cùng trang, trước đợt 2 model chỉ thấy **8 000** ký tự (7 %). Trần **một
+  lời gọi** vẫn 8 000 / 20 000 ký tự: cái đổi là **số lượt gọi**, không phải kích thước mỗi lượt.
+- **Thước đo nay chạy CẢ nhóm `store` trong lượt đầy đủ.** Trước đó `wanted = args.only or
+  list(GROUPS)` mà `GROUPS` không có `'store'` ⇒ nhóm ấy **chưa bao giờ** được đo trong lượt đầy đủ
+  (“12/12 đạt ngưỡng” vẫn thiếu một nhóm). Đã sửa thành `[*GROUPS, 'store']`.
+- **A-7 — ĐO ĐƯỢC (keyless, hai truy vấn, `count=5`)**: `hồ sơ chuyển tuyến bảo hiểm y tế` +
+  `site:chinhphu.vn hồ sơ chuyển tuyến` ⇒ **10 kết quả**, `perQuery [5, 5]`, `deduped 0`,
+  `duplicateUrls 0`, `distinctNormalizedUrls 10`, `providers ['firecrawl']`, **0,85 s** (ngưỡng plan:
+  ≥ 6 kết quả, 0 URL trùng). Lượt lặp lại: **0,0009 s**, `cached: true`, `fetchedAt` y hệt (lượt đầu
+  0,42 s). Bằng chứng: `/var/tmp/v27/a7_live.json`, `/var/tmp/v27/a7_cache_live.py`.
+- **Chân keyless bị GIỚI HẠN NHỊP — nói thẳng**: đo lại muộn hơn cùng ngày (23:19 UTC), Firecrawl
+  không khoá **từ chối bằng 429** hai lượt liên tiếp; `perQuery` ghi rõ truy vấn nào hỏng và thông
+  điệp cuối **kể tên khoá thiếu**. Vì thế ngưỡng **cứng** của thước đo lần 8 là hình dạng mã (2 truy
+  vấn chạy, 0 URL trùng, lượt lặp ăn cache); con số “≥ 6 kết quả” được ghi là **số đo có ngày**, không
+  thành ngưỡng cứng — nếu lấy 6 làm ngưỡng cứng thì một thay đổi của dịch vụ miễn phí sẽ bị báo thành
+  “hồi quy” của mã. Lượt ấy in `11/12 đạt ngưỡng` và thoát mã **1**.
+- **Một lỗi THẬT do ca đơn vị bắt ngay khi viết**: `PAPER_CITATIONS_RESOLVE_MAX` được **dùng** ở nhánh
+  `backward` (`web.py:1332`) nhưng **thiếu trong danh sách import** ⇒ mọi lời gọi `backward` có tham
+  chiếu ném `NameError`. Không lượt sống nào chạm nhánh ấy (thước đo chỉ chạy `forward`), nên chỉ ca
+  đơn vị mới thấy — đúng lý do tồn tại của `test_web_papers.py`. Đã sửa (import) và ghim cả hai chiều.
+- **Bộ đơn vị mới**: `backend/tests/unit/test_web_read_store.py` (**20 ca**, A-4),
+  `backend/tests/unit/test_web_search_multi.py` (**22 ca**, A-7 — gồm ca mới: một chân bị từ chối
+  **không** được im lặng khi chân khác còn kết quả), `backend/tests/unit/test_web_papers.py`
+  (**20 ca**, A-6 — hai chiều, trần, tham số hỏng, `_retry` + `Retry-After`, chuỗi bốn chân, arXiv).
+  Nhóm web: `test_web_read_store.py` + `test_web_search_multi.py` + `test_web_papers.py` +
+  `test_web_tools.py` + `test_web_reading.py` ⇒ **131 passed in 1,84 s**; `test_web_search_multi.py`
+  một mình ⇒ **22 passed in 0,08 s**; `test_web_read_store.py` ⇒ **20 passed in 0,15 s**.
+- **Ba chỗ ghim số công cụ** lên **27** (`test_journal_tools.py:63`, `test_runtime_info.py:154`,
+  `:166`): `read_source` + `paper_citations` vào `ORCHESTRATOR_TOOLS` và nhóm `webResearch`.
+- **Bộ đơn vị đầy đủ** (cùng lệnh, từ gốc repo): trên cây đợt 2 **trước** tệp `test_web_papers.py` +
+  một ca mới + bản sửa import ⇒ **1315 passed, 1 deselected in 219,30 s** (`/var/tmp/v27/unit_run_6.log`);
+  trên cây **chốt đợt 2** ⇒ **1336 passed, 1 deselected in 215,02 s** (`/var/tmp/v27/unit_run_7.log`). Mốc đợt 1: **1274 passed**.
+- **Tài liệu sửa cùng lượt** (ba tệp): `docs/research/host-web-tools.md` §2 (ba chân học thuật +
+  Exa/Parallel), §3 (trần dữ liệu: ≤ 3 truy vấn, không phân trang; bộ đệm tìm kiếm 300 s; nhật ký
+  thêm `web.retry`), §4.4 (**sửa lời nói SAI** “bộ đệm đọc chưa có trong cây này” — nay đã có kèm số
+  đo), §4.8 (A-4 + A-6, gồm cả lỗi import ở trên), §4.9 (A-7, gồm số đo sống và cảnh báo giới hạn
+  nhịp của chân keyless); `docs/architecture/tools-and-skills.md` (Nhóm 6: `web_extract`/`max_results`
+  đã cũ ⇒ `web_fetch` + `read_source` + `paper_citations`, `web_search` nay có `queries`/`site`/
+  `freshness`/`lang`/`exclude`); tệp này.
+- **Bất biến giữ nguyên**: D-13/F7 (các chân chạy **tuần tự** trong một lời gọi, không công cụ song
+  song trong một step); nhật ký DEV **không** chứa truy vấn/URL (`web.retry` chỉ `attempt` + `code`);
+  `untrusted: true` + `note` vẫn có trong mọi payload; SSRF vẫn **ném** lỗi chứ không lùi về đầu đọc;
+  `exclude` **không** bật mặc định (#5991); Exa/Parallel chỉ chạy khi có khoá (#5978/#6020/#6023).

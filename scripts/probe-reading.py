@@ -9,8 +9,9 @@ một ngưỡng ĐÃ CHỐT bị phá. Đây là công cụ để chủ nhà t�
     ./.venv/bin/python scripts/probe-reading.py --only gzip
     ./.venv/bin/python scripts/probe-reading.py --only gzip reader --json /var/tmp/reading.json
 
-Nhóm `store` (bộ đệm đọc + `read_source`) chỉ có nghĩa sau đợt 2; chạy `--only store` trước lúc đó
-sẽ báo "chưa có" chứ không giả vờ đã đo.
+Nhóm `store` (bộ đệm đọc + `read_source`) có từ đợt 2 (A-4): nó tải một trang DÀI rồi ghép các mẩu
+lại, phải bằng đúng số ký tự đã lưu. Chạy trên cây chưa có A-4 thì nhóm này báo "chưa có" chứ không
+giả vờ đã đo.
 """
 from __future__ import annotations
 
@@ -22,6 +23,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'backend/src'))
 
+from agentbox.agent_core.reading import normalize_url  # noqa: E402
 from agentbox.agent_core.web import WebError, WebTools  # noqa: E402
 
 # Ngưỡng ĐÃ CHỐT — số ở đây là số đo ngày 2026-09-23 (xem docs/tracking/test-rounds.md §vòng 27).
@@ -66,14 +68,30 @@ GROUPS: dict[str, list[dict]] = {
          'minChars': 5000, 'maxJunk': 0.05, 'minTables': 5, 'expectTier': 'jats'},
     ],
     'search': [
-        # Nền tìm kiếm không khoá: đo số kết quả, không đo chất lượng (đợt 2 mới gộp nhiều chân).
         {'label': 'web_search (firecrawl)', 'source': 'web', 'query': 'bảo hiểm y tế chuyển tuyến',
          'minResults': 1},
         {'label': 'web_search (wikipedia)', 'source': 'wikipedia', 'query': 'bảo hiểm y tế',
          'minResults': 1},
+        # A-7: hai truy vấn keyless gộp lại, khử trùng theo URL chuẩn hoá, và lời gọi LẶP phải ăn cache.
+        # Ngưỡng 6 kết quả là ngưỡng nghiệm thu đã chốt trong plan (§7).
+        # Ngưỡng CỨNG ở đây là hình dạng của mã (2 truy vấn chạy, 0 URL trùng, lời gọi lặp ăn cache),
+        # còn con số "≥ 6 kết quả" của plan đã đo được lúc 23:15 UTC ngày 2026-09-23 (10 kết quả).
+        # Chân keyless bị GIỚI HẠN NHỊP (đo lại lúc 23:19: hai lượt bị từ chối 429) nên lấy 6 làm
+        # ngưỡng cứng sẽ biến một thay đổi của dịch vụ bên ngoài thành "hồng quy" của mã.
+        {'label': 'web_search gộp 2 truy vấn', 'source': 'web', 'count': 5, 'minResults': 3,
+         'noDuplicateUrls': True, 'expectCache': True,
+         'query': 'hồ sơ chuyển tuyến bảo hiểm y tế',
+         'queries': ['site:chinhphu.vn hồ sơ chuyển tuyến']},
     ],
 }
-# Nguồn mặc định cho nhóm `store`: chỉ có sau A-4 (đợt 2).
+
+# Nhóm `store` (A-4): chỉ có nghĩa khi `read_source` đã ở trong cây.
+STORE_TARGETS: list[dict] = [
+    # Trang DÀI thật: `docs.python.org/3/whatsnew/3.13.html` = 113 936 ký tự văn bản (đo 2026-09-23),
+    # mà đợt 1 chỉ đưa 8 000 ký tự (7 %) vào ngữ cảnh. Ngưỡng của A-4: ghép các mẩu phải ĐỦ bài.
+    {'label': 'docs.python.org 3.13 (mẩu 8 000)', 'url': 'https://docs.python.org/3/whatsnew/3.13.html',
+     'slice': 8000, 'find': 'asyncio', 'minStored': 100000},
+]
 STORE_READY = hasattr(WebTools, 'read_source')
 
 
@@ -121,19 +139,79 @@ def measure_fetch(tools: WebTools, target: dict) -> dict:
     return row
 
 
+def measure_store(tools: WebTools, target: dict) -> dict:
+    """Đo bộ đệm đọc: tải một lần, ghép các mẩu, rồi `find` một từ khoá.
+
+    Ngưỡng là **bằng đúng** `storedChars`: ghép thiếu một mẩu nghĩa là `read_source` mất chữ — đúng
+    thứ mà A-4 sinh ra để chữa (trước đợt 1-2: trang extract 113 936 ký tự, model chỉ thấy 8 000).
+    """
+    started = time.time()
+    row = {'label': target['label'], 'url': target['url'], 'group': 'store'}
+    try:
+        first = tools.fetch({'url': target['url'], 'maxChars': target['slice']})
+    except WebError as exc:
+        row |= {'seconds': round(time.time() - started, 2), 'error': str(exc)[:300],
+                'problems': ['lỗi — không đo được']}
+        return row
+    ref = first.get('ref')
+    pieces = [first.get('text') or '']
+    offset = first.get('nextOffset')
+    calls = 1
+    while ref and offset and calls < 40:
+        piece = tools.read_source({'ref': ref, 'offset': offset, 'maxChars': target['slice']})
+        calls += 1
+        pieces.append(piece.get('text') or '')
+        offset = piece.get('nextOffset')
+        if not piece.get('more'):
+            break
+    joined = ''.join(pieces)
+    stored = first.get('storedChars') or 0
+    hit = tools.read_source({'ref': ref, 'find': [target['find']]}) if ref else {}
+    row |= {'seconds': round(time.time() - started, 2), 'storedChars': stored, 'joinedChars': len(joined),
+            'calls': calls, 'findMatches': len(hit.get('matches') or []), 'ref': ref}
+    problems = []
+    if stored < target.get('minStored', 0):
+        problems.append(f"storedChars {stored} < {target['minStored']}")
+    if len(joined) != stored:
+        problems.append(f"ghép {len(joined)} != storedChars {stored}")
+    if not (hit.get('matches') or []):
+        problems.append(f"`find` {target['find']!r} không khớp")
+    row['problems'] = problems
+    return row
+
+
 def measure_search(tools: WebTools, target: dict) -> dict:
     started = time.time()
     row = {'label': target['label'], 'group': 'search'}
+    args = {'query': target['query'], 'source': target['source']}
+    if target.get('queries'):
+        args['queries'] = list(target['queries'])
+    if target.get('count'):
+        args['count'] = target['count']
     try:
-        payload = tools.search({'query': target['query'], 'source': target['source']})
+        payload = tools.search(args)
     except WebError as exc:
         row |= {'seconds': round(time.time() - started, 2), 'error': str(exc)[:300], 'problems': ['lỗi']}
         return row
     results = payload.get('results') or []
+    urls = [item.get('url') or '' for item in results]
+    duplicates = len(urls) - len({normalize_url(url) for url in urls})
+    failed = [entry['query'] for entry in (payload.get('perQuery') or []) if entry.get('error')]
     row |= {'seconds': round(time.time() - started, 2), 'results': len(results),
-            'source': payload.get('source') or target['source']}
-    row['problems'] = ([] if len(results) >= target.get('minResults', 1)
-                       else [f"results {len(results)} < {target['minResults']}"])
+            'source': payload.get('source') or target['source'],
+            'queries': len(payload.get('queries') or []), 'deduped': payload.get('deduped', 0),
+            'duplicateUrls': duplicates, 'failedQueries': failed}
+    if target.get('expectCache'):
+        started_cache = time.time()
+        again = tools.search(dict(args))
+        row |= {'cachedSeconds': round(time.time() - started_cache, 4), 'cached': bool(again.get('cached'))}
+    problems = ([] if len(results) >= target.get('minResults', 1)
+                else [f"results {len(results)} < {target['minResults']}"])
+    if target.get('noDuplicateUrls') and duplicates:
+        problems.append(f'{duplicates} URL trùng sau khử trùng')
+    if target.get('expectCache') and not row.get('cached'):
+        problems.append('lời gọi lặp KHÔNG ăn cache')
+    row['problems'] = problems
     return row
 
 
@@ -143,25 +221,47 @@ def main() -> int:
                         help='chỉ chạy nhóm này (mặc định: hết)')
     parser.add_argument('--json', help='ghi số đo ra tệp JSON')
     args = parser.parse_args()
-    wanted = args.only or list(GROUPS)
+    # Chạy hết nghĩa là hết CẢ nhóm `store` (A-4): trước lượt đo 8, nhóm này không bao giờ nằm trong
+    # lượt chạy đầy đủ nên "12/12 đạt ngưỡng" vẫn thiếu một nhóm.
+    wanted = args.only or [*GROUPS, 'store']
 
     tools = WebTools()
     rows: list[dict] = []
+    queue: list[tuple[str, dict]] = []
     if 'store' in wanted:
-        print('store: bộ đệm đọc + `read_source` là việc của đợt 2 (A-4)' if not STORE_READY
-              else 'store: đã có `read_source`')
         wanted = [name for name in wanted if name != 'store']
-
+        if not STORE_READY:
+            print('store: bộ đệm đọc + `read_source` chưa có trong cây này (A-4, đợt 2)')
+        else:
+            queue.extend(('store', target) for target in STORE_TARGETS)
     for name in wanted:
-        for target in GROUPS[name]:
-            row = measure_search(tools, target) if name == 'search' else measure_fetch(tools, target)
-            rows.append(row)
-            print(f"{row['label']:34s} status={str(row.get('status')):>5s} "
-                  f"chars={str(row.get('textChars') or row.get('results')):>7s} "
-                  f"junk={str(row.get('junkRatio')):>6s} reader={str(row.get('reader')):>12s} "
-                  f"verdict={str(row.get('verdict')):>11s} {row['seconds']}s"
-                  + (f"  ⚠ {'; '.join(row['problems'])}" if row.get('problems') else ''))
+        queue.extend((name, target) for target in GROUPS[name])
 
+    for name, target in queue:
+        if name == 'store':
+            row = measure_store(tools, target)
+        else:
+            row = measure_search(tools, target) if name == 'search' else measure_fetch(tools, target)
+        rows.append(row)
+        if name == 'store':
+            line = (f"{row['label']:34s} stored={str(row.get('storedChars')):>7s} "
+                    f"ghép={str(row.get('joinedChars')):>7s} mẩu={str(row.get('calls')):>3s} "
+                    f"find={str(row.get('findMatches')):>2s} {row['seconds']}s")
+        elif row.get('failedQueries'):
+            line = (f"{row['label']:34s} results={str(row.get('results')):>3s} "
+                    f"queries={str(row.get('queries')):>2s} trùng={str(row.get('duplicateUrls')):>2s} "
+                    f"chân hỏng={len(row['failedQueries'])} {row['seconds']}s")
+        else:
+            line = (f"{row['label']:34s} status={str(row.get('status')):>5s} "
+                    f"chars={str(row.get('textChars') or row.get('results')):>7s} "
+                    f"junk={str(row.get('junkRatio')):>6s} reader={str(row.get('reader')):>12s} "
+                    f"verdict={str(row.get('verdict')):>11s} {row['seconds']}s")
+        print(line + (f"  ⚠ {'; '.join(row['problems'])}" if row.get('problems') else ''))
+
+    partial = [row for row in rows if row.get('failedQueries')]
+    if partial:
+        print(f"\n{len(partial)} dòng có chân bị từ chối (kết quả một phần): "
+              + ', '.join(row['label'] for row in partial))
     broken = [row for row in rows if row.get('problems')]
     failed = [row for row in rows if row.get('error')]
     print(f"\n{len(rows) - len(broken)}/{len(rows)} đạt ngưỡng"

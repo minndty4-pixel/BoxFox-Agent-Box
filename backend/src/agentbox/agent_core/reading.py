@@ -19,6 +19,11 @@ Five read tiers, best first (chốt #6010/#6011):
 3. ``pdf-table`` — host-side PDF with ``pdfplumber``; tables rebuilt, labelled "bảng trích tự động"
 4. ``reader-text`` — ``r.jina.ai`` text only; tables are **lost** (measured: 0 rows with ``|``)
 5. ``page-image`` — page images + image reading; last resort, not built in this batch
+
+The same module owns the **read store** (``ReadStore``, A-4): the full body of a page that was
+fetched once, kept in process memory so a long document can be read in slices by ``read_source``
+without a second network call (measured: 113 936 characters for the Python 3.13 whatsnew page,
+of which one call can carry 20 000 at most).
 """
 
 import io
@@ -26,7 +31,10 @@ import re
 import urllib.parse
 import unicodedata
 import zlib
+from collections import OrderedDict
 from html.parser import HTMLParser
+
+from .limits import READ_STORE_ENTRY_MAX_CHARS, READ_STORE_MAX_CHARS, READ_STORE_MAX_ENTRIES
 
 # --------------------------------------------------------------------- constants
 
@@ -529,3 +537,123 @@ def pdf_to_markdown(data: bytes, *, max_pages: int = 40, max_tables: int = 24,
         body = body[:max_chars]
         info['truncated'] = True
     return body, info
+
+# ------------------------------------------------------------------ read store (A-4)
+#
+# ĐO ĐƯỢC 2026-09-23: `docs.python.org/3/whatsnew/3.13.html` dựng được 113 936 ký tự nhưng
+# một lời gọi chỉ mang về 20 000 (trần ngữ cảnh), và 8 000 đầu là râu ria điều hướng. Đầu đọc
+# `r.jina.ai` trả CẢ tài liệu trong một lời gọi (`x-start` không cắt) ⇒ nút thắt nằm phía ta.
+# Bộ đệm này giữ bản đầy đủ trong bộ nhớ tiến trình (KHÔNG ghi đĩa) để `read_source` đọc tiếp
+# bằng `offset` mà không phải tải lại trang.
+
+def fold_text(value: str) -> str:
+    """Bỏ dấu + hạ chữ cho phép so khớp #5966, **giữ nguyên độ dài** để offset còn dùng được."""
+    out = []
+    for ch in value:
+        low = ch.lower().replace('đ', 'd')
+        if len(low) != 1:           # vài ký tự lạ đổi độ dài khi hạ chữ: giữ nguyên bản gốc
+            low = ch
+        out.append(unicodedata.normalize('NFD', low)[0])
+    return ''.join(out)
+
+
+def find_terms(text: str, terms, *, limit: int = 4) -> list[dict]:
+    """Vị trí của từng từ khoá tìm được; `offset` tính trên `text` GỐC, không phải bản bỏ dấu."""
+    folded = fold_text(text)
+    hits: list[dict] = []
+    for term in list(terms or [])[:limit]:
+        needle = fold_text(str(term).strip())
+        if not needle:
+            continue
+        at = folded.find(needle)
+        if at < 0:
+            continue
+        hits.append({'term': str(term).strip(), 'offset': at})
+    hits.sort(key=lambda item: item['offset'])
+    return hits[:limit]
+
+
+_TRACKING_KEYS = ('fbclid', 'gclid')
+
+
+def normalize_url(url: str) -> str:
+    """Khoá bộ đệm: bỏ fragment + tham số theo dõi, GIỮ truy vấn (nhiều trang chỉ khác `?ItemID=`)."""
+    parts = urllib.parse.urlsplit(str(url or '').strip())
+    kept = [(key, value) for key, value in urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+            if not key.lower().startswith('utm_') and key.lower() not in _TRACKING_KEYS]
+    netloc = parts.netloc.lower()
+    if netloc.startswith('www.'):
+        netloc = netloc[4:]
+    return urllib.parse.urlunsplit((parts.scheme.lower(), netloc, parts.path,
+                                    urllib.parse.urlencode(kept), ''))
+
+
+class ReadStore:
+    """Bản đầy đủ của những trang đã tải, trong bộ nhớ tiến trình, LRU theo lần chạm.
+
+    Trần (`limits.py`): ``READ_STORE_MAX_ENTRIES`` bản · ``READ_STORE_ENTRY_MAX_CHARS`` ký tự một
+    bản · ``READ_STORE_MAX_CHARS`` tổng. KHÔNG ghi đĩa: tiến trình host khởi động lại là bộ đệm
+    rỗng, và một `ref` cũ trở thành `WEB_READ_REF_UNKNOWN` — nói thẳng, không đoán.
+    """
+
+    def __init__(self, *, max_entries: int = READ_STORE_MAX_ENTRIES,
+                 entry_max_chars: int = READ_STORE_ENTRY_MAX_CHARS,
+                 max_chars: int = READ_STORE_MAX_CHARS):
+        self.max_entries = max(1, int(max_entries))
+        self.entry_max_chars = max(1, int(entry_max_chars))
+        self.max_chars = max(1, int(max_chars))
+        self._entries: OrderedDict = OrderedDict()
+        self._by_url: dict = {}
+        self._seq = 0
+        self.total_chars = 0
+
+    # ------------------------------------------------------------------ write
+    def put(self, *, url: str, final: str, text: str, **fields) -> dict:
+        """Lưu một bản đọc (đã cắt theo trần MỘT bản) và trả về bản ghi kèm `ref`."""
+        stored = str(text or '')[: self.entry_max_chars]
+        key = normalize_url(final or url)
+        old = self._by_url.get(key)
+        if old is not None:
+            self._drop(old)
+        self._seq += 1
+        ref = f'r{self._seq}'
+        entry = {'ref': ref, 'url': url, 'finalUrl': final, 'text': stored,
+                 'textChars': len(stored), 'storedChars': len(stored)}
+        entry.update(fields)
+        self._entries[ref] = entry
+        self._by_url[key] = ref
+        self.total_chars += len(stored)
+        self._evict()
+        return entry
+
+    def _drop(self, ref: str) -> None:
+        entry = self._entries.pop(ref, None)
+        if entry is None:
+            return
+        self.total_chars -= len(entry.get('text') or '')
+        key = normalize_url(entry.get('finalUrl') or entry.get('url') or '')
+        if self._by_url.get(key) == ref:
+            self._by_url.pop(key, None)
+
+    def _evict(self) -> None:
+        while self._entries and (len(self._entries) > self.max_entries
+                                 or self.total_chars > self.max_chars):
+            oldest = next(iter(self._entries))
+            self._drop(oldest)
+
+    # ------------------------------------------------------------------- read
+    def get(self, ref: str) -> dict | None:
+        """Bản ghi theo `ref`, có chạm LRU."""
+        entry = self._entries.get(str(ref or '').strip())
+        if entry is None:
+            return None
+        self._entries.move_to_end(entry['ref'])
+        return entry
+
+    def by_url(self, url: str) -> dict | None:
+        """Bản ghi gần nhất của một URL (đã chuẩn hoá), có chạm LRU."""
+        ref = self._by_url.get(normalize_url(url))
+        return self.get(ref) if ref else None
+
+    def __len__(self) -> int:
+        return len(self._entries)

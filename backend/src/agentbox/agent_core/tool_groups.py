@@ -25,7 +25,7 @@ TOOL_GROUPS = [
                'browser_use', 'inspect_element'],
      'alwaysOn': False},
     {'key': 'webResearch',
-     'tools': ['web_search', 'web_fetch'],
+     'tools': ['web_search', 'web_fetch', 'read_source', 'paper_citations'],
      'alwaysOn': False},
     {'key': 'delegationPlans',
      'tools': ['delegate_task', 'session_search', 'write_plan', 'plan_verify', 'journal_write', 'journal_brief'],
