@@ -1,7 +1,7 @@
 """Vòng 24 — dạng câu trả lời DỜI khỏi prompt: kỹ năng `final-report` giữ nó, prompt chỉ còn MỘT
 dòng bằng chứng (phiên chính) và MỘT con trỏ ở bước tổng kết của lượt có việc (P1/P2 vòng 24).
 
-Chủ nhà chốt (D-26…D-32, `owner-decisions.md` §4.1): form năm phần bị bỏ; model tự chọn phần hợp
+Chủ nhà chốt (D-26…D-32, `owner-decisions.md` §4.2): form năm phần bị bỏ; model tự chọn phần hợp
 lượt, không in phần rỗng; lượt chỉ hỏi thì trả lời như thường, không báo cáo; tóm tắt do model viết
 + "View details" phải chạy lại; ảnh bằng chứng đóng thân câu trả lời.
 
@@ -16,9 +16,8 @@ Ba thứ dưới đây sống ở tầng PROMPT/KỸ NĂNG và phải kiểm đ�
 - **Con trỏ ở bước tổng kết** — bản nhắc việc của LƯỢT trỏ tới kỹ năng, nên nó chỉ xuất hiện ở lượt có
   việc: lượt chỉ hỏi không bao giờ thấy nó (recap rỗng, xem các ca P1.5 giữ nguyên ở dưới).
 
-Ghi chú lịch sử: bản kế hoạch v2 của chính vòng này có nhắc một hằng `ANSWER_PART_MENU` để chứa menu
-ngay trong prompt, nhưng hằng đó CHƯA BAO GIỜ được tạo (bản v3 bỏ ý đó — menu nằm trong kỹ năng), nên
-ở đây không có ghim "vắng mặt" cho nó: ghim một thứ chưa từng tồn tại là ghim vào khoảng không.
+Ghi chú lịch sử: kế hoạch v2 có nhắc một hằng `ANSWER_PART_MENU` cho menu trong prompt, nhưng hằng đó
+chưa từng tồn tại (v3 bỏ ý đó) nên ở đây không có ghim "vắng mặt" cho nó.
 """
 from __future__ import annotations
 
@@ -133,7 +132,7 @@ def test_hai_hang_so_cua_khuon_nam_phan_da_bi_xoa_han():
     assert not hasattr(runtime_module, 'FINAL_REPORT_GUIDANCE')
 
 
-def test_chu_da_nghi_huu_khong_con_o_bon_cho(tmp_path):
+def test_chu_da_nghi_huu_khong_con_o_bon_cho():
     """P2(a) — bốn câu của khuôn cũ vắng ở BỐN chỗ: runtime.py, SOP, `AGENT.md` §3.4, kỹ năng.
 
     Đọc thẳng TỆP `runtime.py` (không chỉ hằng số) vì khuôn cũ nằm rải ở cả hằng số lẫn SOP: một bản
@@ -208,6 +207,11 @@ def test_ky_nang_final_report_giu_menu_va_luat_mo_bai():
         assert phrase in content, f'kỹ năng thiếu luật {phrase!r}'
     # Chữ trong kỹ năng viết hoa "Never print an empty part" — luật là luật, không phụ thuộc viết hoa.
     assert 'never print an empty part' in content.lower(), 'D-27: hết việc thì không in mục rỗng'
+    # D-26: menu KHÔNG được trôi ngược thành khuôn — cấm câu bắt dùng đủ năm phần. Các câu dưới đây
+    # không có trong bản hiện tại, nên ghim này chỉ đỏ khi ai đó viết lại kỹ năng thành khuôn cứng.
+    for phrase in ('all five', 'five parts', 'every part', 'in this order', 'must use'):
+        assert phrase not in content.lower(), f'D-26: menu đã thành khuôn cứng ({phrase!r})'
+    assert 'pick by content, not habit' in content.lower(), 'D-26: luật tự chọn phần phải còn'
     assert SKILL_ID in DEFAULT_SKILLS, 'D-31: kỹ năng Ở LẠI DEFAULT_SKILLS'
 
 
@@ -228,7 +232,7 @@ def test_ten_ky_nang_co_trong_khoi_enabled_skills_cua_prompt(tmp_path):
     store.close()
 
 
-def test_agent_md_muc_34_tro_ve_ky_nang_chu_khong_chep_khuon(tmp_path):
+def test_agent_md_muc_34_tro_ve_ky_nang_chu_khong_chep_khuon():
     """P2(c) — `AGENT.md` §3.4 (bản NẠP THẬT cho mọi vai) chỉ TRỎ về kỹ năng, không dựng khuôn thứ hai.
 
     §3.4 cố ý nói lại luật bằng lời của nó (kể cả luật markdown-only của vòng 23) nhưng KHÔNG được
@@ -354,9 +358,10 @@ def test_dong_bang_chung_khong_bi_nuot_khi_danh_sach_ky_nang_duoc_dung_lai(tmp_p
     sid = session['id']
     seen = client.requests[0][0]['content']
 
+    # Đếm `ANSWER_EVIDENCE_LINE` do `test_dong_bang_chung_dung_mot_lan_va_nam_sau_answer_length` ghim;
+    # ở đây chỉ giữ phần thuộc bài này: khối kỹ năng không được nhân đôi khi prompt bị dựng lại.
     assert seen == system_prompt(runtime, session), 'prompt trong transcript phải là prompt mô hình đọc'
     assert '=== ANSWER LENGTH ===' in seen and runtime_module.ANSWER_LENGTH_HINT in seen
-    assert seen.count(runtime_module.ANSWER_EVIDENCE_LINE) == 1
     assert '=== ENABLED SKILLS' in seen, 'khối kỹ năng không được nhân đôi'
     assert seen.count('=== ENABLED SKILLS') == 1
     store.close()

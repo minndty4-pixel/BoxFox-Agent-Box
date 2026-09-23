@@ -1047,7 +1047,7 @@ RECAP_CLOSER = ("This is not the answer and must not be pasted into it. Before y
                 "read the `final-report` skill with `skill_view` - it holds the answer shape and the "
                 "evidence rules; skip it only when this turn needs neither. If the owner handed over "
                 "work, go through the owner's request above and re-capture every item that is now "
-                "finished, one labelled image per item, and close the answer with those images.")
+                "finished, one labelled image per item.")
 
 
 def turn_recap(calls, owner_prompt=None):

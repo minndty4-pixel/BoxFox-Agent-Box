@@ -53,7 +53,6 @@ owner sees a raw cut of the text instead of a summary.
 
 - The evidence goes at the END, after the other parts — never in the middle, never at the top. It is
   the part that proves the turn: the owner reads the words, then sees the finished state.
-- A turn with nothing observable says so in the evidence part instead of showing a picture.
 
 ## Evidence by kind of work
 
