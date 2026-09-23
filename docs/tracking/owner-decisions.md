@@ -5,8 +5,8 @@ chỉnh sửa. Khi một quyết định thay đổi, **không xoá dòng cũ**:
 xuống phần *Lịch sử sửa đổi* ở cuối tệp.
 
 Quy ước: `Trạng thái` nhận một trong `Đã chốt` (chủ nhà chốt, chưa thi công), `Đang thi công`, `Đã xong`,
-`Đã thay thế`. Mọi số đo trong tệp này đến từ `docs/tracking/test-rounds.md` § *Vòng 21* / § *Vòng 22* và
-`docs/tracking/bug-register.md` § 6.22 / § 6.23.
+`Đã thay thế`. Mọi số đo trong tệp này đến từ `docs/tracking/test-rounds.md` § *Vòng 21* / § *Vòng 22* / § *Vòng 23* và
+`docs/tracking/bug-register.md` § 6.22 / § 6.23 / § 6.31.
 
 ## 1. Năm quyết định chốt ngày 2026-09-22
 
@@ -96,7 +96,33 @@ nhất (env vẫn đè được), và kiểm lại bằng `curl -s -H 'X-BoxFox-
 `Đã chốt`: chúng thuộc đợt peer-mesh và đợt bằng chứng sống của vòng 22, chưa thi công. **D-10** đã được áp ngay trong đợt 1
 (ưu tiên ổn định, chấp nhận tốn thêm bước/token) nên không đổi trạng thái.
 
-## 4. Ràng buộc kỹ thuật phải giữ khi thi công
+## 4. Vòng 23 — mười một câu chốt về "bằng chứng sống" (2026-09-23) — D-16…D-25
+
+Chủ nhà gửi **ảnh chụp giao diện** kèm câu chốt "không phải block. hẳn luôn. chỉ dùng file markdown thôi":
+câu trả lời cuối của lượt trước bị nền tảng render thành **chip "the uploaded file"**, ảnh chụp chỉ nằm trong
+khối gập nên không mở được ảnh nào; mặt chủ nhà muốn là **ảnh chụp render của dự án hiện ngay trong câu trả lời**.
+Vì kế hoạch thi công bị lệch mặt hiển thị, chủ nhà yêu cầu lập **kế hoạch mới** cho phần này và trả lời 11 câu hỏi
+(ba đợt, 03:5x–05:0x UTC). Toàn bộ câu trả lời **đã được áp vào kế hoạch**
+(`/code/.plans/v1-evidence-report.md`, vòng 23).
+
+| Mã | Quyết định | Chốt | Lý do đo được | Việc bị ảnh hưởng | Trạng thái |
+|---|---|---|---|---|---|
+| D-16 | Ảnh bằng chứng là **cửa sổ/tab render của chính dự án trong box**; **không** lấy ảnh desktop của box làm bằng chứng | Có | Ảnh `3120.png` chủ nhà gửi: bằng chứng phải là diff/màn hình **của dự án**, không phải màn hình nền của máy ảo | `tools/system_media.py` + `tool_contracts.py` (tham số `target`), `sandbox/executor.py`, `deploy/docker/capture.py` | Đang thi công |
+| D-17 | Ảnh là bằng chứng **trạng thái đã hoàn thiện**, chụp ở **bước báo cáo**; **không** ảnh "trước/sau", không ảnh dở dang | Có | Hai hàng ảnh của lượt `9481bf87` (ảnh "trước" nhãn `nhan truoc khi doi`) không chứng minh được việc đã xong | `AGENT.md` §3.4, `runtime.py` (chỉ dẫn vai + kỹ năng mới), kỹ năng `final-report` | Đang thi công |
+| D-18 | **Cổng không kiểm khuôn câu trả lời**; câu trả lời cuối để phiên chính tự quyết; việc chính là **prompt/kỹ năng** | Có | Cổng hiện chỉ chấm khẳng định/độ dài (`test-rounds.md`, §6.25 mục BUG-69) | `evidence_gate.py` (chỉ chỉnh kỹ thuật), kỹ năng `final-report`, `AGENT.md` | Đang thi công |
+| D-19 | Mặt câu trả lời cuối **chỉ markdown**: bỏ hẳn hàng "tệp đã thay đổi", hàng "lệnh đã chạy", khối gập "Bằng chứng" | Có | Ảnh `3119.png` (11 dòng "the uploaded file"), `3121.png`, `3123.png` (khối đóng trong chat) | `frontend/src/components/chat/HarnessStepView.tsx`, `MarkdownRenderer.tsx` | Đang thi công |
+| D-20 | **Bỏ luôn dòng trạng thái cổng** (đã kiểm chứng / chưa kiểm chứng) khỏi mặt câu trả lời; hậu kiểm để dành cho **"agent verify"** ở vòng sau ("test, review, verify và main") | Có | Chủ nhà: "trạng thái cổng bỏ, chúng ta về sau sẽ có plan để agent đi kiểm chứng chứ k kiểm chứng bừa" | `HarnessStepView.tsx` (huy hiệu `:2589-2638`), `runtime.py` payload `assistant.data.evidence` giữ nguyên | Đang thi công |
+| D-21 | Ảnh do **model tự viết vào câu trả lời bằng markdown**; app không liệt kê ảnh hộ, không dựng khối/dải/nút nào quanh câu trả lời | Có | Ảnh `3122.png` là mặt đúng: lưới ảnh mở nằm ngay trong câu trả lời | `MarkdownRenderer.tsx` (tile ảnh + lightbox + link tệp) | Đang thi công |
+| D-22 | **Một việc có thể nhiều ảnh**; mỗi ảnh mang **nhãn ngắn của model nói ảnh chứng minh chức năng nào**; tên tệp đặt đọc được | Có | Chủ nhà: "ví dụ 1 việc chủ giao k phải là 1 bức, có thể chụp nhiều bức dựa theo sự thay đổi" | `capture.py` (`label` vào tên tệp), kỹ năng `final-report`, `MarkdownRenderer.tiles` | Đang thi công |
+| D-23 | Bằng chứng **tuỳ use case**: quan sát được trên giao diện ⇒ ảnh render; backend/RAG/CLI ⇒ **chạy test thật rồi chụp kết quả**, lưu tệp kết quả và dẫn link | Có | Chủ nhà: "backend thay đổi, ảnh hưởng đến hệ thống RAG thì agent phải tự biết, quay, cap màn khi test thực tế" | kỹ năng `final-report`, `runtime.evidence_pointers`, kho `.generated_artifacts/captures/evidence/<sid8>/` | Đang thi công |
+| D-24 | Nhãn phần bằng chứng đi theo **ngôn ngữ của câu trả lời model** (không theo thiết lập giao diện) | Có | Câu trả lời tiếng Việt nhưng `en.ts` đang in nhãn tiếng Việt cho cả hai từ điển | `frontend/src/i18n/en.ts` (33 khoá), `answerLang.ts` (mới) | Đang thi công |
+| D-25 | **Giữ nguyên kho lưu hiện có**: ảnh ở `.generated_artifacts/captures/<kind>/<sid8>/…`, tệp văn bằng chứng ở `.generated_artifacts/captures/evidence/<sid8>/…` | Có | Đường dẫn kho đã chạy ổn định từ vòng 22 đợt 3; đổi kho chỉ thêm rủi ro | không đổi mã lưu trữ; chỉ thêm hậu tố nhãn vào tên tệp ảnh | Đang thi công |
+
+**Điều chuyển sang vòng sau (ghi để không trôi):** (a) mặt **"tệp đã thay đổi"** (diff/hunk) trên giao diện —
+chủ nhà: "các phần tệp thay đổi sẽ được plan trong tương lai"; (b) **"agent verify"** — vai đi hậu kiểm thật
+(test/review/verify/main) rồi báo cáo md + ảnh, thay chỗ cho huy hiệu cổng vừa bỏ (D-20).
+
+## 5. Ràng buộc kỹ thuật phải giữ khi thi công
 
 1. **Không thêm giá trị `status` mới** cho phiên: luồng đang lọc `running` / `awaiting_decision`
    (`runtime.py:1199`, `runtime_commands.py:29-31`) và giao diện ánh xạ giá trị lạ thành `failed`
@@ -107,7 +133,7 @@ nhất (env vẫn đè được), và kiểm lại bằng `curl -s -H 'X-BoxFox-
 4. **Di trú cơ sở dữ liệu phải cộng thêm** (`_add_missing_columns()`, `backend/src/agentbox/memory/session_store.py:67-86`).
 5. `store.events()` chỉ trả tối đa 500 dòng (`session_store.py:136-139`) — mọi bảng mới phải tự lọc theo `turn`.
 
-## 5. Lịch sử sửa đổi
+## 6. Lịch sử sửa đổi
 
 | Ngày | Việc | Người chốt |
 |---|---|---|
@@ -116,3 +142,4 @@ nhất (env vẫn đè được), và kiểm lại bằng `curl -s -H 'X-BoxFox-
 | 2026-09-22 | Đợt 1 vòng 22 thi công xong: D-1…D-5 và D-6 chuyển `Đã xong` kèm số đo thi công; D-1 bổ sung số con **40 bước / 300 s** theo D-15; D-7…D-10 giữ `Đã chốt` (thuộc đợt sau) | Nam Nam |
 | 2026-09-22 | Đợt 2 vòng 22 (mesh agent con) thi công xong: D-7 và D-9 chuyển `Đã xong` kèm số đo sống; D-11, D-12, D-13 và D-15 ghi nhận **đã áp xong**; D-14 giữ `Đã chốt` (đợt bằng chứng sống); T14 (`parallelReadTools`) để lại vòng sau theo D-13 | Nam Nam |
 | 2026-09-22 | Đợt 3 vòng 22 (bằng chứng sống) thi công xong: D-8 chuyển `Đã xong` kèm số đo sống; D-14 ghi **nguyên văn** vào D-8 kèm ngày chốt và đồng hồ đếm (`sessions=` / `S4=` / `flagged=`); cổng vẫn mặc định `warn` cho tới mốc 20 phiên | Nam Nam |
+| 2026-09-23 | Vòng 23: chủ nhà gửi ảnh chụp và yêu cầu kế hoạch mới cho phần bằng chứng sống; chốt D-16…D-25 (11 câu qua ba đợt hỏi) — mặt câu trả lời cuối chỉ còn markdown, cổng rời giao diện, nhãn theo ngôn ngữ câu trả lời, kho lưu giữ nguyên | Nam Nam |

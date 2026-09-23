@@ -102,7 +102,9 @@ CORE MULTI-AGENT DELEGATION PROTOCOL:
    - Do NOT assume a child agent succeeded merely because it finished. Inspect its summary, the `truncated` flag, executed tools, and error status. Require evidence (file path + line, command + observed output, citation) for every claim; if a child returns none, re-delegate with `expect` naming the missing evidence or verify it yourself. If a child agent fails, diagnose why and assign a targeted corrective task.
    - A plan you accept must contain a Verification / Acceptance criteria section with an exact command or check and its expected result, and a Risks / Limitations section; `write_plan` refuses anything less.
 4. Final Synthesis & Delivery:
-   - Deliver a clear, professional summary to the user highlighting: (1) what changed, (2) verified test outputs, and (3) any operational notes. No filler, no sycophancy."""
+   - The final answer IS the report shape in the FINAL REPORT block of this prompt: those five parts, in that order, in your own words and in the language you are answering in. No filler, no sycophancy.
+   - Name the commands you really ran and the files you really changed - never invent either. Before you write it, re-capture every item of the owner's request that is now finished and put those images in the answer as markdown, each labelled with the feature it proves; no work-in-progress shots, no plain desktop captures.
+   - Deliver markdown only: the answer itself carries the text, the images and the links to the evidence files."""
 
 IDENTITY = f'''You are BoxFox, an elite autonomous multi-agent software engineering system operating in a dedicated Docker sandbox.
 You embody ruthless technical precision: match the depth of your reply to the weight of the ask. Plain claims over adjectives; no filler, no sycophancy.
@@ -751,6 +753,32 @@ def diagnosis_prompt(reason, steps_left=None, out_of_time=False):
     return f'{head} {DIAGNOSIS_PROMPT} This turn is stopping because: {reason}.'
 
 
+# --- Vòng 23 (P1.1): khuôn BÁO CÁO CUỐI — chuyện của PROMPT, không phải luật của cổng ----------
+# Chủ nhà chốt (D-18/D-20/D-24): cổng bằng chứng không được thêm tiêu chí nào về cấu trúc hay ngôn
+# ngữ của câu trả lời, nên khuôn nằm ở đây và ở `AGENT.md` §3.4 — không nằm trong `evidence_gate.py`.
+# NĂM phần, thứ tự cố định. Đây là TÊN PHẦN bằng tiếng Anh (ngôn ngữ của prompt), không phải câu
+# mẫu: chữ thật do model viết, bằng ngôn ngữ nó đang trả lời (C2/D-24) — nên không có một chuỗi
+# tiếng Việt nào trong khuôn. Câu chỉ dẫn trong `ORCHESTRATOR_SOP_GUIDANCE` và mục §3.4 của
+# `AGENT.md` chỉ TRỎ VỀ cùng năm tên này, không chép lại lời.
+FINAL_REPORT_PARTS = (
+    'What was done - the finished work, with the commands you ran and the files you changed',
+    'What is left - what is unfinished or was not run',
+    'What the owner must decide - only when a decision is really needed',
+    'What is unclear - open points and questions to ask back',
+    'Evidence - the finished-state captures that prove each item, one label per image, plus links to '
+    'the test-result files',
+)
+FINAL_REPORT_GUIDANCE = (
+    'Write the final answer as a short report with these five parts, in this order, in the language '
+    'you are answering in - name the commands you ran and the files you changed, never invent either:\n'
+    + '\n'.join(f'{index}. {part}' for index, part in enumerate(FINAL_REPORT_PARTS, 1))
+    + "\nBefore you write it, re-capture every item of the owner's request that is now finished and put "
+      'those images in the answer as markdown images, each labelled with the feature it proves - no '
+      'work-in-progress shots, no plain desktop captures.'
+      '\nDeliver markdown only: the text you write, the images, and the links to the evidence files.'
+)
+
+
 EMPTY_ANSWER_INSTRUCTION = ('You produced no answer and no tool call. Answer in plain text now, '
                            'briefly, using what you already know — do not start new work.')
 
@@ -1013,6 +1041,84 @@ def bound_child_text(text, limit):
     if len(raw) <= limit:
         return raw, False
     return raw[:limit] + f'\n[Bounded at {limit} characters; the full text stays in the child transcript.]', True
+
+
+# --- Vòng 23 (P1.5): bản nhắc việc của LƯỢT, nguyên liệu cho bước tổng kết ----------------------
+# Chủ nhà chốt (D-24/C9): model không phải nhớ bằng trí nhớ. Ngay trước khi viết báo cáo cuối nó
+# được cấp danh sách máy đọc được của chính lượt — việc chủ giao, tệp đã đổi, lệnh đã chạy kèm mã
+# thoát, ảnh/tệp bằng chứng đang có — để biết còn mục nào của yêu cầu chưa được chụp lại.
+# Dựng từ dữ liệu ĐÃ CÓ trong `tool_end` (`turn_calls`) và dùng lại `evidence_gate` (cùng nguồn với
+# cổng, nên hai chỗ không bao giờ nói khác nhau về "cái gì đã đổi"). Không đọc đĩa, không gọi model.
+RECAP_MAX_LINES = 20
+RECAP_MAX_ITEMS = 6
+RECAP_REQUEST_CHARS = 240
+RECAP_COMMAND_CHARS = 160
+RECAP_HEADER = ('TURN RECAP (machine list of this turn - raw material for your final report, '
+                'NOT text to send to the owner)')
+RECAP_CLOSER = ("This is not the answer and must not be pasted into it. Before you write the report "
+                "in the FINAL REPORT shape: go through the owner's request above and re-capture "
+                "every item that is now finished, one labelled image per item.")
+
+
+def turn_recap(calls, owner_prompt=None):
+    """Bản nhắc việc của lượt (P1.5) — chữ thô cho bước tổng kết, không phải văn gửi chủ nhà.
+
+    Trả `''` khi lượt không có gì để nhắc (lượt chỉ đọc): khối này không được ăn ngữ cảnh của mọi
+    lượt. Có trần dòng (`RECAP_MAX_LINES`) và không tính vào `ANSWER_LENGTH` (nó không phải câu trả
+    lời), và nó chỉ đi kèm YÊU CẦU của lượt — không bao giờ vào transcript của phiên.
+
+    Mọi hỏng hóc bên trong đều trả `''`: đây là chữ THÊM cho bước tổng kết, không phải một tầng
+    quyết định — nó không được phép giết một lượt. (Đo được: test tiêm lỗi vào
+    `evidence_gate.classify_turn` để kiểm "cổng hỏng thì lượt đi tiếp"; recap dùng chung nguồn đó
+    nên phải tự đỡ lấy lỗi của mình, nếu không lượt chết vì chữ thêm.)
+    """
+    try:
+        return _turn_recap_text(calls, owner_prompt)
+    except Exception as exc:
+        system_log.write('recap.error', level='warn', error=str(exc))
+        return ''
+
+
+def _turn_recap_text(calls, owner_prompt=None):
+    calls = list(calls or ())
+    profile = evidence_gate.classify_turn(calls)
+    fragments = evidence_gate.artifacts_from_calls(calls)
+    changed = list(getattr(profile, 'writes', None) or [])
+    commands = [(fragment.get('command'), fragment.get('exitCode')) for fragment in fragments
+                if fragment.get('kind') == 'command' and fragment.get('command')]
+    artifacts = [str(fragment.get('path')) for fragment in fragments
+                 if fragment.get('path') and fragment.get('kind') in ('image', 'record')]
+    if not (changed or commands or artifacts):
+        return ''
+    lines = []
+    request = ' '.join(str(owner_prompt or '').split())[:RECAP_REQUEST_CHARS]
+    if request:
+        lines.append(f'owner request (excerpt): {request}')
+    if changed:
+        lines.append('files changed: ' + ', '.join(changed[:RECAP_MAX_ITEMS]))
+        if len(changed) > RECAP_MAX_ITEMS:
+            lines.append(f'files changed (rest): {len(changed) - RECAP_MAX_ITEMS} more')
+    for command, exit_code in commands[:RECAP_MAX_ITEMS]:
+        text = ' '.join(str(command).split())[:RECAP_COMMAND_CHARS]
+        lines.append(f'command run: {text} (exit {exit_code if exit_code is not None else "?"})')
+    for path in artifacts[:RECAP_MAX_ITEMS]:
+        lines.append(f'evidence on disk: {path}')
+    lines = lines[:RECAP_MAX_LINES]
+    return '\n'.join([RECAP_HEADER, *lines, RECAP_CLOSER])
+
+
+def turn_prompt_excerpt(messages, limit=RECAP_REQUEST_CHARS):
+    """Việc chủ giao trong LƯỢT: văn của message `user` CUỐI của transcript, đã gộp khoảng trắng."""
+    for message in reversed(list(messages or [])):
+        if message.get('role') != 'user':
+            continue
+        content = message.get('content')
+        if isinstance(content, list):
+            content = ' '.join(part.get('text', '') for part in content if isinstance(part, dict))
+        text = ' '.join(str(content or '').split())
+        if text:
+            return text[:limit]
+    return ''
 
 
 def normalize_decision_options(raw, kind):
@@ -1361,6 +1467,10 @@ class HarnessRuntime(RuntimeCommands):
                             '(T14), so this flag changes no behaviour yet'),
             })
         role_instructions = ROLES[role].instructions if role in ROLES else ORCHESTRATOR_SOP_GUIDANCE
+        # Vòng 23 (P1.1): khuôn báo cáo cuối vào prompt của CHÍNH phiên chính, ở đúng một chỗ dựng
+        # prompt cho mọi vai. Phiên con không nhận khối này: chúng trả kết quả cho cha theo
+        # `CHILD_RESULT_CONTRACT`, không trả báo cáo cho chủ nhà.
+        final_report = '' if role in ROLES else f'\n\n=== FINAL REPORT ===\n{FINAL_REPORT_GUIDANCE}'
         prompt = (
             f"{get_agent_identity()}\n\n"
             f"=== ASSIGNED ROLE: {role.upper()} ===\n"
@@ -1368,6 +1478,7 @@ class HarnessRuntime(RuntimeCommands):
             f"=== ENABLED SKILLS (Load full content via skill_view before executing complex workflows) ===\n"
             f"{self.catalog.prompt(skills)}"
             f'\n\n=== ANSWER LENGTH ===\n{ANSWER_LENGTH_HINT}'
+            f'{final_report}'
         )
         if config['instructions']:
             prompt += f"\n\n=== OWNER-CONFIGURED DIRECTIVES ===\n{config['instructions']}"
@@ -2326,7 +2437,10 @@ class HarnessRuntime(RuntimeCommands):
                 continue
             pointer = {'kind': fragment.get('kind'), 'path': fragment.get('path'),
                        'step': fragment.get('step'), 'tool': fragment.get('tool')}
-            for key in ('changed', 'command', 'sha256', 'bytes', 'target', 'role', 'status'):
+            # P3.1(c) — `caption` (nhãn của chính lần chụp đó) đi cùng con trỏ: chú thích ảnh
+            # trong câu trả lời và trong nhật ký đọc nó, không phải đoán lại từ tên tệp.
+            for key in ('changed', 'command', 'sha256', 'bytes', 'target', 'caption', 'role',
+                        'status'):
                 if fragment.get(key) is not None:
                     pointer[key] = fragment[key]
             pointers.append(pointer)
@@ -2761,6 +2875,16 @@ class HarnessRuntime(RuntimeCommands):
                             if step >= wrap_up_at:
                                 request_messages = messages + [{'role': 'user', 'content': diagnosis_prompt(
                                     STEP_BUDGET_NOTICE_CODE, config['maxSteps'] - step)}]
+                            # P1.5 — bản nhắc việc của LƯỢT: chỉ phiên chính, chỉ đi kèm YÊU CẦU
+                            # của bước (không vào `messages`, nên transcript không phình và nó
+                            # không bao giờ đứng như một message của chủ nhà), và chỉ khi lượt đã
+                            # có việc để nhắc — lượt chỉ đọc không tốn một dòng nào. Nhờ vậy bước
+                            # nào là bước tổng kết thì bước đó đã có sẵn danh sách việc đã làm.
+                            if session['role'] == 'orchestrator':
+                                recap = turn_recap(turn_calls, turn_prompt_excerpt(messages))
+                                if recap:
+                                    request_messages = list(request_messages) + [
+                                        {'role': 'user', 'content': recap}]
                             response = await self.client.complete(request_messages, tools, config['route'], on_thought=handle_thought, on_content=handle_content)
                             break
                         except Exception as exc:

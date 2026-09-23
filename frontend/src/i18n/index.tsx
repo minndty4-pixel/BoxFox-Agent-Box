@@ -8,10 +8,8 @@
  */
 import { useCallback, useMemo, useState, type ReactNode } from 'react'
 import vi from './vi'
-import en from './en'
+import { DICTS } from './dicts'
 import { I18nContext, interpolate, lookup, type Lang, type TKey, type TVars } from './context'
-
-const DICTS: Record<Lang, unknown> = { vi, en }
 
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [lang, setLang] = useState<Lang>('en')

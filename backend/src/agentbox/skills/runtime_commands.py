@@ -161,8 +161,13 @@ class RuntimeCommands:
         marker = '=== ENABLED SKILLS (Load full content via skill_view before executing complex workflows) ===\n'
         if messages and marker in messages[0].get('content', ''):
             prefix, tail = messages[0]['content'].split(marker, 1)
-            owner = tail[tail.index('\n\n=== OWNER-CONFIGURED DIRECTIVES'): ] if '\n\n=== OWNER-CONFIGURED DIRECTIVES' in tail else ''
-            messages[0]['content'] = prefix + marker + self.catalog.prompt(enabled) + owner
+            # Chỗ này chỉ được thay DANH SÁCH KỸ NĂNG. Bản cũ cắt từ marker tới hết chuỗi nên nuốt
+            # luôn mọi khối phía sau: đo sống 2026-09-21 thấy lượt đầu tiên mất `=== ANSWER LENGTH ===`
+            # và mất cả khối `=== FINAL REPORT ===` trước khi tới tay mô hình — khuôn báo cáo của
+            # vòng 23 thành vô hiệu. Giữ nguyên phần đuôi (mọi khối `\n\n=== ` sau danh sách).
+            _, _, body = tail.partition('\n\n=== ')
+            rest = ('\n\n=== ' + body) if body else ''
+            messages[0]['content'] = prefix + marker + self.catalog.prompt(enabled) + rest
         # Preserve historical tool exchange structure, remove obsolete active instruction bodies.
         for m in messages[1:]:
             if m.get('name') == 'skill_view':

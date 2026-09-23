@@ -213,7 +213,10 @@ def test_compaction_keeps_pairs_goal_and_prefix():
 
 def test_skills_are_full_upstream_and_path_safe():
     catalog = SkillCatalog()
-    assert len(catalog.items) == 208
+    # 208 gói upstream + `final-report` — kỹ năng của BoxFox (vòng 23, P1.3) nằm cùng cây
+    # `vendor/hermes` để `DEFAULT_SKILLS` nạp được bằng id. Con số này là chốt chống cây bị cắt
+    # cụt, không phải hợp đồng với upstream: sửa nó khi CÓ CHỦ Ý thêm/bớt gói.
+    assert len(catalog.items) == 209
     for sid, item in catalog.items.items():
         read = catalog.read(sid)
         assert hashlib.sha256(read['content'].encode()).hexdigest() == item['sha256']

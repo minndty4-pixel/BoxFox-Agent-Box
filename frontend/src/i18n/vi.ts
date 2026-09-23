@@ -255,6 +255,23 @@ const vi = {
       gate_error: 'cổng bằng chứng tự hỏng ở lượt này',
       answer_too_long: 'câu trả lời dài quá nên cổng không đo được lượt này',
     },
+    // Vòng 23 / P4.3 + P5.3 — chú thích ảnh trong timeline: `extractToolMedia` trả `captionKind`,
+    // chữ dựng từ đây theo NGÔN NGỮ CÂU TRẢ LỜI (nhãn `args.caption` của model luôn thắng).
+    mediaCaption: {
+      'capture-window': 'Ảnh chụp cửa sổ',
+      'capture-tab': 'Ảnh chụp tab',
+      'capture-screen': 'Ảnh chụp màn hình',
+      record: 'Bản ghi màn hình',
+      browser: 'Ảnh chụp trang web',
+    },
+    // Vòng 23 / P5.3 — dòng biên nhận ở đầu lượt: chữ do app viết, nên đi theo ngôn ngữ câu trả lời.
+    receiptThinking: 'Suy luận',
+    receiptCommandOne: '1 lệnh',
+    receiptCommandMany: '{{count}} lệnh',
+    receiptCaptureOne: '1 ảnh chụp',
+    receiptCaptureMany: '{{count}} ảnh chụp',
+    receiptFailed: '{{count}} lỗi',
+    receiptWithoutResult: '{{count}} chưa có kết quả',
   },
   contextUsage: {
     title: 'Cửa sổ context',

@@ -56,11 +56,6 @@ function click(el: Element) {
   })
 }
 
-/** Đúng thứ tự tài liệu: `a` nằm trước `b`? (mockup: nút gấp phải ở SAU lưới ảnh) */
-function fullTextFollows(a: Element, b: Element): boolean {
-  return Boolean(b.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING)
-}
-
 function timelineKinds(host: HTMLElement): string[] {
   return [...host.querySelectorAll('[data-timeline], [data-final-answer]')].map(
     (el) => el.getAttribute('data-timeline') ?? 'final-answer',
@@ -282,7 +277,7 @@ describe('HarnessStepView — F3 suy luận trung thực', () => {
 })
 
 describe('HarnessStepView — F6 tóm tắt câu trả lời cuối', () => {
-  it('renders a short summary with an expander and keeps the turn media attached', () => {
+  it('F6 (vòng 23) tóm tắt ngắn + nút mở chi tiết; mặt câu trả lời không có lưới ảnh của app', () => {
     const full = `${'Dòng tóm tắt nội dung trả lời. '.repeat(40)}FINAL-MARKER-END`
     const events = [
       ev('user', { text: 'Chụp màn hình rồi mô tả' }),
@@ -309,7 +304,7 @@ describe('HarnessStepView — F6 tóm tắt câu trả lời cuối', () => {
     expect(expander?.textContent).toContain(FINAL_ANSWER_EXPAND_LABEL)
     expect(host.querySelectorAll('[data-final-expander="true"]').length).toBe(1)
 
-    // Lưới ảnh của lượt là "phần bên dưới": KHÔNG có trong trạng thái tóm tắt (R3).
+    // Vòng 23 (D-19): mặt câu trả lời KHÔNG còn lưới ảnh do app vẽ — ở trạng thái gấp cũng vậy.
     expect(host.querySelector('[data-final-answer="true"] [data-final-media="true"]')).toBeNull()
 
     click(expander!)
@@ -318,13 +313,16 @@ describe('HarnessStepView — F6 tóm tắt câu trả lời cuối', () => {
     expect(expandedBlock).toBeTruthy()
     expect(expandedBlock!.textContent).toContain('FINAL-MARKER-END')
 
-    // Mở rồi thì lưới ảnh hiện, và nút gấp nằm SAU lưới ảnh trong thứ tự tài liệu.
-    const finalMedia = host.querySelector('[data-final-answer="true"] [data-final-media="true"]')
-    expect(finalMedia).toBeTruthy()
-    expect(finalMedia!.querySelectorAll('img').length).toBe(1)
+    // Mở chi tiết chỉ mở phần CHỮ; không dựng thêm lưới ảnh nào, và nút gấp nằm ngay dưới khung chữ.
+    expect(host.querySelector('[data-final-media="true"]')).toBeNull()
     const collapse = host.querySelector('[data-final-expander="true"]')
     expect(collapse?.textContent).toContain(FINAL_ANSWER_COLLAPSE_LABEL)
-    expect(fullTextFollows(collapse!, finalMedia!)).toBe(true)
+    expect(expandedBlock!.compareDocumentPosition(collapse!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    // Ảnh của lượt không mất: nó vẫn nằm ngay dưới hàng công cụ của lượt, đúng một hàng media.
+    click(host.querySelector('[data-activity-toggle="true"]')!)
+    expect(host.querySelectorAll('[data-media-collapsed="true"]').length).toBe(1)
+    expect(host.querySelector('[data-media-thumb="true"]')).toBeTruthy()
   })
 })
 
@@ -679,7 +677,7 @@ describe('HarnessStepView — R3 tách tóm tắt / chi tiết', () => {
     expect(host.querySelector('[data-final-expander="true"]')!.textContent).toContain(FINAL_ANSWER_COLLAPSE_LABEL)
   })
 
-  it('R3.8 lượt chỉ có ảnh, không có phần chữ nào để mở: nút vẫn tồn tại vì có lưới ảnh', () => {
+  it('R3.8 (vòng 23) lượt chỉ có ảnh, không có phần chữ nào để mở: mặt câu trả lời không dựng nút nào', () => {
     const events = [
       ev('user', { text: 'Chụp màn hình' }),
       ev('tool_start', { id: 'c9', name: 'computer_screen_capture', args: {} }),
@@ -695,12 +693,15 @@ describe('HarnessStepView — R3 tách tóm tắt / chi tiết', () => {
 
     const host = renderSession(events)
     expect(host.querySelector('[data-final-text="summary"]')).toBeTruthy()
-    expect(host.querySelector('[data-final-expander="true"]')).toBeTruthy()
+    // D-19: nút "xem chi tiết" chỉ có nghĩa khi có PHẦN CHỮ bị cắt. Ảnh không còn là "phần bên dưới"
+    // của câu trả lời (D-22 đưa ảnh vào chính mạch chữ của model), nên lượt này không có nút nào.
+    expect(host.querySelector('[data-final-expander="true"]')).toBeNull()
     expect(host.querySelector('[data-final-media="true"]')).toBeNull()
 
-    click(host.querySelector('[data-final-expander="true"]')!)
-
-    expect(host.querySelector('[data-final-media="true"]')).toBeTruthy()
+    // Ảnh không mất: vẫn đúng một hàng media ngay dưới hàng công cụ của lượt.
+    click(host.querySelector('[data-activity-toggle="true"]')!)
+    expect(host.querySelectorAll('[data-media-collapsed="true"]').length).toBe(1)
+    expect(host.querySelector('[data-media-thumb="true"]')).toBeTruthy()
   })
 
   it('R3.9 câu trả lời ngắn, không ảnh, không phần còn lại: nút KHÔNG tồn tại', () => {

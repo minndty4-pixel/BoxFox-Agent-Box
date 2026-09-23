@@ -1,5 +1,6 @@
-import React, { useState, useMemo, useEffect } from 'react'
+import React, { useState, useMemo, useEffect, useCallback } from 'react'
 import { useT } from '../../i18n/context'
+import { useAnswerLabels } from '../../i18n/answerLabels'
 import {
   Terminal,
   Camera,
@@ -7,7 +8,6 @@ import {
   Search,
   BrainCircuit,
   Loader2,
-  CheckCircle2,
   AlertCircle,
   ChevronRight,
   ChevronDown,
@@ -121,6 +121,21 @@ interface HarnessTurn {
   error?: string | null
 }
 
+/**
+ * Vòng 23 / P4.3 — loại ảnh/ghi hình của một mảnh media, đọc từ chính payload (`/captures/<kind>/`)
+ * hoặc từ tên tool. Giao diện dựng chú thích từ từ điển theo ngôn ngữ câu trả lời (P5.3).
+ */
+export type MediaCaptionKind = 'capture-window' | 'capture-tab' | 'capture-screen' | 'record' | 'browser'
+
+/** Khoá từ điển của từng loại mảnh — bảng tường minh để gõ sai khoá là lỗi biên dịch. */
+const MEDIA_CAPTION_KEYS: Record<MediaCaptionKind, TKey> = {
+  'capture-window': 'chat.mediaCaption.capture-window',
+  'capture-tab': 'chat.mediaCaption.capture-tab',
+  'capture-screen': 'chat.mediaCaption.capture-screen',
+  record: 'chat.mediaCaption.record',
+  browser: 'chat.mediaCaption.browser',
+}
+
 /** Ảnh/video sinh ra bởi một lần gọi tool (nguồn thật: payload `tool_end`). */
 export interface ToolMedia {
   eventSeq: number
@@ -129,7 +144,14 @@ export interface ToolMedia {
   mime: string | null
   dimensions: [number, number] | null
   artifactPath: string | null
-  caption: string
+  /**
+   * P4.3 — nhãn của MODEL (`args.caption`) nếu có, ngược lại `null`. App KHÔNG bịa nhãn ảnh nữa:
+   * ba chuỗi tiếng Anh viết cứng trước đây ("Sandbox Desktop Screen Capture") nói sai bản chất ảnh.
+   * Chữ dựng từ từ điển do `captionKind` quyết định, và chỉ ở tầng giao diện.
+   */
+  caption: string | null
+  /** P4.3 — loại của mảnh, khoá để tra chú thích theo ngôn ngữ câu trả lời. */
+  captionKind: MediaCaptionKind
   sourceUrl?: string
   durationSec?: number
   /** D3: tệp có thật nhưng bản ghi không chạy `stop` trọn vẹn → không có số thời lượng. */
@@ -163,8 +185,20 @@ export interface ActivityReceiptPart {
   tone: 'muted' | 'rose' | 'amber'
 }
 
-/** Nhãn hai số của cổng bằng chứng: chữ do i18n cấp, hàm thuần này không tự bịa chữ. */
+/**
+ * Nhãn của dòng biên nhận: chữ do i18n cấp, hàm thuần này không tự bịa chữ.
+ *
+ * Vòng 23 / P5.3 — ngôn ngữ của CHÍNH câu trả lời chọn từ điển (`i18n/answerLabels.ts`), nên mọi
+ * đoạn đếm đều nhận chữ từ người gọi; thiếu chữ thì hàm rơi về bản tiếng Anh như trước.
+ */
 export interface ActivityReceiptLabels {
+  thinking: string
+  commandOne: string
+  commandMany: string
+  captureOne: string
+  captureMany: string
+  failed: string
+  withoutResult: string
   evidence: string
   unverified: string
 }
@@ -185,15 +219,17 @@ export const ACTIVITY_TONE_CLASS: Record<ActivityReceiptPart['tone'], string> = 
  */
 export function activityReceipt(counts: ActivityCounts, labels?: Partial<ActivityReceiptLabels>): ActivityReceiptPart[] {
   const parts: ActivityReceiptPart[] = []
-  if (counts.thinking) parts.push({ label: 'Thinking', tone: 'muted' })
+  if (counts.thinking) parts.push({ label: labels?.thinking ?? 'Thinking', tone: 'muted' })
   if (counts.commands > 0) {
-    parts.push({ label: `${counts.commands} ${counts.commands === 1 ? 'command' : 'commands'}`, tone: 'muted' })
+    const fallback = `${counts.commands} ${counts.commands === 1 ? 'command' : 'commands'}`
+    parts.push({ label: (counts.commands === 1 ? labels?.commandOne : labels?.commandMany) ?? fallback, tone: 'muted' })
   }
   if (counts.captures > 0) {
-    parts.push({ label: `${counts.captures} ${counts.captures === 1 ? 'capture' : 'captures'}`, tone: 'muted' })
+    const fallback = `${counts.captures} ${counts.captures === 1 ? 'capture' : 'captures'}`
+    parts.push({ label: (counts.captures === 1 ? labels?.captureOne : labels?.captureMany) ?? fallback, tone: 'muted' })
   }
-  if (counts.failed > 0) parts.push({ label: `${counts.failed} failed`, tone: 'rose' })
-  if (counts.unfinished > 0) parts.push({ label: `${counts.unfinished} without result`, tone: 'amber' })
+  if (counts.failed > 0) parts.push({ label: labels?.failed ?? `${counts.failed} failed`, tone: 'rose' })
+  if (counts.unfinished > 0) parts.push({ label: labels?.withoutResult ?? `${counts.unfinished} without result`, tone: 'amber' })
   if (counts.evidence) parts.push({ label: labels?.evidence ?? `${counts.evidence} evidence`, tone: 'muted' })
   // Khẳng định thiếu bằng chứng là chuyện phải đọc thấy: tô hổ phách như `without result`.
   if (counts.unverified) {
@@ -337,6 +373,19 @@ function extensionOf(path: string): string {
   return dot === -1 ? '' : clean.slice(dot)
 }
 
+/**
+ * Vòng 23 / P4.3 — loại ảnh chụp đọc từ CHÍNH đường dẫn (`<capture root>/<kind>/<sid8>/…`, P2.1):
+ * box ghi `window | tab | screen` ngay trong đường dẫn, nên không phải đoán từ tên tool — và chú
+ * thích cũ ("Sandbox Desktop Screen Capture") đã nói sai với mọi ảnh chụp tab.
+ */
+function captureKindOf(artifactPath: string | null): MediaCaptionKind | null {
+  if (!artifactPath) return null
+  if (artifactPath.includes('/captures/window/')) return 'capture-window'
+  if (artifactPath.includes('/captures/tab/')) return 'capture-tab'
+  if (artifactPath.includes('/captures/screen/')) return 'capture-screen'
+  return null
+}
+
 /** F4: nhãn `1280 × 800 · PNG` — số đo lấy từ chính `tool_end`, không hardcode. */
 export function formatMediaLabel(media: Pick<ToolMedia, 'mime' | 'dimensions' | 'artifactPath' | 'durationSec' | 'kind'>): string {
   const parts: string[] = []
@@ -431,6 +480,16 @@ export function extractToolMedia(
   }
   if (!src) return null
 
+  // P4.3: nhãn là chữ của MODEL (`args.caption` — chính chữ model gửi cho `computer_screen_capture`,
+  // P2.3) nếu có; không có thì để `null` và chỉ giữ loại — chữ dựng từ từ điển ở tầng giao diện.
+  const modelCaption = typeof args?.caption === 'string' && args.caption.trim() ? args.caption.trim() : null
+  const captionKind: MediaCaptionKind =
+    kind === 'video'
+      ? 'record'
+      : name === 'browser_use'
+        ? 'browser'
+        : (captureKindOf(artifactPath) ?? 'capture-screen')
+
   return {
     eventSeq: event.seq,
     kind,
@@ -438,12 +497,8 @@ export function extractToolMedia(
     mime,
     dimensions,
     artifactPath,
-    caption:
-      kind === 'video'
-        ? 'Sandbox Screen Recording'
-        : name === 'browser_use'
-          ? 'Browser Page Screenshot'
-          : 'Sandbox Desktop Screen Capture',
+    caption: modelCaption,
+    captionKind,
     sourceUrl: typeof args?.url === 'string' ? args.url : undefined,
     durationSec,
     unfinished,
@@ -521,12 +576,6 @@ const EVIDENCE_VERDICT_STATE: Record<string, EvidenceBadgeState> = {
   sufficient: 'verified',
   insufficient: 'unverified',
   not_measurable: 'not_measurable',
-}
-
-export const EVIDENCE_BADGE_CLASS: Record<EvidenceBadgeState, string> = {
-  verified: 'text-emerald-400',
-  unverified: 'text-amber-400',
-  not_measurable: 'text-zinc-400',
 }
 
 /**
@@ -1531,6 +1580,24 @@ function TurnBlock({
 
   const turnMedia = useMemo(() => turnMediaOf(turn, startAllowedSeqs), [turn, startAllowedSeqs])
 
+  /* ---------------- P5.3: chữ của app quanh lượt đi theo ngôn ngữ CÂU TRẢ LỜI ---------------- */
+
+  // Mặt câu trả lời cuối không còn chữ nào của app (P4.2), nên ngôn ngữ câu trả lời chỉ còn ảnh
+  // hưởng tới hai chỗ: chú thích ảnh trong timeline (P4.3) và dòng biên nhận ở đầu lượt. Lượt chưa
+  // có văn cuối (lượt cũ, lượt đang chạy) rơi về từ điển của ngôn ngữ giao diện — mặc định `en`.
+  const answerText = String(turn.finalAssistant?.data?.text ?? '')
+  const { tLabel } = useAnswerLabels(answerText)
+
+  // P4.3: nhãn của model thắng; không có nhãn thì dựng chữ từ từ điển theo LOẠI của mảnh.
+  const mediaCaption = useCallback(
+    (media: ToolMedia) => media.caption ?? tLabel(MEDIA_CAPTION_KEYS[media.captionKind]),
+    [tLabel],
+  )
+
+  // P4.1 — liên kết tệp bằng chứng trong câu trả lời mở tab Files đúng tệp (không mở tab trình duyệt).
+  const showTab = useUiStore((s) => s.showTab)
+  const openArtifactFile = useCallback((path: string) => showTab('files', { path }), [showTab])
+
   const reasoningTokens = typeof turn.usage?.reasoning_tokens === 'number' ? turn.usage.reasoning_tokens : 0
   const thoughtText = turn.thought && turn.thought.trim() ? turn.thought : null
 
@@ -1604,10 +1671,17 @@ function TurnBlock({
   const receipt = useMemo(
     () =>
       activityReceipt(counts, {
-        evidence: t('chat.evidenceReceiptCount', { count: counts.evidence ?? 0 }),
-        unverified: t('chat.evidenceReceiptUnverified', { count: counts.unverified ?? 0 }),
+        thinking: tLabel('chat.receiptThinking'),
+        commandOne: tLabel('chat.receiptCommandOne', { count: counts.commands }),
+        commandMany: tLabel('chat.receiptCommandMany', { count: counts.commands }),
+        captureOne: tLabel('chat.receiptCaptureOne', { count: counts.captures }),
+        captureMany: tLabel('chat.receiptCaptureMany', { count: counts.captures }),
+        failed: tLabel('chat.receiptFailed', { count: counts.failed }),
+        withoutResult: tLabel('chat.receiptWithoutResult', { count: counts.unfinished }),
+        evidence: tLabel('chat.evidenceReceiptCount', { count: counts.evidence ?? 0 }),
+        unverified: tLabel('chat.evidenceReceiptUnverified', { count: counts.unverified ?? 0 }),
       }),
-    [counts, t],
+    [counts, tLabel],
   )
 
   // Khối hoạt động: mở khi lượt đang chạy, gấp còn dòng biên nhận khi lượt xong — nhưng ý định
@@ -1835,6 +1909,7 @@ function TurnBlock({
                     isTurnBusy={isTurnBusy}
                     allowStartMedia={item.end ? startAllowedSeqs.has(item.end.seq) : false}
                     onOpenLightbox={onOpenLightbox}
+                    captionFor={mediaCaption}
                   />
                 )
               }
@@ -1941,20 +2016,19 @@ function TurnBlock({
         )}
       </div>
 
-      {/* 4. Final answer — tóm tắt + nút mở rộng, kèm ảnh/video của lượt (F6) */}
+      {/* 4. Final answer — CHỈ markdown của model (D-19/P4.2): tóm tắt + nút mở rộng VĂN, ảnh nằm
+          trong mạch chữ và bấm ra xem lớn (P4.1). Không huy hiệu, không khối bằng chứng, không
+          hàng tệp/lệnh, không lưới ảnh do app vẽ — dữ liệu `evidence` vẫn nguyên trên event. */}
       <FinalAnswerBlock
         turn={turn}
         providerId={providerId}
         targetModelId={targetModelId}
-        media={turnMedia}
         isTurnBusy={isTurnBusy}
         copiedAssistant={copiedAssistant}
         onCopyAssistant={handleCopyAssistant}
         onOpenLightbox={onOpenLightbox}
-        evidence={answerEvidence}
-        artifacts={turnArtifacts}
-        commands={turnCommands}
-        missing={missingEvidence}
+        onOpenFile={openArtifactFile}
+        fileLinkLabel={tLabel('chat.evidenceOpenFile')}
       />
 
       {/* 5. Turn Error: Rendered cleanly within the specific turn where it occurred */}
@@ -1984,6 +2058,7 @@ function ToolTimelineRow({
   isTurnBusy,
   allowStartMedia,
   onOpenLightbox,
+  captionFor,
 }: {
   start: HarnessEvent | null
   end: HarnessEvent | null
@@ -1991,6 +2066,8 @@ function ToolTimelineRow({
   /** D3: hàng `start` của bản ghi chưa từng `stop` vẫn có đường mở tệp — xem `TurnBlock`. */
   allowStartMedia?: boolean
   onOpenLightbox?: (media: LightboxMediaProps) => void
+  /** P4.3 + P5.3: chú thích của mảnh, dựng theo ngôn ngữ câu trả lời (xem `TurnBlock`). */
+  captionFor?: (media: ToolMedia) => string
 }) {
   const [open, setOpen] = useState(false)
 
@@ -2040,7 +2117,7 @@ function ToolTimelineRow({
       </button>
 
       {/* Ảnh/video của chính tool này — không gom vào gallery riêng */}
-      {media && <ToolMediaBlock media={media} onOpenLightbox={onOpenLightbox} />}
+      {media && <ToolMediaBlock media={media} onOpenLightbox={onOpenLightbox} captionFor={captionFor} />}
 
       {open && (
         <div className="ml-4 space-y-2 rounded-xl border border-line bg-panel2/60 p-2.5 text-xs animate-in fade-in duration-150">
@@ -2071,11 +2148,15 @@ function ToolTimelineRow({
 function ToolMediaBlock({
   media,
   onOpenLightbox,
+  captionFor,
 }: {
   media: ToolMedia
   onOpenLightbox?: (media: LightboxMediaProps) => void
+  captionFor?: (media: ToolMedia) => string
 }) {
   const t = useT()
+  // P4.3 + P5.3: nhãn của model thắng; không có thì lấy chữ của từ điển theo ngôn ngữ câu trả lời.
+  const caption = captionFor ? captionFor(media) : (media.caption ?? '')
   // R1 (yêu cầu 4): ảnh chụp gấp theo mặc định. State nằm trong chính hàng này (cùng khuôn với
   // `ToolTimelineRow`), nên vòng poll 1200 ms không tự mở/gấp lại ảnh.
   const [open, setOpen] = useState(false)
@@ -2091,9 +2172,10 @@ function ToolMediaBlock({
     onOpenLightbox?.({
       type: media.kind,
       src: media.src,
-      caption: media.caption,
+      caption,
       sourceUrl: media.sourceUrl,
       duration: media.durationSec,
+      artifactPath: media.artifactPath ?? undefined,
     })
 
   return (
@@ -2122,7 +2204,7 @@ function ToolMediaBlock({
             <img
               data-media-thumb="true"
               src={media.src}
-              alt={media.caption}
+              alt={caption}
               loading="lazy"
               onLoad={(e) => measure(e.currentTarget)}
               onError={(e) => {
@@ -2153,7 +2235,7 @@ function ToolMediaBlock({
             ) : (
               <img
                 src={media.src}
-                alt={media.caption}
+                alt={caption}
                 onLoad={(e) => measure(e.currentTarget)}
                 onError={(e) => {
                   (e.currentTarget as HTMLElement).style.display = 'none'
@@ -2264,300 +2346,30 @@ function CompactionNotice({ event }: { event: HarnessEvent }) {
   )
 }
 
-/** P4.2: câu giải thích của huy hiệu, dịch từ chính `missing[]` của cổng. */
-function evidenceTitleText(t: Translate, evidence: AnswerEvidence, missing: EvidenceMissing[]): string {
-  // F4 (vòng soát đợt 3): câu này từng in `evidence.checked` (số mảnh CỔNG chấm) trong khi hàng đầu
-  // khối in số mục khối liệt kê — hai con số khác nhau cho cùng một lượt. Bỏ số đi, giữ sự thật.
-  if (evidence.state === 'verified') return t('chat.evidenceBadgeTitleVerified')
-  if (evidence.state === 'not_measurable') return t('chat.evidenceBadgeTitleUnmeasured')
-  const claims = claimMissing(missing)
-  if (claims.length) {
-    return t('chat.evidenceBadgeTitleMissing', {
-      count: claims.length,
-      reasons: claims.map((item) => evidenceReasonText(t, item.reason)).join('; '),
-    })
-  }
-  // Không có khẳng định nào bị ghim mà lượt vẫn chưa xanh: nói thẳng thứ đã cản phép chấm.
-  if (missing.length) {
-    return t('chat.evidenceBadgeTitleUnscored', {
-      reasons: missing.map((item) => evidenceReasonText(t, item.reason)).join('; '),
-    })
-  }
-  return t('chat.evidenceBadgeTitleNothing')
-}
-
-/**
- * Ô thứ ba của dòng biên nhận: số khẳng định thiếu bằng chứng, hoặc — khi lượt chưa xanh mà không
- * khẳng định nào bị ghim — tên của thứ đã cản phép đo (F1). Luôn có chữ: người đọc phải đọc ra
- * được vì sao lượt không xanh.
- */
-function receiptChargeText(
-  t: Translate,
-  state: EvidenceBadgeState,
-  claims: EvidenceMissing[],
-  missing: EvidenceMissing[],
-): string {
-  if (claims.length) return t('chat.evidenceReceiptUnverified', { count: claims.length })
-  if (!missing.length) return t('chat.evidenceReceiptUnverified', { count: 0 })
-  if (state === 'not_measurable') return t('chat.evidenceBadge.not_measurable')
-  return evidenceReasonText(t, missing[0].reason)
-}
-
-/**
- * P4.3 — khối `Bằng chứng` của lượt: mở sẵn, dòng biên nhận là HÀNG ĐẦU của khối, dưới nó là những
- * nhóm có thật dữ liệu.
- *
- * Nhóm `Khẳng định chưa có bằng chứng` luôn hiện, kể cả khi rỗng: người đọc phải biết mục đó đã
- * được chấm, chứ không phải bị giấu đi. Nhóm lệnh/tệp chỉ hiện khi có mục — một hàng rỗng ở đó
- * không nói thêm điều gì.
- */
-function EvidenceBlock({
-  evidence,
-  artifacts,
-  commands,
-  missing,
-  onOpenLightbox,
-}: {
-  evidence: AnswerEvidence
-  artifacts: TurnArtifact[]
-  commands: TurnCommand[]
-  missing: EvidenceMissing[]
-  onOpenLightbox?: (media: LightboxMediaProps) => void
-}) {
-  const t = useT()
-  const [open, setOpen] = useState(true)
-  const stateClass = EVIDENCE_BADGE_CLASS[evidence.state]
-  const total = artifacts.length + commands.length
-  // F1: cùng một phép lọc với dòng biên nhận gọn ở đầu lượt — hai chỗ đếm phải nói cùng một số.
-  const claims = useMemo(() => claimMissing(missing), [missing])
-
-  // P4.3: tệp thì mở bằng tab Files (đúng đường `tabIntentTargets.files` mà `useWorkspaceFiles` đọc,
-  // và là thao tác người dùng nên không bị công tắc `autoOpenTabs` chặn); ảnh/ghi hình thì mở khung
-  // xem lớn như mọi media khác của lượt.
-  const openInFiles = (path: string) => useUiStore.getState().showTab('files', { path })
-
-  return (
-    <div className="max-w-3xl rounded-xl border border-line bg-panel2/40" data-evidence-artifacts="true">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        aria-expanded={open}
-        data-evidence-toggle="true"
-        className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-[11px] text-muted hover:text-fg transition cursor-pointer select-none text-left"
-      >
-        <ShieldAlert className={`size-3 shrink-0 ${stateClass}`} />
-        <span className="flex flex-wrap items-center">
-          <span className="font-medium text-zinc-300">{t('chat.evidenceReceiptCount', { count: total })}</span>
-          <span className="text-zinc-600">{' · '}</span>
-          <span className={missing.length > 0 ? stateClass : undefined}>
-            {receiptChargeText(t, evidence.state, claims, missing)}
-          </span>
-          {/* Công tắc cổng lúc chấm lượt — nguyên văn giá trị backend trả, không suy diễn. */}
-          {evidence.mode && (
-            <>
-              <span className="text-zinc-600">{' · '}</span>
-              <span className="font-mono text-[10px] text-zinc-500">{t('chat.evidenceGate', { mode: evidence.mode })}</span>
-            </>
-          )}
-        </span>
-        <span className="ml-auto shrink-0 text-[10px] text-zinc-500">
-          {open ? t('chat.evidenceHide') : t('chat.evidenceShow')}
-        </span>
-      </button>
-
-      {open && (
-        <div className="space-y-2 border-t border-line/70 px-2.5 py-2">
-          {commands.length > 0 && (
-            <div className="space-y-1">
-              <div className="flex items-center gap-1 text-[11px] font-medium text-zinc-300">
-                <Terminal className="size-3" />
-                <span>{t('chat.evidenceCommandsTitle')}</span>
-                <span className="ml-auto font-mono text-[10px] text-zinc-500">{commands.length}</span>
-              </div>
-              {commands.map((row) => (
-                <div
-                  key={row.command}
-                  data-evidence-command={row.command}
-                  className="flex items-baseline gap-2 rounded-lg border border-line/70 bg-panel/50 px-2 py-1"
-                >
-                  <code className="min-w-0 flex-1 truncate font-mono text-[11px] text-zinc-200" title={row.command}>
-                    {row.command}
-                  </code>
-                  {row.exitCode !== null && (
-                    <span
-                      className={`shrink-0 font-mono text-[10px] ${
-                        row.exitCode === 0 ? 'text-emerald-400/80' : 'text-amber-400/90'
-                      }`}
-                    >
-                      exit {row.exitCode}
-                    </span>
-                  )}
-                  {row.durationMs !== null && (
-                    <span className="shrink-0 font-mono text-[10px] text-zinc-500">{formatMs(row.durationMs)}</span>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div className="space-y-1">
-            <div className="flex items-center gap-1 text-[11px] font-medium text-zinc-300">
-              <FileText className="size-3" />
-              <span>{t('chat.evidenceArtifactsTitle')}</span>
-              <span className="ml-auto font-mono text-[10px] text-zinc-500">{artifacts.length}</span>
-            </div>
-            {artifacts.length === 0 ? (
-              <div className="px-1 text-[11px] text-zinc-500" data-evidence-artifacts-empty="true">
-                {t('chat.evidenceArtifactsEmpty')}
-              </div>
-            ) : (
-              artifacts.map((artifact) => (
-                <div
-                  key={artifact.path}
-                  data-artifact-path={artifact.path}
-                  className="flex items-center gap-2 rounded-lg border border-line/70 bg-panel/50 px-2 py-1"
-                >
-                  {/* Đường dẫn luôn đọc được bằng mắt, kể cả khi panel Files không mở nổi thư mục ẩn. */}
-                  <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-zinc-200" title={artifact.path}>
-                    {artifact.path}
-                  </span>
-                  {artifact.note && <span className="shrink-0 font-mono text-[10px] text-zinc-500">{artifact.note}</span>}
-                  {/* Vân tay nội dung: người đọc đối chiếu được với tệp trên đĩa mà không phải tin lời khai. */}
-                  {artifact.sha256 && (
-                    <span
-                      className="shrink-0 font-mono text-[10px] text-zinc-500"
-                      title={`sha256 ${artifact.sha256}`}
-                    >
-                      {`sha256 ${artifact.sha256.slice(0, 10)}…`}
-                    </span>
-                  )}
-                  {(artifact.added !== null || artifact.removed !== null) && (
-                    <span className="shrink-0 font-mono text-[10px]">
-                      <span className="text-emerald-400/80">{`+${artifact.added ?? 0}`}</span>
-                      <span className="text-zinc-600">{' '}</span>
-                      <span className="text-amber-400/90">{`−${artifact.removed ?? 0}`}</span>
-                    </span>
-                  )}
-                  {artifact.bytes !== null && (
-                    <span className="shrink-0 font-mono text-[10px] text-zinc-600">{`${artifact.bytes} B`}</span>
-                  )}
-                  {artifact.media ? (
-                    <button
-                      type="button"
-                      data-artifact-open="media"
-                      onClick={() =>
-                        onOpenLightbox?.({
-                          type: artifact.media!.kind,
-                          src: artifact.media!.src,
-                          caption: artifact.media!.caption,
-                          sourceUrl: artifact.media!.sourceUrl,
-                          duration: artifact.media!.durationSec,
-                        })
-                      }
-                      className="inline-flex shrink-0 items-center gap-1 text-[10px] text-brand hover:text-brand/80 transition cursor-pointer"
-                    >
-                      <Maximize2 className="size-3" />
-                      <span>{t('chat.zoom')}</span>
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      data-artifact-open="files"
-                      aria-label={`${t('chat.evidenceOpenFile')}: ${artifact.path}`}
-                      onClick={() => openInFiles(artifact.path)}
-                      className="inline-flex shrink-0 items-center gap-1 text-[10px] text-brand hover:text-brand/80 transition cursor-pointer"
-                    >
-                      <FolderOpen className="size-3" />
-                      <span>{t('chat.evidenceOpenFile')}</span>
-                    </button>
-                  )}
-                </div>
-              ))
-            )}
-          </div>
-
-          <div className="space-y-1">
-            <div className="flex items-center gap-1 text-[11px] font-medium text-zinc-300">
-              <AlertCircle className={`size-3 ${missing.length > 0 ? 'text-amber-400' : 'text-zinc-500'}`} />
-              {/* Nhóm này mang HAI loại lý do: khẳng định của câu trả lời, và lỗi của phép đo. Lượt
-                  `not_measurable` chỉ có loại thứ hai, nên tiêu đề phải đổi theo (F1). */}
-              <span data-evidence-missing-title="true">
-                {evidence.state === 'not_measurable'
-                  ? t('chat.evidenceUnmeasuredTitle')
-                  : t('chat.evidenceMissingTitle')}
-              </span>
-              <span className="ml-auto font-mono text-[10px] text-zinc-500">{missing.length}</span>
-            </div>
-            {missing.length === 0 ? (
-              <div className="px-1 text-[11px] text-zinc-500" data-evidence-missing-empty="true">
-                {t('chat.evidenceMissingEmpty')}
-              </div>
-            ) : (
-              missing.map((item) => {
-                // L14: câu của câu trả lời bị ghim vì mục này — đọc từ `claims[]`, không suy diễn.
-                const claimText = chargedClaimText(evidence.claims, item)
-                return (
-                  <div
-                    key={`${item.reason}:${item.detail}`}
-                    data-evidence-missing={item.reason}
-                    className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-2 py-1"
-                  >
-                    {/* Câu bị ghim in NGUYÊN VĂN trong ngoặc kép và đi trước lý do: người đọc phải
-                        thấy mình bị ghim vì câu nào, chứ không chỉ vì đường dẫn nào (mock `dv23`,
-                        nhóm `Khẳng định chưa có bằng chứng`). */}
-                    {claimText && (
-                      <div className="text-[11px] text-amber-100" data-evidence-claim="true">
-                        {`“${claimText}”`}
-                      </div>
-                    )}
-                    <div className="text-[11px] text-amber-100/70">{evidenceReasonText(t, item.reason)}</div>
-                    {item.detail && <div className="mt-0.5 text-[10px] text-zinc-400">{item.detail}</div>}
-                    {/* Mã máy in nguyên văn: người đọc đối chiếu được với log, và test có hook để bám. */}
-                    <div className="mt-0.5 font-mono text-[10px] text-zinc-500">{item.reason}</div>
-                  </div>
-                )
-              })
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
 /** F6: tóm tắt câu trả lời cuối + nút mở rộng + ảnh/video gắn kèm của cả lượt. */
 function FinalAnswerBlock({
   turn,
   providerId,
   targetModelId,
-  media,
   isTurnBusy,
   copiedAssistant,
   onCopyAssistant,
   onOpenLightbox,
-  evidence,
-  artifacts,
-  commands,
-  missing,
+  onOpenFile,
+  fileLinkLabel,
 }: {
   turn: HarnessTurn
   providerId: string
   targetModelId: string
-  media: ToolMedia[]
   isTurnBusy: boolean
   copiedAssistant: boolean
   onCopyAssistant: () => void
   onOpenLightbox?: (media: LightboxMediaProps) => void
-  /** P4.2 — `null` khi lượt không mang trường `evidence`: huy hiệu phải nói `unverified`. */
-  evidence: AnswerEvidence | null
-  /** P4.3 — mảnh bằng chứng mở được của lượt (rỗng khi lượt không có cổng chấm). */
-  artifacts: TurnArtifact[]
-  /** P4.3 — lệnh cổng ghi nhận đã chạy ở lượt. */
-  commands: TurnCommand[]
-  /** P4.3 — khẳng định cổng chấm là thiếu bằng chứng; rỗng vẫn phải hiện mục. */
-  missing: EvidenceMissing[]
+  /** P4.1 — liên kết tệp bằng chứng mở tab Files đúng tệp, không mở tab trình duyệt. */
+  onOpenFile?: (path: string) => void
+  /** P5.3 — nhãn nút mở tệp, chữ theo ngôn ngữ câu trả lời. */
+  fileLinkLabel?: string
 }) {
-  const t = useT()
   const [expanded, setExpanded] = useState(false)
 
   const fullText = String(turn.finalAssistant?.data?.text ?? '')
@@ -2566,14 +2378,8 @@ function FinalAnswerBlock({
   if (!turn.finalAssistant) return null
 
   const visibleText = truncated && !expanded ? summary : fullText
-  // R3: nút chỉ tồn tại khi có gì để mở — phần chữ còn lại, hoặc lưới ảnh của lượt.
-  const hasMore = truncated || media.length > 0
-
-  // P4.2: ba trạng thái, và "không có trường `evidence`" KHÔNG BAO GIỜ là `verified`.
-  const badgeState: EvidenceBadgeState = evidence?.state ?? 'unverified'
-  const badgeLabel = t(`chat.evidenceBadge.${badgeState}` as TKey)
-  const badgeTitle = evidence ? evidenceTitleText(t, evidence, missing) : t('chat.evidenceBadgeTitleLegacy')
-  const BadgeIcon = badgeState === 'verified' ? CheckCircle2 : badgeState === 'not_measurable' ? ShieldAlert : AlertCircle
+  // R3: nút chỉ tồn tại khi còn VĂN để mở (P4.2 bỏ lưới ảnh của lượt khỏi mặt này).
+  const hasMore = truncated
 
   return (
     <div className="space-y-1.5 pl-0.5" data-final-answer="true">
@@ -2583,21 +2389,6 @@ function FinalAnswerBlock({
         <span className="font-semibold text-fg">{targetModelId}</span>
         <span className="text-zinc-500">·</span>
         <span>{formatTime(turn.finalAssistant.created || turn.endTime)}</span>
-        {/* P4.2 — huy hiệu cổng bằng chứng thay cho nhãn `done` viết tay: `data-evidence-badge` là
-            trạng thái ĐANG HIỆN, `data-evidence-verdict` là `verdict` thật của backend và chỉ có
-            mặt khi lượt thật sự mang trường `evidence`. */}
-        <span
-          data-evidence-badge={badgeState}
-          data-evidence-verdict={evidence?.verdict ?? undefined}
-          role="status"
-          tabIndex={0}
-          title={badgeTitle}
-          aria-label={badgeTitle}
-          className={`flex items-center gap-1 font-medium ${EVIDENCE_BADGE_CLASS[badgeState]}`}
-        >
-          <BadgeIcon className="size-3" />
-          <span>{badgeLabel}</span>
-        </span>
 
         {/* Token Usage Metrics (↑ prompt_tokens ↓ completion_tokens) */}
         {turn.usage && (
@@ -2629,17 +2420,18 @@ function FinalAnswerBlock({
         </button>
       </div>
 
-      {/* P4.2 — lượt chưa kiểm chứng thì câu giải thích phải đọc được ngay, không nằm sau tooltip.
-          Lượt không mang trường `evidence` in đúng dấu hiệu nhận ra nó: `lượt trước vòng 23`. */}
-      {badgeState !== 'verified' && (
-        <p className={`max-w-3xl text-[11px] leading-relaxed ${EVIDENCE_BADGE_CLASS[badgeState]}`} data-evidence-note="true">
-          {evidence ? badgeTitle : t('chat.evidenceLegacyNote')}
-        </p>
-      )}
+      {/* P4.2 / D-19 + D-20 — không còn dòng trạng thái cổng, không còn câu giải thích của app:
+          mặt này CHỈ có chữ do model viết. Hậu kiểm để vai "agent verify" ở vòng sau. */}
 
       {/* Summary (mặc định) hoặc toàn bộ markdown khi người dùng mở rộng */}
       <div className="max-w-3xl text-sm text-fg leading-relaxed" data-final-text={expanded ? 'expanded' : 'summary'}>
-        <MarkdownRenderer content={visibleText} />
+        {/* P4.1 — ảnh trong câu trả lời thành tile bấm xem lớn; link tệp bằng chứng mở tab Files. */}
+        <MarkdownRenderer
+          content={visibleText}
+          onOpenImage={onOpenLightbox}
+          onOpenFile={onOpenFile}
+          fileLinkLabel={fileLinkLabel}
+        />
 
         {/* R3 (yêu cầu 6): nút nằm NGAY DƯỚI đoạn tóm tắt, và chỉ tồn tại khi có gì để mở. */}
         {hasMore && !expanded && (
@@ -2656,53 +2448,7 @@ function FinalAnswerBlock({
         )}
       </div>
 
-      {/* P4.3 — khối bằng chứng. Chỉ có mặt khi lượt THẬT SỰ mang trường `evidence`: lượt cũ thì
-          vắng mặt là thật, không dựng một mục rỗng cho đủ hình. */}
-      {evidence && (
-        <EvidenceBlock
-          evidence={evidence}
-          artifacts={artifacts}
-          commands={commands}
-          missing={missing}
-          onOpenLightbox={onOpenLightbox}
-        />
-      )}
-
-      {/* Ảnh/video sinh ra trong lượt — nằm TRONG phần chi tiết: chỉ hiện sau khi người dùng mở */}
-      {expanded && media.length > 0 && (
-        <div className="flex flex-wrap gap-2 pt-0.5" data-final-media="true">
-          {media.map((item) => (
-            <div
-              key={`${item.eventSeq}_${item.src.slice(0, 32)}`}
-              onClick={() =>
-                onOpenLightbox?.({
-                  type: item.kind,
-                  src: item.src,
-                  caption: item.caption,
-                  sourceUrl: item.sourceUrl,
-                  duration: item.durationSec,
-                })
-              }
-              className="group relative overflow-hidden rounded-lg border border-line bg-panel2 cursor-pointer hover:border-brand/60 transition"
-              title={item.caption}
-            >
-              {item.kind === 'video' ? (
-                <>
-                  <video src={item.src} muted playsInline className="h-20 w-32 object-cover" />
-                  <span className="absolute inset-0 flex items-center justify-center bg-black/35 text-white text-[10px] gap-1">
-                    <Film className="size-3.5" />
-                    <span>{formatMediaLabel(item) || 'video'}</span>
-                  </span>
-                </>
-              ) : (
-                <img src={item.src} alt={item.caption} className="h-20 w-32 object-cover" />
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Nút gấp nằm ở CUỐI phần vừa mở — sau lưới ảnh, đúng thứ tự tài liệu của mockup */}
+      {/* Nút gấp nằm ở CUỐI phần vừa mở */}
       {hasMore && expanded && (
         <button
           type="button"

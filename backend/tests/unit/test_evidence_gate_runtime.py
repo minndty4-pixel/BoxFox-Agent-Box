@@ -106,6 +106,19 @@ class FixtureExecutor:
                 raise RuntimeError('box down')
             # Khoá thật của worker: `content` (văn đầu ra) + `exit_code`.
             return {'content': self.probe_stdout, 'exit_code': 0}
+        if name == 'computer_screen_capture':
+            # Vòng 23 (P2.2): payload thật mang `target`/`caption`, ảnh nằm ở `captures/<kind>/<sid8>/`.
+            # KHÔNG mang `image`: `_run` ghi `turn_calls` từ bản `safe` đã bỏ khoá ảnh, nên ca này
+            # chứng minh cổng nhận ảnh qua TÊN CÔNG CỤ chứ không qua khoá `image`.
+            capture_target = args.get('target') if isinstance(args.get('target'), dict) else {'kind': 'screen'}
+            kind = str(capture_target.get('kind') or 'screen')
+            step_token = f"{(_identity.get('step') or 0):03d}"
+            shot = {'content': 'Sandbox screenshot 1280x800', 'dimensions': (1280, 800),
+                    'artifact': f'.generated_artifacts/captures/{kind}/abc/abc_{step_token}_x.png',
+                    'target': dict(capture_target)}
+            if args.get('caption'):
+                shot['caption'] = args['caption']
+            return shot
         if name == 'captures_prune':
             if not self.prune_ok:
                 return {'ok': False, 'error': 'SESSION_OPS_UNAVAILABLE'}
@@ -482,4 +495,44 @@ def test_don_thu_muc_bang_chung_moi_hai_muoi_luot(tmp_path):
     assert store.get(sid)['status'] == 'completed'
     assert [e['data'].get('code') for e in store.events(sid) if e['type'] == 'notice'
             and e['data'].get('code')], 'box từ chối op thì notice nói ra, lượt đi tiếp'
+    store.close()
+
+
+# ------------------------------------------- P3.3 (vòng 23) dữ liệu đo phải sống nguyên
+
+def test_anh_chup_tab_va_du_lieu_do_cua_cong_van_phat_nguyen_ven(tmp_path):
+    """P3.3 — vòng 23 bỏ khối/huy hiệu bằng chứng quanh câu trả lời, nhưng DỮ LIỆU ĐO phải sống:
+    `assistant.data.evidence` + số của `turn_end` + hàng `E:` là chỗ vòng "agent tự verify" sau này
+    đọc lại. Ảnh của một TAB qua cổng như ảnh cũ, và mảnh/con trỏ mang `target` + `caption`.
+    """
+    executor = FixtureExecutor(tmp_path)
+    client = FixtureModel([
+        answer('', calls=[call('file_write', {'path': 'frontend/src/App.tsx', 'content': 'x'})]),
+        answer('', calls=[call('computer_screen_capture',
+                               {'target': {'kind': 'tab', 'url': '127.0.0.1:5173'},
+                                'caption': 'RAG flow'}, cid='c2')]),
+        answer('Đã đổi giao diện, ảnh chụp tab kèm theo.')])
+    store, _runtime, session = run_turns(tmp_path, client, ('đổi giao diện',), executor=executor,
+                                         name='gate-p33.db')
+    sid = session['id']
+
+    payload = events_of(store, sid, 'assistant')[-1]
+    info = payload['evidence']
+    assert set(info) >= {'verdict', 'mode', 'repair', 'checked', 'missing', 'artifacts',
+                         'changedFiles', 'journalSeq'}
+    assert info['verdict'] == 'sufficient' and info['checked'] == 2
+    assert payload['text'] == 'Đã đổi giao diện, ảnh chụp tab kèm theo.', 'cổng không viết lại văn'
+    assert notices(store, sid, EVIDENCE_INSUFFICIENT_CODE) == []
+
+    pointer = [item for item in info['artifacts'] if item['kind'] == 'image'][0]
+    assert set(pointer) >= {'kind', 'path', 'step', 'tool'}
+    assert pointer['target'] == 'tab:127.0.0.1:5173'
+    assert pointer['caption'] == 'RAG flow'
+    assert pointer['tool'] == 'computer_screen_capture' and pointer['step'] == 2
+
+    end = events_of(store, sid, 'turn_end')[-1]
+    assert end['evidenceVerdict'] == 'sufficient' and end['gateMode'] == 'warn'
+    row = journal_rows(store, sid, 'evidence')[0]
+    assert 'image' in [item['type'] for item in row['evidence']]
+    assert row['data']['verdict'] == 'sufficient'
     store.close()

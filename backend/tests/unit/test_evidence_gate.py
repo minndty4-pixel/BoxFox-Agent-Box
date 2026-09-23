@@ -416,3 +416,63 @@ def test_hang_so_dong_bang_va_nhan_tieng_viet():
     assert gate.verdict_label('lạ') == 'chưa đo được', 'giá trị lạ không bao giờ thành "đã kiểm chứng"'
     assert gate.EVIDENCE_ROOT_REL == '.generated_artifacts/captures/evidence'
     assert gate.WRITE_TOOLS == ('file_write', 'file_edit_block')
+    # Vòng 23 (D-18/D-20): cổng KHÔNG được thêm luật nào về cấu trúc/ngôn ngữ của câu trả lời và
+    # không thêm kind bằng chứng — mọi thay đổi của vòng này là kỹ thuật (P3.1).
+    assert gate.CAPTURE_ARTIFACT_KINDS == ('image', 'record')
+    assert gate.REASONS == ('no_change', 'change_without_verification', 'claim_path_not_in_turn',
+                            'claim_path_missing', 'ui_change_without_capture',
+                            'answer_references_unknown_command', 'no_evidence_for_tools',
+                            'box_unreachable', 'box_probe_failed', 'gate_error', 'answer_too_long')
+
+
+# ------------------------------------------------------- P3.1 ảnh chụp có `target` (vòng 23)
+
+def targeted_capture_call(kind='tab', step=3, url=None, caption=None, window_id='0x400003'):
+    """Một lần chụp CÓ `target` — hình dạng thật sau vòng 23: model khai `target`, executor trả
+    `target`/`caption` trong payload (`sandbox/executor.py`)."""
+    target = {'kind': kind}
+    if kind == 'tab':
+        target['url'] = url or '127.0.0.1:5173'
+    if kind == 'window':
+        target['windowId'] = window_id
+    args = {'target': target}
+    if caption:
+        args['caption'] = caption
+    result = {'ok': True, 'artifact': f'.generated_artifacts/captures/{kind}/abc/abc_{step}_x.png',
+              'dimensions': (1280, 800), 'target': dict(target)}
+    if caption:
+        result['caption'] = caption
+    return {'name': 'computer_screen_capture', 'args': args, 'step': step, 'result': result}
+
+
+def test_anh_chup_tab_van_la_anh_chup_cua_luot_va_giu_ngu_canh():
+    """P3.1(a,b) — ảnh của một TAB/WINDOW vẫn là mảnh `image` (không rơi khỏi
+    `CAPTURE_ARTIFACT_KINDS`), và mảnh nói được nó chụp cái gì + nhãn của lần chụp đó."""
+    fragments = evidence(targeted_capture_call(kind='tab', step=3, caption='RAG flow'))
+    assert fragments[0]['kind'] == 'image'
+    assert fragments[0]['target'] == 'tab:127.0.0.1:5173'
+    assert fragments[0]['caption'] == 'RAG flow'
+    assert gate._capture_after_change(fragments, [2]) is fragments[0]
+
+    window = evidence(targeted_capture_call(kind='window', step=4))[0]
+    assert window['kind'] == 'image' and window['target'] == 'window:0x400003'
+    assert 'caption' not in window, 'không có nhãn thì không bịa một nhãn'
+
+
+def test_luot_giao_dien_chup_tab_la_du_bang_chung():
+    """P3.1(a) — luật `ui_change_without_capture` phải nhận ảnh TAB: trước vòng 23 mọi ảnh đều là
+    `kind=screen`, nên một lượt chụp tab đúng cách vẫn bị phạt oan."""
+    profile = gate.classify_turn([write_call('frontend/src/App.tsx', step=2)])
+    verdict = gate.assess('Đã đổi giao diện, ảnh chụp tab sau khi sửa.',
+                          profile, None,
+                          evidence(diff_call(step=2), targeted_capture_call(kind='tab', step=4)))
+    assert verdict['verdict'] == 'sufficient' and verdict['missing'] == []
+
+
+def test_anh_chup_tab_truoc_thay_doi_van_khong_tinh():
+    """Luật thứ tự KHÔNG bị nới vì `kind` mới: ảnh chụp trước khi sửa vẫn không phải bằng chứng."""
+    profile = gate.classify_turn([write_call('frontend/src/App.tsx', step=5)])
+    verdict = gate.assess('Đã đổi giao diện.', profile, None,
+                          evidence(diff_call(step=5), targeted_capture_call(kind='tab', step=1)))
+    assert verdict['verdict'] == 'insufficient'
+    assert [item['reason'] for item in verdict['missing']] == ['ui_change_without_capture']

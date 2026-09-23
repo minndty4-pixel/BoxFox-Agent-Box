@@ -13,6 +13,18 @@ def tool(name, description, properties, required=()):
 
 
 STRING = {'type': 'string'}
+# Vòng 23 (P2.1) — hợp đồng của `target` trong `computer_screen_capture`. Ba kind này là ĐÚNG ba
+# kind `deploy/docker/capture.py` đã hỗ trợ (`capture()`), và khoá là đúng những khoá
+# `resolve_window`/`resolve_tab` đọc: không hứa thứ box không làm. Khoá model tự nghĩ ra bị bỏ ở
+# `sandbox/executor.normalize_capture_target` — gửi xuống box một khoá nó không hiểu là cách chắc
+# nhất để nhận `_invalid` cho một lần chụp đáng lẽ chạy được.
+CAPTURE_TARGET_KINDS = ('window', 'tab', 'screen')
+CAPTURE_TARGET_KEYS = ('kind', 'windowId', 'pid', 'class', 'title', 'tabId', 'url')
+CAPTURE_CAPTION_MAX_CHARS = 200
+CAPTURE_TARGET_SCHEMA = {'type': 'object', 'properties': {
+    'kind': {'type': 'string', 'enum': list(CAPTURE_TARGET_KINDS)},
+    'windowId': STRING, 'pid': {'type': 'integer'}, 'class': STRING, 'title': STRING,
+    'tabId': STRING, 'url': STRING}, 'required': ['kind']}
 # One selectable answer for ask_user / request_approval. The runtime always guarantees at least one
 # 'approve' and one 'reject' option and rewrites their ids to exactly 'approve' / 'reject'.
 DECISION_OPTION = {'type': 'object', 'properties': {
@@ -27,7 +39,13 @@ SCHEMAS = [
     tool('codebase_glob', 'List workspace files matching a relative glob.', {'pattern': STRING}),
     tool('codebase_grep', 'Find literal text in workspace files.', {'query': STRING, 'path': STRING}, ['query']),
     tool('terminal_exec', 'Run Bash inside the sandbox, never on the host. Returns exit code and output.', {'command': STRING, 'timeout': {'type': 'integer'}}, ['command']),
-    tool('computer_screen_capture', 'Capture the actual sandbox display; returns an image and artifact.', {}),
+    tool('computer_screen_capture',
+         'Capture the actual sandbox display; returns an image and artifact. Pass target to shoot ONE '
+         'browser tab or window instead of the whole screen, and a short caption naming the finished '
+         'feature the image is evidence for.',
+         {'target': CAPTURE_TARGET_SCHEMA,
+          'caption': {'type': 'string', 'maxLength': CAPTURE_CAPTION_MAX_CHARS}},
+         []),
     tool('computer_screen_record', 'Start/stop/status real sandbox screen recording for this session.', {'action': {'type': 'string', 'enum': ['start', 'stop', 'status']}}, ['action']),
     tool('inspect_element', 'Inspect UI or DOM element at X11 screen coordinates (x, y) without clicking. Returns window metadata, application name, or web DOM selector, tag, text, and bounding box.',
          {'x': {'type': 'integer'}, 'y': {'type': 'integer'}}, ['x', 'y']),

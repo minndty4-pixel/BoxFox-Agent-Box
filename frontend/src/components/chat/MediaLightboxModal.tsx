@@ -27,6 +27,12 @@ export interface LightboxMediaProps {
   caption?: string
   sourceUrl?: string
   duration?: number
+  /**
+   * Vòng 23 / P4.1 — đường dẫn tệp THẬT trong workspace (khuôn tương đối) mà khung xem đang mở.
+   * Ảnh trong câu trả lời đi kèm trường này để vòng sau nối được nút "mở trong Files" ở chân khung
+   * (mock `lv23-answer-lightbox.html`) mà không phải đoán lại đường dẫn từ `src` đã mã hoá.
+   */
+  artifactPath?: string
   onClose?: () => void
 }
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import tempfile
 import time
@@ -585,6 +586,59 @@ class SessionCaptureTest(unittest.TestCase):
         self.assertRegex(path.name, r"^\d{13}-screen\.png$")
         self.assertEqual(path.read_bytes(), b"png-bytes-" + str(path).encode("utf-8"))
         self.assertFalse((self.root / SID8).exists())
+
+    def test_the_label_of_the_shot_lands_in_the_file_name(self) -> None:
+        """Vòng 23 (P2.3) — nhãn do harness sinh (`label`) vào TÊN TỆP, không thành trường mới."""
+        result = capture.dispatch_capture({"kind": "screen", "label": "rag-test"}, "file",
+                                          session=SESSION, step=4)
+        self.assertEqual(Path(result["path"]).name, f"{SID8}_004_screen-rag-test.png")
+
+    def test_without_a_label_the_name_is_exactly_as_before(self) -> None:
+        result = capture.dispatch_capture({"kind": "screen"}, "file", session=SESSION, step=4)
+        self.assertEqual(Path(result["path"]).name, f"{SID8}_004_screen.png")
+
+    def test_label_is_slugged_at_the_box_and_never_leaves_a_bare_dash(self) -> None:
+        self.assertEqual(capture._key_with_label("tab-3f9a", {"label": "rag test"}), "tab-3f9a-rag-test")
+        self.assertEqual(capture._key_with_label("screen", {}), "screen")
+        self.assertEqual(capture._key_with_label("screen", None), "screen")
+        # Nhãn toàn ký tự bị slug-hoá thành dấu câu ⇒ rơi về khoá cũ, không để lại `screen--`.
+        self.assertEqual(capture._key_with_label("screen", {"label": "\u2026"}), "screen")
+        # Chữ có dấu (đường gọi cũ, harness chưa bỏ dấu) vẫn ra một tên tệp ASCII đọc được.
+        label = capture._key_with_label("screen", {"label": "Kiểm thử RAG"})
+        self.assertTrue(label.startswith("screen-"))
+        self.assertRegex(label, r"^screen-[0-9A-Za-z_.-]+$")
+
+    def test_the_label_of_a_window_shot_lands_in_the_file_name(self) -> None:
+        """Vòng 23 (P2.3) — cửa sổ đi qua ĐÚNG đường thật, nhãn vào tên tệp, thư mục không đổi."""
+        window = {"id": "0x400003", "w": 1280, "h": 800}
+        with patch.object(capture, "resolve_window", return_value=window), \
+             patch.object(capture, "_raise_window"), \
+             patch.object(capture, "_count_active_records", return_value=0):
+            result = capture.dispatch_capture({"kind": "window", "windowId": "0x400003", "label": "du an"},
+                                              "file", session=SESSION, step=5)
+        path = Path(result["path"])
+        self.assertEqual(path.parent, self.root / "window" / SID8)
+        self.assertEqual(path.name, f"{SID8}_005_window-0x400003-du-an.png")
+        self.assertEqual(result["kind"], "window")
+
+    def test_the_label_of_a_tab_shot_lands_in_the_file_name(self) -> None:
+        """Vòng 23 (P2.3) — tab: cùng luật nhãn; taskId cắt 24 ký tự như trước khi có nhãn."""
+        tab = {"id": "abcdef0123456789", "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/x"}
+
+        def _shoot_tab(args, **kwargs):
+            Path(args[args.index("--path") + 1]).write_bytes(b"png-bytes-tab")
+            proc = MagicMock(returncode=0)
+            proc.communicate.return_value = (json.dumps({"width": 1280, "height": 800}), "")
+            return proc
+
+        with patch.object(capture, "resolve_tab", return_value=tab), \
+             patch.object(capture, "_popen_as_agent", side_effect=_shoot_tab):
+            result = capture.dispatch_capture({"kind": "tab", "tabId": "abcdef0123456789", "label": "rag test"},
+                                              "file", session=SESSION, step=6)
+        path = Path(result["path"])
+        self.assertEqual(path.parent, self.root / "tab" / SID8)
+        self.assertEqual(path.name, f"{SID8}_006_tab-abcdef0123456789-rag-test.png")
+        self.assertEqual(result["kind"], "tab")
 
     def test_index_line_carries_sha256_bytes_and_step(self) -> None:
         self._shoot(session=SESSION, step=7)

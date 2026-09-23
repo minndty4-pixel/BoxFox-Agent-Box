@@ -1,15 +1,18 @@
 /**
- * P4.2/P4.3/P4.4 — cổng bằng chứng sống trên giao diện.
+ * Vòng 23 — mặt câu trả lời cuối CHỈ còn markdown của model (D-19/D-20, P4.2).
  *
- * Bốn chuyện người đọc phải phân biệt được, và cả bốn đều nằm trong DOM này:
- *  1. lượt có `evidence.verdict='sufficient'` ⇒ nhãn XANH + danh sách mảnh bằng chứng mở được;
- *  2. lượt `insufficient` ⇒ nhãn VÀNG + lý do đã dịch sang tiếng người + mục `data-evidence-missing`;
- *  3. lượt KHÔNG mang trường `evidence` (phiên cũ / công tắc đo tắt) ⇒ nhãn VÀNG, **không bao giờ
- *     xanh**, và khối bằng chứng vắng mặt thật — không dựng mục rỗng cho đủ hình;
- *  4. bấm một mục tệp ⇒ mở đúng đường dẫn đó trong tab Files.
+ * Trước vòng này tệp kiểm này khẳng định khối `Bằng chứng`, huy hiệu cổng và những hàng đường dẫn
+ * do app vẽ. Chủ nhà đã chốt bỏ hết chúng khỏi mặt câu trả lời: cổng vẫn chạy và vẫn phát dữ liệu
+ * (`assistant.data.evidence` nguyên vẹn, dòng biên nhận ở đầu lượt vẫn đếm), nhưng mặt câu trả lời
+ * không còn chữ nào của app. Tệp kiểm này giữ đúng phần còn lại:
+ *  1. lượt mang `evidence` ⇒ dữ liệu vẫn tới (biên nhận), còn mặt câu trả lời thì không có khối nào;
+ *  2. ảnh trong câu trả lời nằm ngay trong mạch chữ, bấm ra khung xem lớn (P4.1);
+ *  3. liên kết tệp bằng chứng mở tab Files đúng tệp, không mở tab trình duyệt (P4.1);
+ *  4. lượt KHÔNG mang trường `evidence` ⇒ cũng không có gì của app quanh câu trả lời, và câu trả lời
+ *     của model vẫn nguyên văn (app không viết lại chữ của model).
  *
- * Thêm hai ca phụ cho hai đường dữ liệu khác của cùng một sự thật: `not_measurable` (xám) và hàng
- * `E:` từ nhật ký (lệnh + tệp + nhật ký `degraded`).
+ * Chữ do app viết quanh lượt đi theo NGÔN NGỮ CÂU TRẢ LỜI (D-24/P5.3): câu trả lời tiếng Việt ⇒ biên
+ * nhận tiếng Việt; câu trả lời tiếng Anh ⇒ biên nhận tiếng Anh.
  */
 import type { ReactNode } from 'react'
 import { act } from 'react'
@@ -20,6 +23,7 @@ import type { HarnessEvent } from '../../store/harnessChatStore'
 import type { HarnessJournal } from '../../store/harnessChatStore'
 import { useUiStore } from '../../store/uiStore'
 import { HarnessStepView } from './HarnessStepView'
+import type { LightboxMediaProps } from './MediaLightboxModal'
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -31,9 +35,19 @@ function ev(type: string, data: Record<string, unknown> = {}, created?: number):
   return { seq, type, data, created: created ?? 1000 + seq }
 }
 
-function render(events: HarnessEvent[], journal: HarnessJournal | null = null): HTMLElement {
+function render(
+  events: HarnessEvent[],
+  journal: HarnessJournal | null = null,
+  onOpenLightbox?: (media: LightboxMediaProps) => void,
+): HTMLElement {
   const node: ReactNode = (
-    <HarnessStepView events={events} status="idle" error={null} journal={journal} />
+    <HarnessStepView
+      events={events}
+      status="idle"
+      error={null}
+      journal={journal}
+      onOpenLightbox={onOpenLightbox}
+    />
   )
   const host = document.createElement('div')
   document.body.append(host)
@@ -45,7 +59,7 @@ function render(events: HarnessEvent[], journal: HarnessJournal | null = null): 
   return host
 }
 
-function click(el: Element | null) {
+function click(el: Element | null | undefined) {
   act(() => {
     el?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
   })
@@ -63,8 +77,8 @@ afterEach(() => {
 const userTurn = ev('user', { text: 'Nhờ em sửa nhãn cuối lượt' })
 
 /** Event `assistant` cuối lượt: `evidence` chỉ có khi cổng đã chấm lượt này. */
-const finalAssistant = (evidence?: Record<string, unknown>) =>
-  ev('assistant', evidence ? { text: 'Đã sửa nhãn cuối lượt.', final: true, evidence } : { text: 'Đã sửa nhãn cuối lượt.', final: true })
+const finalAssistant = (text: string, evidence?: Record<string, unknown>) =>
+  ev('assistant', evidence ? { text, final: true, evidence } : { text, final: true })
 
 const DIFF_PATH = '.generated_artifacts/captures/evidence/sid8/sid8_1_harness.diff'
 
@@ -112,186 +126,118 @@ const writeToolEvents = (path: string, created = 2000) => [
   ),
 ]
 
-describe('HarnessStepView — cổng bằng chứng (P4)', () => {
-  it('sufficient ⇒ nhãn xanh `đã kiểm chứng` + danh sách mảnh bằng chứng', () => {
-    const host = render([userTurn, ...writeToolEvents(DIFF_PATH), finalAssistant(sufficientEvidence)])
-
-    const badge = host.querySelector('[data-evidence-badge]')
-    expect(badge?.getAttribute('data-evidence-badge')).toBe('verified')
-    // Hook thứ hai giữ nguyên `verdict` THẬT của backend để test đối chiếu được cả hai.
-    expect(badge?.getAttribute('data-evidence-verdict')).toBe('sufficient')
-    expect(badge?.getAttribute('role')).toBe('status')
-    expect(badge?.textContent).toContain('đã kiểm chứng')
-    expect(badge?.className).toContain('text-emerald-400')
-
-    expect(host.querySelector('[data-evidence-artifacts="true"]')).toBeTruthy()
-    const items = host.querySelectorAll('[data-artifact-path]')
-    expect(items).toHaveLength(2)
-    expect([...items].map((item) => item.getAttribute('data-artifact-path'))).toEqual([
-      'frontend/src/i18n/vi.ts',
-      DIFF_PATH,
-    ])
-    // Nhóm khẳng định thiếu bằng chứng vẫn hiện, kèm câu nói thật là nó rỗng.
-    expect(host.querySelector('[data-evidence-missing]')).toBeNull()
-    expect(host.querySelector('[data-evidence-missing-empty="true"]')?.textContent).toContain('không có khẳng định nào thiếu')
-    // Biên nhận của khối đếm đúng số mục đang có, và nói rõ công tắc cổng lúc chấm.
-    expect(host.querySelector('[data-evidence-toggle="true"]')?.textContent).toContain('2 bằng chứng')
-    expect(host.querySelector('[data-evidence-toggle="true"]')?.textContent).toContain('BOXFOX_EVIDENCE_GATE = warn')
-    // Số đo thật của mảnh bằng chứng: vân tay nội dung, số dòng thêm/bớt, số byte.
-    const diffRow = [...items].map((item) => item.textContent).find((text) => text?.includes(DIFF_PATH))
-    expect(diffRow).toContain('sha256 5b8bf90513…')
-    expect(diffRow).toContain('+1')
-    expect(diffRow).toContain('−0')
-    expect(diffRow).toContain('22 B')
-  })
-
-/**
- * Cùng một ảnh chụp, hai khuôn đường dẫn: payload của box (`computer_screen_capture`) báo TUYỆT ĐỐI,
- * còn mảnh cổng ghim vào event và hàng `E:` báo TƯƠNG ĐỐI trong workspace. Ca này là bản sao thu nhỏ
- * của một lượt thật (phiên `5d896abf`): trước khi chuẩn hoá, danh sách hiện ảnh hai lần và biên nhận
- * nói `4 bằng chứng` cho ba mảnh thật.
- */
-const CAPTURE_ABS = '/home/agent/workspace/.generated_artifacts/captures/screen/sid8/sid8_1_screen.png'
-const CAPTURE_REL = '.generated_artifacts/captures/screen/sid8/sid8_1_screen.png'
-
-const captureToolEvents = () => [
-  ev('tool_start', { id: 'c1', name: 'computer_screen_capture', args: {} }, 1500),
-  ev(
-    'tool_end',
-    {
-      id: 'c1',
-      name: 'computer_screen_capture',
-      args: {},
-      result: {
-        content: 'Sandbox screenshot 1280x800',
-        artifact: CAPTURE_ABS,
-        mime: 'image/png',
-        dimensions: [1280, 800],
-      },
-    },
-    1500.4,
-  ),
+/** Mặt câu trả lời: CHỈ đầu lượt của app + khung chữ của model — không hàng, khối, dải nào khác. */
+const FACE_APP_HOOKS = [
+  '[data-evidence-badge]',
+  '[data-evidence-note]',
+  '[data-evidence-toggle]',
+  '[data-evidence-artifacts]',
+  '[data-evidence-command]',
+  '[data-evidence-missing]',
+  '[data-final-media]',
 ]
 
-  it('ảnh chụp có hai khuôn đường dẫn ⇒ MỘT dòng, ảnh vẫn mở được bằng lightbox', () => {
+describe('HarnessStepView — mặt câu trả lời chỉ markdown (P4.2)', () => {
+  it('lượt mang `evidence` ⇒ biên nhận vẫn đếm, mặt câu trả lời không còn khối nào của app', () => {
     const host = render([
       userTurn,
-      ...captureToolEvents(),
-      finalAssistant({
-        verdict: 'sufficient',
-        turn: 1,
-        mode: 'warn',
-        checked: 2,
-        missing: [],
-        changedFiles: ['frontend/src/Round3Probe.tsx'],
-        artifacts: [
-          { kind: 'image', path: CAPTURE_REL, step: 1, tool: 'computer_screen_capture' },
-          { kind: 'diff', path: DIFF_PATH, step: 2, tool: 'file_write', changed: 'frontend/src/Round3Probe.tsx' },
-        ],
-      }),
+      ...writeToolEvents('frontend/src/i18n/vi.ts'),
+      finalAssistant('Đã sửa nhãn cuối lượt.', sufficientEvidence),
     ])
 
-    const rows = [...host.querySelectorAll('[data-artifact-path]')]
-    expect(rows.map((row) => row.getAttribute('data-artifact-path'))).toEqual([
-      'frontend/src/Round3Probe.tsx',
-      CAPTURE_REL,
-      DIFF_PATH,
-    ])
-    // Dòng ảnh giữ được media (payload là nguồn duy nhất có `src`), nên phải còn nút Zoom.
-    const imageRow = rows.find((row) => row.getAttribute('data-artifact-path') === CAPTURE_REL)
-    expect(imageRow?.querySelector('[data-artifact-open="media"]')).toBeTruthy()
-    expect(imageRow?.querySelector('[data-artifact-open="files"]')).toBeNull()
-    // Biên nhận đếm đúng số mảnh đang hiện, không phồng theo số nguồn.
-    expect(host.querySelector('[data-evidence-toggle="true"]')?.textContent).toContain('3 bằng chứng')
+    const face = host.querySelector('[data-final-answer="true"]')
+    expect(face).toBeTruthy()
+    for (const hook of FACE_APP_HOOKS) expect(host.querySelector(hook)).toBeNull()
+    // Không còn hàng đường dẫn nào do app vẽ (khối bằng chứng cũ in chúng).
+    expect(host.querySelector('[data-artifact-path]')).toBeNull()
+
+    // Chữ của model vẫn nguyên văn, và mặt câu trả lời chỉ có ĐẦU LƯỢT + KHUNG CHỮ.
+    expect(face?.textContent).toContain('Đã sửa nhãn cuối lượt.')
+    expect(face?.children.length).toBe(2)
+    expect(face?.querySelector('[data-final-text]')?.textContent).toContain('Đã sửa nhãn cuối lượt.')
+
+    // Dữ liệu cổng vẫn tới người đọc qua dòng biên nhận ở ĐẦU LƯỢT (D-20: không vẽ ở mặt câu trả lời).
+    const receipt = host.querySelector('[data-activity-receipt="true"]')?.textContent ?? ''
+    expect(receipt).toContain('lệnh')
+    expect(receipt).toContain('bằng chứng')
   })
 
-  it('insufficient ⇒ nhãn vàng + lý do dịch sang tiếng người + mục `data-evidence-missing`', () => {
+  it('P5.3: cùng lượt ấy, câu trả lời tiếng Anh ⇒ biên nhận tiếng Anh (chữ app theo ngôn ngữ câu trả lời)', () => {
     const host = render([
       userTurn,
-      finalAssistant({
-        verdict: 'insufficient',
-        turn: 1,
-        mode: 'warn',
-        checked: 1,
-        missing: [
-          { reason: 'change_without_verification', detail: 'src/app.py' },
-          { reason: 'ui_change_without_capture', detail: 'frontend/src/App.tsx' },
-        ],
-        changedFiles: ['src/app.py'],
-        artifacts: [{ kind: 'diff', path: DIFF_PATH }],
-      }),
+      ...writeToolEvents('frontend/src/i18n/vi.ts'),
+      finalAssistant('Fixed the label at the end of the turn.', sufficientEvidence),
     ])
 
-    const badge = host.querySelector('[data-evidence-badge]')
-    expect(badge?.getAttribute('data-evidence-badge')).toBe('unverified')
-    expect(badge?.getAttribute('data-evidence-verdict')).toBe('insufficient')
-    expect(badge?.textContent).toContain('chưa kiểm chứng')
-    expect(badge?.className).toContain('text-amber-400')
-    // Lý do phải đọc được KHÔNG cần hover: câu dịch + mã máy để đối chiếu log.
-    expect(badge?.getAttribute('title')).toContain('tệp đã đổi nhưng không có lệnh nào kiểm lại')
-    expect(badge?.getAttribute('title')).toContain('giao diện đã đổi nhưng chưa có ảnh chụp sau thay đổi')
-
-    const rows = host.querySelectorAll('[data-evidence-missing]')
-    expect(rows).toHaveLength(2)
-    expect(rows[0].getAttribute('data-evidence-missing')).toBe('change_without_verification')
-    expect(rows[0].textContent).toContain('tệp đã đổi nhưng không có lệnh nào kiểm lại')
-    expect(rows[0].textContent).toContain('src/app.py')
-    expect(rows[1].getAttribute('data-evidence-missing')).toBe('ui_change_without_capture')
-    expect(host.querySelector('[data-evidence-missing-empty="true"]')).toBeNull()
-    // Câu trả lời của model KHÔNG bị cổng sửa: nội dung vẫn nguyên văn.
-    expect(host.querySelector('[data-final-answer="true"]')?.textContent).toContain('Đã sửa nhãn cuối lượt.')
+    const receipt = host.querySelector('[data-activity-receipt="true"]')?.textContent ?? ''
+    expect(receipt).toContain('command')
+    expect(receipt).toContain('evidence')
+    expect(receipt).not.toContain('bằng chứng')
   })
 
-  it('lượt không có trường `evidence` ⇒ nhãn vàng, KHÔNG BAO GIỜ xanh, và khối bằng chứng vắng mặt', () => {
-    const host = render([userTurn, finalAssistant()])
+  it('P4.1: ảnh trong câu trả lời hiện thành tile ngay trong mạch chữ, bấm ra khung xem lớn', () => {
+    const capture = '.generated_artifacts/captures/tab/2e4f1a20/2e4f1a20_007_tab-runs-page.png'
+    const onOpenLightbox = vi.fn()
+    const host = render(
+      [
+        userTurn,
+        finalAssistant(`![Công việc: bảng chạy đã đổi nhãn](${capture})`, sufficientEvidence),
+      ],
+      null,
+      onOpenLightbox,
+    )
 
-    const badge = host.querySelector('[data-evidence-badge]')
-    expect(badge?.getAttribute('data-evidence-badge')).toBe('unverified')
-    expect(badge?.getAttribute('data-evidence-verdict')).toBeNull()
-    expect(badge?.textContent).toContain('chưa kiểm chứng')
-    expect(badge?.className).not.toContain('text-emerald-400')
-    // Vắng khối là THẬT: không bịa một mục bằng chứng rỗng cho đủ hình.
-    expect(host.querySelector('[data-evidence-artifacts="true"]')).toBeNull()
-    expect(host.querySelector('[data-evidence-note="true"]')?.textContent).toContain('phiên cũ, hoặc công tắc đo đang tắt')
+    const tile = host.querySelector('[data-final-text] [data-capture-tile="true"]')
+    expect(tile).toBeTruthy()
+    expect(tile?.querySelector('[data-capture-label="true"]')?.textContent).toBe(
+      'Công việc: bảng chạy đã đổi nhãn',
+    )
+    expect(tile?.querySelector('[data-capture-file="true"]')?.textContent).toBe('2e4f1a20_007_tab-runs-page.png')
+
+    click(tile?.querySelector('[data-artifact-open="media"]'))
+    expect(onOpenLightbox).toHaveBeenCalledTimes(1)
+    expect(onOpenLightbox.mock.calls[0][0]).toEqual({
+      type: 'image',
+      src: `/__box/file/media?path=${encodeURIComponent(capture)}`,
+      caption: 'Công việc: bảng chạy đã đổi nhãn',
+      artifactPath: capture,
+    })
   })
 
-  it('bấm mục tệp ⇒ `showTab("files", {path})` đúng tham số', () => {
+  it('P4.1: link tệp kết quả test trong câu trả lời mở tab Files đúng tệp', () => {
+    const log = '.generated_artifacts/captures/evidence/sid8/sid8_9_pytest-result.txt'
     const showTab = vi.spyOn(useUiStore.getState(), 'showTab')
-    const host = render([userTurn, finalAssistant(sufficientEvidence)])
+    const host = render([
+      userTurn,
+      finalAssistant(`- Kết quả test: [${log}](${log})`, sufficientEvidence),
+    ])
 
-    const row = host.querySelector(`[data-artifact-path="frontend/src/i18n/vi.ts"]`)
-    click(row?.querySelector('[data-artifact-open="files"]') ?? null)
+    const button = host.querySelector(`[data-artifact-open="files"][data-artifact-path="${log}"]`)
+    expect(button).toBeTruthy()
+    // Đường cũ `<a target="_blank">` biến mất: bấm vào nó là mở một tab trắng.
+    expect(host.querySelector('[data-final-text] a')).toBeNull()
 
-    expect(showTab).toHaveBeenCalledWith('files', { path: 'frontend/src/i18n/vi.ts' })
+    click(button)
+
+    expect(showTab).toHaveBeenCalledWith('files', { path: log })
     // Cùng một sự thật, kiểm bằng trạng thái thật: đây là đường `tabIntentTargets.files` mà
     // `useWorkspaceFiles` đọc, và là thao tác người dùng nên không bị `autoOpenTabs` chặn.
-    expect(useUiStore.getState().tabIntentTargets.files).toEqual({ path: 'frontend/src/i18n/vi.ts' })
+    expect(useUiStore.getState().tabIntentTargets.files).toEqual({ path: log })
     expect(useUiStore.getState().activeTab).toBe('files')
   })
 
-  it('not_measurable ⇒ nhãn xám `chưa đo được`', () => {
-    const host = render([
-      userTurn,
-      finalAssistant({
-        verdict: 'not_measurable',
-        turn: 1,
-        mode: 'warn',
-        checked: 0,
-        missing: [{ reason: 'box_unreachable', detail: 'docker exec: no such container' }],
-        changedFiles: [],
-        artifacts: [],
-      }),
-    ])
+  it('lượt không mang trường `evidence` ⇒ cũng không có chữ nào của app quanh câu trả lời', () => {
+    const host = render([userTurn, finalAssistant('Đã sửa nhãn cuối lượt.')])
 
-    const badge = host.querySelector('[data-evidence-badge]')
-    expect(badge?.getAttribute('data-evidence-badge')).toBe('not_measurable')
-    expect(badge?.getAttribute('data-evidence-verdict')).toBe('not_measurable')
-    expect(badge?.textContent).toContain('chưa đo được')
-    expect(badge?.className).toContain('text-zinc-400')
-    expect(host.querySelector('[data-evidence-missing="box_unreachable"]')?.textContent).toContain('không kết nối được box')
+    for (const hook of FACE_APP_HOOKS) expect(host.querySelector(hook)).toBeNull()
+    expect(host.querySelector('[data-final-answer="true"]')?.textContent).toContain('Đã sửa nhãn cuối lượt.')
+    // Không có trường `evidence` thì biên nhận KHÔNG được nói số mảnh bằng chứng nào.
+    const receipt = host.querySelector('[data-activity-receipt="true"]')?.textContent ?? ''
+    expect(receipt).not.toContain('bằng chứng')
+    expect(receipt).not.toContain('evidence')
   })
 
-  it('hàng `E:` của nhật ký kể được lệnh đã chạy, và nhật ký `degraded` thì nói ra', () => {
+  it('cờ `degraded` của nhật ký vẫn nói ra (nhật ký bền trong box không bị nuốt)', () => {
     const row = {
       seq: 3,
       kind: 'evidence',
@@ -312,113 +258,13 @@ const captureToolEvents = () => [
       degraded: true,
       evidenceByTurn: { 1: row },
     }
-    const host = render([userTurn, finalAssistant({ verdict: 'sufficient', turn: 1, mode: 'warn', checked: 0 })], journal)
-
-    // Lệnh không có đường dẫn nên nằm ở nhóm riêng, không lẫn vào danh sách tệp.
-    const command = host.querySelector('[data-evidence-command]')
-    expect(command?.getAttribute('data-evidence-command')).toBe('npx vitest run src/components/chat')
-    expect(command?.textContent).toContain('exit 0')
-    const paths = [...host.querySelectorAll('[data-artifact-path]')].map((item) => item.getAttribute('data-artifact-path'))
-    expect(paths).toEqual([DIFF_PATH])
-    expect(host.querySelector('[data-evidence-toggle="true"]')?.textContent).toContain('2 bằng chứng')
-    // Cờ `degraded` của khối `journal` không bị nuốt: người đọc biết nhật ký bền đang hỏng.
-    expect(host.querySelector('[data-journal-degraded="true"]')?.textContent).toContain('chưa ghi được ở phiên này')
-  })
-
-  it('mã thoát và thời lượng lấy từ chính lượt, không in nhãn rỗng của payload', () => {
-    const command = 'npx vitest run src/components/chat'
-    // Hàng `E:` sống ghim đúng chuỗi này khi payload lệnh không mang mã thoát — nhãn đó là rác.
-    const row = {
-      seq: 5,
-      kind: 'evidence',
-      text: 'lượt 1: đã kiểm chứng — 1 mảnh bằng chứng',
-      id: 'E:sid8-5',
-      status: 'info',
-      data: { verdict: 'sufficient', checked: 1, mode: 'warn', missing: [], changedFiles: [] },
-      evidence: [{ type: 'command', path: null, command, note: 'exit None' }],
-      turn: 1,
-      step: 2,
-    }
-    const journal: HarnessJournal = { records: [row], lastSeq: 5, degraded: false, evidenceByTurn: { 1: row } }
     const host = render(
-      [
-        userTurn,
-        ev('tool_start', { id: 'c1', name: 'terminal_exec', args: { command } }, 2000),
-        ev('tool_end', { id: 'c1', name: 'terminal_exec', args: { command }, result: { exit_code: 0 } }, 2002.9),
-        finalAssistant({ verdict: 'sufficient', turn: 1, mode: 'warn', checked: 0 }),
-      ],
+      [userTurn, finalAssistant('Đã sửa nhãn cuối lượt.', { verdict: 'sufficient', turn: 1, mode: 'warn', checked: 0 })],
       journal,
     )
 
-    const rendered = host.querySelector('[data-evidence-command]')
-    expect(rendered?.getAttribute('data-evidence-command')).toBe(command)
-    expect(rendered?.textContent).toContain('exit 0')
-    expect(rendered?.textContent).toContain('2.9s')
-    expect(rendered?.textContent).not.toContain('None')
-  })
-
-  it('not_measurable ⇒ biên nhận nói `chưa đo được`, không đếm lý do đo hỏng thành khẳng định', () => {
-    const host = render([
-      userTurn,
-      finalAssistant({
-        verdict: 'not_measurable',
-        turn: 1,
-        mode: 'warn',
-        checked: 0,
-        missing: [{ reason: 'box_probe_failed', detail: 'timeout sau 20s' }],
-        changedFiles: [],
-        artifacts: [],
-      }),
-    ])
-
-    const receipt = host.querySelector('[data-evidence-toggle="true"]')?.textContent ?? ''
-    expect(receipt).toContain('chưa đo được')
-    expect(receipt).not.toContain('khẳng định chưa kiểm')
-    expect(host.querySelector('[data-evidence-missing-title="true"]')?.textContent).toBe('Chưa đo được lượt này')
-    // Lý do của phép đo vẫn hiện nguyên vẹn: đổi cách đếm không được phép giấu lý do.
-    const item = host.querySelector('[data-evidence-missing="box_probe_failed"]')
-    expect(item?.textContent).toContain('phép dò bằng chứng trong box bị lỗi')
-    expect(item?.textContent).toContain('box_probe_failed')
-  })
-
-  it('lý do là khẳng định vẫn đếm và vẫn mang tiêu đề khẳng định', () => {
-    const host = render([
-      userTurn,
-      finalAssistant({
-        verdict: 'insufficient',
-        turn: 1,
-        mode: 'warn',
-        checked: 0,
-        missing: [
-          { reason: 'change_without_verification', detail: 'src/app.py' },
-          { reason: 'box_probe_failed', detail: 'timeout' },
-        ],
-        changedFiles: ['src/app.py'],
-        artifacts: [],
-      }),
-    ])
-
-    const receipt = host.querySelector('[data-evidence-toggle="true"]')?.textContent ?? ''
-    expect(receipt).toContain('1 khẳng định chưa kiểm')
-    expect(host.querySelector('[data-evidence-missing-title="true"]')?.textContent).toBe('Khẳng định chưa có bằng chứng')
-  })
-
-  it('mã lý do chưa có câu dịch ⇒ in nguyên mã máy, không in khoá i18n', () => {
-    const host = render([
-      userTurn,
-      finalAssistant({
-        verdict: 'insufficient',
-        turn: 1,
-        mode: 'warn',
-        checked: 0,
-        missing: [{ reason: 'verdict_from_the_future', detail: '' }],
-        changedFiles: [],
-        artifacts: [],
-      }),
-    ])
-
-    const item = host.querySelector('[data-evidence-missing="verdict_from_the_future"]')
-    expect(item?.textContent).toContain('verdict_from_the_future')
-    expect(item?.textContent).not.toContain('chat.evidenceReason')
+    expect(host.querySelector('[data-journal-degraded="true"]')?.textContent).toContain(
+      'was not written in this session',
+    )
   })
 })

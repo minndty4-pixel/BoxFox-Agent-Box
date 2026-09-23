@@ -59,6 +59,8 @@ import re
 from dataclasses import dataclass, field
 
 from .limits import ANSWER_MAX_CHARS, ANSWER_WARN_CHARS
+# Một nguồn cho trần `caption` (hợp đồng công cụ), không chép lại con số.
+from .tool_contracts import CAPTURE_CAPTION_MAX_CHARS as CAPTION_MAX_CHARS
 
 __all__ = ['WRITE_TOOLS', 'PLAN_TOOLS', 'UI_TOOLS', 'READ_TOOLS', 'DELEGATE_TOOLS',
            'WRITE_CMD_RE', 'VERIFY_CMD_RE', 'READ_CMD_RE',
@@ -356,6 +358,24 @@ def classify_turn(calls):
                        plan=plan, kind=kind, notes=tuple(notes))
 
 
+def _capture_target_label(value):
+    """Nhãn đọc được của `target` một lần chụp (P3.1): ``tab:<url>`` / ``window:<title>`` / ``screen``.
+
+    Vòng 23 (P2.1) mở `target` cho `computer_screen_capture`, nên mảnh ảnh phải nói được nó chụp
+    CÁI GÌ. Trước đây mảnh chỉ đọc `args['url']` (khoá của `browser_use`), nên ảnh chụp tab không
+    bao giờ có ngữ cảnh. Không đọc được gì thì trả `''` — không bịa.
+    """
+    if not isinstance(value, dict):
+        return ''
+    kind = str(value.get('kind') or '').strip()
+    detail = ''
+    for key in ('url', 'title', 'windowId', 'tabId'):
+        detail = str(value.get(key) or '').strip()
+        if detail:
+            break
+    return f'{kind}:{detail}' if kind and detail else kind
+
+
 def _artifact_kind(path, name, result):
     """Classify one tool result into an evidence fragment kind (or ``None`` = no fragment)."""
     if result.get('record') or result.get('recording'):
@@ -441,8 +461,19 @@ def artifacts_from_calls(calls):
                             sha256=numbers.get('sha256After') or numbers.get('sha256'),
                             bytes=numbers.get('bytes'))
             target = args.get('url') or args.get('selector')
+            if not target:
+                # P2.2 — ảnh chụp của một phiên có `target` (kind + url/title/…): mượn nhãn đọc
+                # được của nó, ưu tiên `args` của model rồi tới `result` executor trả về.
+                target = (_capture_target_label(args.get('target'))
+                          or _capture_target_label(result.get('target')))
             if target:
                 fragment['target'] = str(target)
+            caption = str(args.get('caption') or result.get('caption') or '').strip()
+            if caption:
+                # `caption` là nhãn của CHÍNH lần chụp đó — chú thích ảnh đọc nó, nên nó đi cùng
+                # mảnh. Executor đã cắt ở `CAPTURE_CAPTION_MAX_CHARS`, nhưng `args` của model thì
+                # chưa ai chạm, nên cổng cắt lại.
+                fragment['caption'] = caption[:CAPTION_MAX_CHARS]
             fragments.append(fragment)
         elif name in DELEGATE_TOOLS:
             status = result.get('status') or result.get('childStatus')
