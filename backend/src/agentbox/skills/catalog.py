@@ -43,7 +43,7 @@ class SkillCatalog:
                                      'environment': meta.get('required_environment_variables', []),
                                      'files': meta.get('required_credential_files', [])},
                     'platforms': meta.get('platforms', []), 'readiness': 'requires-environment-check',
-                    'instructions': '', 'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+                    'instructions': '', 'sha256': hashlib.sha256(content.encode('utf-8')).hexdigest(),
                     '_path': path,
                 }
 
@@ -63,7 +63,7 @@ class SkillCatalog:
         linked = [p.relative_to(directory).as_posix() for p in directory.rglob('*') if p.is_file()]
         return {'id': sid, 'content': text, 'file': file_path, 'linkedFiles': linked,
                 'basePath': '/opt/boxfox-skills/' + directory.relative_to(self.root).as_posix(),
-                'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+                'sha256': hashlib.sha256(text.encode('utf-8')).hexdigest()}
 
     def prompt(self, enabled):
         return '\n'.join(f"- {s['id']}: {s['description']}" for s in self.list() if s['id'] in enabled)

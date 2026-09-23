@@ -567,7 +567,7 @@ def execute(name, args, session, turn=None, step=None, tool_call_id=None):
     if name == 'file_write':
         target = path(args['path'])
         target, evidence = write_text(target, args['content'], capture=capture)
-        return {'content': 'Written ' + str(target.relative_to(ROOT)), **evidence}
+        return {'content': 'Written ' + target.relative_to(ROOT).as_posix(), **evidence}
     if name == 'write_plan':
         return write_plan(args)
     if name == 'file_edit_block':
@@ -577,7 +577,7 @@ def execute(name, args, session, turn=None, step=None, tool_call_id=None):
             raise ValueError('old_text must match exactly once; read file first')
         target, evidence = write_text(target, content.replace(args['old_text'], args['new_text'], 1),
                                       capture=capture)
-        return {'content': 'Updated ' + str(target.relative_to(ROOT)), **evidence}
+        return {'content': 'Updated ' + target.relative_to(ROOT).as_posix(), **evidence}
     if name == 'codebase_glob':
         pattern = args.get('pattern', '**/*')
         path(pattern)

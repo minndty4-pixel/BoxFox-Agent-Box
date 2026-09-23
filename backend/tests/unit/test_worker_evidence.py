@@ -65,7 +65,7 @@ def test_a_new_file_reports_no_before_hash_and_its_added_line_count(box):
 def test_an_edit_reports_both_hashes_and_a_readable_diff(box):
     """(b) Sửa tệp: hai hash khác nhau, diff đúng dấu, tệp bằng chứng có thật và chứa hash mới."""
     before = 'def add(a, b):\n    return a - b\n'
-    box.joinpath('calc.py').write_text(before, encoding='utf-8')
+    box.joinpath('calc.py').write_text(before, encoding='utf-8', newline='\n')
 
     payload = worker.execute('file_edit_block', {'path': 'calc.py', 'old_text': '    return a - b',
                                                  'new_text': '    return a + b'}, SID, step=3)
@@ -93,7 +93,7 @@ def test_an_edit_reports_both_hashes_and_a_readable_diff(box):
 def test_an_oversized_old_file_is_hashed_but_never_diffed(box):
     """(c) Trần an toàn 256 KiB: hashes và số dòng vẫn có, `diff` rỗng, lý do là `too_large`."""
     before = 'x' * (300 * 1024) + '\n'
-    box.joinpath('big.txt').write_text(before, encoding='utf-8')
+    box.joinpath('big.txt').write_text(before, encoding='utf-8', newline='\n')
 
     payload = worker.execute('file_write', {'path': 'big.txt', 'content': 'nhỏ thôi\n'}, SID, step=4)
 
@@ -106,7 +106,7 @@ def test_an_oversized_old_file_is_hashed_but_never_diffed(box):
 
 def test_a_long_diff_is_cut_at_the_limit_and_flagged(box):
     """(d) Diff dài: cắt còn 8 000 ký tự và nói thật là đã cắt, số dòng đếm trên diff ĐẦY ĐỦ."""
-    box.joinpath('long.txt').write_text(''.join(f'cũ {index}\n' for index in range(1200)), encoding='utf-8')
+    box.joinpath('long.txt').write_text(''.join(f'cũ {index}\n' for index in range(1200)), encoding='utf-8', newline='\n')
 
     payload = worker.execute('file_write', {'path': 'long.txt',
                                             'content': ''.join(f'mới {index}\n' for index in range(1200))},
