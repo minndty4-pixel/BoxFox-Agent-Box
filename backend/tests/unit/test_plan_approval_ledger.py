@@ -68,12 +68,15 @@ async def blocked_session(runtime, store, prompt='Làm việc'):
     sid = runtime.create({'skills': []})['id']
     runtime.start(sid, prompt)
     loop = asyncio.get_running_loop()
-    end = loop.time() + 5
+    # Trần 5 s quá sát khi cả bộ kiểm chạy song song trên máy đang tải: lượt gieo có lần chưa kịp
+    # tới `awaiting_decision` (đo vòng 25 — phải chạy lại mới xanh). Trần 30 s chỉ thành hiện thực
+    # khi có lỗi thật; đường xanh vẫn thoát ở vòng lặp đầu tiên.
+    end = loop.time() + 30
     while loop.time() < end:
         if store.get(sid)['status'] == 'awaiting_decision':
             return sid, runtime.pending_for(sid)[0]
         await asyncio.sleep(0.01)
-    raise AssertionError('session never reached awaiting_decision; it is ' + store.get(sid)['status'])
+    raise AssertionError('session never reached awaiting_decision within 30 s; it is ' + store.get(sid)['status'])
 
 
 def approval_args(**extra):

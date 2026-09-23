@@ -2124,3 +2124,11 @@ giao diện; danh sách lỗi đầy đủ ở `bug-register.md` §6.34 — BUG-
 - **Hai lỗi `probe` tìm ra mà vòng thi công không thấy** — đáng nhớ cho lần sau: (i) một cổng đặt ở chỗ **hỏi** mà không đặt ở chỗ
   **ghi** thì fail-open trên đường thứ hai (`ask_user`); (ii) `str.lstrip()` cắt theo **tập ký tự** nên hai chỗ "cùng một luật" vẫn nói
   hai chuyện khác nhau (`web.dev` vs `docs.example.com`) — muốn chắc thì gom một hàm dùng chung, đừng chép luật.
+- **Chạy lại ca H7 trên cây chốt `a670e0e`** (chính vòng kiểm thử độc lập tự chạy lại, sau khi bản vá `a93ebd6` lên): harness `3124`
+  được dựng lại **từ tip**, hai chiều đều đạt — host chỉ nằm trong `args` ⇒ `PLAN_QUALITY_REJECTED … (sources-unbacked)`, **0** hàng ghi;
+  cùng host đó nằm trong `result` ⇒ `Plan written …`. Cả bộ thứ hai trên tip: **58/58** (F 12, G 27, H 19). Một điều kiện nói thẳng:
+  `write_plan` không có cửa HTTP, nên hai chiều được đo **trong tiến trình** qua đúng `HarnessRuntime`/`SessionStore` nạp từ cây tip —
+  không phải một lời gọi HTTP vào harness đang chạy.
+- **Một ca kiểm dễ chập chờn đã được siết**: `blocked_session()` ở `test_plan_approval_ledger.py` chờ `awaiting_decision` đúng **5 s**;
+  khi bộ kiểm chạy song song trên máy đang tải, lượt gieo có lần chưa kịp tới trạng thái đó nên ca đỏ rồi xanh khi chạy lại (thấy trong log
+  của worker khác; vòng kiểm thử **không** tái hiện được). Trần nay là **30 s**; đường xanh vẫn thoát ở vòng lặp đầu nên không chậm thêm.
