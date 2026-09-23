@@ -705,6 +705,16 @@ def create_app(runtime):
         asked = payload['version']
         payload['verification'] = runtime.plan_verification_view(identity, asked or 0)
         payload['ownership'] = runtime.plan_ownership_view(identity)
+        # Vòng 25 (hậu kiểm soát mã, F1/F5): công tắc của cổng duyệt đi KÈM trạng thái để tab Plan
+        # đọc được cùng một sự thật với harness. Không có khoá này, giao diện chỉ biết "bản này
+        # chưa `ok`" rồi tự đoán là harness sẽ từ chối — mạnh hơn harness ở chế độ `warn`/`off`
+        # (chặn một cú duyệt mà harness cho qua), yếu hơn ở chế độ `enforce` + `revise` (mời một cú
+        # bấm mà harness chắc chắn trả 409). `*Unknown` là giá trị env lạ đã bị hạ về mặc định:
+        # hạ cấp cổng trong im lặng là thứ kế hoạch cấm, nên nó đi ra tới mặt người dùng.
+        verify_mode, verify_unknown = runtime.plan_verify_mode()
+        sources_mode, sources_unknown = runtime.plan_sources_mode()
+        payload['gate'] = {'verifyMode': verify_mode, 'verifyUnknown': verify_unknown,
+                           'sourcesMode': sources_mode, 'sourcesUnknown': sources_unknown}
         payload['evaluation'] = None if evaluation is None else {
             'identity': evaluation.get('identity'), 'version': evaluation.get('version'),
             'total': evaluation.get('total'), 'verdict': evaluation.get('verdict'),

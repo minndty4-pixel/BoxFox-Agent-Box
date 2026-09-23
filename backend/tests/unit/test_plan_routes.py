@@ -413,6 +413,33 @@ def test_status_reports_a_live_verdict_with_the_issue_list_intact(tmp_path):
     assert payload['ownership'] == {'sessionId': 'owner-sess'}
 
 
+def test_status_carries_the_gate_switches_so_the_tab_can_match_the_harness(tmp_path, monkeypatch):
+    """`gate` LUÔN có mặt, và nói đúng công tắc ĐANG chạy — giao diện không phải tự đoán.
+
+    Tab Plan phải siết đúng bằng harness: khoá nút Duyệt khi bản đang chọn có phán quyết `revise`
+    trong chế độ `enforce`, nhưng KHÔNG khoá khi công tắc đã hạ xuống `warn`/`off`. Giá trị env lạ
+    bị hạ về mặc định KÈM cờ `*Unknown` (hạ cấp cổng trong im lặng là thứ kế hoạch cấm).
+    """
+    executor = BoxExecutor(payload=plan_payload(versions=((1, 4650, '2026-09-20T13:50:00Z'),)))
+    monkeypatch.delenv('BOXFOX_PLAN_VERIFY', raising=False)
+    monkeypatch.delenv('BOXFOX_PLAN_SOURCES_GATE', raising=False)
+    status, payload, _rows = call(tmp_path, executor, 'GET',
+                                  f'{STATUS_ROUTE}?identity={IDENTITY}&version=1')
+    assert status == 200
+    assert payload['gate'] == {'verifyMode': 'enforce', 'verifyUnknown': None,
+                               'sourcesMode': 'enforce', 'sourcesUnknown': None}
+
+    monkeypatch.setenv('BOXFOX_PLAN_VERIFY', 'warn')
+    monkeypatch.setenv('BOXFOX_PLAN_SOURCES_GATE', 'nonsense')
+    status, payload, _rows = call(tmp_path, executor, 'GET',
+                                  f'{STATUS_ROUTE}?identity={IDENTITY}&version=1')
+    assert status == 200
+    assert payload['gate']['verifyMode'] == 'warn'
+    assert payload['gate']['verifyUnknown'] is None
+    assert payload['gate']['sourcesMode'] == 'enforce'
+    assert payload['gate']['sourcesUnknown'] == 'nonsense'
+
+
 def test_status_of_a_version_that_does_not_exist_still_carries_both_faces(tmp_path):
     """Bản bị xoá (hoặc gõ sai số): vẫn HAI khoá với `state: 'none'`, không phải một payload thiếu."""
     executor = BoxExecutor(payload=plan_payload(versions=((1, 4650, '2026-09-20T13:50:00Z'),)))
