@@ -1,0 +1,452 @@
+"""Body-quality rules and the fallback read ladder, host side, no network.
+
+Split out of :mod:`agentbox.agent_core.web` so the rules can be unit-tested
+without a socket and so the source-ledger work (Phạm vi B) has **one** shared
+definition of "this body is real". Numbers below were measured on 2026-09-23
+(see ``docs/plan/v27/subplans/reading.md`` and ``docs/tracking/test-rounds.md``):
+
+* gzip bodies arrive as binary junk: 17 421 / 46 692 / 37 798 "characters" with
+  ``junkRatio`` 0.550 / 0.517, against 0.0000 for real prose;
+* ``moh.gov.vn`` answers the reader with 165–259 bytes
+  ("Warning: This page maybe not yet fully loaded");
+* ``vbpl.vn`` answers 200 with a 404 image page, and 27 378 bytes of
+  "Trang chủ" for a document URL.
+
+Five read tiers, best first (chốt #6010/#6011):
+
+1. ``html``  — the publisher's own HTML; tables survive (measured: arXiv HTML kept 10 tables)
+2. ``jats``  — full-text XML/JATS; tables survive (measured: Europe PMC kept 6 tables)
+3. ``pdf-table`` — host-side PDF with ``pdfplumber``; tables rebuilt, labelled "bảng trích tự động"
+4. ``reader-text`` — ``r.jina.ai`` text only; tables are **lost** (measured: 0 rows with ``|``)
+5. ``page-image`` — page images + image reading; last resort, not built in this batch
+"""
+
+import io
+import re
+import unicodedata
+import zlib
+from html.parser import HTMLParser
+
+# --------------------------------------------------------------------- constants
+
+JUNK_CATEGORIES = {'Cf', 'Cs', 'Co', 'Cn'}   # Cc is judged separately so \t \n \r survive
+JUNK_RATIO_MAX = 0.10                        # measured: junk 0.52–0.55 · real prose 0.0000
+BODY_MIN_CHARS = 500                         # measured: smallest fake body is 403 chars (vbpl.vn 404)
+ERROR_MARKERS = (
+    '404 error',
+    'văn bản không tồn tại',
+    'warning: this page maybe not yet fully loaded',
+    'cached snapshot',
+    'just a moment',
+    'attention required',
+    'đang tải dữ liệu',
+    'enable javascript',
+    'please wait while we load',
+    'meta http-equiv="refresh"',
+    'window.location.replace',
+)
+GENERIC_TITLES = ('trang chủ', 'home', 'homepage', 'trang chu', 'page not found', 'not found',
+                  'đang tải', 'just a moment', 'access denied', 'forbidden', 'error')
+
+TABLE_LABEL = 'bảng trích tự động'
+TABLE_LABEL_NOTE = ('bảng trích tự động — dòng tiêu đề nhiều tầng có thể lệch; '
+                    'khẳng định dựa vào bảng phải ghi rõ nguồn bảng')
+READ_TIERS = ('html', 'jats', 'pdf-table', 'reader-text', 'page-image')
+VERDICTS = ('ok', 'thin', 'junk', 'error-page', 'wrong-page', 'empty')
+LADDER_REASONS = ('none', 'thin', 'junk', 'error-page', 'wrong-page', 'pdf', 'http-status', 'unreachable')
+_TIER_RANK = {'ok': 3, 'thin': 2, 'wrong-page': 1, 'error-page': 1, 'junk': 0, 'empty': 0}
+
+_SLUG_EXTENSIONS = ('.html', '.htm', '.aspx', '.asp', '.php', '.jsp', '.json', '.xml', '.rss',
+                    '.atom', '.pdf', '.md', '.txt', '.cgi')
+_TOKEN_SPLIT = re.compile(r'[^0-9a-z]+')
+_HTML_TAG = re.compile(r'(?s)<[^>]+>')
+_JATS_TABLE = re.compile(r'(?s)<table-wrap\b.*?</table-wrap>')
+_MARKUPISH = re.compile(r'(?i)(<(?:table|tr|td|th|table-wrap)\b|\bxa:table\b)')
+
+
+def _plain(value: str) -> str:
+    """Lowercase, diacritics removed (NFD + drop marks, plus đ/Đ which NFD keeps)."""
+    text = unicodedata.normalize('NFD', str(value or ''))
+    text = ''.join(ch for ch in text if unicodedata.category(ch) != 'Mn')
+    return text.replace('đ', 'd').replace('Đ', 'D').lower()
+
+
+def _tokens(value: str, *, min_len: int = 1) -> list[str]:
+    return [tok for tok in _TOKEN_SPLIT.split(_plain(value)) if len(tok) >= min_len]
+
+
+# ------------------------------------------------------------------- junk / title
+
+def junk_ratio(text: str, sample: int = 1000) -> float:
+    """Share of characters that cannot be prose, in the first ``sample`` characters.
+
+    Counts U+FFFD, control characters other than ``\\t \\n \\r``, and the
+    Cf/Cs/Co/Cn categories. Measured: compressed junk 0.550 · PDF bytes 0.517 ·
+    Vietnamese prose 0.0000 (so the 0.10 line has a very wide margin).
+    """
+    head = str(text or '')[:max(1, int(sample))]
+    if not head:
+        return 0.0
+    bad = 0
+    for ch in head:
+        if ch == '\ufffd':
+            bad += 1
+            continue
+        category = unicodedata.category(ch)
+        if category == 'Cc' and ch not in '\t\n\r':
+            bad += 1
+        elif category in JUNK_CATEGORIES:
+            bad += 1
+    return bad / len(head)
+
+
+def reader_title(text: str) -> str:
+    """Title line of a reader answer (``Title: …``), empty when the text has none."""
+    for line in str(text or '').splitlines()[:6]:
+        if line.startswith('Title:'):
+            return line.split(':', 1)[1].strip()[:200]
+    return ''
+
+
+def wrong_page(text: str, *, url: str = '', title: str = '') -> bool:
+    """True when the title shares no clue with the URL slug — "Trang chủ" for a document URL.
+
+    Deliberately conservative: it needs a title, at least two alphabetic slug
+    tokens (≥3 characters, file extensions dropped) and at least one alphabetic
+    title token. A generic title ("Trang chủ", "Home", …) is enough on its own.
+    """
+    heading = (title or reader_title(text)).strip()
+    if not heading or len(heading) > 200:
+        return False
+    plain_heading = _plain(heading).strip(' -–—:|')
+    if plain_heading in GENERIC_TITLES or any(plain_heading.startswith(g + ' ') or
+                                             plain_heading.startswith(g + ' -') for g in GENERIC_TITLES):
+        return True
+    path = (url or '').split('?', 1)[0].split('#', 1)[0].rstrip('/')
+    if not path:
+        return False
+    slug = path.rsplit('/', 1)[-1].lower()
+    for extension in _SLUG_EXTENSIONS:
+        if slug.endswith(extension):
+            slug = slug[: -len(extension)]
+            break
+    slug_tokens = _tokens(slug, min_len=3)
+    if len([tok for tok in slug_tokens if any(ch.isalpha() for ch in tok)]) < 2:
+        return False
+    title_tokens = [tok for tok in _tokens(heading, min_len=3) if any(ch.isalpha() for ch in tok)]
+    if not title_tokens:
+        return False
+    return not set(slug_tokens) & set(title_tokens)
+
+
+def body_check(text: str, *, url: str = '', status: int | None = None,
+               content_type: str = '', reader: str | None = None,
+               title: str = '') -> dict:
+    """Judge a fetched body and say *why* it cannot be trusted.
+
+    ``verdict`` values (frozen after đợt 1 — Phạm vi B maps them):
+    ``ok`` · ``thin`` (short, still returned) · ``junk`` · ``error-page`` ·
+    ``wrong-page`` · ``empty``. Only ``ok`` means "treat this as the real page";
+    ``thin`` is advice, the other three are refusals.
+    """
+    body = str(text or '')
+    stripped = body.strip()
+    ratio = junk_ratio(body)
+    low = _plain(stripped[:4000])
+    marker = next((mark for mark in ERROR_MARKERS if mark in low), '')
+    result = {
+        'verdict': 'ok',
+        'reason': '',
+        'junkRatio': round(ratio, 4),
+        'textChars': len(stripped),
+        'underMinChars': len(stripped) < BODY_MIN_CHARS,
+        'reader': reader or '',
+        'contentType': content_type or '',
+        'status': status,
+    }
+    if not stripped:
+        result.update(verdict='empty', reason='the body is empty')
+        return result
+    if ratio > JUNK_RATIO_MAX:
+        result.update(verdict='junk',
+                      reason=f'{ratio:.1%} of the first characters cannot be prose (compressed or binary body)')
+        return result
+    if marker:
+        result.update(verdict='error-page', reason=f'the body carries an error/marker page ("{marker}")')
+        return result
+    if wrong_page(body, url=url, title=title):
+        result.update(verdict='wrong-page',
+                      reason='the page title does not match the address (a home or error page answered)')
+        return result
+    if len(stripped) < BODY_MIN_CHARS:
+        result.update(verdict='thin',
+                      reason=f'only {len(stripped)} characters — read it, but look for a second source')
+        return result
+    return result
+
+
+# ------------------------------------------------------------------------ decode
+
+def _fail(code: str, message: str, log_message: str):
+    from .web import WebError  # lazy import: web imports this module, so a cycle must not form
+    raise WebError(code, message, log_message)
+
+
+def decode_body(raw: bytes, headers, *, charset: str = 'utf-8', mode: str = 'on',
+                max_inflated_bytes: int = 16 * 1024 * 1024) -> tuple[str, dict]:
+    """Inflate ``Content-Encoding`` before anything reads the bytes as text.
+
+    ``gzip`` is recognised from the header **or** the ``\\x1f\\x8b`` magic (servers
+    send gzip without saying so — measured on nhandan.vn). ``br`` is an explicit
+    error instead of a wall of junk: the standard library cannot decode it.
+    """
+    meta = {'contentEncoding': 'identity', 'decoded': False, 'decodeTruncated': False}
+    if mode == 'off':
+        return raw.decode(charset, errors='replace'), meta
+    encoding = ''
+    try:
+        encoding = str(headers.get('Content-Encoding') or '').strip().lower()
+    except AttributeError:  # a plain dict without .get on the header object
+        encoding = ''
+    gzip_like = 'gzip' in encoding or raw[:2] == b'\x1f\x8b'
+    if gzip_like:
+        try:
+            obj = zlib.decompressobj(16 + zlib.MAX_WBITS)
+            inflated = obj.decompress(raw, max_inflated_bytes)
+        except zlib.error as exc:
+            _fail('WEB_FETCH_FAILED', f'the body says it is gzip but cannot be inflated ({exc})',
+                  'the gzip body could not be inflated')
+        meta.update(contentEncoding='gzip', decoded=True,
+                    decodeTruncated=bool(obj.unconsumed_tail))
+        return inflated.decode(charset, errors='replace'), meta
+    if 'deflate' in encoding:
+        for wbits in (zlib.MAX_WBITS, -zlib.MAX_WBITS):
+            try:
+                inflated = zlib.decompressobj(wbits).decompress(raw, max_inflated_bytes)
+                meta.update(contentEncoding='deflate', decoded=True)
+                return inflated.decode(charset, errors='replace'), meta
+            except zlib.error:
+                continue
+        _fail('WEB_FETCH_FAILED', 'the body says it is deflate but cannot be inflated',
+              'the deflate body could not be inflated')
+    if 'br' in encoding:
+        _fail('WEB_FETCH_FAILED',
+              'the host answered with brotli compression this reader cannot decode',
+              'the host answered with br')
+    if encoding and encoding not in ('identity', 'none'):
+        meta.update(contentEncoding=encoding)
+    return raw.decode(charset, errors='replace'), meta
+
+
+# ------------------------------------------------------------------------ ladder
+
+def ladder_plan(*, status: int | None = None, content_type: str = '', verdict: str = 'ok',
+                direct_error: bool = False, is_pdf: bool = False, text_chars: int | None = None,
+                mode: str = 'auto') -> dict:
+    """Decide whether the third-party reader gets a turn, and name the reason.
+
+    ``mode='thin'`` reproduces exactly the behaviour of commit ``2add905`` (only
+    bodies shorter than 200 characters went to the reader) — the regression
+    switch. ``mode='off'`` never calls the reader.
+    """
+    if mode == 'off':
+        return {'use_reader': False, 'reason': 'none'}
+    if mode == 'thin':
+        use_reader = text_chars is not None and text_chars < 200
+        return {'use_reader': use_reader, 'reason': 'thin' if use_reader else 'none'}
+    if is_pdf:
+        return {'use_reader': True, 'reason': 'pdf'}
+    if direct_error:
+        return {'use_reader': True, 'reason': 'unreachable'}
+    if status is not None and not (200 <= int(status) < 300):
+        return {'use_reader': True, 'reason': 'http-status'}
+    if verdict in ('junk', 'error-page', 'wrong-page'):
+        return {'use_reader': True, 'reason': verdict}
+    if verdict in ('thin', 'empty'):
+        return {'use_reader': True, 'reason': 'thin'}
+    return {'use_reader': False, 'reason': 'none'}
+
+
+def is_better_grade(new_verdict: str, old_verdict: str) -> bool:
+    """Keep a reader answer only when its ``body_check`` grade beats the direct body."""
+    return _TIER_RANK.get(new_verdict, 0) > _TIER_RANK.get(old_verdict, 0)
+
+
+# ------------------------------------------------------------- structured tiers
+
+class _TableReader(HTMLParser):
+    """Pull ``<table>`` blocks out of HTML as markdown rows (tier 1 keeps tables)."""
+
+    _CELL = {'td', 'th'}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.tables: list[list[list[str]]] = []
+        self._table: list[list[str]] | None = None
+        self._row: list[str] | None = None
+        self._cell: list[str] | None = None
+        self._depth = 0
+        self._skip = 0
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        if tag in ('script', 'style'):
+            self._skip += 1
+            return
+        if tag == 'table':
+            self._depth += 1
+            if self._depth == 1 and self._table is None:
+                self._table = []
+        elif tag == 'tr' and self._table is not None and self._depth == 1:
+            self._row = []
+        elif tag in self._CELL and self._row is not None and self._depth == 1:
+            self._cell = []
+        elif tag == 'br' and self._cell is not None:
+            self._cell.append(' ')
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if tag in ('script', 'style'):
+            self._skip = max(0, self._skip - 1)
+            return
+        if tag in self._CELL and self._cell is not None and self._row is not None:
+            self._row.append(' '.join(''.join(self._cell).split()))
+            self._cell = None
+        elif tag == 'tr' and self._row is not None and self._table is not None:
+            if any(cell for cell in self._row):
+                self._table.append(self._row)
+            self._row = None
+        elif tag == 'table':
+            self._depth = max(0, self._depth - 1)
+            if self._depth == 0 and self._table is not None:
+                if self._table:
+                    self.tables.append(self._table)
+                self._table = None
+
+    def handle_data(self, data):
+        if self._skip or self._cell is None:
+            return
+        self._cell.append(data)
+
+
+def _rows_to_markdown(rows: list[list[str]]) -> str:
+    if not rows:
+        return ''
+    width = max(len(row) for row in rows)
+    lines = []
+    for index, row in enumerate(rows):
+        cells = [(cell or '').replace('|', '\\|') for cell in row] + [''] * (width - len(row))
+        lines.append('| ' + ' | '.join(cells) + ' |')
+        if index == 0:
+            lines.append('|' + '---|' * width)
+    return '\n'.join(lines)
+
+
+def tables_to_markdown(markup: str, *, max_tables: int = 12) -> str:
+    """Markdown of every ``<table>`` in an HTML body, labelled as machine-extracted."""
+    if not markup or '<table' not in markup.lower():
+        return ''
+    parser = _TableReader()
+    try:
+        parser.feed(markup)
+    except Exception:  # a broken page must not lose the rest of the read
+        return ''
+    blocks = []
+    for index, rows in enumerate(parser.tables[:max_tables], start=1):
+        table = _rows_to_markdown(rows)
+        if table:
+            blocks.append(f'**Bảng {index}** ({TABLE_LABEL})\n\n{table}')
+    return '\n\n'.join(blocks)
+
+
+def jats_tables_to_markdown(xml: str, *, max_tables: int = 12) -> str:
+    """Markdown of ``<table-wrap>`` blocks in a JATS full-text answer (tier 2)."""
+    if not xml or '<table-wrap' not in xml.lower():
+        return ''
+    blocks = []
+    for index, chunk in enumerate(_JATS_TABLE.findall(xml)[:max_tables], start=1):
+        label = ''
+        caption = ''
+        label_match = re.search(r'(?s)<label>(.*?)</label>', chunk)
+        caption_match = re.search(r'(?s)<caption>(.*?)</caption>', chunk)
+        if label_match:
+            label = _HTML_TAG.sub(' ', label_match.group(1)).strip()
+        if caption_match:
+            caption = _HTML_TAG.sub(' ', caption_match.group(1)).strip()
+        parser = _TableReader()
+        try:
+            parser.feed(chunk)
+        except Exception:
+            continue
+        if not parser.tables:
+            continue
+        head = ' · '.join(part for part in (label, caption) if part)
+        table = _rows_to_markdown(parser.tables[0])
+        blocks.append(f'**Bảng {index}** ({TABLE_LABEL})' + (f' — {head}' if head else '') + f'\n\n{table}')
+    return '\n\n'.join(blocks)
+
+
+def looks_structured(content_type: str, text: str) -> bool:
+    """True when the body carries tables we should keep instead of flattening."""
+    ctype = str(content_type or '').lower()
+    if 'xml' in ctype or 'jats' in ctype:
+        return _MARKUPISH.search(str(text or '')[:20000]) is not None or '<table-wrap' in str(text or '')
+    return '<table' in str(text or '').lower()
+
+
+def read_tier(*, content_type: str = '', reader: str | None = None, pdf: bool = False,
+              text: str = '') -> str:
+    """Name of the tier this body came from — the ledger stores this per source."""
+    ctype = str(content_type or '').lower()
+    if pdf:
+        return 'pdf-table'
+    if reader:
+        return 'reader-text'
+    if '<table-wrap' in str(text or '').lower() or 'jats' in ctype:
+        return 'jats'
+    return 'html'
+
+
+def pdf_to_markdown(data: bytes, *, max_pages: int = 40, max_tables: int = 24,
+                    max_chars: int = 200000) -> tuple[str, dict]:
+    """Rebuild a PDF as markdown text + markdown tables with pdfplumber (tier 3).
+
+    Returns ``('', info)`` when pdfplumber is missing or the bytes are not a PDF;
+    the caller then falls through to the reader tier.
+    """
+    info = {'pages': 0, 'tables': 0, 'tier': 'pdf-table', 'engine': 'pdfplumber'}
+    if not data[:5].startswith(b'%PDF-'):
+        info['reason'] = 'not a PDF body'
+        return '', info
+    try:
+        import pdfplumber  # type: ignore[import-not-found]  # optional host dependency
+    except Exception:
+        info['reason'] = 'pdfplumber is not installed'
+        return '', info
+    parts: list[str] = []
+    table_count = 0
+    try:
+        with pdfplumber.open(io.BytesIO(data)) as pdf:
+            info['pages'] = len(pdf.pages)
+            for number, page in enumerate(pdf.pages[:max_pages], start=1):
+                text = (page.extract_text() or '').strip()
+                if text:
+                    parts.append(f'## Trang {number}\n\n{text}')
+                if table_count < max_tables:
+                    for rows in (page.extract_tables() or []):
+                        cleaned = [[(cell or '').replace('\n', ' ').strip() for cell in row] for row in rows]
+                        table = _rows_to_markdown(cleaned)
+                        if not table:
+                            continue
+                        table_count += 1
+                        parts.append(f'**Bảng {table_count}** ({TABLE_LABEL_NOTE})\n\n{table}')
+    except Exception as exc:  # a broken PDF must not kill the read
+        info['reason'] = f'{exc.__class__.__name__} while reading the PDF'
+        if not parts:
+            return '', info
+    info['tables'] = table_count
+    body = '\n\n'.join(parts)
+    if len(body) > max_chars:
+        body = body[:max_chars]
+        info['truncated'] = True
+    return body, info

@@ -46,6 +46,10 @@ from .limits import (ANSWER_LENGTH_HINT, ANSWER_LENGTH_WARN_CODE, ANSWER_MAX_CHA
                      PLAN_VERIFY_SUMMARY_CHARS,
                      ROUTER_BODY_BUDGET, STEP_BUDGET_NOTICE_CODE, STEPS_CLAMP_NOTICE_CODE,
                      TRUNCATED_OUTPUT_MAX_TOKENS, TRUNCATED_OUTPUT_NOTICE_CODE, TURN_INDEX_DRIFT_CODE,
+                     READ_STORE_MAX_ENTRIES, WEB_READER_DEFAULT_MODE, WEB_READER_ENV,
+                     WEB_READER_MODES, WEB_READER_MODE_UNKNOWN_CODE,
+                     WEB_READ_STORE_DEFAULT_MODE, WEB_READ_STORE_ENV, WEB_READ_STORE_MODES,
+                     WEB_READ_STORE_MODE_UNKNOWN_CODE,
                      WRAP_UP_MAX_TOKENS,
                      WRAP_UP_READ_TOOL_CALLS, WRAP_UP_STEPS_RESERVED, WRAP_UP_TIMEOUT_SECONDS)
 from . import plan_quality
@@ -2419,6 +2423,38 @@ class HarnessRuntime(RuntimeCommands):
         """`BOXFOX_PLAN_SOURCES_GATE` = `enforce|warn|off`, đọc MỖI LƯỢT (cùng khuôn hai cổng kia)."""
         return mode_from_env(PLAN_SOURCES_ENV, PLAN_SOURCES_MODES, PLAN_SOURCES_DEFAULT_MODE)
 
+    # --- Công tắc lớp đọc web (vòng 27, A-9) ---------------------------------------------------
+    def web_reader_mode(self):
+        """`BOXFOX_WEB_READER` = `auto|thin|off`, đọc MỖI LƯỢT (cùng khuôn hai cổng vòng 25).
+
+        `auto` = luật mới của thang đọc; `thin` = ĐÚNG hành vi `2add905` (chỉ khi thân bài < 200
+        ký tự) — công tắc hồi quy; `off` = không bao giờ gọi đầu đọc.
+        """
+        return mode_from_env(WEB_READER_ENV, WEB_READER_MODES, WEB_READER_DEFAULT_MODE)
+
+    def web_read_store_mode(self):
+        """`BOXFOX_WEB_READ_STORE` = `on|off` cho bộ đệm đọc (A-4), đọc MỖI LƯỢT."""
+        return mode_from_env(WEB_READ_STORE_ENV, WEB_READ_STORE_MODES, WEB_READ_STORE_DEFAULT_MODE)
+
+    def web_switch_notices(self, sid):
+        """Nói RA một lần khi một công tắc lớp đọc bị đặt giá trị lạ.
+
+        Gọi ở route web (chỉ khi phiên thật sự đọc nguồn) nên một máy đặt sai biến mà không ai đọc
+        web thì không sinh nhiễu; còn khi có đọc thì không có chuyện hạ cấp trong im lặng.
+        """
+        for env, modes, default, code, event in (
+                (WEB_READER_ENV, WEB_READER_MODES, WEB_READER_DEFAULT_MODE,
+                 WEB_READER_MODE_UNKNOWN_CODE, 'web.reader.mode_unknown'),
+                (WEB_READ_STORE_ENV, WEB_READ_STORE_MODES, WEB_READ_STORE_DEFAULT_MODE,
+                 WEB_READ_STORE_MODE_UNKNOWN_CODE, 'web.read_store.mode_unknown')):
+            unknown = mode_from_env(env, modes, default)[1]
+            if unknown is None or self._notice_seen(sid, code):
+                continue
+            self.store.emit(sid, 'notice', {
+                'code': code, 'value': unknown, 'partial': False,
+                'message': (f'{code}: {env}={unknown!r} là giá trị lạ — dùng {default!r} cho phiên này')})
+            system_log.write(event, level='warn', session_id=sid, code=code, value=unknown)
+
     def plan_sources_evidence(self, sid):
         """Bằng chứng nguồn của lượt: chỉ KẾT QUẢ CÔNG CỤ của cây phiên, không văn bản model tự viết.
 
@@ -3500,6 +3536,7 @@ class HarnessRuntime(RuntimeCommands):
         if name == 'delegate_task':
             return await self.delegate(session, args)
         if name in {'web_search', 'web_fetch'}:
+            self.web_switch_notices(sid)
             return await self.web.run(name, args, sid)
         if name == 'browser_use' and session['role'] == 'research' and args.get('action') not in {'navigate', 'snapshot', 'screenshot'}:
             raise PermissionError('Research browser access is read-only navigation/snapshot')

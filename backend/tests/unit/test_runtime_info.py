@@ -14,6 +14,7 @@ from aiohttp import ClientSession
 from aiohttp.test_utils import TestServer
 
 from agentbox.agent_core import failures, limits
+from agentbox.agent_core import web as web_module
 from agentbox.agent_core import runtime as runtime_module
 from agentbox.agent_core import tool_groups as tool_groups_module
 from agentbox.agent_core.roles import ORCHESTRATOR_TOOLS, ROLES
@@ -254,6 +255,18 @@ def test_the_limits_are_the_numbers_the_runtime_applies(tmp_path):
             'planVerifyReviseMax': limits.PLAN_VERIFY_REVISE_MAX,
             'planTurnExtensionSeconds': limits.PLAN_TURN_EXTENSION_SECONDS,
         },
+        # Vòng 27 (đợt 1, A-9) — khối `web` đi cùng luật: hai mức đọc qua CHÍNH hàm engine dùng,
+        # nên giao diện không thể hứa một thứ engine không áp.
+        'web': {
+            'readerMode': HarnessRuntime.web_reader_mode(None)[0],
+            'readerModes': list(limits.WEB_READER_MODES),
+            'readerDefault': limits.WEB_READER_DEFAULT_MODE,
+            'readStoreMode': HarnessRuntime.web_read_store_mode(None)[0],
+            'readStoreModes': list(limits.WEB_READ_STORE_MODES),
+            'readStoreDefault': limits.WEB_READ_STORE_DEFAULT_MODE,
+            'textHardChars': web_module.MAX_TEXT_HARD,
+            'storeMaxEntries': limits.READ_STORE_MAX_ENTRIES,
+        },
     }
     assert info['limits']['instructionsChars'] == limits.INSTRUCTIONS_MAX_CHARS
 
@@ -268,4 +281,32 @@ def test_the_limits_are_the_numbers_the_runtime_applies(tmp_path):
     # Vai trò con bị chặn chặt hơn ở `delegate()`; hai hằng đó là thứ hàm đó dùng.
     source = inspect.getsource(runtime_module.HarnessRuntime.delegate)
     assert 'min(CHILD_MAX_STEPS' in source and 'min(CHILD_DEADLINE_SECONDS' in source
+    store.close()
+
+
+def test_a_mis_set_reading_switch_keeps_the_default_and_says_so_once(tmp_path, monkeypatch):
+    """A-9 — giá trị lạ của công tắc lớp đọc không được hạ cấp trong im lặng.
+
+    ĐO ĐƯỢC: `BOXFOX_WEB_READER=chặt-vừa-thôi` ⇒ mức đang áp là `auto`, và phiên nhận ĐÚNG MỘT
+    notice `WEB_READER_MODE_UNKNOWN`; lời gọi thứ hai không sinh notice thứ hai.
+    """
+    monkeypatch.setenv(limits.WEB_READER_ENV, 'chặt-vừa-thôi')
+    monkeypatch.setenv(limits.WEB_READ_STORE_ENV, 'chắc-có-lẽ')
+    store, runtime = make_runtime(tmp_path, 'web-switch.db')
+    sid = runtime.create({'skills': []})['id']
+
+    assert runtime.web_reader_mode() == (limits.WEB_READER_DEFAULT_MODE, 'chặt-vừa-thôi')
+    assert runtime.web_read_store_mode() == (limits.WEB_READ_STORE_DEFAULT_MODE, 'chắc-có-lẽ')
+    runtime.web_switch_notices(sid)
+    runtime.web_switch_notices(sid)
+
+    notices = [e['data'] for e in store.events(sid) if e['type'] == 'notice']
+    codes = [row['code'] for row in notices]
+    assert codes == [limits.WEB_READER_MODE_UNKNOWN_CODE, limits.WEB_READ_STORE_MODE_UNKNOWN_CODE]
+    assert notices[0]['value'] == 'chặt-vừa-thôi' and notices[0]['partial'] is False
+    assert 'auto' in notices[0]['message']
+
+    # Route web gọi đúng chỗ này: một máy đặt sai biến phải nói ra khi phiên thật sự đọc nguồn.
+    source = inspect.getsource(runtime_module.HarnessRuntime.dispatch)
+    assert 'self.web_switch_notices(sid)' in source
     store.close()

@@ -32,7 +32,16 @@ DECISION_OPTION = {'type': 'object', 'properties': {
     'kind': {'type': 'string', 'enum': ['approve', 'reject', 'alternative']}}, 'required': ['label']}
 DECISION_OPTIONS = {'type': 'array', 'items': DECISION_OPTION}
 SCHEMAS = [
-    tool('file_read', 'Read a UTF-8 file inside the sandbox workspace.', {'path': STRING}, ['path']),
+    tool('file_read',
+         'Read a UTF-8 file inside the sandbox workspace. A file longer than the answer can be read '
+         'in slices: pass `offset` (character index to start at) and `limit` (how many characters '
+         'this call returns), then continue at the `nextOffset` the answer reports until it is '
+         'null.',
+         {'path': STRING,
+          'offset': {'type': 'integer', 'description': 'Character index to start at (default 0).'},
+          'limit': {'type': 'integer', 'description': 'How many characters this call returns '
+                                                     '(default 30000).'}},
+         ['path']),
     tool('file_write', 'Write a file inside the sandbox workspace.', {'path': STRING, 'content': STRING}, ['path', 'content']),
     tool('file_edit_block', 'Replace one exact block after reading the file.', {'path': STRING, 'old_text': STRING, 'new_text': STRING}, ['path', 'old_text', 'new_text']),
     tool('codebase_glob', 'List workspace files matching a relative glob.', {'pattern': STRING}),

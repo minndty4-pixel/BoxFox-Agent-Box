@@ -2132,3 +2132,39 @@ giao diện; danh sách lỗi đầy đủ ở `bug-register.md` §6.34 — BUG-
 - **Một ca kiểm dễ chập chờn đã được siết**: `blocked_session()` ở `test_plan_approval_ledger.py` chờ `awaiting_decision` đúng **5 s**;
   khi bộ kiểm chạy song song trên máy đang tải, lượt gieo có lần chưa kịp tới trạng thái đó nên ca đỏ rồi xanh khi chạy lại (thấy trong log
   của worker khác; vòng kiểm thử **không** tái hiện được). Trần nay là **30 s**; đường xanh vẫn thoát ở vòng lặp đầu nên không chậm thêm.
+
+## Vòng 27 — đợt 1: lớp đọc nguồn sống lại (2026-09-23)
+
+- Phạm vi: A-1 (giải nén `Content-Encoding`), A-2 (`reading.body_check`), A-3 (thang đọc dự phòng),
+  A-5 (`file_read` có `offset`/`limit` trong box), A-9 (ba công tắc + khối `limits.web`),
+  A-10 (bàn giao bảng: HTML/JATS/PDF). Đo trên host, model/khoá của phần sống ghi ở mục dưới.
+- **Số đo trước/sau (cùng URL, cùng `web_fetch`)**: `nhandan.vn` 17 421 ký tự rác (junk 0,550) →
+  **8 264 ký tự, junk 0,0000**; `vanban.chinhphu.vn` 46 692 → **8 079, junk 0,0000**;
+  `vietnamplus.vn` 37 798 → **16 455, junk 0,0000**; `thuvienphapluat.vn` (403, thân bài rỗng)
+  → đầu đọc trả **≥ 20 000 ký tự**, `readerReason: http-status`; PDF arXiv `1706.03762v7`
+  `%PDF-1.4…` + junk 0,517 → **≈ 40 895 ký tự** và **bảng dựng lại** bằng `pdfplumber`;
+  HTML arXiv giữ **10 bảng**; `vbpl.vn/…ItemID=1` → `verdict: wrong-page`; `moh.gov.vn`
+  (165–259 byte) → `verdict: error-page`.
+- **Bộ đơn vị mới** `backend/tests/unit/test_web_reading.py`: 23 ca, không ca nào cần mạng
+  (thay `urllib.request.build_opener`), phủ: gzip/có tiêu đề giả/deflate hai biến thể/brotli là
+  lỗi tường minh/bom nén bị chặn/`IncompleteRead` giữ `partial`/công tắc `WEB_DECODE=off` trả lại
+  đúng rác cũ/junk ratio/thin–error-page–wrong-page/thang đọc/đầu đọc chỉ được nhận khi **tốt hơn**
+  và **không** lách SSRF/`WEB_READER=thin` = đúng hành vi `2add905`/bảng HTML + JATS + tầng PDF
+  (PDF viết tay trong test, không cần tệp ngoài).
+- **Lệnh và kết quả**: `./.venv/bin/python -m pytest backend/tests/unit/test_web_reading.py
+  backend/tests/unit/test_web_tools.py -q -p no:randomly` ⇒ **55 passed**; `test_runtime_info.py`
+  ⇒ **12 passed** (khối `limits.web` được ghim bằng so khớp từ điển chính xác, cộng một ca mới:
+  giá trị lạ `chặt-vừa-thôi` ⇒ mức mặc định **kèm đúng một** notice `WEB_READER_MODE_UNKNOWN`).
+- **A-5 (box)**: `./.venv/bin/python -m pytest backend/tests/unit/test_worker_file_read.py
+  backend/tests/unit/test_file_tools.py -q -p no:randomly` ⇒ **15 passed**; tệp 100 000 ký tự đọc
+  bằng 4 lời gọi ghép lại **bằng đúng** bản gốc; `offset` âm/`'abc'`/`None` kẹp về 0; nhánh base64
+  căn offset xuống bội 3 và nói ra bằng `offsetAlignedTo: 3`.
+- **Hai ca đỏ cũ nay xanh theo đúng thiết kế**: lỗi gốc được **giữ nguyên** khi đầu đọc không cứu
+  được (`HTTP 404` vẫn là `HTTP 404`, không đổi thành `WEB_FETCH_EMPTY`) — đúng câu A-3 "đầu đọc
+  timeout ⇒ lỗi gốc được giữ".
+- Ghi chú kỹ thuật: `pdfplumber 0.11.10` + `pypdfium2 5.13.0` nay là phụ thuộc host
+  (`backend/requirements.txt`); PDF **không** dựng được ⇒ trả `''` + `pdfNote` nói rõ, **không**
+  trả nhị phân thô. Ba trang gzip đo lại sau khi sửa đều ra chữ Việt có dấu, không còn mảnh
+  replacement.
+- Giao thức test model + khoá: `docs/plan/v27/research-quality-tests.md` §2. Bộ ca chất lượng
+  research (`RQ1–RQ8` + sáu tiêu chí + oracle): cùng tài liệu, §3.

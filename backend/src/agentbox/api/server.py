@@ -17,6 +17,9 @@ from ..agent_core.limits import (CHILD_DEADLINE_SECONDS, CHILD_MAX_STEPS, DEADLI
                                  DEADLINE_MAX_SECONDS, INSTRUCTIONS_MAX_CHARS, MAX_STEPS_DEFAULT,
                                  MAX_STEPS_MAX)
 from ..agent_core.limits import parallel_read_tools_enabled, peer_mesh_enabled, peer_wait_max
+from ..agent_core.limits import (READ_STORE_MAX_ENTRIES, WEB_READER_DEFAULT_MODE, WEB_READER_MODES,
+                                 WEB_READ_STORE_DEFAULT_MODE, WEB_READ_STORE_MODES)
+from ..agent_core.web import MAX_TEXT_HARD
 from ..agent_core.limits import (EVIDENCE_DEFAULT_MODE, EVIDENCE_MAX_ARTIFACTS, EVIDENCE_MODES,
                                  EVIDENCE_PROBE_MAX_FILES, EVIDENCE_PROBE_TIMEOUT_SECONDS,
                                  EVIDENCE_REPAIR_MAX_TOKENS, EVIDENCE_REPAIR_MIN_REMAINING_SECONDS,
@@ -260,7 +263,18 @@ def create_app(runtime):
                                 'planSourcesDefault': PLAN_SOURCES_DEFAULT_MODE,
                                 'planReviewMinAnswerChars': PLAN_REVIEW_MIN_ANSWER_CHARS,
                                 'planVerifyReviseMax': PLAN_VERIFY_REVISE_MAX,
-                                'planTurnExtensionSeconds': PLAN_TURN_EXTENSION_SECONDS}},
+                                'planTurnExtensionSeconds': PLAN_TURN_EXTENSION_SECONDS},
+                       # Vòng 27 (đợt 1, A-9) — khối `web`: giao diện và DEV đọc mức ĐANG ÁP của
+                       # lớp đọc nguồn từ đây, không chép tay con số nào. `textHardChars` là trần
+                       # một lời gọi; `storeMaxEntries` là trần bộ đệm đọc (A-4).
+                       'web': {'readerMode': runtime.web_reader_mode()[0],
+                               'readerModes': list(WEB_READER_MODES),
+                               'readerDefault': WEB_READER_DEFAULT_MODE,
+                               'readStoreMode': runtime.web_read_store_mode()[0],
+                               'readStoreModes': list(WEB_READ_STORE_MODES),
+                               'readStoreDefault': WEB_READ_STORE_DEFAULT_MODE,
+                               'textHardChars': MAX_TEXT_HARD,
+                               'storeMaxEntries': READ_STORE_MAX_ENTRIES}},
         })
 
     async def skill_settings(request):

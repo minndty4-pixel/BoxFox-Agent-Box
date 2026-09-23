@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import http.client
 import ipaddress
 import json
 import os
@@ -43,9 +44,11 @@ import urllib.request
 from html.parser import HTMLParser
 
 from ..observability.system_log import system_log
+from . import reading
+from .limits import web_decode_mode, web_reader_mode
 
 __all__ = ['WebTools', 'WebError', 'PUBLIC_SOURCES', 'UNTRUSTED_NOTE', 'html_to_text',
-           'assert_public_url', 'USER_AGENT']
+           'assert_public_url', 'http_request', 'http_request_meta', 'USER_AGENT']
 
 USER_AGENT = 'BoxFoxAgent/1.0 (host-side research tool; +https://boxfox.local)'
 MAX_BODY_BYTES = 2 * 1024 * 1024
@@ -56,6 +59,11 @@ MAX_SNIPPET = 400
 MAX_TEXT_DEFAULT = 8000
 MAX_TEXT_HARD = 20000
 READER_PREFIX = 'https://r.jina.ai/'
+# Trần thời gian cho đầu đọc: đo 2026-09-23 — PDF arXiv 15 trang xong trong 2,3 s, còn `moh.gov.vn`
+# trả 503 SAU 18,5 s, nên 20 s là vừa đủ để không cắt bản đọc thật mà vẫn chặn trang treo.
+READER_TIMEOUT = 20.0
+# Trần chống bom nén: 8 lần thân bài cho phép, cùng lớp rủi ro với `GHSA-j5g9-f88f-gfj3`.
+MAX_INFLATED_BYTES = 8 * MAX_BODY_BYTES
 PUBLIC_SOURCES = ('web', 'wikipedia', 'stackoverflow', 'github', 'papers')
 
 # Web content is data. The envelope is repeated in every payload so neither the
@@ -137,24 +145,40 @@ def assert_public_url(url: str) -> urllib.parse.SplitResult:
     return parsed
 
 
-def http_request(url: str, *, method: str = 'GET', body: bytes | None = None,
-                 headers: dict | None = None, timeout: float = FETCH_TIMEOUT,
-                 max_bytes: int = MAX_BODY_BYTES) -> tuple[int, str, str, str]:
-    """One bounded request. Returns ``(status, contentType, text, finalUrl)``."""
+def http_request_meta(url: str, *, method: str = 'GET', body: bytes | None = None,
+                      headers: dict | None = None, timeout: float = FETCH_TIMEOUT,
+                      max_bytes: int = MAX_BODY_BYTES) -> tuple[int, str, str, str, dict]:
+    """One bounded request. Returns ``(status, contentType, text, finalUrl, meta)``.
+
+    ``meta`` records how the bytes became text — ``contentEncoding`` (what the host
+    really sent), ``decoded`` (whether this reader inflated it) and ``partial``
+    (the body stopped before its declared length). Measured 2026-09-23: nhandan.vn
+    answers ``Content-Encoding: gzip`` *even when asked for identity*, so the body
+    must be inflated here or every later reader sees binary junk.
+    """
     assert_public_url(url)
     request = urllib.request.Request(url, data=body, method=method)
     request.add_header('User-Agent', USER_AGENT)
     request.add_header('Accept', 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.5')
     request.add_header('Accept-Language', 'vi,en;q=0.8')
+    request.add_header('Accept-Encoding', 'gzip, deflate')
     for key, value in (headers or {}).items():
         request.add_header(key, value)
     opener = urllib.request.build_opener(_GuardedRedirects())
+    partial = False
     try:
         with opener.open(request, timeout=timeout) as response:
             status = getattr(response, 'status', 200)
-            raw = response.read(max_bytes)
-            ctype = (response.headers.get('Content-Type') or '').split(';')[0].strip().lower()
-            charset = response.headers.get_content_charset() or 'utf-8'
+            raw_headers = response.headers
+            try:
+                raw = response.read(max_bytes)
+            except http.client.IncompleteRead as exc:
+                # Đo được ở vnexpress.net: host cắt thân bài giữa đường (`IncompleteRead: 76722
+                # bytes read`). Phần đã tới vẫn là một bản đọc — giữ nó và nói rõ là thiếu.
+                raw = exc.partial or b''
+                partial = True
+            ctype = (raw_headers.get('Content-Type') or '').split(';')[0].strip().lower()
+            charset = raw_headers.get_content_charset() or 'utf-8'
             final = response.geturl()
     except urllib.error.HTTPError as exc:
         detail = ''
@@ -170,7 +194,42 @@ def http_request(url: str, *, method: str = 'GET', body: bytes | None = None,
     except (TimeoutError, socket.timeout) as exc:
         raise WebError('WEB_FETCH_FAILED', f'{url} did not answer in {timeout:g}s',
                        f'the host did not answer in {timeout:g}s') from exc
-    return status, ctype, raw.decode(charset, errors='replace'), final
+    text, decode_meta = reading.decode_body(raw, raw_headers, charset=charset,
+                                            mode=web_decode_mode(),
+                                            max_inflated_bytes=MAX_INFLATED_BYTES)
+    meta = dict(decode_meta)
+    meta['partial'] = partial
+    meta['bodyBytes'] = len(raw)
+    if raw[:5].startswith(b'%PDF-'):
+        # Tầng 3 cần đúng byte gốc của PDF, không phải bản đã giải mã thành chữ.
+        meta['rawBody'] = raw
+    return status, ctype, text, final, meta
+
+
+def http_request(url: str, *, method: str = 'GET', body: bytes | None = None,
+                 headers: dict | None = None, timeout: float = FETCH_TIMEOUT,
+                 max_bytes: int = MAX_BODY_BYTES) -> tuple[int, str, str, str]:
+    """One bounded request. Returns ``(status, contentType, text, finalUrl)``."""
+    status, ctype, text, final, _meta = http_request_meta(
+        url, method=method, body=body, headers=headers, timeout=timeout, max_bytes=max_bytes)
+    return status, ctype, text, final
+
+_ORIGINAL_HTTP_REQUEST = http_request
+
+
+def _request_with_meta(url: str, *, timeout: float = FETCH_TIMEOUT) -> tuple[int, str, str, str, dict]:
+    """Transport seam of ``fetch``.
+
+    ``http_request`` (four elements) stays the public name every caller and every
+    existing test replaces. When something HAS replaced it, that answer is used and no
+    compression meta is invented — the old contract keeps working unchanged. Otherwise
+    the five-element ``http_request_meta`` carries what the wire really said.
+    """
+    if http_request is not _ORIGINAL_HTTP_REQUEST:
+        status, ctype, text, final = http_request(url, timeout=timeout)
+        return status, ctype, text, final, {'contentEncoding': 'identity', 'decoded': False,
+                                            'partial': False}
+    return http_request_meta(url, timeout=timeout)
 
 
 # ------------------------------------------------------------------- extraction
@@ -436,6 +495,8 @@ class WebTools:
             self.log.write('web.fetch', session_id=session_id, host=result.get('host'),
                            status=result.get('status'), textChars=result.get('textChars', 0),
                            truncated=bool(result.get('truncated')), reader=result.get('reader'),
+                           verdict=(result.get('quality') or {}).get('verdict'),
+                           readerReason=result.get('readerReason'),
                            durationMs=duration)
 
     def _log_error(self, name: str, exc: WebError, session_id: str | None, started: float,
@@ -504,40 +565,114 @@ class WebTools:
             raise WebError('WEB_URL_INVALID', 'maxChars must be a number') from None
         max_chars = max(500, min(max_chars, MAX_TEXT_HARD))
         host = urllib.parse.urlsplit(url).hostname or ''
+        reader_mode = web_reader_mode()
 
-        status, ctype, body, final = http_request(url)
-        title, text, links, reader = '', '', [], None
-        if ctype in {'application/json', 'text/plain', 'text/markdown', 'text/x-markdown'} or ctype.endswith('+json'):
-            text = _clean_text(body)
-        else:
-            title, text, links = html_to_text(body)
-        if len(text.strip()) < 200:
-            reader_text = self._read_through_reader(final)
-            if len(reader_text) > len(text):
-                title = title or reader_text.splitlines()[0].removeprefix('Title: ').strip()[:200]
-                text, reader = reader_text, 'r.jina.ai'
+        status, ctype, body, final, meta = 0, '', '', url, {}
+        direct_error: WebError | None = None
+        try:
+            status, ctype, body, final, meta = _request_with_meta(url)
+        except WebError as exc:
+            if exc.code in ('WEB_URL_INVALID', 'WEB_URL_FORBIDDEN'):
+                # A refused address stays refused: the third-party reader must never become a way
+                # around `assert_public_url` / `_GuardedRedirects` (F13).
+                raise
+            direct_error = exc
+
+        title, text, links, reader, read_tier, extra = '', '', [], None, 'html', {}
+        if direct_error is None:
+            title, text, links, reader, read_tier, extra = self._extract(
+                ctype, final, body, meta.get('rawBody'))
+
+        quality = reading.body_check(text, url=final, status=status or None, content_type=ctype,
+                                     reader=reader, title=title)
+        is_pdf = ctype == 'application/pdf' or body[:5].startswith('%PDF-')
+        plan = reading.ladder_plan(status=status or None, content_type=ctype,
+                                   verdict=quality['verdict'],
+                                   direct_error=direct_error is not None, is_pdf=is_pdf,
+                                   text_chars=len(text.strip()), mode=reader_mode)
+        if plan['use_reader']:
+            reader_text, reader_status = self._read_through_reader(final)
+            if reader_text:
+                reader_title = reading.reader_title(reader_text)
+                reader_quality = reading.body_check(reader_text, url=final, status=reader_status or None,
+                                                    content_type='text/markdown', reader='r.jina.ai',
+                                                    title=reader_title)
+                if reading.is_better_grade(reader_quality['verdict'], quality['verdict']):
+                    title = title or reader_title[:200]
+                    text, reader, read_tier = reader_text, 'r.jina.ai', 'reader-text'
+                    quality, extra = reader_quality, {}
+
+        if direct_error is not None and not text.strip():
+            # The reader did not save this page: keep the ORIGINAL failure (A-3: "đầu đọc
+            # timeout ⇒ lỗi gốc được giữ") instead of swapping it for a vaguer one.
+            raise direct_error
         text = text.strip()
         if not text:
-            raise WebError('WEB_FETCH_EMPTY', f'{final} returned no readable text (content type {ctype or "unknown"})',
+            reason = quality.get('reason') or 'no readable text'
+            raise WebError('WEB_FETCH_EMPTY',
+                           f'{final} returned no readable text (content type {ctype or "unknown"}; {reason})',
                            f'the page returned no readable text (content type {ctype or "unknown"})')
         payload = {'url': url, 'finalUrl': final, 'host': host, 'status': status, 'contentType': ctype,
                    'title': title, 'text': text[:max_chars], 'textChars': len(text),
                    'truncated': len(text) > max_chars, 'links': links[:20], 'reader': reader,
+                   'readerReason': plan['reason'], 'readTier': read_tier, 'quality': quality,
+                   'contentEncoding': meta.get('contentEncoding', 'identity'),
+                   'decoded': bool(meta.get('decoded')), 'partial': bool(meta.get('partial')),
                    'untrusted': True, 'note': UNTRUSTED_NOTE,
                    'fetchedAt': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
+        payload.update(extra)
         return payload
 
-    def _read_through_reader(self, url: str) -> str:
-        """Third-party text reader for pages that block the plain client or need JavaScript."""
+    def _extract(self, ctype: str, final: str, body: str,
+                 raw: bytes | None) -> tuple[str, str, list, str | None, str, dict]:
+        """Turn a raw body into ``(title, text, links, reader, tier, extra keys)``.
+
+        Tier order (chốt #6010/#6011): publisher HTML (tables kept) → JATS full text
+        (tables kept) → PDF rebuilt with ``pdfplumber`` → the text-only reader → page
+        images (not built in this batch). PDF tables come back labelled
+        "bảng trích tự động" because multi-row headers can drift.
+        """
+        extra: dict = {}
+        if ctype == 'application/pdf' or body[:5].startswith('%PDF-'):
+            markdown, info = reading.pdf_to_markdown(raw if isinstance(raw, (bytes, bytearray)) else b'')
+            if markdown:
+                extra.update({'tables': info.get('tables', 0), 'pdfPages': info.get('pages', 0)})
+                return '', markdown, [], None, 'pdf-table', extra
+            extra['pdfNote'] = info.get('reason') or 'the PDF could not be rebuilt on the host'
+            return '', '', [], None, 'pdf-table', extra
+        if ctype in {'application/json', 'text/plain', 'text/markdown', 'text/x-markdown'} or ctype.endswith('+json'):
+            return '', _clean_text(body), [], None, reading.read_tier(content_type=ctype, text=body), extra
+        title, text, links = html_to_text(body)
+        if '<table-wrap' in body.lower():
+            tables = reading.jats_tables_to_markdown(body)
+            tier = 'jats'
+        else:
+            tables = reading.tables_to_markdown(body)
+            tier = reading.read_tier(content_type=ctype, text=body)
+        if tables:
+            extra['tables'] = tables.count('**Bảng ')
+            text = f'{text}\n\n{tables}' if text.strip() else tables
+        return title, text, links, None, tier, extra
+
+    def _read_through_reader(self, url: str, *, timeout: float = READER_TIMEOUT) -> tuple[str, int]:
+        """Third-party text reader for pages that block the plain client or need JavaScript.
+
+        Returns ``(text, status)``: the reader cannot say "no", only "here is a page",
+        so the caller judges the answer with ``reading.body_check`` before keeping it.
+        """
         try:
-            _, _, body, _ = http_request(READER_PREFIX + url, timeout=FETCH_TIMEOUT)
+            status, _ctype, body, _final, _meta = _request_with_meta(READER_PREFIX + url, timeout=timeout)
         except WebError:
-            return ''
+            return '', 0
+        if body[:5].startswith('%PDF-') or body[:2].startswith('\x1f\x8b'):
+            # A reader that hands back the raw file is not a reading: never let a binary body
+            # (which scores low junk because PDF syntax is ASCII) outrank the direct answer.
+            return '', status
         marker = 'Markdown Content:'
         if marker in body:
-            return _clean_text(body.split(marker, 1)[1])
+            return _clean_text(body.split(marker, 1)[1]), status
         if '<' in body and '>' in body:
             # The reader answered with HTML (its own error page, or a site it passed through):
             # extract text instead of returning markup as if it were prose.
-            return _clean_text(html_to_text(body)[1])
-        return _clean_text(body)
+            return _clean_text(html_to_text(body)[1]), status
+        return _clean_text(body), status

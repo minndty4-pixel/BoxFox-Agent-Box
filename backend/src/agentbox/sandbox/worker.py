@@ -100,7 +100,22 @@ BINARY_SNIFF_BYTES = 8192
 BINARY_READ_CHARS = 30000
 
 
-def read_file_payload(target):
+def read_int_arg(value, default):
+    """Số nguyên KHÔNG ÂM từ `args` của model: `None`/`'abc'`/số âm/kiểu lạ ⇒ mặc định (A-5).
+
+    `offset`/`limit` đến từ model nên không tin được: một chuỗi lạ lọt vào `text[offset:...]` là
+    `TypeError` giữa lượt — đúng kiểu chết mà thông báo không nói được vì sao.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        return default
+    try:
+        number = int(value)
+    except ValueError:
+        return default
+    return number if number >= 0 else default
+
+
+def read_file_payload(target, offset=0, limit=BINARY_READ_CHARS):
     """Nội dung một tệp cho `file_read`: văn bản như cũ, nhị phân thì base64 (A8).
 
     Tệp nhị phân trả `encoding: 'base64'` để mô hình biết nó đang cầm một mẩu đã mã hoá chứ
@@ -112,25 +127,45 @@ def read_file_payload(target):
     Nhánh văn bản giữ nguyên hành vi cũ (30 000 ký tự đầu); chỉ thêm một đường lui: tệp có đuôi
     văn bản nhưng không giải mã được UTF-8 (ảnh chụp lưu sai tên, tệp nén đổi đuôi) đi tiếp
     bằng đường base64 thay vì làm lượt chết `UnicodeDecodeError`.
+
+    A-5 (vòng 27): `offset`/`limit` chia một tệp dài thành nhiều mẩu đọc tiếp nhau; `nextOffset`
+    là chỗ đọc tiếp (`None` khi mẩu này đã chạm cuối tệp — KHÔNG phải khi đọc hỏng). Nhánh base64
+    làm tròn `offset` XUỐNG bội số 3 để khung giải mã thẳng hàng và nói rõ bằng `offsetAlignedTo`
+    (không làm tròn thì mẩu giải ra lệch khung); `bytesRead` vẫn là số byte của CHÍNH lời gọi này,
+    `nextOffset` mới là vị trí cộng dồn. `offset` quá cuối tệp trả `content: ''` +
+    `truncated: False`: tệp đã hết, không phải dữ liệu bị thiếu.
     """
+    offset = read_int_arg(offset, 0)
+    limit = read_int_arg(limit, BINARY_READ_CHARS)
     binary = target.suffix.lower() in BINARY_EXTENSIONS
     if not binary:
         with open(target, 'rb') as handle:
             binary = b'\x00' in handle.read(BINARY_SNIFF_BYTES)
     if not binary:
         try:
-            return {'content': target.read_text(encoding='utf-8')[:BINARY_READ_CHARS]}
+            text = target.read_text(encoding='utf-8')
         except UnicodeDecodeError:
             # Tệp đuôi chữ nhưng không giải mã được UTF-8 (ảnh lưu sai tên, tệp nén đổi đuôi): rơi
             # xuống đường base64 ngay dưới đây thay vì làm lượt chết `UnicodeDecodeError`.
             pass
+        else:
+            chunk = text[offset:offset + limit]
+            end = offset + len(chunk)
+            return {'content': chunk, 'truncated': end < len(text), 'sizeChars': len(text),
+                    'nextOffset': end if end < len(text) else None}
     # 30 000 ký tự base64 ≈ 22 500 byte thật; đọc đúng ngần ấy rồi mã hoá.
     size = target.stat().st_size
+    aligned = offset - offset % 3
     with open(target, 'rb') as handle:
+        handle.seek(aligned)
         raw = handle.read(BINARY_READ_CHARS * 3 // 4)
-    return {'content': base64.b64encode(raw).decode('ascii')[:BINARY_READ_CHARS],
-            'encoding': 'base64', 'truncated': len(raw) < size, 'bytesRead': len(raw),
-            'sizeBytes': size}
+    end = aligned + len(raw)
+    payload = {'content': base64.b64encode(raw).decode('ascii')[:BINARY_READ_CHARS],
+               'encoding': 'base64', 'truncated': end < size, 'bytesRead': len(raw),
+               'sizeBytes': size, 'nextOffset': end if end < size else None}
+    if aligned != offset:
+        payload['offsetAlignedTo'] = 3
+    return payload
 
 
 def process_marker(session):
@@ -563,7 +598,7 @@ def execute(name, args, session, turn=None, step=None, tool_call_id=None):
             marker.unlink(missing_ok=True)
         return {'content': 'Session subprocess cleanup complete'}
     if name == 'file_read':
-        return read_file_payload(path(args['path']))
+        return read_file_payload(path(args['path']), args.get('offset'), args.get('limit'))
     if name == 'file_write':
         target = path(args['path'])
         target, evidence = write_text(target, args['content'], capture=capture)

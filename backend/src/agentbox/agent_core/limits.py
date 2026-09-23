@@ -300,3 +300,49 @@ ANSWER_LENGTH_HINT = (
     f'Keep the final answer under {ANSWER_WARN_CHARS:,} characters. If the content is longer, '
     'write it to a file in the workspace and quote the path instead of pasting it into the answer.'
 )
+
+# --------------------------------------------------------------------------------------------
+# Vòng 27 (đợt 1, A-9) — ba công tắc của lớp đọc web (Phạm vi A)
+# --------------------------------------------------------------------------------------------
+# `WEB_READER` là thang đọc dự phòng: `auto` = luật mới (PDF / non-2xx / rác / thiếu chữ),
+# `thin` = ĐÚNG hành vi commit `2add905` (chỉ khi thân bài < 200 ký tự — công tắc hồi quy),
+# `off` = không bao giờ gọi đầu đọc. Giá trị lạ ⇒ rơi về mặc định KÈM notice.
+WEB_READER_ENV = 'BOXFOX_WEB_READER'
+WEB_READER_MODES = ('auto', 'thin', 'off')
+WEB_READER_DEFAULT_MODE = 'auto'
+# Bộ đệm đọc (`ReadStore`) sống trong bộ nhớ tiến trình: hoặc lưu, hoặc không — không có mức
+# giữa nào có nghĩa, nên chỉ hai giá trị (ghi rõ lý do thay vì bịa ra giá trị thứ ba).
+WEB_READ_STORE_ENV = 'BOXFOX_WEB_READ_STORE'
+WEB_READ_STORE_MODES = ('on', 'off')
+WEB_READ_STORE_DEFAULT_MODE = 'on'
+# Công tắc lùi cho việc giải nén `Content-Encoding`: thay đổi này chạm MỌI lượt đọc, nên phải có
+# đường về `2add905` bằng một biến môi trường thay vì một bản revert.
+WEB_DECODE_ENV = 'BOXFOX_WEB_DECODE'
+WEB_DECODE_MODES = ('on', 'off')
+WEB_DECODE_DEFAULT_MODE = 'on'
+# Hai mã notice cho giá trị lạ của công tắc lớp đọc (cùng khuôn hai cổng vòng 25).
+WEB_READER_MODE_UNKNOWN_CODE = 'WEB_READER_MODE_UNKNOWN'
+WEB_READ_STORE_MODE_UNKNOWN_CODE = 'WEB_READ_STORE_MODE_UNKNOWN'
+# Trần của bộ đệm đọc (A-4 dựng `ReadStore` theo đúng con số này); đợt 1 chỉ phơi ra cho giao diện.
+READ_STORE_MAX_ENTRIES = 24
+
+
+def _web_switch(name, modes, default):
+    """Giá trị công tắc trong `modes`, hoặc `default` khi biến trống/giá trị lạ."""
+    raw = (os.environ.get(name) or '').strip().lower()
+    return raw if raw in modes else default
+
+
+def web_reader_mode():
+    """Mức đang áp của thang đọc (`BOXFOX_WEB_READER`)."""
+    return _web_switch(WEB_READER_ENV, WEB_READER_MODES, WEB_READER_DEFAULT_MODE)
+
+
+def web_read_store_mode():
+    """`on`/`off` cho bộ đệm đọc (`BOXFOX_WEB_READ_STORE`)."""
+    return _web_switch(WEB_READ_STORE_ENV, WEB_READ_STORE_MODES, WEB_READ_STORE_DEFAULT_MODE)
+
+
+def web_decode_mode():
+    """`on`/`off` cho việc giải nén thân bài (`BOXFOX_WEB_DECODE`)."""
+    return _web_switch(WEB_DECODE_ENV, WEB_DECODE_MODES, WEB_DECODE_DEFAULT_MODE)
