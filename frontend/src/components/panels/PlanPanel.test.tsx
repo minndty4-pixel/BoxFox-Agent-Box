@@ -61,6 +61,9 @@ function statusPayload(overrides: Record<string, unknown> = {}) {
     reviewStale: false,
     indexAvailable: true,
     evaluation: null,
+    // Cổng duyệt harness đang chạy. Ca cần `warn`/`off` thì tự khai; bỏ HẲN khoá này = harness cũ,
+    // mà hành vi cũ của nó là `enforce` — nên phép thử "thiếu khoá" vẫn phải khoá nút.
+    gate: { verifyMode: 'enforce', verifyUnknown: null, sourcesMode: 'enforce', sourcesUnknown: null },
     ...overrides,
   }
 }
@@ -150,6 +153,12 @@ function installPlanFetch(
     /** `resumed`/`turnId` harness khai ở lần ghi thành công; `null` = harness cũ không khai. */
     reviewResumed?: boolean | null
     reviewTurnId?: string | null
+    /** `wake` harness kể lại chuyện mở lượt (`opened|busy|duplicate|missing|failed`). */
+    reviewWake?: Record<string, unknown> | null
+    /** `approvalWarning` của cổng `warn`: harness cho qua một bản chưa đạt phản biện. */
+    approvalWarning?: string | null
+    /** Làm hỏng đường nhờ harness mở phiên phản biện. */
+    verifyFails?: { error: string; code?: string; status: number }
     /** Thân trả về của `POST /api/agent/plans/verify`. */
     verify?: Record<string, unknown>
     /** Trạng thái sổ phản biện sau khi phiên phản biện được nhờ chạy. */
@@ -193,6 +202,13 @@ function installPlanFetch(
       return jsonResponse(current)
     }
     if (target === '/api/agent/plans/verify' && init?.method === 'POST') {
+      if (options.verifyFails) {
+        return jsonResponse(
+          { error: options.verifyFails.error, code: options.verifyFails.code },
+          false,
+          options.verifyFails.status,
+        )
+      }
       if (options.statusAfterVerify) current = options.statusAfterVerify
       return jsonResponse(options.verify ?? { recorded: false, resumed: true, turnId: '9' })
     }
@@ -215,6 +231,8 @@ function installPlanFetch(
         recorded: true,
         resumed: options.reviewResumed === undefined ? true : options.reviewResumed,
         turnId: options.reviewTurnId === undefined ? '7' : options.reviewTurnId,
+        ...(options.reviewWake ? { wake: options.reviewWake } : {}),
+        ...(options.approvalWarning ? { approvalWarning: options.approvalWarning } : {}),
         review: { ...body, source: 'plan-tab', decidedAt: 1_758_300_000 },
       })
     }
@@ -711,8 +729,22 @@ describe('PlanPanel — vòng 25: chưa phản biện thì chưa duyệt đượ
     expect(rows[0].textContent).toContain('M3 gộp hai việc vào một bước.')
     expect(rows[0].textContent).toContain('step-not-measurable')
     expect(rows[1].textContent).toContain('M8 không nói chạy trong conda env nào.')
-    // `revise` KHÔNG tự khoá nút: harness là bên chặn, và nó trả lý do của chính nó ở 409.
-    expect((host.querySelector('[data-testid="plan-approve"]') as HTMLButtonElement).disabled).toBe(false)
+
+    // Cổng mặc định `enforce`: verdict `revise` thì harness từ chối duyệt, nên nút bị KHOÁ kèm lý do
+    // nói rõ verdict + hai cách gỡ — giao diện không mời một cú bấm mà nó biết chắc sẽ hỏng.
+    const approve = host.querySelector('[data-testid="plan-approve"]') as HTMLButtonElement
+    expect(approve.disabled).toBe(true)
+    expect(approve.getAttribute('data-disabled-reason')).toBe('plan-not-reviewed')
+    const reason = text(host, 'plan-approve-blocked')
+    expect(reason).toContain('verdict: revise')
+    expect(reason).toContain('v3')
+    expect(reason).toContain('plan-review')
+    expect(reason).toContain('send a change request')
+
+    // Bấm được bằng đường khác cũng không đi đâu: không có cú ghi nào được gửi.
+    click(approve)
+    await flush()
+    expect(reviewRequested()).toBe(false)
   })
 
   it('harness cũ thiếu hẳn `verification`: không chip, không dòng khoá, nút Duyệt vẫn bật', async () => {
@@ -891,6 +923,236 @@ describe('PlanPanel — vòng 25: chưa phản biện thì chưa duyệt đượ
     await flush()
     expect(host.textContent).toContain('v2')
     expect(host.textContent).not.toContain('v2 (undefined)')
+  })
+
+  it('`revise` + cổng `warn`: harness VẪN cho qua nên nút Duyệt mở, bấm là quyết định đi thật', async () => {
+    installPlanFetch({
+      status: statusPayload({
+        verification: {
+          state: 'revise',
+          at: null,
+          criticSessionId: 'critic-2',
+          issues: [{ severity: 'high', text: 'M3 gộp hai việc.', fix: null }],
+        },
+        gate: { verifyMode: 'warn', verifyUnknown: null, sourcesMode: 'enforce', sourcesUnknown: null },
+      }),
+    })
+    const host = render(<PlanPanel />)
+    await flush()
+
+    // Khoá ở đây là mời một cú bấm mà harness không hề chặn.
+    expect((host.querySelector('[data-testid="plan-approve"]') as HTMLButtonElement).disabled).toBe(false)
+    expect(host.querySelector('[data-testid="plan-approve-blocked"]')).toBeNull()
+
+    click(host.querySelector('[data-testid="plan-approve"]'))
+    await flush()
+    expect(reviewBody()).toMatchObject({ decision: 'approved', version: 3 })
+  })
+
+  it('payload KHÔNG có khoá `gate` (harness cũ): đọc là `enforce` — hành vi cũ của nó, không phải cổng mở', async () => {
+    installPlanFetch({
+      status: statusPayload({
+        verification: { state: 'revise', at: null, criticSessionId: 'critic-2', issues: [] },
+        gate: undefined,
+      }),
+    })
+    const host = render(<PlanPanel />)
+    await flush()
+
+    expect((host.querySelector('[data-testid="plan-approve"]') as HTMLButtonElement).disabled).toBe(true)
+    expect(text(host, 'plan-approve-blocked')).toContain('verdict: revise')
+  })
+
+  it('`wake.state = busy`: KHÔNG hứa đã mở lượt, và in nguyên văn câu harness giải thích', async () => {
+    installPlanFetch({
+      statusAfterReview: statusPayload({
+        state: 'approved',
+        review: { identity: 'agent-box-plan', version: 3, decision: 'approved', note: '', source: 'plan-tab', decidedAt: 1_758_300_000 },
+      }),
+      reviewResumed: false,
+      reviewWake: {
+        state: 'busy',
+        code: 'PLAN_WAKE_BUSY',
+        message: 'phiên 9481bf87 đang chạy một lượt — quyết định đã ghi sổ, lượt mới chưa mở',
+        sessionId: '9481bf87',
+      },
+    })
+    const host = render(<PlanPanel />)
+    await flush()
+
+    click(host.querySelector('[data-testid="plan-approve"]'))
+    await flush()
+
+    expect(text(host, 'plan-decision-sent')).toContain('no new turn was opened')
+    expect(text(host, 'plan-decision-wake')).toContain('đang chạy một lượt')
+    expect(text(host, 'plan-decision-wake')).toContain('PLAN_WAKE_BUSY')
+  })
+
+  it('`wake.state = missing`: nói thật là chưa mở lượt nào, câu của harness nói rõ vì sao', async () => {
+    installPlanFetch({
+      statusAfterReview: statusPayload({
+        state: 'approved',
+        review: { identity: 'agent-box-plan', version: 3, decision: 'approved', note: '', source: 'plan-tab', decidedAt: 1_758_300_000 },
+      }),
+      reviewResumed: false,
+      reviewWake: {
+        state: 'missing',
+        code: 'PLAN_WAKE_NO_OWNER',
+        message: 'harness chưa biết phiên nào sở hữu kế hoạch agent-box-plan — hãy mở phiên và yêu cầu trực tiếp',
+        sessionId: null,
+      },
+    })
+    const host = render(<PlanPanel />)
+    await flush()
+
+    click(host.querySelector('[data-testid="plan-approve"]'))
+    await flush()
+
+    expect(text(host, 'plan-decision-sent')).toContain('no new turn was opened')
+    expect(text(host, 'plan-decision-wake')).toContain('chưa biết phiên nào sở hữu')
+  })
+
+  it('`wake.state = opened`: lượt mới mở thật — câu "đang mở lượt" giữ nguyên, không có dòng wake nào thừa', async () => {
+    installPlanFetch({
+      statusAfterReview: statusPayload({
+        state: 'approved',
+        review: { identity: 'agent-box-plan', version: 3, decision: 'approved', note: '', source: 'plan-tab', decidedAt: 1_758_300_000 },
+      }),
+      reviewResumed: true,
+      reviewWake: { state: 'opened', sessionId: '9481bf87' },
+    })
+    const host = render(<PlanPanel />)
+    await flush()
+
+    click(host.querySelector('[data-testid="plan-approve"]'))
+    await flush()
+
+    expect(text(host, 'plan-decision-sent')).toContain('the agent is opening the next turn')
+    // Harness không kèm câu giải thích nào thì không có dòng nào để in — không bịa.
+    expect(host.querySelector('[data-testid="plan-decision-wake"]')).toBeNull()
+  })
+
+  it('cổng `warn`: `approvalWarning` của harness hiện thành dải riêng, không bị nuốt', async () => {
+    installPlanFetch({
+      statusAfterReview: statusPayload({
+        state: 'approved',
+        review: { identity: 'agent-box-plan', version: 3, decision: 'approved', note: '', source: 'plan-tab', decidedAt: 1_758_300_000 },
+      }),
+      approvalWarning: 'bản v3 chưa đạt phản biện nhưng BOXFOX_PLAN_VERIFY=warn',
+    })
+    const host = render(<PlanPanel />)
+    await flush()
+
+    click(host.querySelector('[data-testid="plan-approve"]'))
+    await flush()
+
+    expect(text(host, 'plan-approval-warning')).toContain('The harness approved it anyway')
+    expect(text(host, 'plan-approval-warning')).toContain('BOXFOX_PLAN_VERIFY=warn')
+  })
+
+  it('nhờ chạy phiên phản biện mà hỏng: câu lỗi hiện ngay dưới nút, không im lặng như đang chạy', async () => {
+    installPlanFetch({
+      status: statusPayload({ verification: NONE_VERIFICATION }),
+      verifyFails: { error: 'no reviewer session', code: 'PLAN_VERIFY_FAILED', status: 502 },
+    })
+    const host = render(<PlanPanel />)
+    await flush()
+
+    click(host.querySelector('[data-testid="plan-review-run"]'))
+    await flush()
+
+    expect(text(host, 'plan-verify-error')).toContain('Could not start the review session')
+    expect(text(host, 'plan-verify-error')).toContain('PLAN_VERIFY_FAILED: no reviewer session')
+    // Mặt phản biện vẫn là mặt của SỔ: lệnh hỏng thì không tự vẽ "đã phản biện".
+    expect(text(host, 'plan-review-chip')).toBe('Not reviewed')
+  })
+
+  it('đổi version: điều kiện / lý do sửa gõ cho bản cũ KHÔNG sống sang bản mới', async () => {
+    installPlanFetch({ status: statusPayload({ verification: OK_VERIFICATION }) })
+    const host = render(<PlanPanel />)
+    await flush()
+
+    click(host.querySelector('[data-testid="plan-approve-note-toggle"]'))
+    typeInto(
+      host.querySelector('[data-testid="plan-approve-note"]') as HTMLTextAreaElement,
+      'M8 chỉ xong khi chạy trong conda activate ld',
+    )
+    click(host.querySelector('[data-testid="plan-request-changes"]'))
+    typeInto(
+      host.querySelector('[data-testid="plan-changes-note"]') as HTMLTextAreaElement,
+      'tách M3 thành hai bước',
+    )
+
+    // Đổi bản: v3 → v2 (menu version chỉ có nhãn, không có testid riêng).
+    click(Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.trim() === 'v3') ?? null)
+    await flush()
+    click(Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.trim() === 'v2') ?? null)
+    await flush()
+
+    // Hộp lý do phải đóng, và chữ của bản cũ biến mất — không có chuyện gửi kèm quyết định của v2.
+    expect(host.querySelector('[data-testid="plan-changes-form"]')).toBeNull()
+    expect(host.querySelector('[data-testid="plan-approve-note-popover"]')).toBeNull()
+
+    click(host.querySelector('[data-testid="plan-approve-note-toggle"]'))
+    expect((host.querySelector('[data-testid="plan-approve-note"]') as HTMLTextAreaElement).value).toBe('')
+
+    click(host.querySelector('[data-testid="plan-approve-note-cancel"]'))
+    click(host.querySelector('[data-testid="plan-request-changes"]'))
+    expect((host.querySelector('[data-testid="plan-changes-note"]') as HTMLTextAreaElement).value).toBe('')
+  })
+
+  it('hai ô mới trỏ vào NHÃN NHÌN THẤY (`aria-labelledby`), không chỉ có `placeholder`', async () => {
+    installPlanFetch({ status: statusPayload({ verification: OK_VERIFICATION }) })
+    const host = render(<PlanPanel />)
+    await flush()
+
+    click(host.querySelector('[data-testid="plan-approve-note-toggle"]'))
+    const conditions = host.querySelector('[data-testid="plan-approve-note"]') as HTMLTextAreaElement
+    const conditionsLabelId = conditions.getAttribute('aria-labelledby')
+    expect(conditionsLabelId).toBeTruthy()
+    expect(document.getElementById(conditionsLabelId as string)?.textContent).toBe('Condition')
+
+    click(host.querySelector('[data-testid="plan-request-changes"]'))
+    const changes = host.querySelector('[data-testid="plan-changes-note"]') as HTMLTextAreaElement
+    const changesLabelId = changes.getAttribute('aria-labelledby')
+    expect(changesLabelId).toBeTruthy()
+    expect(document.getElementById(changesLabelId as string)?.textContent).toContain('Reason for changes')
+  })
+
+  it('Escape đóng popup điều kiện mà KHÔNG xoá chữ đã gõ; mở lại vẫn còn', async () => {
+    installPlanFetch({ status: statusPayload({ verification: OK_VERIFICATION }) })
+    const host = render(<PlanPanel />)
+    await flush()
+
+    click(host.querySelector('[data-testid="plan-approve-note-toggle"]'))
+    typeInto(
+      host.querySelector('[data-testid="plan-approve-note"]') as HTMLTextAreaElement,
+      'chỉ duyệt khi M8 ghi rõ conda env',
+    )
+
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    })
+    expect(host.querySelector('[data-testid="plan-approve-note-popover"]')).toBeNull()
+
+    click(host.querySelector('[data-testid="plan-approve-note-toggle"]'))
+    expect((host.querySelector('[data-testid="plan-approve-note"]') as HTMLTextAreaElement).value).toBe(
+      'chỉ duyệt khi M8 ghi rõ conda env',
+    )
+  })
+
+  it('bấm ra ngoài đóng popup điều kiện — cùng luật với hai menu kia', async () => {
+    installPlanFetch({ status: statusPayload({ verification: OK_VERIFICATION }) })
+    const host = render(<PlanPanel />)
+    await flush()
+
+    click(host.querySelector('[data-testid="plan-approve-note-toggle"]'))
+    expect(host.querySelector('[data-testid="plan-approve-note-popover"]')).toBeTruthy()
+
+    act(() => {
+      document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    })
+    expect(host.querySelector('[data-testid="plan-approve-note-popover"]')).toBeNull()
   })
 })
 

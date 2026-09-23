@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { agentApi } from '../lib/agentApi'
 import {
+  DEFAULT_PLAN_GATE,
   PlanRepositoryHttpError,
   PlanReviewBlockedError,
   createPlanRepository,
@@ -10,6 +11,7 @@ import {
 import type {
   PlanDocument,
   PlanEvaluation,
+  PlanGate,
   PlanManifest,
   PlanOwnership,
   PlanRepository,
@@ -18,6 +20,7 @@ import type {
   PlanStatusClient,
   PlanStatusReview,
   PlanVerification,
+  PlanWake,
 } from '../lib/plans'
 import { useUiStore } from '../store/uiStore'
 
@@ -61,6 +64,10 @@ export interface PlanReviewResult {
   forwarded: boolean | null
   resumed: boolean | null
   turnId: string | null
+  /** Harness giải thích vì sao mở/không mở được lượt, kèm câu chữ của chính nó; `null` = harness cũ. */
+  wake: PlanWake | null
+  /** Chỉ ở chế độ `warn`: harness cho qua một bản chưa đạt phản biện — nói ra, không giấu. */
+  approvalWarning: string | null
 }
 
 /**
@@ -106,12 +113,25 @@ export interface PlanFilesState {
   indexAvailable: boolean
   /** Bản chấm P1–P8 của đúng bản đang chọn; `null` với bản cũ chưa từng được chấm. */
   evaluation: PlanEvaluation | null
-  /** Mặt phản biện của đúng bản đang chọn (`none | ok | revise | unknown`); `unknown` = chưa biết. */
-  verification: PlanVerification
+  /**
+   * Mặt phản biện của đúng bản đang chọn (`none | ok | revise | unknown`); `unknown` = chưa biết.
+   * `null` = CHƯA đọc xong sổ cho bản này (vừa đổi bản) — khác hẳn `unknown` ("sổ không đọc được"),
+   * nên giao diện không được vẽ mặt nào khi còn `null`.
+   */
+  verification: PlanVerification | null
   /** Phiên đang sở hữu bản kế hoạch — lượt chạy tiếp theo mở trong phiên này. */
   ownership: PlanOwnership
+  /** Công tắc cổng duyệt harness đang chạy (`enforce | warn | off`) — nút Duyệt siết đúng bằng nó. */
+  gate: PlanGate
   /**
-   * `true` chỉ khi harness NÓI RÕ bản này chưa qua phiên phản biện (`verification.state === 'none'`).
+   * `true` khi harness CHẮC CHẮN từ chối cú bấm, để giao diện không mời một cú bấm vô ích:
+   *
+   * - `verification === null` — đang đọc sổ cho bản mới: chưa biết thì chưa mở nút.
+   * - `verification.state === 'none'` — harness nói rõ bản này chưa qua phiên phản biện.
+   * - `verification.state === 'revise'` + `gate.verifyMode === 'enforce'` — bản còn lỗi phải sửa và
+   *   harness chặn cứng: cú bấm chỉ đi tới 409. Ở `warn`/`off` thì KHÔNG khoá: harness cho qua thật,
+   *   và cái giá của việc cho qua được nói ra bằng `approvalWarning`.
+   *
    * `unknown` (harness cũ không trả trường) KHÔNG khoá: thà để harness trả 409 kèm lý do của chính nó
    * còn hơn giao diện tự khoá oan một đường vẫn hợp lệ.
    */
@@ -164,8 +184,10 @@ export function usePlanFiles(
   const [evaluation, setEvaluation] = useState<PlanEvaluation | null>(null)
   const [selectedReview, setSelectedReview] = useState<PlanStatusReview | null>(null)
   const [statusError, setStatusError] = useState<string | null>(null)
-  const [verification, setVerification] = useState<PlanVerification>(UNKNOWN_VERIFICATION)
+  // `null` = chưa đọc xong sổ cho bản đang chọn (khác `UNKNOWN_VERIFICATION` = "không đọc được").
+  const [verification, setVerification] = useState<PlanVerification | null>(null)
   const [ownership, setOwnership] = useState<PlanOwnership>(NO_OWNER)
+  const [gate, setGate] = useState<PlanGate>(DEFAULT_PLAN_GATE)
   const [reviewResult, setReviewResult] = useState<PlanReviewResult | null>(null)
   const [reviewBlocked, setReviewBlocked] = useState<PlanReviewBlockedError | null>(null)
   const [verifyStatus, setVerifyStatus] = useState<PlanVerifyStatus>('idle')
@@ -193,19 +215,33 @@ export function usePlanFiles(
     setReviewStatus((current) => (current === 'blocked' ? 'idle' : current))
   }, [])
 
-  const resetStatus = useCallback(() => {
-    statusGenerationRef.current += 1
-    statusSelectionRef.current = null
+  /**
+   * Mọi thứ SUY TỪ KẾT LUẬN của một bản cụ thể (trạng thái nhóm, chuẩn thuận, điểm P1–P8, mặt phản
+   * biện, chủ phiên) — đổi bản là chúng hết đúng ngay, không đợi lượt đọc sổ của bản mới trả lời.
+   *
+   * Vì sao phải xoá trước khi đọc: giữ lại kết luận của bản cũ trong lúc chờ mạng là lần duy nhất
+   * giao diện tự dựng một lời khẳng định chưa ai nói (verdict của v1 in trên đầu v2, nút khoá theo
+   * bản cũ). Và vì sao KHÔNG đặt `unknown` thay chỗ: `unknown` là một câu khác — "sổ không đọc
+   * được" — trong khi chỗ này chỉ là "chưa trả lời"; `verification = null` nói đúng điều đó.
+   */
+  const clearStatusFacts = useCallback(() => {
     setPlanState('unknown')
     setReviewStale(false)
     setIndexAvailable(true)
     setEvaluation(null)
     setSelectedReview(null)
-    setStatusError(null)
-    setVerification(UNKNOWN_VERIFICATION)
+    setVerification(null)
     setOwnership(NO_OWNER)
+  }, [])
+
+  const resetStatus = useCallback(() => {
+    statusGenerationRef.current += 1
+    statusSelectionRef.current = null
+    setStatusError(null)
+    setGate(DEFAULT_PLAN_GATE)
+    clearStatusFacts()
     clearReviewFacts()
-  }, [clearReviewFacts])
+  }, [clearReviewFacts, clearStatusFacts])
 
   /**
    * Đọc trạng thái duyệt thật + bản chấm P1–P8 cho đúng bản đang chọn.
@@ -223,6 +259,8 @@ export function usePlanFiles(
       const selectionKey = `${nextSelection.identity}:${nextSelection.version}`
       if (statusSelectionRef.current !== selectionKey) {
         statusSelectionRef.current = selectionKey
+        // Bản đổi: bỏ hết kết luận của bản cũ ngay, rồi mới hỏi sổ (xem `clearStatusFacts`).
+        clearStatusFacts()
         clearReviewFacts()
       }
       try {
@@ -235,6 +273,7 @@ export function usePlanFiles(
         setSelectedReview(report.review)
         setVerification(report.verification)
         setOwnership(report.ownership)
+        setGate(report.gate)
         setStatusError(null)
       } catch (cause) {
         if (generation !== statusGenerationRef.current) return
@@ -251,7 +290,7 @@ export function usePlanFiles(
         setStatusError(messageFor(cause))
       }
     },
-    [activeStatusClient, resetStatus, clearReviewFacts],
+    [activeStatusClient, resetStatus, clearReviewFacts, clearStatusFacts],
   )
 
   const loadDocument = useCallback(
@@ -421,6 +460,9 @@ export function usePlanFiles(
           forwarded: outcome.forwarded,
           resumed: outcome.resumed,
           turnId: outcome.turnId,
+          // Lời giải thích của harness đi nguyên qua: `resumed` chỉ là một bit, `wake` mới nói vì sao.
+          wake: outcome.wake ?? null,
+          approvalWarning: outcome.approvalWarning ?? null,
         })
         await refresh()
         setReviewStatus('idle')
@@ -456,7 +498,8 @@ export function usePlanFiles(
     evaluation,
     verification,
     ownership,
-    approvalLocked: verification.state === 'none',
+    gate,
+    approvalLocked: approvalLockedFor(verification, gate),
     statusError,
     reviewForwarded,
     reviewStatus,
@@ -472,4 +515,15 @@ export function usePlanFiles(
 
 function messageFor(cause: unknown): string {
   return cause instanceof Error ? cause.message : 'Unable to load plan files.'
+}
+
+/**
+ * Nút Duyệt có bị khoá không — câu trả lời phải TRÙNG với câu harness sẽ trả lời, nếu không giao diện
+ * mời một cú bấm chắc chắn bị từ chối (`revise` + `enforce`), hoặc khoá một đường harness vẫn cho qua
+ * (`revise` + `warn`/`off`).
+ */
+function approvalLockedFor(verification: PlanVerification | null, gate: PlanGate): boolean {
+  if (!verification) return true
+  if (verification.state === 'none') return true
+  return verification.state === 'revise' && gate.verifyMode === 'enforce'
 }

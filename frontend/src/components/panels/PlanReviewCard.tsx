@@ -40,13 +40,22 @@ export const VERIFY_CHIP: Record<KnownVerificationState, { label: TKey; classes:
 }
 
 interface PlanReviewCardProps {
-  verification: PlanVerification
+  /**
+   * Mặt phản biện của bản đang xem. `null` = vừa đổi bản, sổ của bản mới còn đang đọc — khác hẳn
+   * `unknown` ("sổ không đọc được"), nên không được mượn câu của `unknown` để nói.
+   */
+  verification: PlanVerification | null
   /** Bản đang xem — vào câu chỉ dẫn của mặt `none` và mặt `ok`. */
   version: number | null
   /** Đường dẫn tương đối của bản đang xem — câu "yêu cầu tối thiểu". */
   path: string
   /** Đang chờ harness nhận yêu cầu chạy phiên phản biện. */
   runPending?: boolean
+  /**
+   * Câu lỗi của lần nhờ harness chạy phiên phản biện vừa rồi. Cú bấm hỏng mà im lặng thì người dùng
+   * tưởng phiên đang chạy; chỗ này nói thẳng là không chạy được, kèm nguyên văn lỗi.
+   */
+  runError?: string | null
   /** Có thì mới vẽ nút chạy phiên — không hứa một đường không tồn tại. */
   onRun?: () => void
 }
@@ -111,13 +120,45 @@ function FindingRow({ issue, index }: { issue: PlanVerificationIssue; index: num
   )
 }
 
-export function PlanReviewCard({ verification, version, path, runPending = false, onRun }: PlanReviewCardProps) {
+export function PlanReviewCard({
+  verification,
+  version,
+  path,
+  runPending = false,
+  runError = null,
+  onRun,
+}: PlanReviewCardProps) {
   const t = useT()
   const label = version === null ? '—' : `v${version}`
-  const stamp = planStamp(verification.at)
+
+  /** Nút chạy phiên + câu lỗi của cú bấm hỏng — hai mặt dưới dùng chung đúng một bản. */
+  const runRow = onRun ? (
+    <>
+      <button
+        type="button"
+        data-component-id="plan-review-run-button"
+        data-testid="plan-review-run"
+        disabled={runPending}
+        onClick={onRun}
+        className="rounded border border-line bg-panel px-2.5 py-1 text-[11px] font-medium text-fg hover:bg-panel2 disabled:opacity-50"
+      >
+        {runPending ? t('plan.verify.runPending') : t('plan.verify.run')}
+      </button>
+      {/* Cú bấm hỏng phải nói ra: không có dòng này thì "chạy phiên phản biện" im như đang chạy. */}
+      {runError && (
+        <p
+          data-testid="plan-verify-error"
+          role="status"
+          className="text-[11px] leading-relaxed text-rose-400"
+        >
+          {t('plan.verify.runError')}: {runError}
+        </p>
+      )}
+    </>
+  ) : null
 
   // Harness cũ không khai mặt phản biện: một hàng nói đúng "chưa biết", không đoán, không tô đỏ.
-  if (verification.state === 'unknown') {
+  if (verification?.state === 'unknown') {
     return (
       <div
         data-component-id="plan-review-card"
@@ -129,6 +170,28 @@ export function PlanReviewCard({ verification, version, path, runPending = false
       </div>
     )
   }
+
+  // Vừa đổi bản, sổ của bản mới còn đang đọc: không vẽ mặt nào (mặt của bản cũ là chuyện khác), và
+  // cũng KHÔNG mượn câu "sổ không đọc được" — ở đây chỉ là chưa trả lời.
+  if (verification === null) {
+    return (
+      <div
+        data-component-id="plan-review-card"
+        data-testid="plan-review-card"
+        className="rounded-lg border border-line bg-panel2/30 p-3.5 space-y-2.5"
+      >
+        <h2 className="text-[11px] font-semibold text-fg uppercase tracking-wider">
+          {t('plan.verify.cardTitle')}
+        </h2>
+        <p data-testid="plan-review-card-reading" className="text-[11px] text-muted leading-relaxed">
+          {t('plan.verify.reading', { version: label })}
+        </p>
+        {runRow}
+      </div>
+    )
+  }
+
+  const stamp = planStamp(verification.at)
 
   // `unknown` đã trả về ở trên: ba mặt còn lại đều có nhãn + màu trong `VERIFY_CHIP`.
   const face = verification.state
@@ -189,18 +252,7 @@ export function PlanReviewCard({ verification, version, path, runPending = false
         </>
       )}
 
-      {onRun && (
-        <button
-          type="button"
-          data-component-id="plan-review-run-button"
-          data-testid="plan-review-run"
-          disabled={runPending}
-          onClick={onRun}
-          className="rounded border border-line bg-panel px-2.5 py-1 text-[11px] font-medium text-fg hover:bg-panel2 disabled:opacity-50"
-        >
-          {runPending ? t('plan.verify.runPending') : t('plan.verify.run')}
-        </button>
-      )}
+      {runRow}
     </div>
   )
 }

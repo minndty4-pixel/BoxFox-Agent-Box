@@ -10,7 +10,7 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { PlanReviewBlockedError } from '../lib/plans'
+import { DEFAULT_PLAN_GATE, PlanReviewBlockedError } from '../lib/plans'
 import type { PlanDocument, PlanManifest, PlanRepository, PlanStatusClient, PlanStatusReport } from '../lib/plans'
 import { usePlanFiles } from './usePlanFiles'
 import type { PlanFilesState } from './usePlanFiles'
@@ -68,6 +68,8 @@ function reportFor(overrides: Partial<PlanStatusReport> = {}): PlanStatusReport 
     // Mặc định = harness CHƯA khai mặt phản biện (bản cũ); ca nào cần thì tự khai.
     verification: { state: 'unknown', at: null, criticSessionId: null, issues: [] },
     ownership: { sessionId: null },
+    // Cổng duyệt mặc định của harness là `enforce`; ca nào cần `warn`/`off` thì tự khai.
+    gate: DEFAULT_PLAN_GATE,
     ...overrides,
   }
 }
@@ -393,7 +395,7 @@ describe('usePlanFiles — mặt phản biện + kết quả quyết định (v�
       submitReview: vi.fn(),
     })
 
-    expect(hook.state.verification.state).toBe('none')
+    expect(hook.state.verification?.state).toBe('none')
     expect(hook.state.ownership.sessionId).toBe('9481bf87')
     expect(hook.state.approvalLocked).toBe(true)
     await hook.unmount()
@@ -409,8 +411,8 @@ describe('usePlanFiles — mặt phản biện + kết quả quyết định (v�
       submitReview: vi.fn(),
     })
 
-    expect(hook.state.verification.state).toBe('unknown')
-    expect(hook.state.verification.issues).toEqual([])
+    expect(hook.state.verification?.state).toBe('unknown')
+    expect(hook.state.verification?.issues).toEqual([])
     expect(hook.state.approvalLocked).toBe(false)
     await hook.unmount()
   })
@@ -524,6 +526,180 @@ describe('usePlanFiles — mặt phản biện + kết quả quyết định (v�
     expect(read).toHaveBeenLastCalledWith('agent-box-plan', 1)
     expect(hook.state.reviewResult).toBeNull()
     expect(hook.state.reviewBlocked).toBeNull()
+    await hook.unmount()
+  })
+
+  it('cổng `enforce`: bản có verdict `revise` thì KHOÁ duyệt; `warn`/`off` thì mở — siết đúng bằng harness', async () => {
+    const repository: PlanRepository = {
+      list: vi.fn(async () => manifestWith('agent-box-plan', [1])),
+      read: vi.fn(async (identity, version) => documentFor(identity, version)),
+    }
+    const revise = { state: 'revise' as const, at: null, criticSessionId: 'critic-1', issues: [] }
+
+    const enforced = await mount(repository, {
+      read: vi.fn(async () => reportFor({ version: 1, verification: revise })),
+      submitReview: vi.fn(),
+    })
+    expect(enforced.state.gate.verifyMode).toBe('enforce')
+    expect(enforced.state.approvalLocked).toBe(true)
+    await enforced.unmount()
+
+    const warned = await mount(repository, {
+      read: vi.fn(async () =>
+        reportFor({
+          version: 1,
+          verification: revise,
+          gate: { ...DEFAULT_PLAN_GATE, verifyMode: 'warn' },
+        }),
+      ),
+      submitReview: vi.fn(),
+    })
+    expect(warned.state.gate.verifyMode).toBe('warn')
+    // Cổng `warn` nói harness VẪN cho qua: khoá ở đây là mời một cú bấm không có gì chặn.
+    expect(warned.state.approvalLocked).toBe(false)
+    await warned.unmount()
+
+    const disabled = await mount(repository, {
+      read: vi.fn(async () =>
+        reportFor({
+          version: 1,
+          verification: revise,
+          gate: { ...DEFAULT_PLAN_GATE, verifyMode: 'off' },
+        }),
+      ),
+      submitReview: vi.fn(),
+    })
+    expect(disabled.state.approvalLocked).toBe(false)
+    await disabled.unmount()
+  })
+
+  it('env lạ bị harness hạ về `enforce` và khai kèm: `verifyUnknown` đi ra, giao diện siết như harness', async () => {
+    const repository: PlanRepository = {
+      list: vi.fn(async () => manifestWith('agent-box-plan', [1])),
+      read: vi.fn(async (identity, version) => documentFor(identity, version)),
+    }
+    const hook = await mount(repository, {
+      read: vi.fn(async () =>
+        reportFor({
+          version: 1,
+          verification: { state: 'revise', at: null, criticSessionId: null, issues: [] },
+          gate: { ...DEFAULT_PLAN_GATE, verifyUnknown: 'yolo' },
+        }),
+      ),
+      submitReview: vi.fn(),
+    })
+
+    expect(hook.state.gate.verifyUnknown).toBe('yolo')
+    expect(hook.state.gate.verifyMode).toBe('enforce')
+    expect(hook.state.approvalLocked).toBe(true)
+    await hook.unmount()
+  })
+
+  it('đổi version: xoá kết luận của bản CŨ ngay, `verification` là `null` cho tới khi sổ trả lời', async () => {
+    let release: ((report: PlanStatusReport) => void) | null = null
+    const read = vi.fn(async (_identity: string, version: number | null) => {
+      if (version === 2) {
+        return reportFor({
+          version: 2,
+          state: 'approved',
+          stateVersion: 2,
+          verification: { state: 'ok', at: '2026-09-20T20:56:00Z', criticSessionId: 'critic-1', issues: [] },
+          ownership: { sessionId: '9481bf87' },
+        })
+      }
+      return new Promise<PlanStatusReport>((resolve) => {
+        release = resolve
+      })
+    })
+    const repository: PlanRepository = {
+      list: vi.fn(async () => manifestWith('agent-box-plan', [2, 1])),
+      read: vi.fn(async (identity, version) => documentFor(identity, version)),
+    }
+    const hook = await mount(repository, { read, submitReview: vi.fn() })
+
+    expect(hook.state.verification?.state).toBe('ok')
+    expect(hook.state.ownership.sessionId).toBe('9481bf87')
+
+    await act(async () => {
+      hook.state.selectVersion(1)
+    })
+
+    // Sổ của bản mới CHƯA trả lời: không mượn verdict `ok` của v2 in lên đầu v1, và không mượn cả
+    // chủ phiên của v2 — `null` nói đúng "chưa đọc xong", `unknown` thì nói "sổ không đọc được".
+    expect(hook.state.verification).toBeNull()
+    expect(hook.state.ownership.sessionId).toBeNull()
+    expect(hook.state.evaluation).toBeNull()
+    // Chưa biết bản mới thế nào thì nút Duyệt không được mời bấm.
+    expect(hook.state.approvalLocked).toBe(true)
+
+    await act(async () => {
+      release?.(reportFor({ version: 1, verification: { state: 'none', at: null, criticSessionId: null, issues: [] } }))
+    })
+
+    expect(hook.state.verification?.state).toBe('none')
+    await hook.unmount()
+  })
+
+  it('`wake` + `approvalWarning` của harness đi nguyên vào dòng kết quả, không bị nuốt', async () => {
+    const submitReview = vi.fn().mockResolvedValue({
+      review: null,
+      forwarded: true,
+      recorded: true,
+      resumed: false,
+      turnId: null,
+      wake: {
+        state: 'busy',
+        code: 'PLAN_WAKE_BUSY',
+        message: 'phiên 9481bf87 đang chạy một lượt — quyết định đã ghi sổ, lượt mới chưa mở',
+        sessionId: '9481bf87',
+      },
+      approvalWarning: 'bản v1 chưa đạt phản biện nhưng BOXFOX_PLAN_VERIFY=warn',
+    })
+    const repository: PlanRepository = {
+      list: vi.fn(async () => manifestWith('agent-box-plan', [1])),
+      read: vi.fn(async (identity, version) => documentFor(identity, version)),
+    }
+    const hook = await mount(repository, { read: vi.fn(async () => reportFor({ version: 1 })), submitReview })
+
+    await act(async () => {
+      await hook.state.submitReview('approved', '')
+    })
+
+    expect(hook.state.reviewResult).toMatchObject({
+      decision: 'approved',
+      resumed: false,
+      wake: {
+        state: 'busy',
+        code: 'PLAN_WAKE_BUSY',
+        message: 'phiên 9481bf87 đang chạy một lượt — quyết định đã ghi sổ, lượt mới chưa mở',
+        sessionId: '9481bf87',
+      },
+      approvalWarning: 'bản v1 chưa đạt phản biện nhưng BOXFOX_PLAN_VERIFY=warn',
+    })
+    await hook.unmount()
+  })
+
+  it('harness cũ không có `wake`: dòng kết quả vẫn đọc đúng bit `resumed`, không bịa kết cục nào', async () => {
+    const submitReview = vi.fn().mockResolvedValue({
+      review: null,
+      forwarded: true,
+      recorded: true,
+      resumed: null,
+      turnId: null,
+    })
+    const repository: PlanRepository = {
+      list: vi.fn(async () => manifestWith('agent-box-plan', [1])),
+      read: vi.fn(async (identity, version) => documentFor(identity, version)),
+    }
+    const hook = await mount(repository, { read: vi.fn(async () => reportFor({ version: 1 })), submitReview })
+
+    await act(async () => {
+      await hook.state.submitReview('approved', '')
+    })
+
+    expect(hook.state.reviewResult?.wake).toBeNull()
+    expect(hook.state.reviewResult?.approvalWarning).toBeNull()
+    expect(hook.state.reviewResult?.resumed).toBeNull()
     await hook.unmount()
   })
 })

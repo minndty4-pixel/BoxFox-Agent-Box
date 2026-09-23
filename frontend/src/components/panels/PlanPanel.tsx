@@ -63,6 +63,13 @@ const VERIFY_CHIP_TITLES: Record<KnownVerificationState, TKey> = {
 /** Id của dòng lý do khoá duyệt — nút `disabled` không hiện `title`, nên nối bằng `aria-describedby`. */
 const APPROVE_BLOCKED_ID = 'plan-approve-blocked'
 
+/**
+ * Id của hai NHÃN NHÌN THẤY của hai ô mới. Ô chỉ có `placeholder` thì trình đọc màn hình không có
+ * tên để đọc (và `placeholder` biến mất ngay khi gõ), nên ô trỏ vào đúng cái tiêu đề đang hiện.
+ */
+const APPROVE_CONDITIONS_LABEL_ID = 'plan-approve-conditions-label'
+const CHANGES_TITLE_ID = 'plan-request-changes-title'
+
 export function PlanPanel() {
   const t = useT()
   const mode = useAgentStore((s) => s.mode)
@@ -140,35 +147,62 @@ export function PlanPanel() {
   /**
    * Mặt phản biện của bản đang xem (sổ phản biện của harness). `unknown` = harness cũ không khai
    * trường: KHÔNG vẽ chip và KHÔNG khoá duyệt — thà để harness trả 409 kèm lý do của chính nó.
+   * `null` = vừa đổi bản, sổ của bản mới còn đang đọc: cũng không vẽ gì — không mượn mặt của bản cũ.
    */
-  const verificationState = planFiles.verification.state
+  const verification = planFiles.verification
+  const verificationState = verification?.state ?? null
   const verifyChipState: KnownVerificationState | null =
     verificationState === 'none' || verificationState === 'ok' || verificationState === 'revise'
       ? verificationState
       : null
-  const verifyStamp = planStamp(planFiles.verification.at)
+  const verifyStamp = planStamp(verification?.at)
   const selectionVersion = planFiles.selection?.version ?? null
   const versionLabel = selectionVersion === null ? '—' : `v${selectionVersion}`
 
-  /** Lý do khoá nút Duyệt: ưu tiên nguyên văn `remedy` harness trả ở 409, không có thì câu i18n. */
+  /**
+   * Lý do nút Duyệt bị khoá, theo đúng thứ tự của cái đang biết:
+   * 1. harness đã chặn ở 409: nguyên văn `remedy` của nó, không dịch lại;
+   * 2. sổ của bản mới còn đang đọc: nói đúng là đang đọc (không mượn kết luận của bản cũ);
+   * 3. `revise` + cổng `enforce`: nói rõ verdict, rằng harness từ chối, và hai cách gỡ;
+   * 4. còn lại: bản chưa có phiên phản biện nào.
+   */
   const approveBlockedReason = planFiles.reviewBlocked?.remedy.trim()
     ? planFiles.reviewBlocked.remedy.trim()
-    : t('plan.verify.locked', { version: versionLabel })
+    : verification === null
+      ? t('plan.verify.reading', { version: versionLabel })
+      : verification.state === 'revise'
+        ? t('plan.verify.reviseLocked', { version: versionLabel, critic: t('plan.verify.critic') })
+        : t('plan.verify.locked', { version: versionLabel })
   const approveLocked = planFiles.approvalLocked
 
-  /** Dòng kết quả quyết định: chỉ khẳng định "đang mở lượt" khi harness NÓI `resumed: true`. */
+  /**
+   * Dòng kết quả quyết định. Harness trả kèm `wake.{state,code,message}` — câu chữ của CHÍNH NÓ về
+   * việc mở lượt — nên ở đây ưu tiên `wake.state`: chỉ `opened` mới là "đang mở lượt"; `busy` /
+   * `duplicate` / `missing` / `failed` đều KHÔNG mở lượt mới, và câu giải thích của harness được in
+   * nguyên văn ở dòng dưới. Harness cũ (không có `wake`) lùi về đúng bit `resumed` như trước.
+   */
   const reviewResult = planFiles.reviewResult
-  const decisionSentText = !reviewResult
+  const wake = reviewResult?.wake ?? null
+  const wakeOpenedTurn = wake ? wake.state === 'opened' : reviewResult?.resumed === true
+  const wakeText = wake?.message?.trim() ? wake.message.trim() : null
+  const sentTurnText = reviewResult
+    ? reviewResult.decision === 'changes_requested'
+      ? t('plan.decisions.sent.changes', { version: reviewResult.version })
+      : reviewResult.note.trim()
+        ? t('plan.decisions.sent.approvedWithNote')
+        : t('plan.decisions.sent.approved')
+    : null
+  const decisionSentText = !sentTurnText
     ? null
-    : reviewResult.resumed === null
-      ? t('plan.decisions.sent.unknown')
-      : reviewResult.resumed === false
-        ? t('plan.decisions.sent.notResumed')
-        : reviewResult.decision === 'changes_requested'
-          ? t('plan.decisions.sent.changes', { version: reviewResult.version })
-          : reviewResult.note.trim()
-            ? t('plan.decisions.sent.approvedWithNote')
-            : t('plan.decisions.sent.approved')
+    : wake
+      ? wake.state === 'opened'
+        ? sentTurnText
+        : t('plan.decisions.sent.notResumed')
+      : reviewResult?.resumed === null
+        ? t('plan.decisions.sent.unknown')
+        : reviewResult?.resumed === false
+          ? t('plan.decisions.sent.notResumed')
+          : sentTurnText
   const decisionSentMeta = reviewResult
     ? [
         reviewResult.turnId ? t('plan.decisions.sent.turn', { turn: reviewResult.turnId }) : null,
@@ -207,6 +241,26 @@ export function PlanPanel() {
   const [versionMenuOpen, setVersionMenuOpen] = useState(false)
   const identityMenuRef = useRef<HTMLDivElement>(null)
   const versionMenuRef = useRef<HTMLDivElement>(null)
+  const approveNoteRef = useRef<HTMLDivElement>(null)
+
+  /**
+   * Điều kiện / lý do sửa gõ cho MỘT bản chỉ đúng với bản đó: đổi bản thì hai ô và hai popup phải
+   * sạch, nếu không một điều kiện gõ cho v1 sẽ được gửi kèm quyết định của v2 (chữ vẫn là chữ của
+   * bản cũ, chỉ có số version đổi — người đọc không thể biết).
+   */
+  const selectionKey = planFiles.selection
+    ? `${planFiles.selection.identity}:${planFiles.selection.version}`
+    : null
+  const previousSelectionKey = useRef<string | null>(null)
+  useEffect(() => {
+    const previous = previousSelectionKey.current
+    previousSelectionKey.current = selectionKey
+    if (previous === null || previous === selectionKey) return
+    setApproveNote('')
+    setChangesNote('')
+    setApproveNoteOpen(false)
+    setChangesFormOpen(false)
+  }, [selectionKey])
 
   const currentPlan = mode === 'ACT' && endorsed ? endorsed : workspace
 
@@ -234,7 +288,7 @@ export function PlanPanel() {
     return currentPlan.steps.find((s) => s.id === selectedStepId) ?? null
   }, [currentPlan, selectedStepId])
 
-  // Click outside to close popovers
+  // Click outside to close popovers — popup "duyệt kèm điều kiện" đi cùng luật với hai menu kia.
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
       const target = e.target as Node
@@ -244,12 +298,28 @@ export function PlanPanel() {
       if (versionMenuRef.current && !versionMenuRef.current.contains(target)) {
         setVersionMenuOpen(false)
       }
+      if (approveNoteRef.current && !approveNoteRef.current.contains(target)) {
+        setApproveNoteOpen(false)
+      }
     }
-    if (identityMenuOpen || versionMenuOpen) {
+    if (identityMenuOpen || versionMenuOpen || approveNoteOpen) {
       document.addEventListener('mousedown', handleClickOutside)
     }
     return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [identityMenuOpen, versionMenuOpen])
+  }, [identityMenuOpen, versionMenuOpen, approveNoteOpen])
+
+  /**
+   * Escape đóng popup điều kiện mà KHÔNG xoá chữ đã gõ (mở lại vẫn còn) — xoá chữ là việc của nút
+   * Huỷ, còn đóng chỉ là đóng.
+   */
+  useEffect(() => {
+    if (!approveNoteOpen) return
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') setApproveNoteOpen(false)
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [approveNoteOpen])
 
   /**
    * Duyệt kế hoạch thật: ghi vào container (`POST /__box/plans/review`) khi tab
@@ -516,7 +586,7 @@ export function PlanPanel() {
           )}
 
           {/* Approve + MỘT mũi tên nhỏ mở popup "duyệt kèm điều kiện" (không phải nút thứ hai). */}
-          <div className="relative flex items-center">
+          <div ref={approveNoteRef} className="relative flex items-center">
             <button
               type="button"
               data-testid="plan-approve"
@@ -568,11 +638,14 @@ export function PlanPanel() {
                 data-testid="plan-approve-note-popover"
                 className="absolute right-0 top-full z-40 mt-1 w-80 space-y-2 rounded-lg border border-line bg-panel2 p-3 text-left shadow-xl animate-in fade-in zoom-in-95 duration-100"
               >
-                <div className="text-xs font-semibold text-fg">{t('plan.decisions.conditionsLabel')}</div>
+                <div id={APPROVE_CONDITIONS_LABEL_ID} className="text-xs font-semibold text-fg">
+                  {t('plan.decisions.conditionsLabel')}
+                </div>
                 <p className="text-[11px] leading-relaxed text-muted">{t('plan.decisions.conditionsHint')}</p>
                 <textarea
                   data-component-id="plan-approve-conditions-input"
                   data-testid="plan-approve-note"
+                  aria-labelledby={APPROVE_CONDITIONS_LABEL_ID}
                   rows={3}
                   value={approveNote}
                   onChange={(event) => setApproveNote(event.target.value)}
@@ -629,7 +702,9 @@ export function PlanPanel() {
           className="space-y-2 border-b border-line bg-panel2/30 px-4 py-2"
         >
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-[11px] font-semibold text-fg">{t('plan.decisions.changesTitle')}</span>
+            <span id={CHANGES_TITLE_ID} className="text-[11px] font-semibold text-fg">
+              {t('plan.decisions.changesTitle')}
+            </span>
             <span className="font-mono text-[10px] text-muted">
               {t('plan.decisions.changesFor', { version: selectionVersion ?? '—' })}
             </span>
@@ -637,6 +712,7 @@ export function PlanPanel() {
           <textarea
             data-component-id="plan-request-changes-input"
             data-testid="plan-changes-note"
+            aria-labelledby={CHANGES_TITLE_ID}
             rows={3}
             value={changesNote}
             onChange={(event) => setChangesNote(event.target.value)}
@@ -775,6 +851,21 @@ export function PlanPanel() {
         </div>
       )}
 
+      {/* Bản chưa đạt phản biện mà harness VẪN cho qua (`BOXFOX_PLAN_VERIFY=warn`): nói ra, không giấu. */}
+      {reviewResult?.approvalWarning && (
+        <div
+          data-testid="plan-approval-warning"
+          role="status"
+          className="flex items-start gap-2 border-b border-line bg-amber-500/10 px-4 py-1.5 text-xs text-amber-300"
+        >
+          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+          <span className="min-w-0 flex-1 leading-relaxed">
+            <span className="font-semibold">{t('plan.verify.warnTitle')}</span>{' '}
+            <span className="text-muted">{reviewResult.approvalWarning.trim()}</span>
+          </span>
+        </div>
+      )}
+
       {/* Quyết định vừa gửi: nói thật chuyện gì xảy ra sau cú bấm (BUG-2/BUG-7 nhìn từ giao diện). */}
       {decisionSentText && (
         <div
@@ -783,11 +874,29 @@ export function PlanPanel() {
           className="flex items-center gap-2 border-b border-line bg-panel2/40 px-4 py-1.5 text-xs text-muted"
         >
           <CircleCheck
-            className={`size-3.5 shrink-0 ${reviewResult?.resumed === true ? 'text-emerald-400' : 'text-muted'}`}
+            className={`size-3.5 shrink-0 ${wakeOpenedTurn ? 'text-emerald-400' : 'text-muted'}`}
           />
           <span className="min-w-0 flex-1 truncate">{decisionSentText}</span>
           {decisionSentMeta && (
             <span className="shrink-0 font-mono text-[10px] text-muted">{decisionSentMeta}</span>
+          )}
+        </div>
+      )}
+
+      {/* Vì sao mở/không mở được lượt — câu của harness, in NGUYÊN VĂN, không viết lại thành câu chung. */}
+      {decisionSentText && wakeText && (
+        <div
+          data-testid="plan-decision-wake"
+          role="status"
+          className="flex items-start gap-2 border-b border-line bg-panel2/40 px-4 py-1.5 text-xs text-muted"
+        >
+          <GitBranch className="mt-0.5 size-3.5 shrink-0" />
+          <span className="min-w-0 flex-1 leading-relaxed">
+            <span className="font-semibold text-fg">{t('plan.decisions.sent.wakeTitle')}</span>{' '}
+            {wakeText}
+          </span>
+          {wake?.code && (
+            <span className="shrink-0 font-mono text-[10px] text-muted">{wake.code}</span>
           )}
         </div>
       )}
@@ -991,12 +1100,15 @@ export function PlanPanel() {
 
                 {/* Thẻ ĐẦU cột Overview: phiên phản biện độc lập đã đọc bản này chưa, và nó nêu gì.
                     Trên cả metadata và lưới P1–P8, vì đây là điều kiện để được duyệt. */}
+                {/* `verification === null` (vừa đổi bản, sổ còn đang đọc) vẫn có thẻ: nó có mặt
+                    riêng cho tình huống đó và KHÔNG vẽ mặt nào của bản cũ. */}
                 {planFiles.document && (
                   <PlanReviewCard
-                    verification={planFiles.verification}
+                    verification={verification}
                     version={selectionVersion}
                     path={planFiles.document.relativePath}
                     runPending={planFiles.verifyStatus === 'running'}
+                    runError={planFiles.verifyError}
                     onRun={handleRunVerification}
                   />
                 )}

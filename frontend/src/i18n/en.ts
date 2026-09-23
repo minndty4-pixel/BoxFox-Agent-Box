@@ -807,6 +807,14 @@ const en: SameShape<typeof vi> = {
       fix: 'Fix:',
       locked: 'A plan-review session must review version {{version}} before you approve',
       lockedAria: 'Approve plan — locked',
+      /** Why the button is locked while the ledger for a just-switched version is still in flight. */
+      reading: 'Reading the review ledger for version {{version}} — nothing is claimed until it answers.',
+      /** `revise` + `BOXFOX_PLAN_VERIFY=enforce`: the harness refuses this click, in the harness's terms. */
+      reviseLocked:
+        'The review session read version {{version}} and still lists issues to fix (verdict: revise) — the harness refuses to approve it. Fix those issues and run the {{critic}} session again for this version, or send a change request.',
+      runError: 'Could not start the review session',
+      /** `BOXFOX_PLAN_VERIFY=warn`: the harness let a not-yet-passed version through — say so. */
+      warnTitle: 'The harness approved it anyway',
       blockedTitle: 'Harness blocked the approval',
     },
     /** The two decisions in the toolbar row: approve with conditions, and send a change reason. */
@@ -830,6 +838,8 @@ const en: SameShape<typeof vi> = {
         unknown: 'Stored in the review ledger. The harness did not say whether a turn was opened — nothing is claimed here.',
         turn: 'turn {{turn}}',
         session: 'session {{session}}',
+        /** Leads into the harness's own wording of the wake outcome, printed verbatim next to it. */
+        wakeTitle: 'The harness explained the wake:',
       },
     },
     /** Plan owner (round 25, M9): which session the new turn opens in, and which one chat is showing. */

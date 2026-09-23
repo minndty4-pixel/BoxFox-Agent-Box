@@ -21,7 +21,10 @@ function verificationFor(overrides: Partial<PlanVerification> = {}): PlanVerific
   return { state: 'none', at: null, criticSessionId: null, issues: [], ...overrides }
 }
 
-function renderCard(verification: PlanVerification, props: { onRun?: () => void; runPending?: boolean } = {}) {
+function renderCard(
+  verification: PlanVerification | null,
+  props: { onRun?: () => void; runPending?: boolean; runError?: string | null } = {},
+) {
   const host = document.createElement('div')
   document.body.append(host)
   const root = createRoot(host)
@@ -35,6 +38,7 @@ function renderCard(verification: PlanVerification, props: { onRun?: () => void;
           path=".plans/owner-rules/v3.md"
           onRun={props.onRun}
           runPending={props.runPending}
+          runError={props.runError}
         />
       </I18nProvider>,
     )
@@ -147,5 +151,37 @@ describe('PlanReviewCard', () => {
     const row = text(host, 'plan-review-finding-1')
     expect(row).toContain('severity unknown')
     expect(row).not.toMatch(/\blow\b/u)
+  })
+
+  it('`verification === null` (vừa đổi bản): "đang đọc sổ", KHÔNG mượn câu "sổ không đọc được"', () => {
+    const host = renderCard(null)
+
+    expect(text(host, 'plan-review-card-reading')).toContain('Reading the review ledger for version v3')
+    // Hai chuyện khác nhau phải là hai câu khác nhau: chưa đọc xong ≠ sổ không đọc được.
+    expect(text(host, 'plan-review-card')).not.toMatch(/could not be read/u)
+    expect(host.querySelector('[data-testid="plan-review-card-state"]')).toBeNull()
+    expect(host.querySelectorAll('[data-testid^="plan-review-finding-"]')).toHaveLength(0)
+  })
+
+  it('mặt "đang đọc" vẫn có nút chạy phiên khi có đường — hành động không phụ thuộc lượt đọc', () => {
+    const onRun = vi.fn()
+    const host = renderCard(null, { onRun })
+
+    click(host.querySelector('[data-testid="plan-review-run"]'))
+    expect(onRun).toHaveBeenCalledTimes(1)
+  })
+
+  it('cú bấm chạy phiên hỏng: câu lỗi hiện dưới nút, nguyên văn; không lỗi thì không có dòng nào', () => {
+    const host = renderCard(verificationFor({ state: 'none' }), {
+      onRun: vi.fn(),
+      runError: 'PLAN_VERIFY_FAILED: no reviewer session',
+    })
+
+    expect(text(host, 'plan-verify-error')).toBe(
+      'Could not start the review session: PLAN_VERIFY_FAILED: no reviewer session',
+    )
+
+    const clean = renderCard(verificationFor({ state: 'none' }), { onRun: vi.fn() })
+    expect(clean.querySelector('[data-testid="plan-verify-error"]')).toBeNull()
   })
 })

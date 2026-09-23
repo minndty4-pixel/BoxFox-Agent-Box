@@ -802,6 +802,14 @@ const vi = {
       fix: 'Cách sửa:',
       locked: 'Cần một phiên plan-review phản biện bản {{version}} trước khi duyệt',
       lockedAria: 'Duyệt kế hoạch — đang khoá',
+      /** Vì sao nút bị khoá khi sổ phản biện của bản vừa đổi còn đang đọc. */
+      reading: 'Đang đọc sổ phản biện của bản {{version}} — chưa đọc xong thì ở đây không nói gì.',
+      /** `revise` + `BOXFOX_PLAN_VERIFY=enforce`: harness từ chối cú bấm này, nói bằng lời của harness. */
+      reviseLocked:
+        'Phiên phản biện đã đọc bản {{version}} và còn nêu lỗi phải sửa (verdict: revise) — harness từ chối duyệt bản này. Sửa hết lỗi rồi chạy lại phiên {{critic}} cho đúng bản này, hoặc gửi yêu cầu sửa.',
+      runError: 'Không chạy được phiên phản biện',
+      /** `BOXFOX_PLAN_VERIFY=warn`: harness vẫn cho qua một bản chưa đạt phản biện — phải nói ra. */
+      warnTitle: 'Harness vẫn cho qua',
       blockedTitle: 'Harness chặn duyệt',
     },
     /** Hai quyết định ở hàng công cụ: duyệt kèm điều kiện và gửi lý do sửa (vòng 25). */
@@ -825,6 +833,8 @@ const vi = {
         unknown: 'Đã vào sổ duyệt. Harness không nói có mở lượt chạy hay không — ở đây không đoán.',
         turn: 'lượt {{turn}}',
         session: 'phiên {{session}}',
+        /** Mở đầu cho câu chữ NGUYÊN VĂN của harness về kết cục mở lượt, in ngay cạnh. */
+        wakeTitle: 'Harness nói rõ về việc mở lượt:',
       },
     },
     /** Chủ sở hữu kế hoạch (vòng 25, M9): lượt mới mở ở phiên nào và khung chat đang xem phiên nào. */

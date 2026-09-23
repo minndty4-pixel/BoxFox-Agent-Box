@@ -45,6 +45,30 @@ export type PlanDecision = 'approved' | 'changes_requested'
 export const PLAN_VERIFICATION_STATES = ['none', 'ok', 'revise'] as const
 export type PlanVerificationState = (typeof PLAN_VERIFICATION_STATES)[number] | 'unknown'
 
+/**
+ * Công tắc cổng duyệt của harness (`BOXFOX_PLAN_VERIFY`): `enforce` = từ chối 409, `warn` = vẫn ghi
+ * sổ nhưng kèm `approvalWarning`, `off` = không kiểm. Giao diện phải siết ĐÚNG bằng harness, nên nó
+ * đọc công tắc này thay vì mặc định `enforce` rồi khoá oan một bản mà harness sẽ cho qua.
+ */
+export const PLAN_GATE_MODES = ['enforce', 'warn', 'off'] as const
+export type PlanGateMode = (typeof PLAN_GATE_MODES)[number]
+
+export interface PlanGate {
+  verifyMode: PlanGateMode
+  /** Giá trị env lạ bị harness hạ về mặc định — giữ chuỗi gốc để giao diện nói thật là "không hiểu". */
+  verifyUnknown: string | null
+  sourcesMode: PlanGateMode
+  sourcesUnknown: string | null
+}
+
+/** Harness cũ không có khoá `gate` (KHÔNG phải "cổng mở"): `enforce` là hành vi cũ của nó. */
+export const DEFAULT_PLAN_GATE: PlanGate = {
+  verifyMode: 'enforce',
+  verifyUnknown: null,
+  sourcesMode: 'enforce',
+  sourcesUnknown: null,
+}
+
 const PLAN_ISSUE_SEVERITIES = ['high', 'medium', 'low'] as const
 /** Mức lỗi — `unknown` khi harness không khai; KHÔNG hạ xuống `low` cho dễ nhìn. */
 export type PlanIssueSeverity = (typeof PLAN_ISSUE_SEVERITIES)[number] | 'unknown'
@@ -138,6 +162,20 @@ export interface PlanStatusReport {
   evaluation: PlanEvaluation | null
   verification: PlanVerification
   ownership: PlanOwnership
+  /** Công tắc cổng duyệt harness đang chạy — giao diện siết đúng bằng nó, không đoán. */
+  gate: PlanGate
+}
+
+/** Kết cục một lần đánh thức phiên sở hữu (`plan_wake`) — harness là bên nói, giao diện không đoán. */
+export const PLAN_WAKE_STATES = ['opened', 'busy', 'duplicate', 'missing', 'failed'] as const
+export type PlanWakeState = (typeof PLAN_WAKE_STATES)[number] | 'unknown'
+
+export interface PlanWake {
+  state: PlanWakeState
+  code: string | null
+  /** Câu giải thích NGUYÊN VĂN của harness; vắng mặt thì giao diện không bịa câu nào. */
+  message: string | null
+  sessionId: string | null
 }
 
 export interface PlanReviewOutcome {
@@ -152,6 +190,41 @@ export interface PlanReviewOutcome {
    */
   resumed: boolean | null
   turnId: string | null
+  /**
+   * Harness giải thích NGAY trong thân trả về vì sao mở/không mở được lượt (`opened|busy|duplicate|
+   * missing|failed`) kèm câu chữ của chính nó. Bỏ trường này đi là bỏ lời giải thích thật, rồi giao
+   * diện phải đoán từ `resumed` — `null` khi harness cũ không khai.
+   */
+  wake: PlanWake | null
+  /** Chỉ có ở chế độ `warn`: harness đã cho qua một bản chưa đạt phản biện, kèm lý do. */
+  approvalWarning: string | null
+}
+
+function readPlanGateMode(value: unknown, fallback: PlanGateMode): PlanGateMode {
+  return PLAN_GATE_MODES.find((candidate) => candidate === value) ?? fallback
+}
+
+/** Chuẩn hoá `gate` của `GET /api/agent/plans/status`; thiếu khoá ⇒ hành vi cũ của harness = `enforce`. */
+export function readPlanGate(raw: unknown): PlanGate {
+  if (!isRecord(raw)) return DEFAULT_PLAN_GATE
+  return {
+    verifyMode: readPlanGateMode(raw.verifyMode, DEFAULT_PLAN_GATE.verifyMode),
+    verifyUnknown: asText(raw.verifyUnknown),
+    sourcesMode: readPlanGateMode(raw.sourcesMode, DEFAULT_PLAN_GATE.sourcesMode),
+    sourcesUnknown: asText(raw.sourcesUnknown),
+  }
+}
+
+/** Chuẩn hoá `wake` của hai route ghi quyết định/đánh thức; state lạ đọc là `unknown`, không đoán. */
+export function readPlanWake(raw: unknown): PlanWake | null {
+  if (!isRecord(raw)) return null
+  const state = PLAN_WAKE_STATES.find((candidate) => candidate === raw.state)
+  return {
+    state: state ?? 'unknown',
+    code: asText(raw.code),
+    message: asText(raw.message),
+    sessionId: asText(raw.sessionId),
+  }
 }
 
 /** Hợp đồng tối thiểu mà `usePlanFiles` cần — test bơm bản giả, không cần mạng. */
@@ -324,6 +397,7 @@ export function readPlanStatus(raw: unknown): PlanStatusReport | null {
     ownership: {
       sessionId: asText(isRecord(raw.ownership) ? raw.ownership.sessionId : null),
     },
+    gate: readPlanGate(raw.gate),
   }
 }
 
@@ -396,6 +470,8 @@ export class HarnessPlanStatusClient implements PlanStatusClient {
       recorded: typeof body.recorded === 'boolean' ? body.recorded : null,
       resumed: typeof body.resumed === 'boolean' ? body.resumed : null,
       turnId: asText(body.turnId),
+      wake: readPlanWake(body.wake),
+      approvalWarning: asText(body.approvalWarning),
     }
   }
 }

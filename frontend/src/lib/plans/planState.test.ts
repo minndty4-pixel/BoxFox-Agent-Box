@@ -6,15 +6,18 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import {
+  DEFAULT_PLAN_GATE,
   HarnessPlanStatusClient,
   PLAN_MAX_CHARS,
   planCount,
   planStamp,
   PlanReviewBlockedError,
   readPlanEvaluation,
+  readPlanGate,
   readPlanStatus,
   readPlanStatusReview,
   readPlanVerification,
+  readPlanWake,
 } from './planState'
 
 /** Payload thật của `Evaluation.to_payload`, rút gọn còn các trường giao diện dùng. */
@@ -350,6 +353,105 @@ describe('HarnessPlanStatusClient — kết quả quyết định', () => {
 
       expect(failure).not.toBeInstanceOf(PlanReviewBlockedError)
       expect((failure as Error).message).toBe('REVIEW_BUSY: Ledger busy')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
+describe('readPlanGate — công tắc cổng duyệt của harness', () => {
+  it('harness CŨ (không có khoá `gate`) đọc là `enforce`: hành vi cũ của nó, KHÔNG phải "cổng mở"', () => {
+    expect(readPlanGate(undefined)).toEqual(DEFAULT_PLAN_GATE)
+    expect(readPlanGate(null)).toEqual(DEFAULT_PLAN_GATE)
+    expect(readPlanGate({})).toEqual(DEFAULT_PLAN_GATE)
+    expect(readPlanGate({ verifyMode: 'warn' }).sourcesMode).toBe('enforce')
+  })
+
+  it('đọc nguyên công tắc harness khai, kèm cả giá trị env nó không hiểu', () => {
+    expect(
+      readPlanGate({
+        verifyMode: 'warn',
+        verifyUnknown: null,
+        sourcesMode: 'off',
+        sourcesUnknown: null,
+      }),
+    ).toEqual({ verifyMode: 'warn', verifyUnknown: null, sourcesMode: 'off', sourcesUnknown: null })
+  })
+
+  it('mode lạ bị hạ về `enforce` + giữ chuỗi gốc, để giao diện siết đúng như harness đang chạy', () => {
+    const gate = readPlanGate({ verifyMode: 'yolo', verifyUnknown: 'yolo', sourcesMode: 7 })
+    expect(gate.verifyMode).toBe('enforce')
+    expect(gate.verifyUnknown).toBe('yolo')
+    expect(gate.sourcesMode).toBe('enforce')
+    // `sourcesUnknown` vắng mặt: không bịa chuỗi nào.
+    expect(gate.sourcesUnknown).toBeNull()
+  })
+
+  it('`readPlanStatus` mang `gate` ra ngoài; payload thiếu khoá thì vẫn là `enforce`', () => {
+    const older = readPlanStatus({ identity: 'agent-box-plan', version: 1 })
+    expect(older?.gate).toEqual(DEFAULT_PLAN_GATE)
+
+    const current = readPlanStatus({
+      identity: 'agent-box-plan',
+      version: 1,
+      gate: { verifyMode: 'off', sourcesMode: 'warn', sourcesUnknown: 'maybe' },
+    })
+    expect(current?.gate).toMatchObject({ verifyMode: 'off', sourcesMode: 'warn', sourcesUnknown: 'maybe' })
+  })
+})
+
+describe('readPlanWake — harness kể lại chuyện mở lượt', () => {
+  it('đọc đủ năm kết cục harness có thể trả', () => {
+    for (const state of ['opened', 'busy', 'duplicate', 'missing', 'failed'] as const) {
+      expect(readPlanWake({ state, code: 'PLAN_WAKE_BUSY', message: 'nguyên văn', sessionId: 's1' })).toEqual({
+        state,
+        code: 'PLAN_WAKE_BUSY',
+        message: 'nguyên văn',
+        sessionId: 's1',
+      })
+    }
+  })
+
+  it('thiếu `wake` (harness cũ) là `null` — không bịa "không mở lượt"', () => {
+    expect(readPlanWake(undefined)).toBeNull()
+    expect(readPlanWake(null)).toBeNull()
+    expect(readPlanWake('busy')).toBeNull()
+  })
+
+  it('state lạ đọc là `unknown`, không suy ra `opened` cũng không suy ra `failed`', () => {
+    expect(readPlanWake({ state: 'maybe' })).toEqual({
+      state: 'unknown',
+      code: null,
+      message: null,
+      sessionId: null,
+    })
+    expect(readPlanWake({})?.state).toBe('unknown')
+  })
+
+  it('`submitReview` mang `wake` + `approvalWarning` của harness ra ngoài, thiếu thì là `null`', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        forwarded: true,
+        recorded: true,
+        resumed: false,
+        wake: { state: 'busy', code: 'PLAN_WAKE_BUSY', message: 'phiên đang chạy một lượt' },
+        approvalWarning: 'bản v3 chưa đạt phản biện nhưng BOXFOX_PLAN_VERIFY=warn',
+      }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const outcome = await new HarnessPlanStatusClient().submitReview('agent-box-plan', 3, 'approved', '')
+      expect(outcome.wake).toMatchObject({ state: 'busy', code: 'PLAN_WAKE_BUSY' })
+      expect(outcome.approvalWarning).toBe('bản v3 chưa đạt phản biện nhưng BOXFOX_PLAN_VERIFY=warn')
+
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ forwarded: true, recorded: true, resumed: true }),
+      })
+      const older = await new HarnessPlanStatusClient().submitReview('agent-box-plan', 3, 'approved', '')
+      expect(older.wake).toBeNull()
+      expect(older.approvalWarning).toBeNull()
     } finally {
       vi.unstubAllGlobals()
     }
