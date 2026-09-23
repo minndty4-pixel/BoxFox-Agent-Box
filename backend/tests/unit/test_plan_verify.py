@@ -301,6 +301,40 @@ def test_a_critique_without_a_verdict_line_is_refused(tmp_path):
     store.close()
 
 
+def test_a_verdict_the_critique_only_quotes_does_not_decide_the_outcome(tmp_path):
+    """Hậu kiểm vòng 25 (M3): verdict là DÒNG CUỐI, không phải "lần khớp cuối ở bất kỳ đâu".
+
+    Một bài phản biện thật hay **thuật lại** một verdict (vòng trước nói gì), nên luật cũ — lấy lần
+    khớp cuối cùng trong cả văn bản — để một câu nhắc ở giữa bài quyết định kết quả, im lặng và không
+    kiểm chứng được. Nay bài kết thúc bằng văn xuôi thì bị từ chối thẳng thắn.
+    """
+    def seed(store, sid):
+        seed_write(store, sid)
+        seed_critic(store, sid, text=CRITIQUE.replace('VERDICT: ok', 'VERDICT: revise')
+                    + '\n\n(Đó là điều vòng trước nói; bản này đã sửa, nên đây chỉ là chỗ tôi thuật lại.)')
+
+    store, _executor, sid, _ = run_verify(tmp_path, verify_args(verdict='revise'), seed=seed)
+    result = only_result(store, sid)
+    assert result['errorCode'] == 'PLAN_VERIFY_VERDICT_MISSING'
+    assert 'must END' in result['error']
+    assert store.plan_verification(IDENTITY, 1) is None
+    store.close()
+
+
+def test_blank_lines_after_the_verdict_still_leave_a_compliant_critique_readable(tmp_path):
+    """Siết theo dòng cuối KHÔNG được biến một bài hợp lệ thành lỗi: dòng trống ở cuối là chuyện thường."""
+    def seed(store, sid):
+        seed_write(store, sid)
+        seed_critic(store, sid, text=CRITIQUE + '\n\n\n', wait=0.02)
+
+    store, _executor, sid, _ = run_verify(tmp_path, verify_args(), seed=seed)
+    result = only_result(store, sid)
+    assert not result.get('is_error'), result
+    assert result['verdict'] == 'ok'
+    assert store.plan_verification(IDENTITY, 1)['critic_verdict'] == 'ok'
+    store.close()
+
+
 def test_the_recorded_verdict_must_match_what_the_critique_actually_said(tmp_path):
     def seed(store, sid):
         seed_write(store, sid)

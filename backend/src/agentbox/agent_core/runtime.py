@@ -2437,13 +2437,11 @@ class HarnessRuntime(RuntimeCommands):
                     continue  # lời gọi hỏng không chứng minh được nguồn nào
                 for text in self.source_strings(payload):
                     for match in re.finditer(r'https?://([^\s/)\'"<>\]]+)', text):
-                        host = match.group(1).strip().lower().rstrip('.')
-                        if host.startswith('www.'):
-                            host = host[4:]
+                        host = plan_quality.strip_www(match.group(1))
                         if host and host not in hosts:
                             hosts.append(host)
                     for match in re.finditer(r'(?:[\w.~-]+/)+[\w.~-]+', text):
-                        candidate = match.group(0).lstrip('./')
+                        candidate = plan_quality.normalize_path(match.group(0))
                         if candidate and candidate not in paths:
                             paths.append(candidate)
                     if len(hosts) > 400 and len(paths) > 400:
@@ -4134,6 +4132,30 @@ class HarnessRuntime(RuntimeCommands):
                              session_id=record['sessionId'], identity=identity, version=version,
                              status=status, kind=record.get('kind'))
             return None
+        if status == 'approved':
+            # Hậu kiểm vòng 25 (H1): cổng phản biện phải đứng ở chỗ GHI, không chỉ ở chỗ HỎI. `ask_user`
+            # cũng đổ vào sổ này (BUG-7/D-37), nên trước khi siết ở đây, một câu hỏi mang cặp khoá plan
+            # mà chủ nhà trả lời "đồng ý" sinh một hàng `approved` KHÔNG có phán quyết `ok` — đúng trạng
+            # thái mà vòng này dựng ra để cấm. Đo được: `request_approval` bị từ chối
+            # `PLAN_APPROVAL_UNVERIFIED` (không hàng nào), còn cùng cặp khoá đi qua `ask_user` thì vẫn ghi.
+            # KHÔNG ném lỗi ở đây: `settle()` gọi hàm này trước `decision_resolved`, và thoả thuận của hàm
+            # là sổ không bao giờ giết một quyết định — nên đường ghi lùi lại + để dấu vết, còn chủ nhà
+            # vẫn nhận được câu trả lời của mình.
+            blocked = self.plan_approval_blocked(identity, version)
+            if blocked:
+                mode, unknown = self.plan_verify_mode()
+                if mode != 'off':
+                    system_log.write('plan.review.unverified_approval', level='warn',
+                                     code=PLAN_APPROVAL_UNVERIFIED_CODE, message=blocked,
+                                     session_id=record['sessionId'], identity=identity, version=version,
+                                     status=status, kind=record.get('kind'), mode=mode,
+                                     **({'unknown': unknown} if unknown else {}))
+                if mode == 'enforce':
+                    self.store.emit(record['sessionId'], 'plan_decision_skipped',
+                                    {'identity': identity, 'version': version, 'status': status,
+                                     'kind': record.get('kind'), 'reason': 'unverified',
+                                     'code': PLAN_APPROVAL_UNVERIFIED_CODE, 'message': blocked})
+                    return None
         decision = 'approved' if status == 'approved' else 'changes_requested'
         try:
             return self.store.record_plan_review(identity, version, decision, note=(note or ''),
@@ -4474,7 +4496,8 @@ class HarnessRuntime(RuntimeCommands):
         Bốn điều kiện là bốn cách chặn một "phê bình giả": (i) phải có bản ghi thật cho đúng
         `(identity, version)`; (ii) phiên con phải mang vai `plan-review`; (iii) nó phải chạy SAU
         lần ghi đó (một phê bình của bản cũ không nói gì về bản mới); (iv) câu trả lời phải đủ dài
-        để có nội dung đọc được. Verdict đọc từ VĂN BẢN của chính nó, không phải từ lời khai.
+        để có nội dung đọc được. Verdict đọc từ VĂN BẢN của chính nó — đúng DÒNG CUỐI — không phải từ
+        lời khai của model, và cũng không phải từ một dòng nhắc nào đó nằm giữa bài.
         """
         children = self.store.children_of(sid)
         tree = [sid] + [row['session_id'] for row in children]
@@ -4507,14 +4530,19 @@ class HarnessRuntime(RuntimeCommands):
             candidate = event['data'].get('text') if isinstance(event['data'], dict) else None
             if isinstance(candidate, str) and candidate.strip():
                 text = candidate
-        match = None
-        for found in re.finditer(r'(?im)^\s*VERDICT:\s*(ok|revise)\b', text or ''):
-            match = found
-        if match is None:
-            raise ValueError(f'{PLAN_VERIFY_VERDICT_MISSING_CODE}: the critique answer has no final line '
-                             f'"VERDICT: ok" or "VERDICT: revise" (critic {str(critic["session_id"])[:8]}) — '
+        # Hậu kiểm vòng 25 (M3): verdict đọc từ DÒNG CUỐI, không phải "lần khớp cuối ở bất kỳ đâu".
+        # Một bài phản biện có thể NHẮC tới một verdict (thuật lại vòng trước, hoặc một dòng
+        # `VERDICT: revise` nằm trong thân bài), và bản đầu lấy lần khớp cuối nên một câu nhắc ở giữa
+        # bài có thể quyết định kết quả. SOP đã hứa "kết thúc bằng đúng một dòng VERDICT và không có
+        # chữ nào sau nó" (`roles.PLAN_REVIEW_INSTRUCTIONS`), nên luật ở đây siết đúng bằng lời hứa đó.
+        lines = [line.strip() for line in str(text or '').splitlines() if line.strip()]
+        found = re.match(r'(?i)^VERDICT:\s*(ok|revise)$', lines[-1] if lines else '')
+        if found is None:
+            raise ValueError(f'{PLAN_VERIFY_VERDICT_MISSING_CODE}: the critique answer must END with a '
+                             f'final line "VERDICT: ok" or "VERDICT: revise" (critic '
+                             f'{str(critic["session_id"])[:8]}, {len(lines)} non-empty line(s)) — '
                              f'ask it for the verdict line, then call plan_verify again')
-        return critic, match.group(1).lower(), int(critic['answer_chars'] or 0)
+        return critic, found.group(1).lower(), int(critic['answer_chars'] or 0)
 
     async def plan_verify(self, session, args):
         """Ghi phán quyết phản biện của một bản kế hoạch — CHỈ khi có phê bình độc lập thật.

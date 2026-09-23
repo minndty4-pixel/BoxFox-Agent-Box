@@ -224,6 +224,73 @@ def test_an_answer_to_a_question_about_a_plan_lands_in_the_ledger(tmp_path):
     asyncio.run(run())
 
 
+def test_an_ask_user_approval_of_an_unverified_plan_writes_no_row(tmp_path, monkeypatch):
+    """H1 (hậu kiểm vòng 25): cổng phản biện phải đứng ở chỗ GHI, không chỉ ở chỗ HỎI.
+
+    Trước khi siết: `request_approval` bị từ chối `PLAN_APPROVAL_UNVERIFIED` (không hàng nào), nhưng
+    CÙNG cặp khoá plan đi qua `ask_user` + "Duyệt" thì ghi thẳng một hàng `approved` — một kế hoạch
+    được duyệt mà không có phán quyết `ok` nào, đúng trạng thái vòng này dựng ra để cấm. Nay: không
+    hàng, để lại dấu vết `plan_decision_skipped`, và quyết định của chủ nhà vẫn được trả như thường
+    (sổ không bao giờ được giết một quyết định).
+    """
+    monkeypatch.setenv('BOXFOX_PLAN_VERIFY', 'enforce')
+
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        model = FixtureModel([
+            answer('Hỏi trước khi làm', calls=[call('ask_user', {
+                'question': 'Thi hành bản v1 này?', 'options': [{'id': 'go', 'label': 'Chạy',
+                                                                'kind': 'approve'},
+                                                               {'id': 'wait', 'label': 'Chờ',
+                                                                'kind': 'reject'}],
+                'planIdentity': IDENTITY, 'planVersion': 1})]),
+            answer('Đã thi hành.')])
+        runtime = HarnessRuntime(store, FixtureExecutor(), model)
+        sid, record = await blocked_session(runtime, store, 'Trình kế hoạch')
+
+        assert runtime.resolve_decision(sid, record['decisionId'], 'approve', None)['outcome'] == 'approved'
+        assert await asyncio.wait_for(runtime.tasks[sid], 5) == 'Đã thi hành.', \
+            'quyết định vẫn phải được trả, chỉ đường GHI SỔ bị chặn'
+        assert store.plan_review(IDENTITY, 1) is None, \
+            'chưa có phán quyết `ok` thì không được sinh hàng duyệt nào'
+        assert store.plan_verification(IDENTITY, 1) is None, 'cổng không được tự ghi phán quyết thay'
+        skipped = [row['data'] for row in store.events(sid) if row['type'] == 'plan_decision_skipped']
+        assert skipped, 'sự thật phải có dấu vết, chỉ là không nằm trong sổ duyệt'
+        assert skipped[-1]['reason'] == 'unverified'
+        assert skipped[-1]['code'] == 'PLAN_APPROVAL_UNVERIFIED'
+        assert (skipped[-1]['identity'], skipped[-1]['version']) == (IDENTITY, 1)
+        store.close()
+
+    asyncio.run(run())
+
+
+def test_a_downgraded_gate_still_lets_the_ledger_row_through(tmp_path, monkeypatch):
+    """Cùng cặp khoá plan, công tắc hạ xuống `warn`: hàng duyệt CÓ mặt (đó là ý nghĩa của công tắc)."""
+    monkeypatch.setenv('BOXFOX_PLAN_VERIFY', 'warn')
+
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        model = FixtureModel([
+            answer('Hỏi trước khi làm', calls=[call('ask_user', {
+                'question': 'Thi hành bản v1 này?', 'options': [{'id': 'go', 'label': 'Chạy',
+                                                                'kind': 'approve'},
+                                                               {'id': 'wait', 'label': 'Chờ',
+                                                                'kind': 'reject'}],
+                'planIdentity': IDENTITY, 'planVersion': 1})]),
+            answer('Đã thi hành.')])
+        runtime = HarnessRuntime(store, FixtureExecutor(), model)
+        sid, record = await blocked_session(runtime, store, 'Trình kế hoạch')
+
+        assert runtime.resolve_decision(sid, record['decisionId'], 'approve', None)['outcome'] == 'approved'
+        assert await asyncio.wait_for(runtime.tasks[sid], 5) == 'Đã thi hành.'
+        row = store.plan_review(IDENTITY, 1)
+        assert row is not None and row['decision'] == 'approved', 'hạ công tắc thì harness cho qua'
+        assert [r['data'] for r in store.events(sid) if r['type'] == 'plan_decision_skipped'] == []
+        store.close()
+
+    asyncio.run(run())
+
+
 def test_a_rejected_question_is_not_a_request_for_changes(tmp_path):
     """Câu hỏi bị trả lời "không" **không** phải yêu cầu sửa kế hoạch: chỉ log, không hàng (D-37)."""
 

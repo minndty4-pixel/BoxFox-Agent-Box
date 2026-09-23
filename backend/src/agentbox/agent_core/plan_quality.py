@@ -301,13 +301,38 @@ def source_lines(markdown: str) -> list:
     return [line.strip() for line in found[1].splitlines() if line.strip()]
 
 
+def strip_www(host: str) -> str:
+    """`www.example.com` -> `example.com`; viết thường, bỏ dấu chấm cuối. Giữ nguyên phần còn lại.
+
+    `str.lstrip('www.')` là một BẪY: nó cắt theo TẬP ký tự chứ không theo tiền tố, nên `web.dev`
+    thành `eb.dev` và `w3.org` thành `3.org`. Hậu kiểm vòng 25 đo được đúng lỗi đó ở `sources_issues`
+    (`known_hosts`): một kế hoạch viện dẫn `web.dev` — đúng host mà lời gọi công cụ vừa trả về — vẫn
+    bị `sources-unbacked` chặn, tức cổng nguồn từ chối một kế hoạch CÓ bằng chứng thật. Ba chỗ chuẩn
+    hoá host (`cited_hosts`, `sources_issues`, `runtime.plan_sources_evidence`) nay dùng chung hàm này
+    để chúng không trôi khỏi nhau lần nữa.
+    """
+    text = str(host or '').strip().lower().rstrip('.')
+    return text[4:] if text.startswith('www.') else text
+
+
+def normalize_path(path: str) -> str:
+    """Đường dẫn tương đối hoá: bỏ tiền tố `./` (lặp được) và các dấu `/` ở đầu.
+
+    Cùng một họ lỗi với `strip_www`: `lstrip('./')` cắt theo tập ký tự, nên `.github/workflows/ci.yml`
+    mất luôn dấu chấm đầu tiên. Hai chỗ dùng nó (`sources_issues.known_paths`, `plan_sources_evidence`)
+    nay đi qua đây.
+    """
+    text = str(path or '').strip()
+    while text.startswith('./'):
+        text = text[2:]
+    return text.lstrip('/')
+
+
 def cited_hosts(markdown: str) -> list:
     """Host được viện dẫn trong cả tài liệu (đã bỏ `www.`, viết thường), theo thứ tự xuất hiện."""
     hosts = []
     for match in _HOST_RE.finditer(str(markdown or '')):
-        host = match.group(1).strip().lower().rstrip('.')
-        if host.startswith('www.'):
-            host = host[4:]
+        host = strip_www(match.group(1))
         if host and host not in hosts:
             hosts.append(host)
     return hosts
@@ -337,8 +362,8 @@ def sources_issues(markdown: str, *, children=(), hosts=(), paths=()) -> list:
                 or (_PATHY_RE.search(line) and not _UNVERIFIED_RE.search(line))]
     if not concrete:
         issues.append('sources-vague')
-    known_hosts = {str(host).strip().lower().lstrip('www.') for host in (hosts or ()) if str(host).strip()}
-    known_paths = {str(path).strip().lstrip('./') for path in (paths or ()) if str(path).strip()}
+    known_hosts = {strip_www(host) for host in (hosts or ()) if str(host).strip()}
+    known_paths = {normalize_path(path) for path in (paths or ()) if str(path).strip()}
     for host in cited_hosts(text):
         if host in known_hosts:
             continue

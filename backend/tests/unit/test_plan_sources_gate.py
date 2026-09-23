@@ -191,6 +191,60 @@ def test_a_research_child_that_returned_the_host_lets_the_plan_through(tmp_path)
     assert source_notices(store, sid) == []
 
 
+# Host bắt đầu bằng `w` — đúng loại bị `lstrip('www.')` cắt cụt (H2).
+W_HOST_PLAN = SOURCED_PLAN.replace('https://docs.example.com/retry', 'https://web.dev/retry')
+
+# Bằng chứng mang tiền tố `www.`, kế hoạch viện dẫn host trần (và ngược lại ở ca dưới).
+WWW_PLAN = SOURCED_PLAN
+
+
+def test_a_cited_host_that_starts_with_w_is_not_cut_by_a_character_set_strip(tmp_path):
+    """H2 (hậu kiểm): chuẩn hoá host là `startswith('www.')`, KHÔNG phải `lstrip('www.')`.
+
+    `str.lstrip` cắt theo TẬP ký tự, nên bản đầu của cổng biến `web.dev` thành `eb.dev` (và `w3.org`
+    thành `3.org`): một kế hoạch viện dẫn ĐÚNG cái host mà lời gọi công cụ vừa trả về vẫn bị
+    `sources-unbacked` chặn — cổng từ chối một kế hoạch CÓ bằng chứng thật, và lượt không ghi được gì.
+    """
+    # Mức hàm thuần trước: đây là chỗ DUY NHẤT của cổng chuẩn hoá host hai lần, nên nó phải tự đứng
+    # được một mình (không nhờ đường so khớp đường dẫn cứu).
+    plan_quality = runtime_module.plan_quality
+    assert plan_quality.cited_hosts(W_HOST_PLAN) == ['web.dev', 'docs.example.com'] or \
+        'web.dev' in plan_quality.cited_hosts(W_HOST_PLAN)
+    assert plan_quality.sources_issues(
+        W_HOST_PLAN, children=[{'role': 'research', 'status': 'completed'}],
+        hosts=['web.dev'], paths=[]) == [], 'host trần `web.dev` trong bằng chứng phải trả lời được dòng viện dẫn'
+    assert plan_quality.sources_issues(
+        W_HOST_PLAN, children=[{'role': 'research', 'status': 'completed'}],
+        hosts=['www.web.dev'], paths=[]) == [], 'bằng chứng mang `www.` cũng phải trả lời được'
+
+    # Rồi tới đường sống: kết quả công cụ trả host `web.dev` **không kèm đường dẫn** (không có gì để
+    # đường so khớp đường dẫn cứu), kế hoạch phải được ghi.
+    store, executor, sid = run_write(
+        tmp_path, W_HOST_PLAN,
+        seed=lambda s, sid: research_child(s, sid, 'request to https://web.dev returned 200'))
+
+    result = tool_end_result(store, sid)
+    assert not result.get('is_error'), result
+    assert len(write_plan_calls(executor)) == 1
+    assert len(written(store, sid)) == 1
+    assert source_notices(store, sid) == []
+    store.close()
+
+
+def test_a_www_prefixed_evidence_host_backs_a_bare_citation(tmp_path):
+    """Hai chỗ chuẩn hoá host phải nói CÙNG một chuyện: bằng chứng `www.docs.example.com` trả lời được
+    cho dòng viện dẫn `docs.example.com` (trước hậu kiểm, hai chỗ dùng hai cách cắt khác nhau)."""
+    store, _executor, sid = run_write(
+        tmp_path, WWW_PLAN,
+        seed=lambda s, sid: research_child(s, sid, 'fetched https://www.docs.example.com/retry page'))
+
+    result = tool_end_result(store, sid)
+    assert not result.get('is_error'), result
+    assert len(written(store, sid)) == 1
+    assert source_notices(store, sid) == []
+    store.close()
+
+
 def test_a_cited_host_that_no_tool_call_returned_is_refused(tmp_path):
     """Con đã chạy nhưng chưa từng trả host được viện dẫn: `sources-unbacked`, không ghi."""
     store, executor, sid = run_write(
