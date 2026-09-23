@@ -272,6 +272,10 @@ const vi = {
     receiptCaptureMany: '{{count}} ảnh chụp',
     receiptFailed: '{{count}} lỗi',
     receiptWithoutResult: '{{count}} chưa có kết quả',
+    // Vòng 23 / P5.3 — hai nhãn mở/gấp phần văn của câu trả lời cuối: cũng là chữ của app quanh lượt,
+    // nên đi theo ngôn ngữ câu trả lời (trước đây là hai hằng số tiếng Anh viết cứng trong mã).
+    finalAnswerExpand: 'Xem chi tiết',
+    finalAnswerCollapse: 'Thu gọn chi tiết',
   },
   contextUsage: {
     title: 'Cửa sổ context',

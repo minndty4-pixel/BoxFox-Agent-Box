@@ -12,8 +12,7 @@
 import { useMemo } from 'react'
 import { DICTS } from './dicts'
 import { answerLang } from './answerLang'
-import { interpolate, lookup, type Lang, type TKey, type TVars } from './context'
-import vi from './vi'
+import { labelFrom, type Lang, type TKey, type TVars } from './context'
 
 export interface AnswerLabels {
   /** Ngôn ngữ đã nhận ra của chính câu trả lời (`en` khi không có gì rõ ràng). */
@@ -28,8 +27,7 @@ export function useAnswerLabels(text: string | null | undefined): AnswerLabels {
     const dict = DICTS[lang]
     return {
       lang,
-      tLabel: (key: TKey, vars?: TVars) =>
-        interpolate(lookup(dict, key) ?? lookup(vi, key) ?? key, vars),
+      tLabel: (key: TKey, vars?: TVars) => labelFrom(dict, key, vars),
     }
   }, [lang])
 }

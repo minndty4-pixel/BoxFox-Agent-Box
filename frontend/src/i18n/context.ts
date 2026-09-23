@@ -63,3 +63,14 @@ export function interpolate(template: string, vars?: TVars): string {
     return value === undefined ? whole : String(value)
   })
 }
+
+/**
+ * Tra một khoá trong MỘT từ điển đã chọn, rồi thay biến — chuỗi dự phòng nằm ở đúng một chỗ:
+ * từ điển đang chọn → tiếng Việt → chính khoá (để lỗi thiếu chữ nhìn thấy được ngay).
+ *
+ * Dùng bởi `I18nProvider` (từ điển theo ngôn ngữ giao diện) và `useAnswerLabels` (từ điển theo ngôn
+ * ngữ câu trả lời) — hai chỗ ấy khác NGUỒN từ điển, không khác luật dự phòng.
+ */
+export function labelFrom(dict: unknown, key: TKey, vars?: TVars): string {
+  return interpolate(lookup(dict, key) ?? lookup(vi, key) ?? key, vars)
+}

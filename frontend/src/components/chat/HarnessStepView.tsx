@@ -158,9 +158,6 @@ export interface ToolMedia {
   unfinished?: boolean
 }
 
-/** i18n thuộc workstream khác — hai nhãn này được export thẳng từ component. */
-export const FINAL_ANSWER_EXPAND_LABEL = 'View details'
-export const FINAL_ANSWER_COLLAPSE_LABEL = 'Hide details'
 export const FINAL_ANSWER_SUMMARY_MAX_CHARS = 600
 export const FINAL_ANSWER_SUMMARY_MAX_LINES = 6
 
@@ -509,9 +506,6 @@ export function extractToolMedia(
  * P4 — cổng bằng chứng sống: đọc `evidence` của lượt + mảnh bằng chứng
  * ------------------------------------------------------------------ */
 
-/** Trạng thái HIỂN THỊ của huy hiệu lượt. Ba giá trị, không có giá trị thứ tư "không biết". */
-export type EvidenceBadgeState = 'verified' | 'unverified' | 'not_measurable'
-
 /** Một lý do cổng chấm là thiếu bằng chứng: mã máy (`reason`) + câu backend kể (`detail`). */
 export interface EvidenceMissing {
   reason: string
@@ -550,13 +544,17 @@ export interface EvidenceFragment {
   bytes: number | null
 }
 
-/** Bản đọc đã chuẩn hoá của trường `evidence` trên event `assistant` cuối lượt. */
+/**
+ * Bản đọc đã chuẩn hoá của trường `evidence` trên event `assistant` cuối lượt.
+ *
+ * `verdict`/`checked`/`mode` là BẢN SAO NGUYÊN VĂN của payload backend, giữ lại cho vòng "agent
+ * verify" (D-20) — mặt câu trả lời không còn chỗ vẽ chúng, nhưng dữ liệu cổng vẫn đọc được từ event.
+ */
 export interface AnswerEvidence {
   /** Giá trị `verdict` THẬT trong event; `null` khi event có `evidence` nhưng thiếu `verdict`. */
   verdict: string | null
-  state: EvidenceBadgeState
   checked: number | null
-  /** Công tắc cổng lúc chấm lượt (`off|warn|strict`) — hiện nguyên văn trong khối bằng chứng. */
+  /** Công tắc cổng lúc chấm lượt (`off|warn|strict`) — bản sao nguyên văn của payload. */
   mode: string | null
   turn: number | null
   missing: EvidenceMissing[]
@@ -569,23 +567,13 @@ export interface AnswerEvidence {
 }
 
 /**
- * Ba `verdict` của backend → ba trạng thái hiển thị. Verdict LẠ (backend mới hơn UI này) rơi về
- * `unverified`: thà nói chưa kiểm chứng còn hơn tô xanh một lượt mình không hiểu.
- */
-const EVIDENCE_VERDICT_STATE: Record<string, EvidenceBadgeState> = {
-  sufficient: 'verified',
-  insufficient: 'unverified',
-  not_measurable: 'not_measurable',
-}
-
-/**
  * Năm mã `missing[].reason` là lời của CÂU TRẢ LỜI (khẳng định mà lượt này không đỡ được); sáu mã
  * còn lại là chuyện của CÁI CÂN (`box_unreachable`, `box_probe_failed`, `gate_error`,
  * `answer_too_long`, `no_evidence_for_tools`, `no_change`).
  *
- * Vòng soát đợt 3 bắt được chỗ này: huy hiệu xám "chưa đo được" mà dòng biên nhận vẫn khẳng định
- * "1 khẳng định chưa kiểm" là nói sai về lượt — số khẳng định chỉ đếm từ năm mã đầu, còn lý do của
- * phép đo hỏng đã có huy hiệu và tên riêng ở khối bằng chứng.
+ * Vòng soát đợt 3 bắt được chỗ này: dòng biên nhận khẳng định "1 khẳng định chưa kiểm" trong khi
+ * lượt chỉ hỏng phép đo là nói sai về lượt — số khẳng định chỉ được đếm từ năm mã đầu, còn lý do
+ * của phép đo hỏng không bao giờ là một khẳng định của câu trả lời.
  */
 export const CLAIM_REASON_CODES = new Set([
   'change_without_verification',
@@ -690,8 +678,8 @@ function parseChangedFiles(value: unknown): string[] {
  * P4.2: đọc trường `evidence` của event `assistant` cuối lượt.
  *
  * Trả `null` khi lượt KHÔNG mang trường này — phiên cũ, hoặc công tắt đo đang tắt (lúc đó backend
- * không gắn `evidence` vào event). `null` là "không đo", KHÔNG phải "đã kiểm chứng": chỗ vẽ phải
- * nói `unverified` và không được bịa mục bằng chứng rỗng.
+ * không gắn `evidence` vào event). `null` là "không đo", KHÔNG phải "đã kiểm chứng": chỗ vẽ không
+ * được bịa mục bằng chứng rỗng từ một lượt không đo.
  */
 export function readAnswerEvidence(event: HarnessEvent | null | undefined): AnswerEvidence | null {
   const raw = event?.data?.evidence
@@ -700,7 +688,6 @@ export function readAnswerEvidence(event: HarnessEvent | null | undefined): Answ
   const verdict = typeof block.verdict === 'string' ? block.verdict : null
   return {
     verdict,
-    state: (verdict && EVIDENCE_VERDICT_STATE[verdict]) || 'unverified',
     checked: typeof block.checked === 'number' ? block.checked : null,
     mode: typeof block.mode === 'string' ? block.mode : null,
     turn: typeof block.turn === 'number' ? Math.trunc(block.turn) : null,
@@ -1661,8 +1648,10 @@ function TurnBlock({
       captures: turnMedia.length,
       failed,
       unfinished,
-      // P4.4: hai số của cổng chỉ có khi cổng đã chấm lượt này (`answerEvidence` khác null), và
-      // `evidence` đếm ĐÚNG số mục khối Bằng chứng liệt kê — biên nhận phải đọc ra được từ khối.
+      // P4.2/D-20: hai số của cổng chỉ có khi cổng đã chấm lượt này (`answerEvidence` khác null).
+      // Mặt câu trả lời KHÔNG còn khối bằng chứng để đối chiếu, nên dòng biên nhận này là chỗ duy
+      // nhất người đọc còn thấy số liệu cổng — nó phải đếm đúng thứ nó nói: số mảnh bằng chứng đã
+      // ghim trong lượt, và số khẳng định chưa có bằng chứng.
       evidence: answerEvidence ? turnArtifacts.length + turnCommands.length : undefined,
       unverified: answerEvidence ? unverifiedClaims.length : undefined,
     }
@@ -2029,6 +2018,10 @@ function TurnBlock({
         onOpenLightbox={onOpenLightbox}
         onOpenFile={openArtifactFile}
         fileLinkLabel={tLabel('chat.evidenceOpenFile')}
+        // P5.3/D-24: hai nhãn mở/gấp văn là CHỮ CỦA APP quanh lượt, nên đi theo ngôn ngữ câu trả lời
+        // như dòng biên nhận và chú thích ảnh — không còn là chuỗi tiếng Anh viết cứng trong mã.
+        expandLabel={tLabel('chat.finalAnswerExpand')}
+        collapseLabel={tLabel('chat.finalAnswerCollapse')}
       />
 
       {/* 5. Turn Error: Rendered cleanly within the specific turn where it occurred */}
@@ -2346,7 +2339,7 @@ function CompactionNotice({ event }: { event: HarnessEvent }) {
   )
 }
 
-/** F6: tóm tắt câu trả lời cuối + nút mở rộng + ảnh/video gắn kèm của cả lượt. */
+/** F6: tóm tắt câu trả lời cuối + nút mở rộng (P4.2 bỏ lưới ảnh của lượt khỏi mặt này — ảnh nằm trong mạch chữ). */
 function FinalAnswerBlock({
   turn,
   providerId,
@@ -2357,6 +2350,8 @@ function FinalAnswerBlock({
   onOpenLightbox,
   onOpenFile,
   fileLinkLabel,
+  expandLabel,
+  collapseLabel,
 }: {
   turn: HarnessTurn
   providerId: string
@@ -2369,6 +2364,10 @@ function FinalAnswerBlock({
   onOpenFile?: (path: string) => void
   /** P5.3 — nhãn nút mở tệp, chữ theo ngôn ngữ câu trả lời. */
   fileLinkLabel?: string
+  /** P5.3 — nhãn nút mở phần văn còn lại, cùng luật ngôn ngữ với `fileLinkLabel`. */
+  expandLabel: string
+  /** P5.3 — nhãn nút gấp phần văn vừa mở. */
+  collapseLabel: string
 }) {
   const [expanded, setExpanded] = useState(false)
 
@@ -2443,7 +2442,7 @@ function FinalAnswerBlock({
             className="mt-1.5 inline-flex items-center gap-1 text-[11px] text-brand hover:text-brand/80 font-medium transition cursor-pointer select-none"
           >
             <ChevronRight className="size-3" />
-            <span>› {FINAL_ANSWER_EXPAND_LABEL}</span>
+            <span>› {expandLabel}</span>
           </button>
         )}
       </div>
@@ -2458,7 +2457,7 @@ function FinalAnswerBlock({
           className="inline-flex items-center gap-1 text-[11px] text-brand hover:text-brand/80 font-medium transition cursor-pointer select-none"
         >
           <ChevronDown className="size-3" />
-          <span>› {FINAL_ANSWER_COLLAPSE_LABEL}</span>
+          <span>› {collapseLabel}</span>
         </button>
       )}
     </div>

@@ -73,4 +73,50 @@ describe('answerLang — ngôn ngữ của chính câu trả lời (P5.1)', () =
     const below = 'Em fixed the build, thanks.'
     expect(answerLang(below)).toBe('en')
   })
+
+  it('câu tiếng Anh TRÍCH chuỗi giao diện tiếng Việt trong span mã ⇒ `en` (chữ trong mã là dữ liệu)', () => {
+    expect(
+      answerLang(
+        'I renamed the tile label to `Ảnh chụp tab` and the receipt now reads `Suy luận · 1 lệnh`, so the ' +
+          'answer face is fully in English with the new wording.',
+      ),
+    ).toBe('en')
+  })
+
+  it('câu tiếng Anh có chú thích tiếng Việt trong khối mã ⇒ `en`', () => {
+    expect(
+      answerLang(
+        [
+          'The regression is gone. The fixture that proves it:',
+          '',
+          '```python',
+          '# lượt 1: đã kiểm chứng — một mảnh bằng chứng tiếng Việt',
+          'assert verdict == "sufficient"  # câu trả lời của chủ nhà',
+          '```',
+          '',
+          'That is the whole change, and the suite is green.',
+        ].join('\n'),
+      ),
+    ).toBe('en')
+  })
+
+  it('câu trả lời tiếng VIỆT có chuỗi tiếng Việt trong mã ⇒ vẫn `vi` (chữ ngoài mã quyết định)', () => {
+    expect(
+      answerLang(
+        [
+          'Em đã đổi nhãn ở bảng chạy và chụp lại ảnh tab sau khi sửa, phần còn lại chờ chủ nhà quyết.',
+          '',
+          '```ts',
+          "const key = 'chat.mediaCaption.capture-tab'",
+          '```',
+        ].join('\n'),
+      ),
+    ).toBe('vi')
+  })
+
+  it('toàn bộ chữ nằm trong mã ⇒ `en` (không còn tín hiệu nào ngoài mã)', () => {
+    expect(answerLang('```\nẢnh chụp cửa sổ, Ảnh chụp tab\n```')).toBe('en')
+    // Khối mã chưa đóng (đang stream) cũng không được tính điểm.
+    expect(answerLang('Đang viết:\n```python\n# câu trả lời tiếng Việt chưa có chữ nào ngoài mã')).toBe('en')
+  })
 })

@@ -145,6 +145,77 @@ describe('MarkdownRenderer', () => {
     expect(host.querySelector('a')?.getAttribute('target')).toBe('_blank')
   })
 
+  it('P4.1: ảnh lồng trong một liên kết KHÔNG thành nút nồng trong `<a>` (một cú bấm, một việc)', () => {
+    const onOpenImage = vi.fn()
+    const host = renderMarkdown(`[![Ảnh chụp bảng chạy](${CAPTURE_REL})](https://example.com/report)`, {
+      onOpenImage,
+    })
+
+    // Ảnh vẫn hiện (đường dẫn vẫn qua route media), nhưng không có điều khiển nào lồng trong liên kết:
+    // markup/ARIA hợp lệ, và một cú bấm chỉ làm MỘT việc — đi theo liên kết.
+    const img = host.querySelector('img')
+    expect(img).toBeTruthy()
+    expect(img?.getAttribute('src')).toBe(`/__box/file/media?path=${encodeURIComponent(CAPTURE_REL)}`)
+    expect(img?.getAttribute('alt')).toBe('Ảnh chụp bảng chạy')
+    expect(host.querySelectorAll('button').length).toBe(0)
+    expect(host.querySelectorAll('[data-artifact-open]').length).toBe(0)
+    expect(host.querySelectorAll('[data-capture-tile="true"]').length).toBe(0)
+
+    const anchor = host.querySelector('a')
+    expect(anchor?.getAttribute('href')).toBe('https://example.com/report')
+    expect(anchor?.getAttribute('target')).toBe('_blank')
+    click(anchor)
+    expect(onOpenImage).not.toHaveBeenCalled()
+  })
+
+  it('P4.1: một hàm chuẩn hoá cho cả phân loại lẫn giá trị gửi đi (`?query`, `#neo`, `./`, đường dẫn trần)', () => {
+    const onOpenImage = vi.fn()
+    const onOpenFile = vi.fn()
+    const host = renderMarkdown(
+      [
+        `![A](${CAPTURE_REL}?raw=1)`,
+        `![B](./${CAPTURE_REL})`,
+        `![C](shots/a.png)`,
+        `[log](${EVIDENCE_REL}#L12)`,
+        `[Ngoài](https://example.com/live.txt?raw=1)`,
+      ].join('\n\n'),
+      { onOpenImage, onOpenFile },
+    )
+
+    // Phân loại: ba ảnh thành tile, tệp `.txt#neo` thành nút Files, link ngoài vẫn là link thường.
+    const tiles = [...host.querySelectorAll('[data-capture-tile="true"]')]
+    expect(tiles.length).toBe(3)
+    expect(tiles.map((tile) => tile.getAttribute('data-artifact-path'))).toEqual([
+      CAPTURE_REL,
+      CAPTURE_REL,
+      'shots/a.png',
+    ])
+    // Giá trị GỬI ĐI cũng là khuôn sạch — route media nhận đúng đường dẫn, không kèm `?raw=1`/`./`.
+    expect(tiles[0].querySelector('img')?.getAttribute('src')).toBe(
+      `/__box/file/media?path=${encodeURIComponent(CAPTURE_REL)}`,
+    )
+    expect(tiles[1].querySelector('img')?.getAttribute('src')).toBe(
+      `/__box/file/media?path=${encodeURIComponent(CAPTURE_REL)}`,
+    )
+    expect(tiles[2].querySelector('img')?.getAttribute('src')).toBe('/__box/file/media?path=shots%2Fa.png')
+
+    click(tiles[0].querySelector('[data-artifact-open="media"]'))
+    expect(onOpenImage.mock.calls[0][0]).toEqual({
+      type: 'image',
+      src: `/__box/file/media?path=${encodeURIComponent(CAPTURE_REL)}`,
+      caption: 'A',
+      artifactPath: CAPTURE_REL,
+    })
+
+    const button = host.querySelector('[data-artifact-open="files"]')
+    expect(button?.getAttribute('data-artifact-path')).toBe(EVIDENCE_REL)
+    click(button)
+    expect(onOpenFile).toHaveBeenCalledWith(EVIDENCE_REL)
+
+    // Đường dự phòng giữ NGUYÊN `href` thô của model (trình duyệt tự hiểu link của nó).
+    expect(host.querySelector('a')?.getAttribute('href')).toBe('https://example.com/live.txt?raw=1')
+  })
+
   it('P4.1: không truyền callback ⇒ hành vi cũ giữ nguyên (không phá chỗ dùng khác)', () => {
     const host = renderMarkdown(`![Ảnh](${CAPTURE_REL})\n\n[Kết quả](${EVIDENCE_REL})`)
 

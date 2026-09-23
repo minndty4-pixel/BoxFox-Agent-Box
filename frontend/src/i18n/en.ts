@@ -283,6 +283,9 @@ const en: SameShape<typeof vi> = {
     receiptCaptureMany: '{{count}} captures',
     receiptFailed: '{{count}} failed',
     receiptWithoutResult: '{{count}} without result',
+    // Vòng 23 / P5.3 — mở/gấp phần văn của câu trả lời cuối, chữ theo ngôn ngữ câu trả lời.
+    finalAnswerExpand: 'View details',
+    finalAnswerCollapse: 'Hide details',
   },
   contextUsage: {
     title: 'Context window',

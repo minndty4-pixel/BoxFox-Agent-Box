@@ -11,7 +11,7 @@
  *     + Plugin và Components tĩnh + React.memo
  *     + content-visibility: auto + contain-intrinsic-size cho các khối off-screen.
  */
-import { useState, useMemo, memo, type ReactNode } from 'react'
+import { useState, useMemo, memo, createContext, useContext, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import type { Components } from 'react-markdown'
 import remarkMath from 'remark-math'
@@ -69,9 +69,26 @@ const IMAGE_FILE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp', '.svg', '.gif']
 const DEFAULT_FILE_LINK_LABEL = 'Open in Files'
 
 /**
+ * Đường dẫn artifact đã CHUẨN HOÁ: bỏ dấu cách thừa, bỏ `?query` và `#fragment` ở cuối, bỏ `./` đầu.
+ *
+ * Vì sao phải có: việc PHÂN LOẠI một link (ảnh? tệp bằng chứng? link ngoài?) và việc GỬI ĐI giá trị
+ * (`onOpenFile`/`onOpenImage`, `data-artifact-path`, URL `/__box/file/media`) trước đây đọc hai giá
+ * trị khác nhau — phân loại thì cắt `?query`, còn giá trị gửi đi là chuỗi thô. Hệ quả: `…x.txt?raw=1`,
+ * `…x.txt#L12`, `./.generated_artifacts/a.png`, `shots/a.png` đều dẫn tới đường dẫn KHÔNG mở được
+ * (route media nhận sai đường dẫn, tab Files không tìm thấy tệp). Nay một hàm chuẩn hoá dùng cho cả hai.
+ *
+ * Chuỗi thô vẫn được giữ cho đường DỰ PHÒNG (thẻ `<a href>` nguyên bản) — trình duyệt tự hiểu link của nó.
+ */
+function normalizeArtifactPath(path: string): string {
+  let clean = path.trim().split('#')[0].split('?')[0].trim()
+  while (clean.startsWith('./')) clean = clean.slice(2)
+  return clean
+}
+
+/**
  * Đường dẫn media của box đi qua route `/__box/file/media`. Box báo tệp theo hai khuôn: đường dẫn
  * TUYỆT ĐỐI trong workspace (`/home/agent/workspace/…`) và đường dẫn TƯƠNG ĐỐI
- * (`.generated_artifacts/…` hoặc `captures/…`). Cả hai khuôn về cùng một URL.
+ * (`.generated_artifacts/…`, `captures/…`, hoặc `shots/…`). Cả hai khuôn về cùng một URL.
  */
 function resolveMediaSrc(path: string): string {
   const relative = workspaceRelative(path)
@@ -82,33 +99,42 @@ function resolveMediaSrc(path: string): string {
 /**
  * Đường dẫn TƯƠNG ĐỐI trong workspace, hoặc `null` nếu đường dẫn không nằm trong workspace.
  * Đây là khuôn mà tab Files và mọi mảnh cổng đang dùng.
+ *
+ * Mọi đường dẫn TƯƠNG ĐỐI đều được coi là đường dẫn trong workspace: model viết đường dẫn theo gốc
+ * workspace (`.generated_artifacts/…`, `frontend/src/…`, `shots/a.png`), và không có gốc nào khác để
+ * chúng dựa vào. Ba thứ KHÔNG nằm trong workspace: link có scheme (`https:`, `data:`, `blob:`,
+ * `//host`), đường dẫn tuyệt đối của hệ điều hành (`/etc/…`), và neo trong trang (`#mục`).
  */
 function workspaceRelative(path: string): string | null {
-  if (path.startsWith('/home/agent/workspace/')) return path.replace(/^\/home\/agent\/workspace\//, '')
-  if (path.startsWith('.generated_artifacts/') || path.startsWith('captures/')) return path
-  return null
+  const clean = normalizeArtifactPath(path)
+  if (!clean) return null
+  if (/^[a-z][a-z0-9+.-]*:/i.test(clean) || clean.startsWith('//')) return null
+  if (clean.startsWith('/home/agent/workspace/')) return clean.replace(/^\/home\/agent\/workspace\//, '')
+  if (clean.startsWith('/')) return null
+  return clean
 }
 
 /** Tên tệp đọc được của một đường dẫn (P4.1: dòng nhãn dưới tile ảnh). */
 function fileNameOf(path: string): string {
-  const clean = path.split('?')[0].replace(/\/+$/, '')
+  const clean = normalizeArtifactPath(path).replace(/\/+$/, '')
   const slash = clean.lastIndexOf('/')
   return slash === -1 ? clean : clean.slice(slash + 1)
 }
 
 /** Link trỏ tới ẢNH: đuôi ảnh, hoặc thư mục ảnh chụp của box (khuôn cũ, không có đuôi đọc được). */
 function isImageLink(href: string): boolean {
-  const clean = href.split('?')[0].toLowerCase()
+  const clean = normalizeArtifactPath(href).toLowerCase()
   return (
-    IMAGE_FILE_EXTENSIONS.some((ext) => clean.endsWith(ext)) || href.includes('.generated_artifacts/captures')
+    IMAGE_FILE_EXTENSIONS.some((ext) => clean.endsWith(ext)) || clean.includes('.generated_artifacts/captures')
   )
 }
 
 /** Link trỏ tới tệp BẰNG CHỨNG trong workspace (không phải ảnh) — mở bằng tab Files, không mở tab mới. */
 function isEvidenceFileLink(href: string): boolean {
-  if (!workspaceRelative(href)) return false
-  const clean = href.split('?')[0].toLowerCase()
-  return !IMAGE_FILE_EXTENSIONS.some((ext) => clean.endsWith(ext))
+  const clean = normalizeArtifactPath(href)
+  if (!workspaceRelative(clean)) return false
+  const lower = clean.toLowerCase()
+  return !IMAGE_FILE_EXTENSIONS.some((ext) => lower.endsWith(ext))
 }
 
 /** Từ điển components tĩnh — áp dụng content-visibility:auto giúp bỏ qua layout off-screen */
@@ -304,10 +330,12 @@ function renderStaticImage(props: ImgProps): ReactNode {
  * bấm ra khung xem lớn. Nhiều ảnh thì `inline-block` tự xuống dòng thành lưới.
  */
 function AnswerImageTile({ path, caption, tools }: { path: string; caption: string; tools: MarkdownTools }) {
-  const resolvedSrc = resolveMediaSrc(path)
-  const fileName = fileNameOf(path)
+  // Một đường dẫn, MỘT giá trị: phân loại và gửi đi đều dùng khuôn đã chuẩn hoá.
+  const artifactPath = normalizeArtifactPath(path)
+  const resolvedSrc = resolveMediaSrc(artifactPath)
+  const fileName = fileNameOf(artifactPath)
   return (
-    <span className="my-2.5 mr-2.5 inline-block max-w-full align-top" data-capture-tile="true" data-artifact-path={path || undefined}>
+    <span className="my-2.5 mr-2.5 inline-block max-w-full align-top" data-capture-tile="true" data-artifact-path={artifactPath || undefined}>
       <button
         type="button"
         onClick={() =>
@@ -315,12 +343,12 @@ function AnswerImageTile({ path, caption, tools }: { path: string; caption: stri
             type: 'image',
             src: resolvedSrc,
             caption: caption || undefined,
-            artifactPath: path || undefined,
+            artifactPath: artifactPath || undefined,
           })
         }
         data-artifact-open="media"
         aria-label={caption || fileName || 'Image'}
-        title={path || caption || undefined}
+        title={artifactPath || caption || undefined}
         className="group/tile block w-40 cursor-zoom-in text-left"
       >
         <span className="block h-24 w-full overflow-hidden rounded-lg border border-line bg-panel2 transition group-hover/tile:border-brand/60">
@@ -339,7 +367,7 @@ function AnswerImageTile({ path, caption, tools }: { path: string; caption: stri
           </span>
         )}
         {fileName && (
-          <span className="mt-0.5 block truncate font-mono text-[10px] text-zinc-500" data-capture-file="true" title={path || undefined}>
+          <span className="mt-0.5 block truncate font-mono text-[10px] text-zinc-500" data-capture-file="true" title={artifactPath || undefined}>
             {fileName}
           </span>
         )}
@@ -348,9 +376,23 @@ function AnswerImageTile({ path, caption, tools }: { path: string; caption: stri
   )
 }
 
+/**
+ * Ảnh nằm BÊN TRONG một liên kết phải là ảnh thường, không phải tile bấm được.
+ *
+ * `[![nhãn](anh.png)](https://tài-liệu)` là khuôn markdown hợp lệ: ảnh là chữ của liên kết. Nếu ảnh
+ * vẫn là tile (`<button>`) thì markup thành `<a><button>…</button></a>` — ARIA sai, và một cú bấm vừa
+ * mở khung xem lớn vừa mở tab trình duyệt (mất mạch chat). Liên kết bật cờ này quanh chữ của nó, và
+ * bộ dựng ảnh đọc cờ ấy để vẽ ảnh TĨNH: liên kết giữ nguyên việc của nó, ảnh chỉ để nhìn.
+ *
+ * Dùng context (không phải thay element của `children`) vì `children` ở đây do react-markdown dựng
+ * sẵn — bộ dựng `img` của mình chỉ chạy lúc render, khi cờ đã nằm trong cây.
+ */
+const PassiveMediaContext = createContext(false)
+
 function makeImgRenderer(tools: MarkdownTools): (props: ImgProps) => ReactNode {
   return function AnswerImage({ src, alt }) {
-    if (!tools.onOpenImage) return renderStaticImage({ src, alt })
+    const passive = useContext(PassiveMediaContext)
+    if (passive || !tools.onOpenImage) return renderStaticImage({ src, alt })
     return <AnswerImageTile path={String(src || '')} caption={String(alt || '')} tools={tools} />
   }
 }
@@ -358,11 +400,13 @@ function makeImgRenderer(tools: MarkdownTools): (props: ImgProps) => ReactNode {
 function makeAnchorRenderer(tools: MarkdownTools): (props: AnchorProps) => ReactNode {
   return function AnswerAnchor({ href, children }) {
     const hrefStr = String(href || '')
+    // Một giá trị đã chuẩn hoá cho cả việc PHÂN LOẠI lẫn việc GỬI ĐI (xem `normalizeArtifactPath`).
+    const cleanHref = normalizeArtifactPath(hrefStr)
     // Tệp bằng chứng trong workspace (không phải ảnh) được xét TRƯỚC phép thử ảnh: tệp kết quả test
     // nằm trong `.generated_artifacts/captures/evidence/…`, mà khuôn cũ coi cả thư mục `captures/`
     // là ảnh — nếu xét sau thì một tệp `.txt` lại thành tile ảnh hỏng.
-    const relativePath = workspaceRelative(hrefStr)
-    if (relativePath && tools.onOpenFile && isEvidenceFileLink(hrefStr)) {
+    const relativePath = workspaceRelative(cleanHref)
+    if (relativePath && tools.onOpenFile && isEvidenceFileLink(cleanHref)) {
       const label = tools.fileLinkLabel ?? DEFAULT_FILE_LINK_LABEL
       return (
         <button
@@ -374,18 +418,24 @@ function makeAnchorRenderer(tools: MarkdownTools): (props: AnchorProps) => React
           title={relativePath}
           className="inline-flex max-w-full items-center gap-1 rounded-md border border-line bg-panel2/70 px-1.5 py-0.5 font-mono text-[11px] text-brand transition cursor-pointer hover:border-brand/60"
         >
-          <span className="max-w-full truncate">{children || relativePath}</span>
+          {/* Nút không được chứa nút: ảnh trong liên kết ở đây cũng là ảnh thường. */}
+          <span className="max-w-full truncate">
+            <PassiveMediaContext.Provider value={true}>{children}</PassiveMediaContext.Provider>
+            {!children && relativePath}
+          </span>
           <span className="shrink-0 text-[10px] font-sans text-muted">{label}</span>
         </button>
       )
     }
-    if (isImageLink(hrefStr)) {
+    if (isImageLink(cleanHref)) {
       if (tools.onOpenImage) {
         const label = typeof children === 'string' ? children : ''
-        return <AnswerImageTile path={hrefStr} caption={label} tools={tools} />
+        return <AnswerImageTile path={cleanHref} caption={label} tools={tools} />
       }
       return renderStaticAnchor({ href, children })
     }
+    // Link thường: giữ NGUYÊN `href` thô (trình duyệt tự hiểu), nhưng bên trong không có điều khiển
+    // tương tác nào — ảnh lồng trong link là ảnh thường, bấm cả khối thì đi theo link.
     return (
       <a
         href={href}
@@ -393,7 +443,7 @@ function makeAnchorRenderer(tools: MarkdownTools): (props: AnchorProps) => React
         rel="noreferrer"
         className="text-brand hover:underline font-medium cursor-pointer"
       >
-        {children}
+        <PassiveMediaContext.Provider value={true}>{children}</PassiveMediaContext.Provider>
       </a>
     )
   }

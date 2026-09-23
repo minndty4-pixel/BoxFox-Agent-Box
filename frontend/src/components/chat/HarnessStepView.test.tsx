@@ -3,8 +3,6 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
-  FINAL_ANSWER_COLLAPSE_LABEL,
-  FINAL_ANSWER_EXPAND_LABEL,
   HarnessStepView,
   activityReceipt,
   formatMediaLabel,
@@ -301,7 +299,9 @@ describe('HarnessStepView — F6 tóm tắt câu trả lời cuối', () => {
 
     // R3 (yêu cầu 6): nút nằm NGAY DƯỚI đoạn tóm tắt (trong cùng khung chữ của tóm tắt).
     const expander = summaryBlock!.querySelector('[data-final-expander="true"]')
-    expect(expander?.textContent).toContain(FINAL_ANSWER_EXPAND_LABEL)
+    // P5.3: hai nhãn mở/gấp là chữ quanh lượt, đi theo ngôn ngữ CÂU TRẢ LỜI — lượt này trả lời
+    // tiếng Việt (chuỗi `Dòng tóm tắt nội dung trả lời.` lặp lại), nên nhãn phải là tiếng Việt.
+    expect(expander?.textContent).toContain('Xem chi tiết')
     expect(host.querySelectorAll('[data-final-expander="true"]').length).toBe(1)
 
     // Vòng 23 (D-19): mặt câu trả lời KHÔNG còn lưới ảnh do app vẽ — ở trạng thái gấp cũng vậy.
@@ -316,7 +316,7 @@ describe('HarnessStepView — F6 tóm tắt câu trả lời cuối', () => {
     // Mở chi tiết chỉ mở phần CHỮ; không dựng thêm lưới ảnh nào, và nút gấp nằm ngay dưới khung chữ.
     expect(host.querySelector('[data-final-media="true"]')).toBeNull()
     const collapse = host.querySelector('[data-final-expander="true"]')
-    expect(collapse?.textContent).toContain(FINAL_ANSWER_COLLAPSE_LABEL)
+    expect(collapse?.textContent).toContain('Thu gọn chi tiết')
     expect(expandedBlock!.compareDocumentPosition(collapse!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 
     // Ảnh của lượt không mất: nó vẫn nằm ngay dưới hàng công cụ của lượt, đúng một hàng media.
@@ -674,7 +674,26 @@ describe('HarnessStepView — R3 tách tóm tắt / chi tiết', () => {
     const expanded = host.querySelector('[data-final-text="expanded"]')!
     expect(expanded.textContent).toContain('Diễn biến')
     expect(expanded.querySelector('[data-final-expander="true"]')).toBeNull()
-    expect(host.querySelector('[data-final-expander="true"]')!.textContent).toContain(FINAL_ANSWER_COLLAPSE_LABEL)
+    expect(host.querySelector('[data-final-expander="true"]')!.textContent).toContain('Thu gọn chi tiết')
+  })
+
+  it('F6 (vòng 23) hai nhãn mở/gấp đi theo ngôn ngữ câu trả lời, không còn chữ Anh viết cứng', () => {
+    const full = `${'Summary line of the answer body. '.repeat(40)}FINAL-MARKER-END`
+    const host = renderSession([
+      ev('user', { text: 'Explain the change' }),
+      ev('assistant', { text: full, final: true }),
+      ev('finish', { status: 'completed' }),
+    ])
+
+    // Cùng một component, câu trả lời tiếng Anh ⇒ nhãn tiếng Anh; tiếng Việt ⇒ nhãn tiếng Việt
+    // (hai ca tiếng Việt ở F6/R3.7 phía trên). Nhãn KHÔNG còn là hằng số trong mã.
+    const expander = host.querySelector('[data-final-expander="true"]')!
+    expect(expander.textContent).toContain('View details')
+    expect(expander.textContent).not.toContain('Xem chi tiết')
+
+    click(expander)
+
+    expect(host.querySelector('[data-final-expander="true"]')!.textContent).toContain('Hide details')
   })
 
   it('R3.8 (vòng 23) lượt chỉ có ảnh, không có phần chữ nào để mở: mặt câu trả lời không dựng nút nào', () => {
