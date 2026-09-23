@@ -530,3 +530,12 @@ Chủ nhà nguyên văn (#5998): *"chúng ta mới xong cho phần luật, y t�
 4. **Số ước lượng:** chỉ dùng khi ghi rõ "ước lượng · ai ước lượng · năm nào · cỡ mẫu nếu có" **và** có nơi thứ hai
    cùng nói (#6000).
 5. Bảng khai báo `v27-market-usecases.md` §Phần 3 đã cập nhật `C2′` + hai tầng số + `tran_thu_nen_tang: 3`.
+
+---
+
+## Phụ lục 2 — điều chỉnh đã chốt ở vòng 12 (#6016, #6019, #6020, 2026-09-23)
+
+1. **Luật gap hai tầng số CHỐT** (#6016): sàn 20/10/≥2 + 1 nguồn tổng hợp cho mọi việc; đích 30–50/≥15/≥3 khi mức 3 hoặc khi
+   dữ liệu đủ; hết trần thử ⇒ kết luận, đi tiếp. Cổng chất lượng cần mã lỗi riêng cho **"tín hiệu, chưa kiểm"**.
+2. **Hồ sơ CHỐT** (#6019): 1/3/6 tệp theo mức; `review.md` ghi **hai loại phản biện** — kiểm lại nguồn và **soi ý kiến chủ nhà**.
+3. **Công cụ tìm kiếm/tải: tự dựng, KHÔNG mua khoá** (#6020); chỗ cắm khoá giữ trong mã nhưng mặc định tắt.

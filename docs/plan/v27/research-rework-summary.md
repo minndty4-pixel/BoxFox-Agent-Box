@@ -26,7 +26,7 @@
 | Không cổng nào kiểm nguồn, không vòng phản biện nào cho nghiên cứu | — |
 | **Không có case đo** | thư mục ca benchmark rỗng; judge còn `NotImplementedError` |
 
-## Đã chốt (25 quyết định qua 11 vòng phỏng vấn — ghi đủ trong ADR kèm kế hoạch)
+## Đã chốt (30 quyết định qua 12 vòng phỏng vấn — ghi đủ trong ADR kèm kế hoạch)
 
 Ba mức nghiên cứu với **một con số mức cho cả việc** (mơ hồ ⇒ mức 2) · **đọc nguồn bắt buộc ở mọi mức** (mở thật, lấy
 đoạn liên quan, lưu trích nguyên văn) · **bốn pha** bản đồ → chốt → đào sâu → **phản biện độc lập** · mức 3 luôn **săn
@@ -45,7 +45,10 @@ khoá tìm kiếm** (keyless trước, chừa chỗ cắm khoá, nhiều chân d
 đủ, **thiếu mẫu ⇒ ghi "tín hiệu, chưa kiểm" + lý do và đi tiếp** (không deadlock); **bão hoà săn đuổi trích dẫn 3 vòng**;
 **trần đối thủ 10–15**; paper cần **mã bài + năm + nơi công bố + tác giả + đã mở toàn văn**, căn cứ **trích thân bài**, số
 liệu **lấy từ bảng/hình**; tài liệu hãng & kho mã cần **phiên bản/tag hoặc commit + ngày truy cập**; số ước lượng phải ghi
-**ai ước lượng · năm nào · cỡ mẫu** + nơi thứ hai cùng nói.
+**ai ước lượng · năm nào · cỡ mẫu** + nơi thứ hai cùng nói. **Vòng 12:** luật gap hai tầng số **chốt** (sàn 20/10/≥2 + đích
+30–50/15/≥3, thiếu mẫu ⇒ "tín hiệu, chưa kiểm", không deadlock) · **nhánh con theo sóng 3–5**, không mở toàn bộ cùng lúc ·
+**hồ sơ 1/3/6 tệp** với `review.md` ghi **hai loại phản biện** (kiểm lại nguồn · soi ý kiến chủ nhà) · **duyệt nguyên bảng
+MỞ-A…MỞ-H** + chỉ thị **tự dựng công cụ tìm kiếm/tải, không mua khoá**.
 
 ## Kế hoạch đổi gì, theo ba lớp
 
@@ -55,7 +58,8 @@ văn bản thật 0,0000). **Thang đọc FULL năm tầng** (chốt #6010): HTM
 phía máy chủ** → đầu đọc **chỉ cho chữ** → ảnh trang là đường cuối; bảng dựng lại phải mang nhãn **"bảng trích tự động"**.
 Một **bộ đệm đọc** giữ bản đã tải để **đọc theo đoạn**: tài liệu 113 936 ký tự đọc trọn bằng 6 lời gọi thay vì một lời
 gọi 7 %; tệp trong box cũng đọc theo đoạn. Tìm kiếm: nhiều truy vấn một lượt, khử trùng, lọc theo `site:`/thời gian/ngôn
-ngữ, cache ngắn, tự thử lại, và **ba chân keyless** + chỗ cắm khoá (Brave/Tavily đã có mã).
+ngữ, cache ngắn, tự thử lại, và **công cụ tìm kiếm tự dựng** gộp nhiều chân keyless (**không mua khoá** — chốt #6020; chỗ
+cắm khoá giữ trong mã nhưng mặc định tắt).
 
 **Lớp sổ nguồn (đợt 3–4, 6).** Mỗi khẳng định vào **sổ nguồn**: URL · đoạn trích nguyên văn · ngày lấy · tầng ·
 **nguồn tin gốc** · đã mở bản gốc chưa · **loại bản đã đọc** (`html`/`jats`/`pdf-table`/`reader-text`/`page-image`) ·
@@ -102,12 +106,13 @@ mới; hồ sơ đọc bằng panel Tệp có sẵn; câu trả lời cuối v�
 
 ## Còn mở — sẽ phỏng vấn tiếp
 
-**Phương pháp** (mảng duy nhất còn mở — vòng 12+): số nhánh con tối đa theo mức · trần thời gian mặc định mỗi mức
-(+ D-number cho lượt research dài) · hình dạng hồ sơ mẫu mỗi mức · cách chủ nhà nới trần giữa việc · nhịp kiểm chứng.
+**Vòng 13:** trần thời gian — ba loại trần (**trần lượt** cả lượt chat · **trần con** mỗi nhánh · **ngân sách việc**) hỏi lại
+bằng ví dụ cụ thể vì chủ nhà chốt *"còn tùy task"* (#6018) · **số sóng nhánh** tối đa mỗi mức (sóng 3–5 đã chốt ở #6017) ·
+**hình dạng công cụ tìm kiếm/tải tự dựng** (chủ nhà chỉ thị tự build, không mua khoá — #6020) · **nhịp kiểm chứng**
+(pha 4 chạy cho mức nào) và **khi nào bật phản biện ý kiến chủ nhà** (#6019).
 
-Cộng bảy câu kỹ thuật MỞ-A…MỞ-H đã có sẵn phương án đề xuất (trần đọc mỗi đoạn · bật mạng trong box · mua khoá nào trước ·
-công cụ săn đuổi · mở skill web nào · bộ đệm có ghi ra đĩa không · trần lượt cho mức 3 · trần chi phí USD) — xem §8 kế hoạch.
-*Thị trường, học thuật/kỹ thuật và đọc FULL đã chốt ở vòng 9–11.*
+*Đã chốt ở vòng 9–12:* thị trường · học thuật/kỹ thuật · đọc FULL · luật gap hai tầng số · sóng nhánh 3–5 · hồ sơ 1/3/6 tệp
+với hai loại phản biện · bảng MỞ-A…MỞ-H (duyệt nguyên bảng).
 
 ## Ràng buộc không phá
 

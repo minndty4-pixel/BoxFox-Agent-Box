@@ -1,6 +1,6 @@
 # Vòng 27 — Biên bản quyết định của chủ nhà (research agent + công cụ tìm kiếm)
 
-Nguồn: 11 vòng phỏng vấn bằng `ask_user`, decision #5955–#6014 (2026-09-23). Đây là bản ghi chính thức để
+Nguồn: 12 vòng phỏng vấn bằng `ask_user`, decision #5955–#6020 (2026-09-23). Đây là bản ghi chính thức để
 viết ADR + kế hoạch. Số đo kèm theo nằm ở `/var/tmp/v27/feasibility-probes.md` và các `probe*.log`.
 
 ## 1. Mục tiêu chủ nhà đặt ra
@@ -97,11 +97,32 @@ viết ADR + kế hoạch. Số đo kèm theo nằm ở `/var/tmp/v27/feasibilit
   - **Đích lấy mẫu** khi dữ liệu đủ (#6012): **30–50 lượt**, **≥15 lượt cùng chủ đề**, trải trên **≥3 nền tảng**.
   - **Không đủ mẫu ⇒ phải biết, không deadlock** (#6012): ghi **"tín hiệu, chưa kiểm"** + lý do cụ thể, thử **có trần** (số nền tảng/vòng thử hữu hạn, chốt khi thi công) rồi **kết luận và đi tiếp**, tuyệt đối không lặp vô hạn.
 
+### 2.14 Phương pháp — lượt 1 của vòng 12 (#6016–#6020)
+- **#6016 — Luật gap hai tầng số: CHỐT** (xác nhận cách ghép #6012 + #6013): **sàn** 20 lượt/10 cùng chủ đề/≥2 nền tảng
+  + 1 nguồn tổng hợp dùng cho **mọi việc**; **đích** 30–50/≥15/≥3 áp khi mức 3 hoặc khi dữ liệu đủ; hết trần thử thì
+  **kết luận và đi tiếp**.
+- **#6017 — Số nhánh con: chủ nhà nêu luật riêng.** *"còn tùy task và lv. Ví dụ… spam ra 3 đến 5 sub agent, xong việc thì
+  spam tiếp dạng parallel, chứ không spam cùng lúc toàn bộ vì gây lag box"* ⇒ **sóng 3–5 nhánh**, hết sóng mới mở sóng
+  tiếp; **không mở toàn bộ cùng lúc**; số sóng còn tuỳ việc (xác nhận thêm ở vòng 13).
+- **#6018 — Trần thời gian: chủ nhà CHƯA HIỂU câu hỏi.** *"Này tôi chưa hiểu lắm. Nếu là thời gian trần của sub agent thì
+  còn tùy task nó nghiên cứu, main cũng thế"* ⇒ trần phải **phụ thuộc việc**, không cứng theo mức; hỏi lại ở vòng 13
+  bằng ví dụ cụ thể (ba loại trần: **trần lượt** · **trần con** · **ngân sách việc**).
+- **#6019 — Hình dạng hồ sơ: CHỐT** (1 tệp / 3 tệp / 6 tệp như đề xuất) **+ bổ sung**: *"Bản phản biện có loại là phản biện
+  để agent research đi check lại tiếp, hoặc cũng có thể là phản biện ý kiến của user"* ⇒ `review.md` ghi rõ **loại phản
+  biện**: (a) **kiểm lại nguồn** — gửi con đi check tiếp; (b) **soi ý kiến/giả định của chủ nhà**.
+- **#6020 — Bảng MỞ-A…MỞ-H: DUYỆT NGUYÊN BẢNG**, kèm chỉ thị mới: *"chúng ta cần tự build tool search, fetch, ... thay vì
+  mua key gây tốn kém"* ⇒ **không mua khoá**; hướng đi là **tự dựng công cụ tìm kiếm/tải trong harness**; chỗ cắm khoá
+  vẫn giữ trong mã nhưng **mặc định tắt**; hình dạng công cụ chốt ở vòng 13.
+
 ## 3. CÒN ĐỂ MỞ — sẽ phỏng vấn tiếp
 Chủ nhà nói ở #5998: *"chúng ta mới xong cho phần luật, y tế,... còn thị trường và paper/kỹ thuật, phương pháp thì chưa"*.
-**Thị trường: ĐÃ CHỐT** (§2.11). **Học thuật & kỹ thuật: ĐÃ CHỐT** (§2.12, §2.13 phần đọc).
-1. **Phương pháp nghiên cứu (vòng 12+):** số nhánh con tối đa theo mức; trần thời gian/chi phí mặc định cho từng mức (+ D-number cho lượt research dài); hình dạng mẫu hồ sơ từng mức; cách chủ nhà nới trần giữa việc; nhịp kiểm chứng (pha 4 chạy cho mức nào).
-2. **Bảy câu kỹ thuật MỞ-A…MỞ-H** (bảng §8 của kế hoạch) — đã có sẵn phương án khuyến nghị, chờ chủ nhà xác nhận hoặc sửa.
+**Thị trường: ĐÃ CHỐT** (§2.11). **Học thuật & kỹ thuật: ĐÃ CHỐT** (§2.12, §2.13 phần đọc). **Luật gap: ĐÃ CHỐT** (§2.14 #6016).
+**Hồ sơ mẫu: ĐÃ CHỐT** (§2.14 #6019). **Bảng MỞ: ĐÃ DUYỆT** (§2.14 #6020).
+1. **Trần thời gian (vòng 13, hỏi lại bằng ví dụ):** ba loại trần — lượt · con · ngân sách việc — và cách nới khi chạm.
+2. **Số sóng nhánh mỗi mức** (vòng 13, xác nhận sau #6017).
+3. **Hình dạng công cụ tìm kiếm/tải tự dựng** (vòng 13, sau chỉ thị #6020).
+4. **Nhịp kiểm chứng:** pha 4 chạy cho mức nào; khi nào bật **phản biện ý kiến chủ nhà** (#6019).
+5. **Cách chạy bốn pha:** cổng giữa các pha (khi nào chờ ai), nếu còn cần chốt sau vòng 13.
 
 ## 4. Số đo đã có (không phải giả định)
 Chi tiết ở `/var/tmp/v27/feasibility-probes.md`; tóm tắt:

@@ -1,8 +1,9 @@
 # ADR — Cải tổ research agent và công cụ tìm kiếm (Vòng 27)
 
 **Trạng thái:** các phần đã chốt (luật, y tế, tài chính; thang nguồn; số nguồn; đầu ra; điều phối) **đã được chủ nhà
-duyệt bằng 11 vòng phỏng vấn** (#5955–#6014). **Thị trường và học thuật/kỹ thuật: ĐÃ CHỐT** (vòng 9–11, xem §C-bis).
-Mảng **phương pháp** còn mở — chủ nhà yêu cầu *"tạo plan trước, ghi vào plan trước rồi tiếp tục interview"* (#5998).
+duyệt bằng 12 vòng phỏng vấn** (#5955–#6020). **Thị trường, học thuật/kỹ thuật, đọc FULL, luật gap, hình dạng hồ sơ và bảng
+MỞ: ĐÃ CHỐT** (vòng 9–12, xem §C-bis). Mảng **phương pháp** còn hai mục: **trần thời gian** và **nhịp kiểm chứng** — chủ nhà
+yêu cầu *"tạo plan trước, ghi vào plan trước rồi tiếp tục interview"* (#5998).
 
 **Ngày:** 2026-09-23 · **Nhánh:** `vorflux/v22-peer-mesh` · **HEAD khi viết:** `2add905`
 
@@ -64,6 +65,11 @@ con research làm việc nặng** (#5957).
 | C-10 | **Danh mục thị trường giữ đủ 10 usecase TM-1…TM-10**; **TM-3 dùng archetype C2′** (đếm → mẫu → luật); **TM-2 trần đối thủ 10–15** | Chủ nhà chốt #6005, #6006, #6007 (*"thị trường Việt Nam nhiều đơn vị nhỏ"*) | Bảng khai báo usecase sửa: C2′ + trần 10–15 (không sửa luật trong mã) |
 | C-11 | **Bão hoà săn đuổi trích dẫn ở mức 3: 3 vòng liên tiếp không thêm bài mới** (không phải 2) | Chủ nhà chốt #6008 | Ngưỡng nằm trong bảng khai báo; ca `R4` chấm theo 3 vòng |
 | C-12 | **Số ước lượng/khảo sát chỉ dùng khi ghi rõ** "ước lượng · ai ước lượng · năm nào · cỡ mẫu nếu có" **+ nơi thứ hai cùng nói** | Chủ nhà chốt #6000 | Trường bắt buộc của nhóm thị trường (TM-4/TM-5/TM-8) |
+| B-14 | **Luật gap hai tầng số CHỐT** (cách ghép #6012 + #6013): sàn 20/10/≥2 + 1 nguồn tổng hợp cho **mọi việc**; đích 30–50/≥15/≥3 khi mức 3 hoặc khi dữ liệu đủ; hết trần thử ⇒ kết luận và đi tiếp | Chủ nhà xác nhận #6016 | Một luật máy duy nhất, hai tầng số; mã lỗi riêng cho "tín hiệu, chưa kiểm" |
+| C-13 | **Nhánh con chạy theo SÓNG 3–5**; hết sóng mới mở sóng tiếp; **không mở toàn bộ cùng lúc** | Chủ nhà chốt #6017: *"…3 đến 5 sub agent, xong việc thì spam tiếp dạng parallel, chứ không spam cùng lúc toàn bộ vì gây lag box"* | Bộ điều phối sóng nằm trong luồng mức (đợt 5); ca `R10` kiểm nhánh đồng thời |
+| C-14 | **Hồ sơ 1/3/6 tệp CHỐT** + `review.md` ghi **hai loại phản biện**: (a) kiểm lại nguồn (gửi con check tiếp), (b) **soi ý kiến/giả định của chủ nhà** | Chủ nhà chốt #6019 | Đợt 4 (hồ sơ) + đợt 6 (pha phản biện) thêm trường `loai_phan_bien` |
+| C-15 | **Bảng MỞ-A…MỞ-H: duyệt nguyên bảng**, riêng **MỞ-C đổi hướng**: **không mua khoá** — **tự dựng công cụ tìm kiếm/tải** trong harness; chỗ cắm khoá giữ trong mã nhưng **mặc định tắt** | Chủ nhà chốt #6020: *"cần tự build tool search, fetch, ... thay vì mua key gây tốn kém"* | Đợt 2 (tìm kiếm) đổi trọng tâm sang công cụ tự dựng; hình dạng chốt vòng 13 |
+| C-16 | **Trần thời gian phải phụ thuộc việc** — chủ nhà không nhận câu hỏi dạng trần cứng theo mức | Chủ nhà #6018: *"còn tùy task nó nghiên cứu, main cũng thế"* | Vòng 13 phải hỏi lại bằng ví dụ ba loại trần (lượt · con · ngân sách việc) |
 
 
 
@@ -101,11 +107,14 @@ con research làm việc nặng** (#5957).
 
 ## F. Câu hỏi còn mở (sẽ phỏng vấn tiếp)
 
-1. **Phương pháp** (mảng duy nhất còn mở, vòng 12+): số nhánh con tối đa theo mức; trần thời gian/chi phí mặc định cho
-   từng mức (+ D-number cho lượt research dài); hình dạng mẫu hồ sơ từng mức; cách chủ nhà nới trần giữa việc; nhịp
-   kiểm chứng (pha 4 chạy cho mức nào).
-2. **Bảy câu kỹ thuật MỞ-A…MỞ-H** (§8 kế hoạch) — đã có phương án khuyến nghị, chờ chủ nhà xác nhận hoặc sửa.
-3. **Hai mục nhỏ của thị trường** (không chặn): ảnh chụp trang giá kèm hồ sơ; luật cross-nhóm (đã có #5995 làm mặc định).
+1. **Trần thời gian (vòng 13):** ba loại trần — **trần lượt** (cả lượt chat, hiện 1 200 s) · **trần con** (mỗi nhánh, hiện
+   `min(420 s, cha)`) · **ngân sách việc** (tổng thời gian/token của một việc, dùng cho nút xin duyệt) — hỏi lại **bằng ví dụ**
+   vì chủ nhà chốt *"còn tùy task"* (#6018).
+2. **Số sóng nhánh mỗi mức** (sóng 3–5 đã chốt ở #6017; tổng số sóng còn tuỳ việc).
+3. **Hình dạng công cụ tìm kiếm/tải tự dựng** (chỉ thị #6020: không mua khoá).
+4. **Nhịp kiểm chứng:** pha 4 chạy cho mức nào; **khi nào bật phản biện ý kiến chủ nhà** (#6019).
+5. **Cách chạy bốn pha:** cổng giữa các pha (nếu còn cần chốt).
+6. **Hai mục nhỏ của thị trường** (không chặn): ảnh chụp trang giá kèm hồ sơ; luật cross-nhóm (đã có #5995 làm mặc định).
 
 ## G. Ràng buộc không được phá
 

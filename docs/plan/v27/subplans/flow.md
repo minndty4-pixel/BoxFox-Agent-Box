@@ -409,3 +409,16 @@ Ba khung cần mockup ở tab Design trước khi build C-5/C-2: (1) **composer 
    (HTML/JATS/PDF)".
 4. **Gap TM-3** theo archetype C2′ (hai tầng số + luật chống deadlock) — nhịp báo mốc phải nói rõ khi một gap rơi vào
    "tín hiệu, chưa kiểm".
+
+---
+
+## Phụ lục 2 — điều chỉnh đã chốt ở vòng 12 (#6016–#6020, 2026-09-23)
+
+1. **Nhánh con chạy theo SÓNG 3–5**: hết sóng mới mở sóng tiếp; **không mở toàn bộ cùng lúc** (chủ nhà: *"không spam cùng
+   lúc toàn bộ vì gây lag box"*). Ca kiểm `R10` đếm số nhánh đồng thời.
+2. **Hồ sơ CHỐT**: mức 1 = 1 tệp · mức 2 = báo cáo + sổ · mức 3 = báo cáo + sổ + `tables/` + `review.md`.
+3. **`review.md` ghi hai LOẠI phản biện**: (a) **kiểm lại nguồn** — gửi con research đi check tiếp; (b) **soi ý kiến/giả định
+   của chủ nhà**. Pha 4 (đợt 6) thêm trường `loai_phan_bien`.
+4. **Trần thời gian**: chủ nhà không nhận câu hỏi dạng trần cứng theo mức (#6018) — trần phải **phụ thuộc việc**; vòng 13 hỏi
+   lại bằng ví dụ với ba loại trần (lượt · con · ngân sách việc). Bảng trần trong tệp này **vẫn là nháp**.
+5. **Bảng MỞ-A…MỞ-H duyệt nguyên bảng** (#6020), riêng **MỞ-C đổi hướng: không mua khoá** — tự dựng công cụ tìm kiếm/tải.
