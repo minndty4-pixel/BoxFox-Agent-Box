@@ -33,9 +33,14 @@ from html.parser import HTMLParser
 JUNK_CATEGORIES = {'Cf', 'Cs', 'Co', 'Cn'}   # Cc is judged separately so \t \n \r survive
 JUNK_RATIO_MAX = 0.10                        # measured: junk 0.52–0.55 · real prose 0.0000
 BODY_MIN_CHARS = 500                         # measured: smallest fake body is 403 chars (vbpl.vn 404)
+# CẢNH BÁO (đo được 2026-09-23): phép so dấu hiệu chạy trên bản ĐÃ BỎ DẤU (`_plain`), nên mục nào
+# còn dấu trong bảng này là chuỗi chết trừ khi có mặt chữ không dấu đi kèm. `'văn bản không tồn tại'`
+# và `'đang tải dữ liệu'` từng KHÔNG BAO GIỜ khớp: một trang `vbpl.vn` 404 (ảnh + "Văn bản không
+# tồn tại") vẫn được chấm `ok`. Nay mỗi mục có cả hai cách viết.
 ERROR_MARKERS = (
     '404 error',
     'văn bản không tồn tại',
+    'van ban khong ton tai',
     'warning: this page maybe not yet fully loaded',
     'cached snapshot',
     'just a moment',
@@ -45,13 +50,14 @@ ERROR_MARKERS = (
     # Không có dấu hiệu này thì 281 ký tự đó ra `thin` — vẫn là một dạng thành công giả.
     'performing security verification',
     'đang tải dữ liệu',
+    'dang tai du lieu',
     'enable javascript',
     'please wait while we load',
     'meta http-equiv="refresh"',
     'window.location.replace',
 )
 GENERIC_TITLES = ('trang chủ', 'home', 'homepage', 'trang chu', 'page not found', 'not found',
-                  'đang tải', 'just a moment', 'access denied', 'forbidden', 'error')
+                  'đang tải', 'dang tai', 'just a moment', 'access denied', 'forbidden', 'error')
 
 TABLE_LABEL = 'bảng trích tự động'
 TABLE_LABEL_NOTE = ('bảng trích tự động — dòng tiêu đề nhiều tầng có thể lệch; '
@@ -66,7 +72,6 @@ _SLUG_EXTENSIONS = ('.html', '.htm', '.aspx', '.asp', '.php', '.jsp', '.json', '
 _TOKEN_SPLIT = re.compile(r'[^0-9a-z]+')
 _HTML_TAG = re.compile(r'(?s)<[^>]+>')
 _JATS_TABLE = re.compile(r'(?s)<table-wrap\b.*?</table-wrap>')
-_MARKUPISH = re.compile(r'(?i)(<(?:table|tr|td|th|table-wrap)\b|\bxa:table\b)')
 
 
 def _plain(value: str) -> str:
@@ -78,6 +83,11 @@ def _plain(value: str) -> str:
 
 def _tokens(value: str, *, min_len: int = 1) -> list[str]:
     return [tok for tok in _TOKEN_SPLIT.split(_plain(value)) if len(tok) >= min_len]
+
+
+# `wrong_page` so trên `_plain(heading)`, nên bản bỏ dấu này mới là bảng thật dùng để so: mỗi mục
+# còn dấu trong `GENERIC_TITLES` (`'trang chủ'`, `'đang tải'`) là chuỗi chết nếu so thẳng.
+_GENERIC_TITLES_PLAIN = tuple(dict.fromkeys(_plain(item) for item in GENERIC_TITLES))
 
 
 # ------------------------------------------------------------------- junk / title
@@ -125,7 +135,10 @@ def _slug_tokens(url: str) -> list[str]:
     path = path.split('?', 1)[0].split('#', 1)[0].rstrip('/')
     if not path:
         return []
-    slug = path.rsplit('/', 1)[-1].lower()
+    # ĐO ĐƯỢC 2026-09-23: slug tiếng Việt bị percent-encode (`%E1%BA%BFt`) mà không giải mã thì
+    # token sinh ra là rác (`['chuy','83n','tuy','bfn','b4ng','ngh']`) và trang THẬT bị gọi là
+    # `wrong-page` — báo sai trên chính nhóm URL luật/hành chính là nguồn chính của sản phẩm.
+    slug = urllib.parse.unquote(path.rsplit('/', 1)[-1]).lower()
     for extension in _SLUG_EXTENSIONS:
         if slug.endswith(extension):
             slug = slug[: -len(extension)]
@@ -177,8 +190,9 @@ def wrong_page(text: str, *, url: str = '', title: str = '') -> bool:
     if not heading or len(heading) > 200:
         return False
     plain_heading = _plain(heading).strip(' -–—:|')
-    if plain_heading in GENERIC_TITLES or any(plain_heading.startswith(g + ' ') or
-                                             plain_heading.startswith(g + ' -') for g in GENERIC_TITLES):
+    if plain_heading in _GENERIC_TITLES_PLAIN or any(
+            plain_heading.startswith(g + ' ') or plain_heading.startswith(g + ' -')
+            for g in _GENERIC_TITLES_PLAIN):
         return True
     slug_tokens = _slug_tokens(url)
     if len(slug_tokens) < 2:
@@ -203,7 +217,8 @@ def body_check(text: str, *, url: str = '', status: int | None = None,
     stripped = body.strip()
     ratio = junk_ratio(body)
     low = _plain(stripped[:4000])
-    marker = next((mark for mark in ERROR_MARKERS if mark in low), '')
+    # So trên bản bỏ dấu ⇒ cũng phải BỎ DẤU chính dấu hiệu, nếu không mục còn dấu là chuỗi chết.
+    marker = next((mark for mark in ERROR_MARKERS if _plain(mark) in low), '')
     result = {
         'verdict': 'ok',
         'reason': '',
@@ -292,18 +307,27 @@ def decode_body(raw: bytes, headers, *, charset: str = 'utf-8', mode: str = 'on'
 
 def ladder_plan(*, status: int | None = None, content_type: str = '', verdict: str = 'ok',
                 direct_error: bool = False, is_pdf: bool = False, text_chars: int | None = None,
-                mode: str = 'auto') -> dict:
+                mode: str = 'auto', pdf_rebuilt: bool = False) -> dict:
     """Decide whether the third-party reader gets a turn, and name the reason.
 
     ``mode='thin'`` reproduces exactly the behaviour of commit ``2add905`` (only
     bodies shorter than 200 characters went to the reader) — the regression
     switch. ``mode='off'`` never calls the reader.
+
+    ``is_pdf`` means "a PDF whose on-host rebuild (tier 3) produced nothing usable":
+    tier 3 sits **before** the text-only reader (tier 4), so a PDF that ``pdfplumber``
+    already turned into text + tables is never sent out — that call would cost an
+    external hop and could replace labelled tables with table-less text.
     """
     if mode == 'off':
         return {'use_reader': False, 'reason': 'none'}
     if mode == 'thin':
         use_reader = text_chars is not None and text_chars < 200
         return {'use_reader': use_reader, 'reason': 'thin' if use_reader else 'none'}
+    if pdf_rebuilt:
+        # Tầng 3 đã trả về một bản đọc dùng được (chữ + bảng có nhãn): tầng 4 đứng SAU, nên ở đây
+        # không có gì để cứu — và một lời gọi đầu đọc có thể thay bảng bằng bản chữ không bảng.
+        return {'use_reader': False, 'reason': 'none'}
     if is_pdf:
         return {'use_reader': True, 'reason': 'pdf'}
     if direct_error:
@@ -434,14 +458,6 @@ def jats_tables_to_markdown(xml: str, *, max_tables: int = 12) -> str:
         table = _rows_to_markdown(parser.tables[0])
         blocks.append(f'**Bảng {index}** ({TABLE_LABEL})' + (f' — {head}' if head else '') + f'\n\n{table}')
     return '\n\n'.join(blocks)
-
-
-def looks_structured(content_type: str, text: str) -> bool:
-    """True when the body carries tables we should keep instead of flattening."""
-    ctype = str(content_type or '').lower()
-    if 'xml' in ctype or 'jats' in ctype:
-        return _MARKUPISH.search(str(text or '')[:20000]) is not None or '<table-wrap' in str(text or '')
-    return '<table' in str(text or '').lower()
 
 
 def read_tier(*, content_type: str = '', reader: str | None = None, pdf: bool = False,

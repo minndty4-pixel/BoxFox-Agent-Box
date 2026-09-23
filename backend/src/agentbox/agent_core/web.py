@@ -612,9 +612,19 @@ class WebTools:
         quality = reading.body_check(text, url=final, status=status or None, content_type=ctype,
                                      reader=reader, title=title)
         is_pdf = ctype == 'application/pdf' or body[:5].startswith('%PDF-')
+        # Tầng 3 (PDF dựng lại) đứng TRƯỚC tầng 4 (đầu đọc): chỉ khi bản dựng lại không dùng được
+        # mới tới lượt `r.jina.ai`. ĐO ĐƯỢC 2026-09-23: xếp `is_pdf` trước phép kiểm `verdict` làm
+        # MỌI PDF trả thêm một lời gọi ngoài, và khi bản dựng lại ít chữ thì bản đầu đọc (không
+        # bảng) thay được nó — bảng bị bỏ, chỉ còn `pdfNote` nhắc.
+        # "Không dùng được" = không có chữ, hoặc chữ bị chấm là rác/trang lỗi/trang sai. Một PDF ít
+        # chữ (`thin`) vẫn là bản đọc thật CÓ bảng: gửi nó cho đầu đọc chỉ để lấy bản không bảng là lỗ.
+        pdf_usable = bool(text.strip()) and quality['verdict'] not in ('junk', 'empty', 'error-page',
+                                                                      'wrong-page')
+        needs_pdf_reader = is_pdf and not pdf_usable
         plan = reading.ladder_plan(status=status or None, content_type=ctype,
                                    verdict=quality['verdict'],
-                                   direct_error=direct_error is not None, is_pdf=is_pdf,
+                                   direct_error=direct_error is not None, is_pdf=needs_pdf_reader,
+                                   pdf_rebuilt=pdf_usable,
                                    text_chars=len(text.strip()), mode=reader_mode)
         if plan['use_reader']:
             reader_text, reader_status = self._read_through_reader(final)
@@ -630,7 +640,10 @@ class WebTools:
                 clears_wrong_page = (quality['verdict'] != 'wrong-page'
                                      or reading.slug_clue(reader_text, url=final))
                 if reading.is_better_grade(reader_quality['verdict'], quality['verdict']) and clears_wrong_page:
-                    title = title or reader_title[:200]
+                    # Tiêu đề phải tả ĐÚNG thân bài đang giữ: khi bản đầu đọc được nhận, tiêu đề
+                    # của chính nó đi trước — trước đây `title or …` giữ lại tiêu đề của trang
+                    # vừa bị chấm `wrong-page` (đo được: `title='Trang chủ'` mà `text` là bài thật).
+                    title = reader_title[:200] or title
                     text, reader, read_tier = reader_text, 'r.jina.ai', 'reader-text'
                     # Lý do tầng PDF hỏng phải đi cùng payload kể cả khi đầu đọc đã cứu được trang:
                     # người đọc cần biết bảng đã bị bỏ chứ không phải “không có bảng”.
@@ -704,6 +717,10 @@ class WebTools:
 
         Returns ``(text, status)``: the reader cannot say "no", only "here is a page",
         so the caller judges the answer with ``reading.body_check`` before keeping it.
+
+        Dòng `Title:` của đầu đọc được **giữ lại** ở đầu bản trả về. ĐO ĐƯỢC 2026-09-23: nếu cắt
+        lấy đúng phần sau `Markdown Content:` thì `reading.reader_title` (và vì thế cả cửa hậu
+        `slug_clue`) không bao giờ thấy tiêu đề — đúng trang THẬT bị chấm `wrong-page` rồi bị bỏ.
         """
         try:
             status, _ctype, body, _final, _meta = _request_with_meta(READER_PREFIX + url, timeout=timeout)
@@ -715,7 +732,10 @@ class WebTools:
             return '', status
         marker = 'Markdown Content:'
         if marker in body:
-            return _clean_text(body.split(marker, 1)[1]), status
+            head, _, tail = body.partition(marker)
+            title = reading.reader_title(_clean_text(head))
+            cleaned = _clean_text(tail)
+            return (f'Title: {title}\n\n{cleaned}' if title else cleaned), status
         if '<' in body and '>' in body:
             # The reader answered with HTML (its own error page, or a site it passed through):
             # extract text instead of returning markup as if it were prose.

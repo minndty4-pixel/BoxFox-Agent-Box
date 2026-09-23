@@ -455,6 +455,9 @@ Nếu main muốn có **chỉ báo "đang đọc nguồn"**, đó là mục nh�
    "bảng trích tự động") → 4) **đầu đọc r.jina.ai chỉ cho chữ** (đo: bảng mất sạch, 0 dòng có `|`) →
    5) **ảnh trang + đọc ảnh** (cần `pypdfium2`) là đường cuối.
    ⇒ Đợt 1 thêm việc **A-10** (thang đọc có cấu trúc + `pdfplumber`); câu "PDF đi thẳng đầu đọc" trong tệp này **không còn hiệu lực**.
+   Chốt bằng mã (sau lượt soát 2026-09-23): `ladder_plan` nhận `pdf_rebuilt` — dựng lại **được** thì
+   **không** gọi đầu đọc (đo sống: `arxiv.org/pdf/1706.03762v7` 2 lời gọi, 0 lời gọi đầu đọc, 10 bảng);
+   chỉ PDF **không** dựng lại được mới đi tiếp xuống tầng 4.
 2. **Phụ thuộc mới phía máy chủ:** `pdfplumber` bắt buộc, `pypdfium2` khi cần dựng ảnh trang (chủ nhà cho phép #6011).
    Box vẫn **không cài gì**.
 3. **Bão hoà săn đuổi trích dẫn = 3 vòng** liên tiếp không thêm bài mới (#6008), không phải 2 vòng.

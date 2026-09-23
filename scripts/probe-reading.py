@@ -83,7 +83,9 @@ def measure_fetch(tools: WebTools, target: dict) -> dict:
     try:
         payload = tools.fetch({'url': target['url'], 'maxChars': 20000})
     except WebError as exc:
-        row |= {'seconds': round(time.time() - started, 2), 'error': str(exc)[:300]}
+        # Đích không trả lời KHÔNG phải là "đạt ngưỡng": không có số đo thì không có gì để so.
+        row |= {'seconds': round(time.time() - started, 2), 'error': str(exc)[:300],
+                'problems': ['lỗi — không đo được']}
         return row
     quality = payload.get('quality') or {}
     row |= {
@@ -161,7 +163,10 @@ def main() -> int:
                   + (f"  ⚠ {'; '.join(row['problems'])}" if row.get('problems') else ''))
 
     broken = [row for row in rows if row.get('problems')]
-    print(f"\n{len(rows) - len(broken)}/{len(rows)} đạt ngưỡng")
+    failed = [row for row in rows if row.get('error')]
+    print(f"\n{len(rows) - len(broken)}/{len(rows)} đạt ngưỡng"
+          f" — đo được {len(rows) - len(failed)}/{len(rows)} dòng, "
+          f"{len(failed)} dòng lỗi tính là hỏng")
     if args.json:
         pathlib.Path(args.json).write_text(json.dumps(rows, ensure_ascii=False, indent=1))
         print(f'ghi {args.json}')

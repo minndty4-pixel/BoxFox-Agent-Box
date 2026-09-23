@@ -174,6 +174,27 @@ def test_an_error_page_is_named_a_thin_page_is_advice_and_a_wrong_page_is_named(
     assert home['verdict'] == 'wrong-page', 'ĐO ĐƯỢC: URL văn bản trả về trang chủ 27 378 byte'
 
 
+def test_the_vietnamese_error_markers_are_not_dead_strings():
+    """ĐO ĐƯỢC 2026-09-23 (soát mã): phép so dấu hiệu chạy trên bản BỎ DẤU, nên
+    `'văn bản không tồn tại'` và `'đang tải dữ liệu'` chưa từng khớp — một trang 404 của
+    `vbpl.vn` (ảnh 404 + "Văn bản không tồn tại") vẫn được chấm `ok` nếu không có mục `'404 error'`."""
+    stale = ('Chi tiết văn bản pháp luật · tra cứu toàn văn. ' * 20) + 'Văn bản không tồn tại'
+    quality = reading.body_check(stale, url='https://vbpl.vn/van-ban/chi-tiet/abc.htm',
+                                 title='Chi tiết văn bản')
+    assert quality['verdict'] == 'error-page'
+    assert 'van ban khong ton tai' in reading._plain(quality['reason'])
+
+    loading = 'Đang tải dữ liệu... Vui lòng chờ trong giây lát. ' * 20
+    assert reading.body_check(loading)['verdict'] == 'error-page'
+
+
+def test_a_generic_title_with_diacritics_is_still_generic():
+    """Cùng hình dạng lỗi: bảng tiêu đề chung cũng bị so trên bản bỏ dấu."""
+    body = 'Danh mục văn bản pháp luật · tra cứu · hướng dẫn. ' * 20
+    assert reading.wrong_page(body, url='https://vbpl.vn/TW/Pages/vbpq-toanvan.aspx?ItemID=1',
+                              title='Đang tải') is True
+
+
 def test_a_real_vietnamese_page_is_not_called_junk():
     page = ('Bảo hiểm y tế: hồ sơ chuyển tuyến gồm giấy chuyển tuyến, thẻ bảo hiểm và căn cước. '
             * 20)
@@ -189,6 +210,9 @@ def test_the_ladder_decides_from_the_verdict_and_never_from_thin_alone():
     assert reading.ladder_plan(verdict='wrong-page')['reason'] == 'wrong-page'
     assert reading.ladder_plan(verdict='ok') == {'use_reader': False, 'reason': 'none'}
     assert reading.ladder_plan(verdict='ok', is_pdf=True)['reason'] == 'pdf'
+    # Tầng 3 (PDF dựng lại) đứng TRƯỚC tầng 4: bản ít chữ nhưng có bảng vẫn không đi ra ngoài.
+    assert reading.ladder_plan(verdict='thin', is_pdf=True, pdf_rebuilt=True) == {'use_reader': False,
+                                                                                 'reason': 'none'}
     assert reading.ladder_plan(verdict='ok', status=403)['reason'] == 'http-status'
     assert reading.ladder_plan(verdict='ok', direct_error=True)['reason'] == 'unreachable'
     assert reading.ladder_plan(verdict='ok', mode='off') == {'use_reader': False, 'reason': 'none'}
@@ -266,14 +290,31 @@ def test_the_old_thin_page_policy_is_still_reachable_by_switch(tools, monkeypatc
     assert short_body['reader'] == 'r.jina.ai', 'thân bài < 200 ký tự vẫn đi qua đầu đọc như trước'
 
 
-def test_an_unknown_reader_mode_falls_back_to_the_default():
+def test_an_unknown_reader_mode_falls_back_to_the_default(monkeypatch):
+    """Giá trị lạ ⇒ mức mặc định; notice một lần do `runtime` phát (`test_runtime_info.py`).
+
+    Dùng `monkeypatch` (không sửa `os.environ` trực tiếp): bộ đơn vị có lượt chạy ghim
+    `BOXFOX_WEB_READER=thin` cho cả tiến trình, tự ý `pop` sẽ âm thầm đổi mức của các tệp sau.
+    """
     from agentbox.agent_core import limits
-    import os
-    os.environ['BOXFOX_WEB_READER'] = 'chặt-vừa-thôi'
-    try:
-        assert limits.web_reader_mode() == limits.WEB_READER_DEFAULT_MODE
-    finally:
-        os.environ.pop('BOXFOX_WEB_READER', None)
+    monkeypatch.setenv('BOXFOX_WEB_READER', 'chặt-vừa-thôi')
+    assert limits.web_reader_mode() == limits.WEB_READER_DEFAULT_MODE
+    monkeypatch.setenv('BOXFOX_WEB_READER', 'thin')
+    assert limits.web_reader_mode() == 'thin', 'giá trị hợp lệ vẫn đi thẳng, không bị kẹp về mặc định'
+
+
+def test_the_empty_verdict_and_the_tier_ranking_are_pinned():
+    """Sáu `verdict` là hợp đồng, và thang `ok > thin > wrong-page/error-page > junk/empty` là
+    luật quyết định bản đầu đọc có được nhận hay không — ca này ghim cả hai."""
+    assert reading.body_check('')['verdict'] == 'empty'
+    assert set(reading.VERDICTS) == {'ok', 'thin', 'junk', 'error-page', 'wrong-page', 'empty'}
+    assert reading.is_better_grade('ok', 'thin') is True
+    assert reading.is_better_grade('thin', 'wrong-page') is True
+    assert reading.is_better_grade('thin', 'error-page') is True
+    assert reading.is_better_grade('error-page', 'junk') is True
+    assert reading.is_better_grade('junk', 'empty') is False, 'hai mức ngang nhau thì không "tốt hơn"'
+    assert reading.is_better_grade('wrong-page', 'error-page') is False, 'hai mức ngang nhau'
+    assert reading.is_better_grade('ok', 'ok') is False, 'bản đầu đọc phải TỐT HƠN, không phải bằng'
 
 
 # ------------------------------------------------------------ A-10: structured tiers
@@ -352,9 +393,15 @@ def test_a_body_that_is_not_a_pdf_is_refused_by_the_pdf_tier():
 
 
 def test_a_pdf_bigger_than_the_body_cap_is_fetched_again_with_the_pdf_cap(tools, monkeypatch):
-    """ĐO ĐƯỢC: PDF arXiv 1706.03762v7 nặng hơn 2 MiB — cắt ở trần thì pdfplumber không dựng lại được."""
+    """ĐO ĐƯỢC: PDF arXiv 1706.03762v7 nặng hơn 2 MiB — cắt ở trần thì pdfplumber không dựng lại được.
+
+    ĐO ĐƯỢC 2026-09-23 (soát mã): bản cũ độn một PDF **còn nguyên** cho quá trần, nên pdfplumber
+    vẫn dựng được 36 ký tự ⇒ **không** có lần tải lại nào; `len(seen) == 2` chỉ tình cờ đúng vì khi
+    đó thang đọc còn gọi đầu đọc cho MỌI PDF. Nay thân bài bị cắt giữa cấu trúc PDF đúng như lượt
+    đo thật, và phép đếm chỉ tính các lần gọi tới chính PDF.
+    """
     pdf = _tiny_pdf()
-    padded = pdf + b'\n%' + b'0' * (web_module.MAX_BODY_BYTES + 4096) + b'\n%%EOF\n'
+    padded = pdf[: len(pdf) // 2] + b'\n%' + b'0' * (web_module.MAX_BODY_BYTES + 4096) + b'\n%%EOF\n'
     seen: list[str] = []
 
     def handler(url: str):
@@ -367,6 +414,9 @@ def test_a_pdf_bigger_than_the_body_cap_is_fetched_again_with_the_pdf_cap(tools,
     assert len(seen) == 2, 'bản bị cắt phải được tải lại ĐÚNG một lần'
     assert payload['readTier'] == 'pdf-table' and payload['pdfPages'] == 1
     assert payload['reader'] is None and 'Bang du lieu thuc nghiem' in payload['text']
+    # Tầng 3 đứng TRƯỚC tầng 4: PDF đã dựng lại được thì KHÔNG tốn thêm lời gọi đầu đọc
+    # (và bảng không có cơ hội bị thay bằng bản chữ không bảng).
+    assert not any(url.startswith(web_module.READER_PREFIX) for url in seen)
 
 
 def test_a_pdf_that_stays_broken_keeps_its_note_when_the_reader_saves_the_page(tools, monkeypatch):
@@ -382,7 +432,8 @@ def test_a_pdf_that_stays_broken_keeps_its_note_when_the_reader_saves_the_page(t
     _serve(monkeypatch, handler)
     payload = tools.fetch({'url': 'https://arxiv.org/pdf/1706.03762v7'})
     assert payload['reader'] == 'r.jina.ai' and payload['readTier'] == 'reader-text'
-    assert 'PdfminerException' in (payload.get('pdfNote') or ''), 'lý do tầng PDF hỏng phải đi cùng payload'
+    # Ghim câu của TA, không ghim tên lớp lỗi của thư viện (`pdfplumber>=0.11,<1` có thể đổi tên).
+    assert 'while reading the PDF' in (payload.get('pdfNote') or ''), 'lý do tầng PDF hỏng phải đi cùng payload'
 
 
 def test_the_reader_cannot_launder_a_wrong_page_into_ok(tools, monkeypatch):
@@ -422,6 +473,26 @@ def test_a_reader_answer_that_names_the_slug_still_replaces_a_wrong_page(tools, 
     assert payload['reader'] == 'r.jina.ai' and payload['quality']['verdict'] == 'ok'
 
 
+def test_the_readers_title_line_survives_and_clears_a_wrong_page(tools, monkeypatch):
+    """ĐO ĐƯỢC 2026-09-23 (soát mã): `_read_through_reader` cắt lấy phần sau `Markdown Content:`
+    nên dòng `Title:` — kênh duy nhất mà `slug_clue` đọc — bị xoá TRƯỚC khi ai kịp thấy; đúng
+    trang thật bị chấm `wrong-page` rồi bị bỏ. Bản dưới đây KHÔNG có dòng `#` nào trong thân bài."""
+    reader_answer = ('Title: Quyet dinh 1234 ve thue\n\nMarkdown Content:\n\n'
+                     + 'Quyet dinh 1234 ve thue: noi dung toan van. ' * 80)
+
+    def handler(url: str):
+        if url.startswith(web_module.READER_PREFIX):
+            return _FakeResponse(reader_answer.encode(), ctype='text/markdown', url=url)
+        return _FakeResponse(('<html><head><title>Trang chủ</title></head><body>'
+                              + 'Danh mục ' * 200 + '</body></html>').encode(), url=url)
+
+    _serve(monkeypatch, handler)
+    payload = tools.fetch({'url': 'https://vbpl.vn/van-ban/chi-tiet/quyet-dinh-1234-ve-thue.htm'})
+    assert payload['reader'] == 'r.jina.ai', 'bản đầu đọc nhắc đúng slug phải được nhận'
+    assert payload['quality']['verdict'] == 'ok'
+    assert payload['title'].startswith('Quyet dinh 1234'), 'tiêu đề phải tả thân bài đang giữ'
+
+
 def test_a_bot_check_page_is_an_error_page_not_a_thin_success():
     """ĐO ĐƯỢC: 403 của thuvienphapluat.vn, đầu đọc (không khoá) trả 281 ký tự
     "Performing security verification" — phải là `error-page`, không phải `thin`."""
@@ -433,6 +504,16 @@ def test_a_bot_check_page_is_an_error_page_not_a_thin_success():
                                 status=403, content_type='text/markdown', reader='r.jina.ai')
     assert quality['verdict'] == 'error-page'
     assert 'performing security verification' in quality['reason']
+
+
+def test_a_percent_encoded_slug_does_not_make_a_genuine_page_wrong():
+    """ĐO ĐƯỢC 2026-09-23 (soát mã): slug tiếng Việt percent-encode mà không giải mã thì token
+    sinh ra là rác, nên trang THẬT bị gọi `wrong-page` — nhóm URL luật/hành chính là nguồn chính."""
+    url = 'https://vbpl.vn/van-ban/chi-tiet/quy-%C4%91%E1%BB%8Bnh-m%E1%BB%9Bi-v%E1%BB%81-thu%E1%BA%BF.htm'
+    title = 'Quy định mới về thuế'
+    assert reading._slug_tokens(url) == ['quy', 'dinh', 'moi', 'thue'], 'token là chữ của slug đã giải mã'
+    assert reading.wrong_page(title, url=url, title=title) is False
+    assert reading.slug_clue('# Quy định mới về thuế', url=url) is True
 
 
 def test_a_host_name_is_not_a_slug():

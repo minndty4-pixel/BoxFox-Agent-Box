@@ -66,14 +66,16 @@ Ghi theo từng đợt đã xong, kèm ngày đo.
 
 | Trang | Trước (commit `2add905`) | Sau (đợt 1) |
 |---|---|---|
-| `nhandan.vn` | 17 421 "ký tự" mà **55 %** là rác nhị phân, junk 0,550 | `textChars` ≈ 8 264, **junk 0,0000** |
-| `vanban.chinhphu.vn` | 46 692 ký tự rác, junk 0,517 | 31 792 ký tự, **junk 0,0000**, `readTier: html` |
-| `vietnamplus.vn` | 37 798 ký tự rác | `textChars` ≈ 16 455, **junk 0,0000** |
+| `nhandan.vn/<bài Bộ Y tế …post900643>` | 17 421 "ký tự" mà **55 %** là rác nhị phân, junk 0,550 | cùng URL: **9 103** ký tự, **junk 0,0000**, `ok` — số lấy từ đầu đọc, vì đường trực tiếp của bài này nay trả 404 |
+| `nhandan.vn/` (trang chủ) | — | 18 832 ký tự, **junk 0,0000**, `readTier: html` |
+| `baochinhphu.vn/<bài Bộ Y tế …102250115105914411.htm>` | 46 692 ký tự rác, junk 0,517 | **8 079** ký tự chữ, **junk 0,0000**, `readTier: html` (giải nén tại chỗ, **không** cần đầu đọc) |
+| `vanban.chinhphu.vn/` (trang chủ) | 942 ký tự — thân bài nằm trong `<form>` nên bị bỏ sạch | 31 792 ký tự, **junk 0,0000**, `readTier: html` |
+| `vietnamplus.vn/` | 37 798 ký tự rác | **16 455** ký tự, **junk 0,0000** |
 | `thuvienphapluat.vn` (403) | thân bài rỗng ⇒ mất cả trang, dù đầu đọc có 91 032 byte | **không còn mất trang**: 281 ký tự, `verdict: error-page`, đầu đọc không cứu được (xem §4.6) |
 | PDF arXiv `1706.03762v7` | chuỗi `%PDF-1.4…`, junk 0,517, `textChars` 10 205 | 46 128 ký tự chữ, `readTier: pdf-table`, **10 bảng** / 15 trang dựng tại chỗ bằng `pdfplumber` |
 | HTML arXiv `1706.03762v7` | — | 45 814 ký tự, tầng `html`: **9 bảng** mang nhãn `bảng trích tự động` (HTML có 10 thẻ `<table>`) |
-| `vbpl.vn/TW/Pages/vbpq-toanvan.aspx?ItemID=1` | trả "Trang chủ" (27 378 byte) mà không ai biết | 87 ký tự, `verdict: wrong-page`, đầu đọc **không** được nhận (xem §4.6) |
-| `moh.gov.vn` | "Warning: This page maybe not yet fully loaded" (165–259 byte) | ném `WEB_FETCH_FAILED` sau 15,44 s — không bao giờ `ok` |
+| `vbpl.vn/TW/Pages/vbpq-toanvan.aspx?ItemID=1` | trả "Trang chủ" (27 378 byte) mà không ai biết | 87 ký tự; lần 6 `wrong-page`, lần 7 **`error-page`** (dấu hiệu `'đang tải dữ liệu'` đã sống — xem §4.7.1), đầu đọc **không** được nhận (xem §4.6) |
+| `moh.gov.vn` | "Warning: This page maybe not yet fully loaded" (165–259 byte) | ném `WEB_FETCH_FAILED` sau 15,44 s (lần 6); lần 7 qua đầu đọc trả **21 ký tự** ⇒ `thin`, `underMinChars: true` — **không bao giờ `ok`** |
 | `r.jina.ai` trên PDF | (chỉ đường này) | **0 dòng `|`** ⇒ bảng mất sạch: vì vậy đầu đọc chỉ là tầng 4, sau tầng PDF |
 
 ### 4.2 Thang đọc năm tầng (A-3/A-10)
@@ -81,8 +83,8 @@ Ghi theo từng đợt đã xong, kèm ngày đo.
 | Tầng | Khi nào | Đo được |
 |---|---|---|
 | 1 `html` | trang HTML thường | chữ + bảng giữ nguyên |
-| 2 `jats` | `fullTextXML` của Europe PMC | 6 `<table-wrap>` giữ được |
-| 3 `pdf-table` | `Content-Type: application/pdf` **hoặc** thân bài bắt đầu `%PDF-` | dựng lại bằng `pdfplumber` trên host; 10 bảng; dòng tiêu đề nhiều tầng **có thể lệch** ⇒ bảng luôn mang nhãn `bảng trích tự động` |
+| 2 `jats` | `fullTextXML` của Europe PMC — nhận **theo dấu hiệu** `table-wrap` trong thân bài, vì dịch vụ trả `text/plain` chứ không phải `application/xml` | `PMC7090843`: 10 thẻ `<table-wrap>` ⇒ **5 bảng** mang nhãn (mẫu cũ `PMC3258128` không có thẻ nào nên tầng không chạy — lỗi ở mẫu đo, không ở mã) |
+| 3 `pdf-table` | `Content-Type: application/pdf` **hoặc** thân bài bắt đầu `%PDF-` | dựng lại bằng `pdfplumber` trên host; 10 bảng; dòng tiêu đề nhiều tầng **có thể lệch** ⇒ bảng luôn mang nhãn `bảng trích tự động`. Dựng lại **được** ⇒ tầng 4 **không** được gọi (§4.7.3) |
 | 4 `reader-text` | thân bài rác/thiếu chữ, non-2xx, hoặc PDF hỏng | `r.jina.ai`; bảng mất — chỉ dùng khi các tầng trên không cứu được |
 | 5 `page-image` | (chưa hiện thực — đợt sau) | — |
 
@@ -109,13 +111,16 @@ Giá trị lạ ⇒ **mức mặc định + notice một lần** (`WEB_READER_MO
  "textHardChars": 20000, "storeMaxEntries": 24}
 ```
 
-### 4.4 Sửa lại dòng "Trần dữ liệu" của bảng §3
+### 4.4 Dòng "Trần dữ liệu" của bảng §3 — đọc kèm mục này
 
-Trần **một lời gọi** không đổi: `MAX_TEXT_DEFAULT = 8 000`, `MAX_TEXT_HARD = 20 000` (trần ngữ
-cảnh vẫn cắt ở 20 000, nên nâng con số này chỉ tạo payload bị cắt âm thầm). Phần **tài liệu dài**
-không nằm trong một lời gọi mà nằm ở bộ đệm đọc: `ReadStore` giữ tới 24 bản × 400 000 ký tự
-(trần 4 000 000 ký tự) và `read_source(offset=…)` trả từng mẩu (A-4, đợt 2) — vì vậy một trang
-113 936 ký tự đọc được **đủ**, thay vì 7 % như trước.
+Dòng §3 **giữ nguyên, không sửa**: trần **một lời gọi** vẫn là `MAX_TEXT_DEFAULT = 8 000` và
+`MAX_TEXT_HARD = 20 000` (trần ngữ cảnh vẫn cắt ở 20 000, nên nâng con số này chỉ tạo payload bị
+cắt âm thầm). Phần **tài liệu dài** không nằm trong một lời gọi mà nằm ở bộ đệm đọc — thứ **chưa
+có trong cây này** (A-4, **đợt 2**; `scripts/probe-reading.py` in "chưa có" cho `--only store`).
+Thiết kế đã ghim: `ReadStore` giữ tới 24 bản × 400 000 ký tự (trần 4 000 000 ký tự) và
+`read_source(offset=…)` trả từng mẩu; khi đó một trang 113 936 ký tự đọc được **đủ**, thay vì 7 %
+như trước. Số hiện tại của đợt 1 vẫn là "bị cắt ở trần ngữ cảnh": lượt sống (i) 3 trang đều
+`truncated: true`, lượt sống (ii) PDF 46 128 ký tự cũng `truncated: true`.
 
 ### 4.5 Ghi chú phụ thuộc
 
@@ -148,6 +153,31 @@ chữ của plan nhưng chính thước đo phơi ra; mỗi chỗ đều có s�
 Hai sửa đổi của cùng lượt này (đã ghi ở §4.2/§4.5) được xác nhận sống: **trần PDF riêng 8 MiB** tải lại
 đúng một lần, và **tầng JATS nhận theo dấu hiệu `table-wrap` trong thân bài** (Europe PMC trả
 `text/plain` cho `fullTextXML`, không phải `application/xml`).
+
+### 4.7 Ba sửa đổi nữa mà lượt soát mã bắt được (2026-09-23)
+
+Sau khi chốt đợt 1, ba lượt soát mã song song (dọn mã · lõi `reading.py`/`web.py` · kiểm thử –
+tài liệu – thước đo) tìm thêm ba chỗ **mã không làm điều nó nói**, đã sửa ngay trong đợt:
+
+1. **Hai dấu hiệu lỗi tiếng Việt là chuỗi chết.** Phép so dấu hiệu chạy trên bản **bỏ dấu**
+   (`_plain`), nhưng `ERROR_MARKERS` chỉ có `'văn bản không tồn tại'` và `'đang tải dữ liệu'` ⇒
+   **không bao giờ khớp**. Hệ quả đo được: thân bài 404 của `vbpl.vn` (ảnh `404 Error` + "Văn bản
+   không tồn tại") chỉ bị bắt nhờ mục `'404 error'`; thiếu mục ấy thì nó ra `ok` — đúng loại
+   "thành công giả" mà đợt này tồn tại để giết. Nay mỗi mục có cả hai cách viết và phép so bỏ dấu
+   chính dấu hiệu; bảng `GENERIC_TITLES` sửa cùng lỗi (`'trang chủ'`, `'đang tải'`).
+2. **Slug tiếng Việt percent-encode bị giải mã sai, và kênh tiêu đề của đầu đọc bị xoá.**
+   `_slug_tokens` không `unquote` nên `…/B%E1%BA%A3o_hi%E1%BB%83m_y_t%E1%BA%BF` sinh token
+   `['a3o','83m']` ⇒ trang THẬT bị gọi `wrong-page` (đo lại trên `vi.wikipedia.org`: bản cũ
+   `wrong_page=True`, bản nay `False`, tokens `['bao','hiem']`). Đường cứu đã thiết kế cũng **bất
+   động**: `_read_through_reader` cắt lấy phần sau `Markdown Content:` nên dòng `Title:` — kênh duy
+   nhất `slug_clue` đọc — bị xoá trước khi ai kịp thấy. Nay `unquote` slug, giữ dòng `Title:` của
+   đầu đọc, và khi nhận bản đầu đọc thì **tiêu đề của nó** mô tả thân bài đang giữ.
+3. **PDF dựng lại được vẫn đi qua đầu đọc.** `ladder_plan` kiểm `is_pdf` **trước** `verdict`, nên
+   mọi PDF tốn thêm một lời gọi ngoài, và khi bản dựng lại ít chữ thì bản đầu đọc (không bảng) thay
+   được nó — bảng bị bỏ. Nay tầng 3 đứng trước tầng 4: chỉ PDF **không dựng lại được** (không chữ,
+   hoặc bị chấm `junk`/`empty`/trang lỗi/sai) mới tới lượt `r.jina.ai`. Đo sống lại
+   `arxiv.org/pdf/1706.03762v7`: hai lời gọi (bản cắt 2 MiB + lần tải lại theo trần PDF 8 MiB),
+   **0 lời gọi đầu đọc**, `pdf-table`, **10 bảng**, 15 trang, 46 128 ký tự, 2,36 s.
 
 **Một chỗ lệch kỳ vọng của plan, nói thẳng:** A-3 kỳ vọng `thuvienphapluat.vn` đọc được **≥ 20 000 ký tự**
 (đo được 91 032 byte ngày 2026-09-23). Đo lại cùng ngày, muộn hơn: `r.jina.ai` **không khoá** trả về đúng

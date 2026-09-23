@@ -2138,21 +2138,25 @@ giao diện; danh sách lỗi đầy đủ ở `bug-register.md` §6.34 — BUG-
 - Phạm vi: A-1 (giải nén `Content-Encoding`), A-2 (`reading.body_check`), A-3 (thang đọc dự phòng),
   A-5 (`file_read` có `offset`/`limit` trong box), A-9 (ba công tắc + khối `limits.web`),
   A-10 (bàn giao bảng: HTML/JATS/PDF). Đo trên host, model/khoá của phần sống ghi ở mục dưới.
-- **Số đo trước/sau (cùng URL, cùng `web_fetch`)**: `nhandan.vn` 17 421 ký tự rác (junk 0,550) →
-  **8 264 ký tự, junk 0,0000**; `vanban.chinhphu.vn` 46 692 → **8 079, junk 0,0000**;
-  `vietnamplus.vn` 37 798 → **16 455, junk 0,0000**; `thuvienphapluat.vn` (403, thân bài rỗng)
-  → đầu đọc trả **≥ 20 000 ký tự**, `readerReason: http-status`; PDF arXiv `1706.03762v7`
-  `%PDF-1.4…` + junk 0,517 → **≈ 40 895 ký tự** và **bảng dựng lại** bằng `pdfplumber`;
-  HTML arXiv giữ **10 bảng**; `vbpl.vn/…ItemID=1` → `verdict: wrong-page`; `moh.gov.vn`
-  (165–259 byte) → `verdict: error-page`.
-- **Bộ đơn vị mới** `backend/tests/unit/test_web_reading.py`: 23 ca, không ca nào cần mạng
+- **Số đo trước/sau** (đều trên host qua `web_fetch`; "trước" = dump thô chưa giải nén): bài
+  `nhandan.vn/…post900643` 17 421 ký tự rác (junk 0,550) → **cùng URL nay 9 103**, junk 0,0000, `ok`
+  (số lấy từ đầu đọc: đường trực tiếp của bài này nay trả 404); `nhandan.vn/` (trang chủ) **18 832**,
+  junk 0,0000; bài `baochinhphu.vn/…102250115105914411.htm` 46 692 (junk 0,517) → **8 079**,
+  junk 0,0000, `readTier: html` (giải nén tại chỗ, **không** cần đầu đọc); `vanban.chinhphu.vn/`
+  (trang chủ) **942 → 31 792**; `vietnamplus.vn/` 37 798 → **16 455**, junk 0,0000;
+  `thuvienphapluat.vn` (403, thân bài rỗng) → xem "chỗ lệch kỳ vọng" dưới: **281** ký tự *trang chặn
+  bot*, `error-page`; PDF arXiv `1706.03762v7` `%PDF-1.4…` + junk 0,517 → **46 128** ký tự,
+  `pdf-table` (**10** bảng, 15 trang), **không** còn nhị phân thô; HTML arXiv **9 bảng** có nhãn
+  (HTML có 10 thẻ `<table>`); `vbpl.vn/…ItemID=1` → `verdict: wrong-page`; `moh.gov.vn`
+  (165–259 byte) → ném timeout, không ra `ok`.
+- **Bộ đơn vị mới** `backend/tests/unit/test_web_reading.py`: 34 ca, không ca nào cần mạng
   (thay `urllib.request.build_opener`), phủ: gzip/có tiêu đề giả/deflate hai biến thể/brotli là
   lỗi tường minh/bom nén bị chặn/`IncompleteRead` giữ `partial`/công tắc `WEB_DECODE=off` trả lại
   đúng rác cũ/junk ratio/thin–error-page–wrong-page/thang đọc/đầu đọc chỉ được nhận khi **tốt hơn**
   và **không** lách SSRF/`WEB_READER=thin` = đúng hành vi `2add905`/bảng HTML + JATS + tầng PDF
   (PDF viết tay trong test, không cần tệp ngoài).
 - **Lệnh và kết quả**: `./.venv/bin/python -m pytest backend/tests/unit/test_web_reading.py
-  backend/tests/unit/test_web_tools.py -q -p no:randomly` ⇒ **55 passed**; `test_runtime_info.py`
+  backend/tests/unit/test_web_tools.py -q -p no:randomly` ⇒ **67 passed**; `test_runtime_info.py`
   ⇒ **12 passed** (khối `limits.web` được ghim bằng so khớp từ điển chính xác, cộng một ca mới:
   giá trị lạ `chặt-vừa-thôi` ⇒ mức mặc định **kèm đúng một** notice `WEB_READER_MODE_UNKNOWN`).
 - **A-5 (box)**: `./.venv/bin/python -m pytest backend/tests/unit/test_worker_file_read.py
@@ -2169,7 +2173,9 @@ giao diện; danh sách lỗi đầy đủ ở `bug-register.md` §6.34 — BUG-
 - Giao thức test model + khoá: `docs/plan/v27/research-quality-tests.md` §2. Bộ ca chất lượng
   research (`RQ1–RQ8` + sáu tiêu chí + oracle): cùng tài liệu, §3.
 - **Chốt đợt 1 — đo lại toàn bộ bằng `scripts/probe-reading.py` (2026-09-23, lần 6): 11/11 đạt ngưỡng.**
-  Mỗi dòng là một lời gọi `web_fetch` thật trên host; số là ký tự mô hình nhận được sau cắt trần:
+  Mỗi dòng là một lời gọi `web_fetch` thật trên host; cột "ký tự" là `textChars` = độ dài văn bản
+  bóc được **trước** khi cắt trần (`maxChars: 20000` của lượt đo — bốn dòng vượt trần nên model chỉ
+  nhận 20 000 ký tự đầu):
 
   | Nguồn | giây | ký tự | junk | verdict | `readTier` | reader |
   |---|---|---|---|---|---|---|
@@ -2185,6 +2191,14 @@ giao diện; danh sách lỗi đầy đủ ở `bug-register.md` §6.34 — BUG-
   | `web_search` (firecrawl) | 0,13 | 5 kết quả | — | — | — | — |
   | `web_search` (wikipedia) | 0,26 | 5 kết quả | — | — | — | — |
 
+- **Đo lại lần 7 trên cây sau ba lượt soát: 11/11 đạt ngưỡng — đo được 11/11 dòng, 0 dòng lỗi**
+  (`probe_reading_7.json`). Chênh so với lần 6: `vietnamplus.vn` 16 606 (lần 6: 16 455);
+  `vbpq-toanvan.aspx?ItemID=1` nay **`error-page`** thay vì `wrong-page` — dấu hiệu `'đang tải dữ
+  liệu'` đã sống (mục "soát mã" 2), tức trang được bắt bằng dấu hiệu tường minh chứ không bằng tiêu đề;
+  `thuvienphapluat.vn` 306 ký tự / 3,03 s (đầu đọc trả lời nhanh hơn, vẫn `error-page`);
+  `moh.gov.vn` 21 ký tự qua đầu đọc ⇒ **`thin`** (lần 6 ném timeout) — vẫn **không** ra `ok`, nhưng
+  đây là dạng "thân bài 21 ký tự" mà trần thời gian + chính sách lượt của đợt 5 (D-40) phải xử lý;
+  PDF arXiv 2,33 s với **0** lời gọi đầu đọc (tầng 3 trước tầng 4 — mục "soát mã" 4).
 - **Bốn sửa đổi mà chính thước đo bắt được** (không nằm trong chữ của plan, đều có số đo trước/sau):
   1. **`<form>` không còn bị bỏ nội dung.** Trang ASP.NET `vanban.chinhphu.vn/?pageid=27160&docid=207396`
      bọc **toàn bộ thân bài** trong `<form id="form1">`, nên `_TextExtractor` bỏ hết: 81 697 byte HTML
@@ -2213,13 +2227,54 @@ giao diện; danh sách lỗi đầy đủ ở `bug-register.md` §6.34 — BUG-
   - Europe PMC: bài `PMC3258128` dùng ở lần chạy trước **không có** `<table-wrap>` nào nên nhánh JATS
     không chạy và tầng ra `html` — lỗi ở **mẫu đo**, không ở mã. Mẫu nay là `PMC7090843` (10 thẻ, 5 khối ngoài).
 - **Bộ đơn vị đầy đủ trên cây này**: `./.venv/bin/python -m pytest backend/tests/unit -q -p no:randomly
-  --deselect backend/tests/unit/test_terminal_tools.py::test_terminal_exec_echo` ⇒ **1254 passed, 1 deselected**
-  trong 215,16 s (mốc trước bốn sửa đổi: 1247 passed). `test_web_reading.py` một mình **27 ca**;
-  `test_web_reading.py` + `test_web_tools.py` ⇒ **62 passed**; `test_runtime_info.py` ⇒ **12 passed**.
+  --deselect backend/tests/unit/test_terminal_tools.py::test_terminal_exec_echo` ⇒ **1272 passed, 1 deselected**
+  trong 217,83 s (mốc trước đợt 1: 1219) (mốc trước bốn sửa đổi: 1247 passed). `test_web_reading.py` một mình **34 ca**;
+  `test_web_reading.py` + `test_web_tools.py` ⇒ **67 passed**; `test_runtime_info.py` ⇒ **12 passed**.
   Ca deselected là `Write-Output` PowerShell trên Linux — đỏ có sẵn từ trước, đỏ y hệt trên `git archive HEAD` sạch.
 - **Lượt sống với model (giao thức và khoá: `docs/plan/v27/research-quality-tests.md` §2)**:
   (i) job `b89d2e4b` — 3 lời gọi `web_fetch` (`nhandan.vn`, `vanban.chinhphu.vn`, PDF arXiv), **0 lỗi**,
   model trả lời đúng cả ba con số, không bịa; (ii) job `d01e9ed8` (chỉ PDF, sau khi vá trần):
   `readTier: pdf-table`, `tables: 10`, `pdfPages: 15`, 46 128 ký tự, junk 0,0, 0 lỗi.
-  Cả hai lượt cho thấy **ngữ cảnh model chỉ nhận 8 000 ký tự đầu** ⇒ phần bảng nằm ở đuôi bị cắt —
-  đúng lý do tồn tại của A-4 (bộ đệm đọc + `read_source`) ở đợt 2.
+  Cả hai lượt đều `truncated: true` (18 832 / 32 173 / 40 563 ký tự ở lượt (i); 46 128 ở lượt (ii))
+  ⇒ phần bảng nằm ở đuôi **bị cắt** — đúng lý do tồn tại của A-4 (bộ đệm đọc + `read_source`) ở đợt 2.
+- **Soát mã đợt 1 (ba lượt song song: dọn mã · lõi `reading.py`/`web.py` · kiểm thử – tài liệu – thước
+  đo) tìm thêm sáu chỗ; cả sáu đã sửa ngay trong đợt:**
+  1. **Thước đo đếm "không đo được" thành "đạt ngưỡng".** Nhánh `WebError` của `measure_fetch`
+     (`scripts/probe-reading.py`) trả về sớm mà không đặt `problems`, nên một đích **không trả lời**
+     vẫn được tính là qua. Chứng minh bằng lượt chạy **cắt hết đường ra**
+     (`https_proxy=http://127.0.0.1:9`, `http_proxy=…`): trước khi sửa in **9/11 đạt ngưỡng**; sau khi
+     sửa in **0/11 đạt ngưỡng — đo được 0/11 dòng, 11 dòng lỗi tính là hỏng** và thoát mã **1**.
+  2. **Hai dấu hiệu lỗi tiếng Việt là chuỗi chết** (`ERROR_MARKERS` được so trên bản **bỏ dấu**):
+     thân bài 404 của `vbpl.vn` chỉ bị bắt nhờ mục `'404 error'`. Nay mỗi mục có cả hai cách viết, và
+     bảng tiêu đề chung (`GENERIC_TITLES`) sửa cùng lỗi.
+  3. **Slug percent-encode bị giải mã sai ⇒ trang THẬT ra `wrong-page`**, kèm **kênh `Title:` của đầu
+     đọc bị xoá** nên cửa hậu `slug_clue` bất động. Đo lại sống trên `vi.wikipedia.org`: bản cũ token
+     `['a3o','83m']` ⇒ `wrong_page=True`; bản nay `['bao','hiem']` ⇒ `False`; cả ba URL đo lại đều
+     `ok`. Nay slug được `unquote`, dòng `Title:` được giữ, và tiêu đề của bản đầu đọc đi trước khi
+     bản đó được nhận vào payload.
+  4. **PDF dựng lại được vẫn đi qua đầu đọc** (tầng 3 phải đứng TRƯỚC tầng 4). Đo lại sống
+     `arxiv.org/pdf/1706.03762v7`: **hai** lời gọi (bản cắt ở trần 2 MiB + lần tải lại theo trần PDF
+     8 MiB), **0 lời gọi đầu đọc**, `pdf-table`, **10 bảng**, 15 trang, 46 128 ký tự, 2,36 s.
+  5. **Bộ đơn vị sửa `os.environ` trực tiếp** (tự `pop` `BOXFOX_WEB_READER`) ⇒ lượt chạy hồi quy ghim
+     `thin` cho cả tiến trình bị hạ về mặc định ở các tệp chạy sau; nay dùng `monkeypatch`. Cùng lượt:
+     ghim thêm **`verdict: empty`** + **thứ hạng thang đọc**, và bỏ câu ghim tên lớp lỗi của thư viện
+     (`'PdfminerException'` — `requirements.txt` cho phép `pdfplumber>=0.11,<1`).
+  6. **Năm con số trong tài liệu không tái lập được** (xem "Số đo trước/sau" ở trên: số "trước" là của
+     **bài báo**, số "sau" là của **trang chủ** — hai URL khác nhau). Đã đo lại **cùng URL** và sửa cả
+     `docs/research/host-web-tools.md` lẫn tệp này.
+- **Ba lượt sống với model `muse-spark-1.3-contributor-free`** (mỗi lượt một khoá, cùng cây mã, cùng
+  bộ ca `backend/tests/integration/test_peer_mesh_chain.py -k song`, harness scratch cổng 3188):
+
+| Khoá | Giờ (UTC) | Kết quả | Phiên | Con | Biên nhận | Chờ | Lỗi |
+|---|---|---|---|---|---|---|---|
+| 1 `f8a5f4e8…` | 22:06 | **`1 passed, 2 deselected`** 26,41 s | `8b2c6d0888cb4630b357d4fe6b59849a` | 2 (`childSteps` 3, `childTokens` 1011) | 2/2 `injected` | 8 886 ms | không |
+| 2 `a43ff124…` | 22:03 | **`1 passed, 2 deselected`** 26,42 s | `75a8d0fd169b46ed8c7dc6e054b69819` | 2 (`childSteps` 3, `childTokens` 836) | 2/2 `injected` | 0 ms | không |
+| 3 `3d27b0b0…` | 22:05 | **`1 passed, 2 deselected`** 16,39 s | `e35a0f62e81c40d991c61c7841906ec5` | 2 (`childSteps` 4, `childTokens` 932) | 2/2 `injected` | 7 987 ms | không |
+
+  Cả ba khoá **không** có 429/403/400/500; hai con của mỗi lượt (`testing`, `review`) đều `completed`.
+- **Oracle chất lượng research nay đã có** (đợt 8, phần đầu): `scripts/eval/research_checks.py` — sáu
+  tiêu chí 0/1/2, ngưỡng **9/12**, **cảnh báo chứ không chặn** — cộng bộ ca của chính nó
+  `backend/tests/unit/test_research_checks.py` (**13 ca**, không cần mạng) ⇒ **13 passed**. Bốn đầu vào:
+  `--sources` (sổ nguồn JSONL), `--transcript` (nhật ký: nhận cả dòng `tool_end` của bảng `events` lẫn
+  dòng trần), `--answer`, `--rq`. Chạy **sống** `RQ1–RQ8` còn chờ đợt 3 (chưa có `sources.jsonl` thật)
+  — ghi ở `docs/plan/v27/research-quality-tests.md` §5.
