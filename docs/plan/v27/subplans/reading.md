@@ -435,3 +435,22 @@ Phạm vi A **không có mặt giao diện mới** — và theo F2/F4–F6/§5(4
 2. `frontend/src/components/settings/HarnessEditor.test.tsx:34` — fixture nhóm `webResearch`; chỉ cần cập nhật nếu muốn mock khớp backend (test hiện tại tự nhất quán).
 
 Nếu main muốn có **chỉ báo "đang đọc nguồn"**, đó là mục nhịp tiến độ của Phạm vi C (`v27-flow-plan.md` C-4), không phải việc của A.
+
+---
+
+## Phụ lục — điều chỉnh đã chốt ở vòng 11 (#6010–#6013, 2026-09-23)
+
+> Bản kế hoạch chính `v1-research-rework.md` (bản 2) đã cập nhật; mục dưới đây **ghi đè** các chi tiết cũ trong tệp này.
+
+1. **Thang đọc FULL là năm tầng, không phải "PDF đi thẳng đầu đọc"** (đo `probe8.py`, 2026-09-23):
+   1) **HTML chính chủ** (`arxiv.org/html/…`, trang nhà xuất bản, PMC HTML — đo: giữ **10 bảng** thật) →
+   2) **toàn văn XML/JATS** (`Europe PMC fullTextXML` — đo: giữ **6 bảng**) →
+   3) **PDF + `pdfplumber`** phía máy chủ (đo: dựng lại **10 bảng**; dòng tiêu đề nhiều tầng có thể lệch ⇒ nhãn
+   "bảng trích tự động") → 4) **đầu đọc r.jina.ai chỉ cho chữ** (đo: bảng mất sạch, 0 dòng có `|`) →
+   5) **ảnh trang + đọc ảnh** (cần `pypdfium2`) là đường cuối.
+   ⇒ Đợt 1 thêm việc **A-10** (thang đọc có cấu trúc + `pdfplumber`); câu "PDF đi thẳng đầu đọc" trong tệp này **không còn hiệu lực**.
+2. **Phụ thuộc mới phía máy chủ:** `pdfplumber` bắt buộc, `pypdfium2` khi cần dựng ảnh trang (chủ nhà cho phép #6011).
+   Box vẫn **không cài gì**.
+3. **Bão hoà săn đuổi trích dẫn = 3 vòng** liên tiếp không thêm bài mới (#6008), không phải 2 vòng.
+4. Sổ nguồn (Phạm vi B) thêm trường **loại bản đã đọc**: `html` · `jats` · `pdf-table` · `reader-text` · `page-image`;
+   khẳng định dựa vào bảng phải ghi rõ nguồn bảng.

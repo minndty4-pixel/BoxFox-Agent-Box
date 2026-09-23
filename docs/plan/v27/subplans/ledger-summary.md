@@ -66,3 +66,5 @@ Không sửa `evidence_gate.py`/`web.py`/`compression.py`/`plan_quality.py`; kh�
 ## Việc UI (bàn giao riêng, ngoài phạm vi)
 
 Chat hiện **không có renderer trích dẫn** (đo được: `frontend/src` chỉ có 1 lần chữ "citation", `SubagentInspectorPanel.tsx:87`; 0 chỗ dựng chỉ số `[n]`). Nếu main muốn hiện `[s<N>]`/khối `**Nguồn:**` cho đẹp trong chat thì **phải dispatch một design subagent** và đính artefact ở tab Design — việc đó nằm **ngoài** kế hoạch này.
+
+> **Cập nhật vòng 9–11 (#6002–#6014):** sổ nguồn thêm **loại bản đã đọc** + **phiên bản/commit/ngày truy cập**; TM-2 trần **10–15**; TM-3 dùng **C2′** (sàn 20/10/≥2 + đích 30–50/15/≥3, thiếu mẫu ⇒ "tín hiệu, chưa kiểm", không deadlock). Chi tiết ở Phụ lục cuối `v27-ledger-plan.md`.

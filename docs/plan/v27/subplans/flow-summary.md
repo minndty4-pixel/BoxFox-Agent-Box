@@ -62,3 +62,5 @@ Owner: agent research hôm nay "chỉ tìm được phần nổi, không đọc 
 ## Bàn giao UI
 
 Phạm vi C có 3 điểm chạm giao diện: (1) composer gửi được chỉ thị khi đang chạy + dòng xác nhận "đã xếp hàng"; (2) dòng tiến độ giữa lượt trong timeline; (3) nút "mở tệp" cho đường dẫn `.research/...`. Đề nghị main dispatch **design subagent** kèm artifact ở tab Design (khung composer bận, dòng tiến độ, hàng tệp hồ sơ) trước khi build C-5/C-2.
+
+> **Cập nhật vòng 9–11 (#6008):** bão hoà săn đuổi trích dẫn mức 3 = **3 vòng**; bảng trần theo mức vẫn **nháp** tới khi chủ nhà chốt phương pháp ở vòng 12+. Chi tiết ở Phụ lục cuối `v27-flow-plan.md`.

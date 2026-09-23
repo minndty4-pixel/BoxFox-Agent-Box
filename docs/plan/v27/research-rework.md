@@ -7,18 +7,24 @@
 > nguồn, **không có vòng phản biện** cho nghiên cứu, và **không có case đo** nào. Kế hoạch này sửa lớp đọc (đợt 1),
 > dựng sổ nguồn + thang nguồn + hồ sơ việc + cổng chất lượng + pha phản biện (đợt 2–3), rồi dạy luồng chạy ba mức
 > nghiên cứu, bốn pha, nhịp báo, can thiệp giữa lượt và **đầu ra 100 % là tệp** (đợt 4–6), cuối cùng là đo được bằng
-> bộ ca + oracle máy (đợt 7). Ba mảng **thị trường**, **học thuật/kỹ thuật**, **phương pháp** sẽ được phỏng vấn tiếp
-> sau khi kế hoạch này được duyệt; cơ chế dựng sẵn với giá trị nháp nên chốt xong chỉ đổi **bảng khai báo**.
+> bộ ca + oracle máy (đợt 8). Ba mảng **thị trường**, **học thuật/kỹ thuật**, **phương pháp** được phỏng vấn tiếp sau khi
+> kế hoạch này được duyệt; cơ chế dựng sẵn với giá trị nháp nên chốt xong chỉ đổi **bảng khai báo**.
+> **Cập nhật bản 2 (vòng 9–11, #5999–#6014):** thị trường và học thuật/kỹ thuật **đã chốt** — thang đọc FULL năm tầng
+> (HTML/JATS → PDF + `pdfplumber` → đầu đọc chỉ chữ → ảnh trang), luật gap **hai tầng số** (sàn 20/10/≥2 + đích 30–50/15/3,
+> thiếu mẫu thì nói rõ chứ không deadlock), bão hoà săn đuổi **3 vòng**, trần đối thủ **10–15**, tài liệu hãng cần
+> **phiên bản + ngày truy cập**. Mảng **phương pháp** (nhánh con, trần mức, hồ sơ mẫu, nới trần, nhịp kiểm chứng) hỏi tiếp ở vòng 12+.
 
-**Trạng thái:** chờ chủ nhà duyệt · **Nhánh:** `vorflux/v22-peer-mesh` · **HEAD khi viết:** `2add905` (cây sạch)
+**Trạng thái:** bản 2 — cập nhật sau vòng 9–11 · chờ chủ nhà duyệt · **Nhánh:** `vorflux/v22-peer-mesh` · **HEAD khi viết:** `2add905` (cây sạch)
 **Chủ nhà chốt:** *"tạo plan trước, ghi vào plan trước rồi tiếp tục interview"* (#5998)
 
 **Kế hoạch con (chi tiết tới tệp/hàm/test):**
 - `subplans/v27-reading-plan.md` + `-summary.md` — Phạm vi A: lớp đọc nguồn & lớp tìm kiếm (9 việc A-1…A-9, 4 đợt)
 - `subplans/v27-ledger-plan.md` + `-summary.md` — Phạm vi B: sổ nguồn, thang nguồn, hồ sơ việc, cổng chất lượng, pha phản biện (8 mục, 6 đợt)
 - `subplans/v27-flow-plan.md` + `-summary.md` — Phạm vi C: ba mức, bốn pha, điều phối, nhịp & can thiệp, ngân sách, đầu ra tệp, benchmark (C-1…C-8)
-- `v27-owner-answers.md` — biên bản 8 vòng phỏng vấn (#5955–#5998)
+- `v27-owner-answers.md` — biên bản 11 vòng phỏng vấn (#5955–#6014)
 - `v27-adr-research-rework.md` — ADR: quyết định đã chốt + lý do + bằng chứng đo
+- `v27-market-usecases.md` — danh mục 10 usecase thị trường (TM-1…TM-10) + 4 archetype C1–C4/C2′ (chốt vòng 10–11)
+- `v27-full-read-and-pain-count.md` — đo năm đường đọc FULL + luật gap hai tầng số (chốt vòng 11)
 - Mockup giao diện: `designs/v27-run-queue.html`, `v27-progress-milestones.html`, `v27-report-files.html`, `v27-level-approval.html` (+ `designs/design-plan.json`)
 
 ---
@@ -41,6 +47,13 @@
 | 12 | **Đầu ra 100 % là TỆP**; chat **chỉ có báo cáo ngắn của main** (đã làm gì · được gì · chặn gì · vướng gì) | #5973, #5980 |
 | 13 | **Chưa mua khoá tìm kiếm**: keyless trước, **chừa chỗ cắm khoá**, nhiều nhà cung cấp dự phòng, tự thử lại khi bị chặn | #5978 |
 | 14 | Terminal trong box chỉ **danh sách trắng hẹp** (curl/wget tải tệp, chạy script có sẵn của skill, đọc/ghi workspace; **không cài gói**); đường chính vẫn ở phía máy chủ | #5977 (chủ nhà giao tự quyết) |
+| 15 | **Thang đọc FULL năm tầng**: HTML chính chủ → toàn văn XML/JATS → **PDF + `pdfplumber`** → đầu đọc **chỉ cho chữ** → ảnh trang là đường cuối; bảng phải lấy từ bản cấu trúc khi có, bảng dựng lại ghi rõ "bảng trích tự động" | #6009, #6010; đo `probe8.py` |
+| 16 | **Thư viện mới phía MÁY CHỦ**: `pdfplumber` bắt buộc, `pypdfium2` khi cần dựng ảnh trang; **box vẫn không cài gì** | #6011 |
+| 17 | **Luật gap hai tầng số**: sàn **≥20 lượt / ≥10 cùng chủ đề / ≥2 nền tảng + 1 nguồn tổng hợp** để gọi "đã kiểm"; đích **30–50 / ≥15 / ≥3 nền tảng** khi dữ liệu đủ; **thiếu mẫu ⇒ ghi "tín hiệu, chưa kiểm" + lý do, dừng sau trần thử, KHÔNG deadlock** | #6006, #6012, #6013 |
+| 18 | **Bão hoà săn đuổi trích dẫn ở mức 3: 3 vòng** liên tiếp không thêm bài mới (thay bản nháp 2 vòng) | #6008 |
+| 19 | **Thị trường**: giữ đủ **10 usecase TM-1…TM-10**; **TM-3 dùng archetype C2′** (đếm → mẫu → luật); **TM-2 trần đối thủ 10–15** | #5999–#6007 |
+| 20 | **Học thuật/kỹ thuật**: paper cần **mã bài + năm + nơi công bố + tác giả + đã mở toàn văn**; **căn cứ trích nguyên văn từ thân bài**, **số liệu lấy từ bảng/hình**; tài liệu hãng & kho mã cần **phiên bản/tag hoặc commit + ngày truy cập**, ghi rõ là tài liệu hãng | #6002, #6003, #6014 |
+| 21 | **Số ước lượng/khảo sát**: dùng được nhưng phải ghi rõ "ước lượng · ai ước lượng · năm nào · cỡ mẫu nếu có" **và** cần nơi thứ hai cùng nói | #6000 |
 
 ## 2. Vấn đề — số đo hôm nay (2026-09-23, HEAD `2add905`, không dùng khoá API)
 
@@ -60,6 +73,9 @@
 | 12 | **Không có case đo research**: `benchmark/cases/*` rỗng (chỉ `.gitkeep`), `scripts/eval/results/tier0-regression/scores.jsonl` **không tồn tại**, judge runner `NotImplementedError` (`--execute` exit 5) | `benchmark/`, `scripts/eval/judge.py:176` |
 | 13 | Skill chuyên môn **chết**: `grounded-citations` gọi `web_extract` (không tồn tại — tool thật là `web_fetch`) 5 lần, `skill_view` không tự chạy script, không ai đặt `HERMES_HOME`; các skill web/research không nằm trong `DEFAULT_SKILLS` | `tool_contracts.py:64-69`, `skills/catalog.py:7-14` |
 | 14 | Box **không có Internet** mặc định (`iptables -P OUTPUT DROP`), không có `pdftotext/tesseract/pypdf/bs4/lxml`, **có** `curl`, `wget`, `node` | đo trong container; `docs/architecture/sandbox.md:203-210` |
+| 15 | **Đọc FULL có năm đường, chất lượng khác nhau**: HTML chính chủ arXiv **10 bảng** thật (188 707 byte) · Europe PMC JATS **6 bảng** (102 171 byte) · đầu đọc trên PDF 40 895 byte chữ tốt nhưng **bảng MẤT** (0 dòng có `\|`) · `pdfplumber` dựng lại **10 bảng** từ PDF gốc (15 trang, 35 511 ký tự) | `probe8.log`, `probe8.json` (2026-09-23) |
+| 16 | Tiêu đề nhiều tầng của bảng dựng lại **có thể lệch** (ví dụ `train N d d h d d P ϵ model ff k v drop ls steps`) ⇒ khẳng định then chốt dựa vào bảng phải đối chiếu câu văn quanh bảng hoặc mở bản HTML/JATS | `probe8.log` |
+| 17 | Số ước lượng thị trường **không tự kiểm được**: chỉ dùng khi có "ai ước lượng · năm nào · cỡ mẫu" + nơi thứ hai | #6000 (yêu cầu chủ nhà) |
 
 ## 3. Kiến trúc — ba lớp khớp vào nhau thế nào
 
@@ -70,16 +86,21 @@ Bốn tầng nhỏ, mỗi tầng đo được:
 http_request (xin gzip/deflate)  →  reading.decode_body (giải nén, trần chống bom)
    →  html_to_text / passthrough  →  reading.body_check (ok · thin · junk · error-page · wrong-page · empty)
    →  bộ đệm đọc (trong tiến trình, LRU)  →  payload ≤ 20 000 ký tự + ref + nextOffset
-   →  read_source(ref, offset, find)  cắt tiếp KHÔNG tải lại   →  thang đọc r.jina.ai khi PDF/non-2xx/rác/thiếu chữ
+   →  read_source(ref, offset, find)  cắt tiếp KHÔNG tải lại   →  thang đọc khi PDF/non-2xx/rác/thiếu chữ
 ```
 
+- **Thang đọc FULL năm tầng (chốt vòng 11, #6010):** (1) **HTML chính chủ** (arXiv HTML, trang tạp chí/nhà xuất bản, PMC HTML)
+  → (2) **toàn văn XML/JATS** (Europe PMC `fullTextXML`, PMC OA) → (3) **PDF + `pdfplumber`** phía máy chủ (bảng **dựng lại**,
+  ghi rõ "bảng trích tự động") → (4) **đầu đọc** (chỉ **cho chữ** — đo được là mất sạch bảng) → (5) **ảnh trang + đọc ảnh**
+  (đường cuối, cần `pypdfium2`). Lý do có thang, không có một đường: bản HTML giữ **10 bảng** thật, đầu đọc trên cùng bài
+  giữ **0** (`probe8.log`).
 - **Chỉ số rác** là thứ biến "thành công giả" thành chuyện máy phát hiện được: rác đo **0,52–0,55**, văn bản thật **0,0000**.
 - `read_source` là công cụ trả lời đúng câu #5966 ("mở thật + lấy đoạn liên quan"): đọc trọn `docs.python.org` bằng **6 lời gọi** thay vì 1 lời gọi 7 %.
 - Tìm kiếm: nhiều truy vấn một lượt, khử trùng theo URL chuẩn hoá, `site:`/`tbs`/`lang`, cache 5 phút, retry/backoff; ba chân keyless (Firecrawl + OpenAlex + Europe PMC/Crossref) và **chỗ cắm khoá** Brave/Tavily (mã đã có) để sau này chỉ cần đặt biến.
 - **Giao cho B:** hàm thuần `reading.body_check(...)` để `source_verify` ra `ok` / `fakeSuccess` / `unreachable` — B không chép lại luật.
 
 ### 3.2 Lớp B — nghiên cứu có sổ (đợt 3–4)
-- **Sổ nguồn** (`source_ledger`): mỗi khẳng định ↔ URL ↔ **đoạn trích nguyên văn** ↔ ngày lấy ↔ tầng ↔ **nguồn tin gốc** ↔ đã mở bản gốc chưa.
+- **Sổ nguồn** (`source_ledger`): mỗi khẳng định ↔ URL ↔ **đoạn trích nguyên văn** ↔ ngày lấy ↔ tầng ↔ **nguồn tin gốc** ↔ đã mở bản gốc chưa ↔ **loại bản đã đọc** (`html` · `jats` · `pdf-table` · `reader-text` · `page-image`) ↔ **phiên bản/tag hoặc commit + ngày truy cập** (nhóm học thuật/kỹ thuật, #6014).
 - **Thang nguồn 4 tầng + tầng 0 "tài liệu chủ nhà"** cứng trong mã, đổi bằng `BOXFOX_SOURCE_TIERS`; nhánh `official-social` cho trang chính thức của cơ quan trên mạng xã hội.
 - **Ba nhóm hồ sơ việc** + usecase con có trường bắt buộc riêng (bảng khai báo, sửa được không cần đụng luật).
 - **Cổng chất lượng riêng** `research_quality.py` (13 mã lỗi + câu khắc phục) — **không** nhét citation vào `evidence_gate` (D-18); công tắc ba mức kiểu `BOXFOX_PLAN_SOURCES_GATE`; cổng chạy **trước** khi ghi hồ sơ, và ghi sổ hỏng chỉ **log rồi đi tiếp**.
@@ -113,20 +134,21 @@ chủ nhà hỏi → main đọc tín hiệu, chốt MỘT mức + hồ sơ vi�
 
 | Đợt | Nội dung | Mã việc | Phụ thuộc | **Điều kiện dừng / cách đo** |
 |---|---|---|---|---|
-| **1** | Lớp đọc sống lại: giải nén `Content-Encoding`, `reading.body_check`, thang đọc dự phòng, ba công tắc | A-1, A-2, A-3, A-9 | — | Ba trang gzip ra **junk 0,0000** (`textChars` ≈ 8 264 / 8 079 / 16 455); 403 (`thuvienphapluat.vn`) và PDF arXiv đọc được; `vbpl.vn`/`moh.gov.vn` **không** ra `ok`; `BOXFOX_WEB_READER=thin` xanh **toàn bộ** test cũ |
+| **1** | Lớp đọc sống lại: giải nén `Content-Encoding`, `reading.body_check`, **thang đọc FULL năm tầng (HTML/JATS → PDF + `pdfplumber` → đầu đọc chỉ chữ → ảnh trang)**, ba công tắc | A-1, A-2, A-3, A-9, **A-10** | — | Ba trang gzip ra **junk 0,0000** (`textChars` ≈ 8 264 / 8 079 / 16 455); 403 (`thuvienphapluat.vn`) và PDF arXiv đọc được (**bảng dựng lại** kèm nhãn "bảng trích tự động"); HTML arXiv `1706.03762v7` giữ **10 bảng**; `vbpl.vn`/`moh.gov.vn` **không** ra `ok`; `BOXFOX_WEB_READER=thin` xanh **toàn bộ** test cũ |
 | **2** | Đọc trọn tài liệu: bộ đệm + `read_source(offset/find)` + `file_read` có `offset` | A-4, A-5 | 1 | `docs.python.org` (113 936 ký tự) đọc trọn bằng **6 lời gọi**, ghép lại đúng bản gốc; tệp 100 000 ký tự trong box đọc trọn; ảnh PNG giữ nguyên hình dạng cũ |
-| **3** | Sổ nguồn + thang nguồn 4 tầng (+ tầng 0 tài liệu chủ nhà, nhánh `official-social`) | B-1, B-2 | 1 | Chạy lại 5 URL đã đo ⇒ `fakeSuccess`/`unreachable` đúng ca; sổ ghi/đọc được 3 dòng sống; test `test_source_ledger_store.py`, `test_source_tiers.py` xanh |
-| **4** | Ba nhóm hồ sơ việc + cổng chất lượng + `dossier_write` (phòng `.research/`) | B-3a, B-3b, C-2 | 3 | 6 ca hàm thuần + **3 ca vi phạm bị từ chối và KHÔNG tạo tệp**; hồ sơ nháp ra đủ 3 tệp (`v1-*.md`, `sources.jsonl`, `sources.md`) |
-| **5** | Ba mức + `research_brief` + skill `research-team` + SOP bốn pha + nhịp báo mốc | C-1, C-3, C-4 | 4 | Một lượt thật chạy mức 2 và một lượt mức 3; mốc báo xuất hiện đúng nhịp; bảng trần theo mức khai được; ca `R1–R4` xanh |
+| **3** | Sổ nguồn + thang nguồn 4 tầng (+ tầng 0 tài liệu chủ nhà, nhánh `official-social`) + trường **loại bản đã đọc** và **phiên bản/commit/ngày truy cập** | B-1, B-2 | 1 | Chạy lại 5 URL đã đo ⇒ `fakeSuccess`/`unreachable` đúng ca; sổ ghi/đọc được 3 dòng sống **có `bản đã đọc`**; test `test_source_ledger_store.py`, `test_source_tiers.py` xanh |
+| **4** | Ba nhóm hồ sơ việc + cổng chất lượng + `dossier_write` (phòng `.research/`) + bảng khai báo thị trường (**TM-2 trần 10–15**, **TM-3 archetype C2′** hai tầng số + luật "không đủ mẫu ⇒ tín hiệu, chưa kiểm") | B-3a, B-3b, C-2 | 3 | 6 ca hàm thuần + **3 ca vi phạm bị từ chối và KHÔNG tạo tệp**; hồ sơ nháp ra đủ 3 tệp (`v1-*.md`, `sources.jsonl`, `sources.md`); ca gap thiếu mẫu ghi đúng "tín hiệu, chưa kiểm" |
+| **5** | Ba mức + `research_brief` + skill `research-team` + SOP bốn pha + nhịp báo mốc + săn đuổi trích dẫn mức 3 (**bão hoà 3 vòng**) | C-1, C-3, C-4 | 4 | Một lượt thật chạy mức 2 và một lượt mức 3; mốc báo xuất hiện đúng nhịp; bảng trần theo mức khai được; ca `R1–R4` xanh |
 | **6** | Pha phản biện độc lập: vai `research-review`, `research_verify`, sổ `research_verifications`, nhãn "CHƯA ĐẠT" | B-4 | 4 | 4 ca sống: `ok` ⇒ giao hồ sơ; `revise` ⇒ sửa **một** vòng; còn `revise` ⇒ giao kèm nhãn do **máy** viết; phản biện giả (không có phiên con hợp lệ) bị chặn |
 | **7** | Can thiệp giữa lượt (`session_steers`, `drain_steers`, `cancel_child`) + ngân sách/duyệt việc lớn + hai mặt giao diện | C-5, C-6 | 5 | Gõ "dừng nhánh luật" giữa lượt ⇒ nhánh dừng ở bước kế, có dòng xác nhận; việc lớn ra thẻ duyệt đúng mức + trần; `extend_turn_budget` theo mức chạy |
-| **8** | Sửa skill chết + tài liệu lệch + bộ ca `R1–R7` + oracle máy + ghi sổ theo dõi | B-5, B-6, C-7, C-8 | 1–7 | `test_skill_tool_names.py` xanh (không còn `web_extract`); hai tài liệu lệch đã sửa; `scripts/eval/research_checks.py` chạy được và **số** ghi vào `docs/tracking/test-rounds.md` |
+| **8** | Sửa skill chết + tài liệu lệch + bộ ca `R1–R9` + oracle máy + ghi sổ theo dõi | B-5, B-6, C-7, C-8 | 1–7 | `test_skill_tool_names.py` xanh (không còn `web_extract`); hai tài liệu lệch đã sửa; `scripts/eval/research_checks.py` chạy được và **số** ghi vào `docs/tracking/test-rounds.md` |
 
 Ghi chú thi công:
 - Đợt 1–2 và đợt 3–4 có thể **chạy song song theo tệp** (A sở hữu `web.py`/`worker.py`; B sở hữu module + bảng SQLite mới); chỉ đợt 4 cần `reading.body_check` của A.
 - Mọi sửa tệp `backend/**`, `docs/tracking/*` giữ **đúng CRLF/LF của tệp gốc**; dùng `patch.py` cho tệp CRLF.
 - Test đầy đủ chạy từ **gốc repo** với `--deselect backend/tests/unit/test_terminal_tools.py::test_terminal_exec_echo`; frontend: `VITE_BOX_API_URL=http://localhost:8081 npx vitest run` + `tsc -b --noEmit`.
 - Không rebuild box (thêm op box là an toàn vì `worker.py` đi kèm tiến trình harness), không restart/kill tiến trình chủ nhà.
+- **Phụ thuộc mới (chốt #6011):** `pdfplumber` bắt buộc, `pypdfium2` khi cần dựng ảnh trang — cài **phía máy chủ harness** (ghi vào danh sách phụ thuộc khi thi công đợt 1); **box không cài gì**.
 
 ## 5. Đo "thật kỹ" — bộ ca và oracle
 
@@ -135,10 +157,12 @@ Ghi chú thi công:
 | R1 | Đọc trọn tài liệu dài: 113 936 ký tự bằng 6 lời gọi, không có đoạn nào là điều hướng | Ghép `offset` ⇒ so với bản tải trực tiếp; tỉ lệ điều hướng < ngưỡng |
 | R2 | Trang nén: Nhân Dân/Báo Chính phủ/VietnamPlus ra văn bản sạch | `junkRatio` < 0,01 và có ≥ 1 câu thân bài |
 | R3 | Không tin `http=200`: `vbpl.vn` 404 giả, `moh.gov.vn` 165–259 byte | `body_check` trả `error-page`/`thin`, **không** `ok` |
-| R4 | Bão hoà săn đuổi trích dẫn ở mức 3 | Dừng sau **2 vòng liên tiếp không thêm bài mới** hoặc chạm trần bài (nháp: 30/50/100 theo mức) |
+| R4 | Bão hoà săn đuổi trích dẫn ở mức 3 | Dừng sau **3 vòng liên tiếp không thêm bài mới** (chốt #6008) hoặc chạm trần bài (nháp: 30/50/100 theo mức) |
 | R5 | Hai nguồn độc lập: ba bài chép cùng một tin ⇒ **một** nguồn | Sổ nguồn đếm theo `nguồn tin gốc`, không đếm theo URL |
 | R6 | Bản gốc vs báo chính thống: khẳng định về nội dung văn bản phải trỏ bản gốc **hoặc** ghi rõ "chưa mở được bản gốc" | `research_quality` mã lỗi tương ứng |
 | R7 | Giao hồ sơ: tệp ra đủ, chat chỉ có báo cáo ngắn + hàng tệp; phản biện `revise` để lại nhãn | Kiểm tệp trên đĩa + phần đầu hồ sơ + sổ `research_verifications` |
+| R8 | **Bảng biểu**: paper có bản HTML/JATS ⇒ bảng lấy từ bản cấu trúc; chỉ có PDF ⇒ `pdfplumber` dựng lại **kèm nhãn "bảng trích tự động"**; khẳng định dựa vào bảng có đối chiếu câu văn quanh bảng hoặc bản cấu trúc | Đếm bảng trong hồ sơ + trường *loại bản đã đọc* trong sổ (`html`/`jats`/`pdf-table`) |
+| R9 | **Gap hai tầng số**: đủ sàn ⇒ "đã kiểm"; chưa đủ sàn mà hết trần thử ⇒ ghi **"tín hiệu, chưa kiểm" + lý do**, **không** treo lượt | `research_quality` mã lỗi tương ứng + không có vòng lặp thử vô hạn |
 
 **Trung thực về đo lường:** `benchmark/cases/*` đang rỗng và judge runner là `NotImplementedError` ⇒ vòng này **tự dựng** oracle máy (`scripts/eval/research_checks.py`), **không** tuyên bố "đã có benchmark research". Mọi số phải ghi **ngày đo + tệp đo**.
 
@@ -165,27 +189,34 @@ Không có màn hình mới; hồ sơ đọc bằng **panel Tệp workspace có 
 - **F19**: không được nói "đã có benchmark research".
 - Test đếm công cụ phải cập nhật: 25 → **31** (B) — cộng `read_source`/`paper_citations` của A ⇒ con số cuối chốt khi thi công đợt 1–3.
 
-## 8. [MỞ — chờ phỏng vấn] — chương trình phỏng vấn vòng 9+
+## 8. Trạng thái phỏng vấn (ba mảng của #5998)
 
-Chủ nhà đã chốt: *"còn thị trường và paper/kỹ thuật, phương pháp thì chưa… tạo plan trước, ghi vào plan trước rồi tiếp tục interview"*. Các mục dưới đây **không chặn** đợt 1–3 (lớp đọc và sổ nguồn dựng trước, giá trị nháp), chốt xong chỉ đổi **bảng khai báo**.
+Chủ nhà đã chốt: *"còn thị trường và paper/kỹ thuật, phương pháp thì chưa… tạo plan trước, ghi vào plan trước rồi tiếp tục interview"*.
 
-**Nhóm câu hỏi chính (3 mảng chủ nhà nêu):**
-1. **Thị trường (nhóm 3)**: nguồn gốc của giá là gì (trang giá, báo cáo thị trường, hồ sơ doanh nghiệp)? Trường bắt buộc (`ngày lấy giá`, khu vực, phân khúc, đơn vị tiền)? Xử lý số **ước lượng/khảo sát** thế nào? Bao nhiêu kênh thì "đủ kỹ"?
-2. **Học thuật & kỹ thuật (nhóm 2)**: trường bắt buộc của paper (DOI/mã, năm, venue, tác giả — có bắt **mở PDF** không)? Ngưỡng **bão hoà** khi săn đuổi trích dẫn? Tài liệu hãng theo **phiên bản** thế nào? Bảng biểu trong PDF (đầu đọc mất cấu trúc bảng) xử lý ra sao?
-3. **Phương pháp**: bốn pha chạy cụ thể ra sao; **số nhánh con tối đa** theo mức; **trần thời gian/chi phí mặc định** mỗi mức; hình dạng hồ sơ mẫu mỗi mức; cách chủ nhà **nới trần** giữa việc; nhịp kiểm chứng.
-
-**Câu hỏi kỹ thuật đã có sẵn phương án (A giao lại, cần chủ nhà xác nhận):**
-
-| # | Câu hỏi | Khuyến nghị |
+| Mảng | Trạng thái | Chốt ở đâu |
 |---|---|---|
-| MỞ-A | Ngân sách đọc theo mức và trần mỗi đoạn | Giữ **trần 20 000 ký tự/đoạn** (trần ngữ cảnh là ràng buộc cứng); khác nhau ở **số lần đọc** |
-| MỞ-B | Có **bật mạng trong box** để dùng `browser_use`/terminal cho cổng JS (`moh.gov.vn`, `vbpl.vn`) không? | **Không** vòng này: box kín, `browser_use` trả lỗi có mã trong < 5 s; giữ cho vòng sau khi có số đo số trang JS cần mở |
-| MỞ-C | Mua khoá tìm kiếm nào trước | **Brave rồi Tavily** (mã đã có, 0 dòng mã mới) — biến "một chân keyless" thành ba chân; Exa/Parallel để sau |
-| MỞ-D | "Bão hoà" săn đuổi trích dẫn: ngưỡng nào, và săn đuổi là **công cụ riêng** hay tham số? | **2 vòng liên tiếp không thêm bài mới** hoặc chạm trần bài; công cụ riêng `paper_citations` (dễ đếm vòng) |
-| MỞ-E | Mở skill web/research nào | Mở `blocked-page-recovery` → `rss-feeds`; `duckduckgo-search`/`searxng-search` **đóng vĩnh viễn** kèm lý do đo được; `pdf`/`scrapling` sau |
-| MỞ-F | Bộ đệm đọc có ghi ra đĩa không | **Không** — trong bộ nhớ tiến trình (không để nội dung không tin cậy trên đĩa) |
-| MỞ-G | **Trần lượt cho mức 3**: trần lượt hiện tại 1 200 s có thể chặn việc "có thể tới cả ngày" | Cần **một D-number mới** cho lượt research dài — **không** nới trần chờ của con |
-| MỞ-H | **Trần chi phí USD**: router có `cost`/`costBasis` nhưng harness **chưa nhận** trường đó | Nêu trần bằng **giây + token** trước; USD để mở sau khi harness nhận được số |
+| **Thị trường** | **ĐÃ CHỐT** (vòng 9–10) | §1 hàng 19 & 21; `v27-market-usecases.md` (TM-1…TM-10, C2′) |
+| **Học thuật & kỹ thuật** | **ĐÃ CHỐT** (vòng 9, 11) | §1 hàng 15, 18, 20; `v27-full-read-and-pain-count.md` |
+| **Đọc FULL tài liệu** | **ĐÃ CHỐT** (vòng 11) | §1 hàng 15, 16; §3.1 thang năm tầng |
+| **Đếm nỗi đau (gap)** | **ĐÃ CHỐT** (vòng 10–11) | §1 hàng 17; luật hai tầng số |
+| **Phương pháp** | **CÒN MỞ — vòng 12+** | Xem dưới |
+
+**Phương pháp — năm câu hỏi vòng 12 (đang hỏi):** số nhánh con tối đa theo mức · trần thời gian mặc định mỗi mức (+ D-number
+cho lượt research dài, MỞ-G) · hình dạng hồ sơ mẫu mỗi mức · cách chủ nhà nới trần giữa việc · nhịp kiểm chứng (pha 4 chạy
+cho mức nào). Vòng sau (nếu cần): bảng MỞ-A…MỞ-H còn lại + hai mục nhỏ của thị trường (ảnh chụp trang giá).
+
+**Bảy câu kỹ thuật đã có sẵn phương án (chờ chủ nhà xác nhận hoặc sửa):**
+
+| # | Câu hỏi | Khuyến nghị | Trạng thái |
+|---|---|---|---|
+| MỞ-A | Ngân sách đọc theo mức và trần mỗi đoạn | Giữ **trần 20 000 ký tự/đoạn** (trần ngữ cảnh là ràng buộc cứng); khác nhau ở **số lần đọc** | Chờ xác nhận |
+| MỞ-B | Có **bật mạng trong box** để dùng `browser_use`/terminal cho cổng JS (`moh.gov.vn`, `vbpl.vn`) không? | **Không** vòng này: box kín, `browser_use` trả lỗi có mã trong < 5 s; giữ cho vòng sau khi có số đo số trang JS cần mở | Chờ xác nhận |
+| MỞ-C | Mua khoá tìm kiếm nào trước | **Brave rồi Tavily** (mã đã có, 0 dòng mã mới) — biến "một chân keyless" thành ba chân; Exa/Parallel để sau | Chờ xác nhận |
+| MỞ-D | "Bão hoà" săn đuổi: ngưỡng nào, và săn đuổi là **công cụ riêng** hay tham số? | **3 vòng** liên tiếp không thêm bài mới (chốt #6008) hoặc chạm trần bài; công cụ riêng `paper_citations` (dễ đếm vòng) | **Đã chốt ngưỡng**; công cụ riêng chờ xác nhận |
+| MỞ-E | Mở skill web/research nào | Mở `blocked-page-recovery` → `rss-feeds`; `duckduckgo-search`/`searxng-search` **đóng vĩnh viễn** kèm lý do đo được; `pdf`/`scrapling` sau | Chờ xác nhận |
+| MỞ-F | Bộ đệm đọc có ghi ra đĩa không | **Không** — trong bộ nhớ tiến trình (không để nội dung không tin cậy trên đĩa) | Chờ xác nhận |
+| MỞ-G | **Trần lượt cho mức 3**: trần lượt hiện tại 1 200 s có thể chặn việc "có thể tới cả ngày" | Cần **một D-number mới** cho lượt research dài — hỏi ở vòng 12 (số cụ thể theo trần mức 3); **không** nới trần chờ của con | **Đang hỏi vòng 12** |
+| MỞ-H | **Trần chi phí USD**: router có `cost`/`costBasis` nhưng harness **chưa nhận** trường đó | Nêu trần bằng **giây + token** trước; USD để mở sau khi harness nhận được số | Chờ xác nhận |
 
 ## 9. Không làm trong vòng này
 
@@ -193,7 +224,7 @@ Chủ nhà đã chốt: *"còn thị trường và paper/kỹ thuật, phương 
 - Không mở tool song song trong một step; không cho con sinh con; không cho con research quyền ghi tự do (chỉ `dossier_write`/`source_add` có kiểm).
 - Không UI mới ngoài bốn mặt ở §6; không light-theme; không thêm khối/dải quanh câu trả lời cuối.
 - Không bật mạng cho box, không cài gói, không rebuild box, không restart tiến trình chủ nhà.
-- Không thêm thư viện ngoài (`zlib`, `gzip`, `html.parser`, `urllib` là đủ); không dùng `sources=`/`page=` của Firecrawl (đo được: 400); không thêm giá trị cho enum `source`.
+- **Thư viện**: chỉ thêm **`pdfplumber`** phía **máy chủ** (+ `pypdfium2` khi cần dựng ảnh trang) — chủ nhà cho phép ở #6011; phần còn lại dùng chuẩn (`zlib`, `gzip`, `html.parser`, `urllib`); **box không cài gì**; không dùng `sources=`/`page=` của Firecrawl (đo được: 400); không thêm giá trị cho enum `source`.
 - Không hứa đọc được **trang chỉ chạy JS** ở vòng này.
 
 ## 10. Rủi ro và cách chặn
@@ -201,7 +232,7 @@ Chủ nhà đã chốt: *"còn thị trường và paper/kỹ thuật, phương 
 | Rủi ro | Cách chặn |
 |---|---|
 | Mức 3 dài hơn trần lượt ⇒ lượt chết giữa lúc nghiên cứu | MỞ-G: xin D-number mới cho lượt research dài; `extend_turn_budget` theo mức; **không** nới trần chờ của con |
-| Ba mảng còn mở được chốt muộn ⇒ phải sửa nhiều chỗ | Mọi luật hồ sơ nằm trong **bảng khai báo**; đợt 1–3 độc lập với ba mảng đó |
+| Mảng **phương pháp** còn mở, chốt muộn ⇒ phải sửa nhiều chỗ | Mọi luật hồ sơ nằm trong **bảng khai báo**; đợt 1–3 độc lập với mảng đó; phần đã chốt (thị trường, học thuật, đọc FULL) đã vào bản 2 |
 | Trần 8 000 ký tự của con vẫn cắt hồ sơ | Đường chính là **ghi tệp** (`dossier_write`) + `read_source` đọc theo đoạn; trần câu trả lời chỉ dùng cho báo cáo ngắn |
 | Nguồn keyless chập chờn (arXiv 406, Crossref 429, Semantic Scholar 429) | Retry/backoff + nhiều nhà cung cấp + ghi rõ nguồn nào chập chờn; Semantic Scholar **chỉ bật khi có khoá** |
 | Cổng nguồn quá chặt làm việc nhỏ chậm | Cổng có **công tắc ba mức** (`enforce`/`warn`/`off`) và **mức 1 chỉ cần đọc thật**, không bắt hai nguồn |
@@ -210,7 +241,7 @@ Chủ nhà đã chốt: *"còn thị trường và paper/kỹ thuật, phương 
 
 ## 11. Điều kiện bắt đầu thi công
 
-1. Chủ nhà **duyệt kế hoạch này** (đợt 1–3 có thể bắt đầu ngay sau khi duyệt vì không phụ thuộc ba mảng mở).
-2. Ba mảng **thị trường / học thuật-kỹ thuật / phương pháp** tiếp tục được phỏng vấn; chốt xong thì cập nhật bảng khai báo và **ghi vào kế hoạch bản kế tiếp** trước khi thi công các đợt phụ thuộc.
+1. Chủ nhà **duyệt kế hoạch này** (bản 2) — đợt 1–3 có thể bắt đầu ngay sau khi duyệt vì không phụ thuộc mảng phương pháp.
+2. Mảng **phương pháp** phỏng vấn tiếp ở **vòng 12+**; chốt xong thì cập nhật **bảng khai báo** và re-submit **bản 3** trước khi thi công các đợt phụ thuộc (5–7). *Thị trường và học thuật/kỹ thuật đã chốt ở vòng 9–11 và đã nằm trong bản 2 này.*
 3. Mỗi đợt xong: chạy test đầy đủ, ghi số vào `docs/tracking/test-rounds.md`, cập nhật `docs/tracking/bug-register.md` nếu phát hiện lỗi, ghi quyết định mới vào `docs/tracking/owner-decisions.md`.
 

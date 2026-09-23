@@ -26,7 +26,7 @@
 | Không cổng nào kiểm nguồn, không vòng phản biện nào cho nghiên cứu | — |
 | **Không có case đo** | thư mục ca benchmark rỗng; judge còn `NotImplementedError` |
 
-## Đã chốt (14 quyết định qua 8 vòng phỏng vấn — ghi đủ trong ADR kèm kế hoạch)
+## Đã chốt (25 quyết định qua 11 vòng phỏng vấn — ghi đủ trong ADR kèm kế hoạch)
 
 Ba mức nghiên cứu với **một con số mức cho cả việc** (mơ hồ ⇒ mức 2) · **đọc nguồn bắt buộc ở mọi mức** (mở thật, lấy
 đoạn liên quan, lưu trích nguyên văn) · **bốn pha** bản đồ → chốt → đào sâu → **phản biện độc lập** · mức 3 luôn **săn
@@ -39,19 +39,31 @@ gộp một con · **báo tiến độ theo mốc** (mỗi nhánh con xong hoặ
 **ngân sách do main đề xuất, việc lớn có nút duyệt** · **đầu ra 100 % là TỆP**, chat chỉ có báo cáo ngắn · **chưa mua
 khoá tìm kiếm** (keyless trước, chừa chỗ cắm khoá, nhiều chân dự phòng) · terminal trong box chỉ **danh sách trắng hẹp**.
 
+**Chốt bổ sung ở vòng 9–11 (bản 2):** **thang đọc FULL năm tầng** — HTML chính chủ → toàn văn XML/JATS → **PDF + `pdfplumber`**
+→ đầu đọc **chỉ cho chữ** → ảnh trang là đường cuối (đo được: bản HTML giữ 10 bảng, đầu đọc trên cùng bài giữ **0**);
+**luật gap hai tầng số** — sàn **20 lượt/10 cùng chủ đề/≥2 nền tảng + 1 nguồn tổng hợp**, đích **30–50/15/≥3** khi dữ liệu
+đủ, **thiếu mẫu ⇒ ghi "tín hiệu, chưa kiểm" + lý do và đi tiếp** (không deadlock); **bão hoà săn đuổi trích dẫn 3 vòng**;
+**trần đối thủ 10–15**; paper cần **mã bài + năm + nơi công bố + tác giả + đã mở toàn văn**, căn cứ **trích thân bài**, số
+liệu **lấy từ bảng/hình**; tài liệu hãng & kho mã cần **phiên bản/tag hoặc commit + ngày truy cập**; số ước lượng phải ghi
+**ai ước lượng · năm nào · cỡ mẫu** + nơi thứ hai cùng nói.
+
 ## Kế hoạch đổi gì, theo ba lớp
 
 **Lớp đọc (đợt 1–2).** Tải thô nay xin nén và **giải nén** (có trần chống bom nén). Một lớp **kiểm thân bài** mới phán
 sáu kết luận — đủ, thiếu chữ, rác, trang lỗi, sai trang, rỗng — dựa trên **chỉ số rác đo được** (rác 0,52–0,55 so với
-văn bản thật 0,0000). **Thang đọc dự phòng** gọi đầu đọc khi PDF, lỗi HTTP, rác hoặc thiếu chữ, và **chỉ nhận** nếu bản
-đầu đọc tốt hơn. Một **bộ đệm đọc** giữ bản đã tải để **đọc theo đoạn**: tài liệu 113 936 ký tự đọc trọn bằng 6 lời gọi
-thay vì một lời gọi 7 %; tệp trong box cũng đọc theo đoạn. Tìm kiếm: nhiều truy vấn một lượt, khử trùng, lọc theo
-`site:`/thời gian/ngôn ngữ, cache ngắn, tự thử lại, và **ba chân keyless** + chỗ cắm khoá (Brave/Tavily đã có mã).
+văn bản thật 0,0000). **Thang đọc FULL năm tầng** (chốt #6010): HTML chính chủ → toàn văn XML/JATS → **PDF + `pdfplumber`
+phía máy chủ** → đầu đọc **chỉ cho chữ** → ảnh trang là đường cuối; bảng dựng lại phải mang nhãn **"bảng trích tự động"**.
+Một **bộ đệm đọc** giữ bản đã tải để **đọc theo đoạn**: tài liệu 113 936 ký tự đọc trọn bằng 6 lời gọi thay vì một lời
+gọi 7 %; tệp trong box cũng đọc theo đoạn. Tìm kiếm: nhiều truy vấn một lượt, khử trùng, lọc theo `site:`/thời gian/ngôn
+ngữ, cache ngắn, tự thử lại, và **ba chân keyless** + chỗ cắm khoá (Brave/Tavily đã có mã).
 
 **Lớp sổ nguồn (đợt 3–4, 6).** Mỗi khẳng định vào **sổ nguồn**: URL · đoạn trích nguyên văn · ngày lấy · tầng ·
-**nguồn tin gốc** · đã mở bản gốc chưa. **Thang nguồn 4 tầng** (+ tầng riêng cho tài liệu chủ nhà, + nhánh "trang chính
-thức của cơ quan") cài cứng trong mã, đổi bằng biến môi trường. **Ba nhóm hồ sơ việc** với usecase con có trường bắt
-buộc riêng. **Cổng chất lượng riêng cho nghiên cứu** chạy **trước khi ghi hồ sơ**, có công tắc ba mức, không đụng vào
+**nguồn tin gốc** · đã mở bản gốc chưa · **loại bản đã đọc** (`html`/`jats`/`pdf-table`/`reader-text`/`page-image`) ·
+**phiên bản/tag hoặc commit + ngày truy cập** cho tài liệu hãng & kho mã. **Thang nguồn 4 tầng** (+ tầng riêng cho tài
+liệu chủ nhà, + nhánh "trang chính thức của cơ quan") cài cứng trong mã, đổi bằng biến môi trường. **Ba nhóm hồ sơ việc**
+với usecase con có trường bắt buộc riêng; bảng khai báo thị trường giữ **10 usecase TM-1…TM-10**, **TM-2 trần đối thủ
+10–15**, **TM-3 dùng archetype C2′** (đếm → mẫu → luật hai tầng số, thiếu mẫu ghi "tín hiệu, chưa kiểm").
+**Cổng chất lượng riêng cho nghiên cứu** chạy **trước khi ghi hồ sơ**, có công tắc ba mức, không đụng vào
 cổng bằng chứng hiện có. Cuối cùng là **pha phản biện**: một con riêng mở lại nguồn, kiểm cả dòng khai "nguồn tin gốc",
 kết thúc bằng một dòng máy đọc được; **`revise` chặn MỘT vòng**, còn `revise` thì hồ sơ ra kèm nhãn **"CHƯA ĐẠT" do máy viết**.
 
@@ -79,33 +91,33 @@ mới; hồ sơ đọc bằng panel Tệp có sẵn; câu trả lời cuối v�
 
 | Đợt | Việc | Dừng khi |
 |---|---|---|
-| 1 | Giải nén + kiểm thân bài + thang đọc dự phòng | ba trang nén sạch; 403/PDF đọc được; trang giả **không** ra "ok" |
+| 1 | Giải nén + kiểm thân bài + **thang đọc FULL năm tầng** (HTML/JATS/PDF+`pdfplumber`/đầu đọc/ảnh trang) | ba trang nén sạch; 403/PDF đọc được **kèm bảng**; HTML arXiv giữ **10 bảng**; trang giả **không** ra "ok" |
 | 2 | Bộ đệm + đọc theo đoạn (host và box) | đọc trọn tài liệu 113 936 ký tự bằng 6 lời gọi |
-| 3 | Sổ nguồn + thang nguồn 4 tầng | chạy lại 5 URL đã đo ra đúng "giả"/"không tới được" |
-| 4 | Hồ sơ việc + cổng chất lượng + ghi hồ sơ ra tệp | 3 ca vi phạm bị **từ chối và không tạo tệp** |
-| 5 | Ba mức + bốn pha + nhịp báo mốc | một lượt mức 2 và một lượt mức 3 chạy sống |
+| 3 | Sổ nguồn + thang nguồn 4 tầng + **loại bản đã đọc & phiên bản/commit** | chạy lại 5 URL đã đo ra đúng "giả"/"không tới được" |
+| 4 | Hồ sơ việc + cổng chất lượng + ghi hồ sơ ra tệp + **bảng thị trường TM-2 10–15 / TM-3 C2′** | 3 ca vi phạm bị **từ chối và không tạo tệp**; gap thiếu mẫu ghi đúng "tín hiệu, chưa kiểm" |
+| 5 | Ba mức + bốn pha + nhịp báo mốc + **bão hoà săn đuổi 3 vòng** | một lượt mức 2 và một lượt mức 3 chạy sống |
 | 6 | Pha phản biện độc lập + nhãn chưa đạt | 4 ca sống; phản biện giả bị chặn |
 | 7 | Chỉ thị giữa lượt + duyệt ngân sách + hai mặt giao diện | gõ "dừng nhánh luật" ⇒ nhánh dừng ở bước kế |
-| 8 | Sửa skill chết, hai tài liệu lệch, bộ ca + oracle | script chấm chạy được, số vào sổ theo dõi |
+| 8 | Sửa skill chết, hai tài liệu lệch, bộ ca **R1–R9** + oracle | script chấm chạy được, số vào sổ theo dõi |
 
 ## Còn mở — sẽ phỏng vấn tiếp
 
-**Thị trường** (nguồn giá, trường bắt buộc, số ước lượng, ngưỡng "đủ kỹ") · **học thuật & kỹ thuật** (trường bắt buộc
-của paper, ngưỡng bão hoà, tài liệu hãng theo phiên bản, bảng biểu trong PDF) · **phương pháp** (cách chạy bốn pha, số
-nhánh tối đa theo mức, trần mặc định, hình dạng hồ sơ mẫu).
+**Phương pháp** (mảng duy nhất còn mở — vòng 12+): số nhánh con tối đa theo mức · trần thời gian mặc định mỗi mức
+(+ D-number cho lượt research dài) · hình dạng hồ sơ mẫu mỗi mức · cách chủ nhà nới trần giữa việc · nhịp kiểm chứng.
 
-Cộng bảy câu kỹ thuật đã có sẵn phương án đề xuất: trần đọc mỗi đoạn · có bật mạng trong box cho cổng JS không · mua
-khoá nào trước · ngưỡng bão hoà và công cụ săn đuổi · mở skill web nào · bộ đệm có ghi ra đĩa không · **trần lượt cho
-mức 3** và **trần chi phí USD**.
+Cộng bảy câu kỹ thuật MỞ-A…MỞ-H đã có sẵn phương án đề xuất (trần đọc mỗi đoạn · bật mạng trong box · mua khoá nào trước ·
+công cụ săn đuổi · mở skill web nào · bộ đệm có ghi ra đĩa không · trần lượt cho mức 3 · trần chi phí USD) — xem §8 kế hoạch.
+*Thị trường, học thuật/kỹ thuật và đọc FULL đã chốt ở vòng 9–11.*
 
 ## Ràng buộc không phá
 
 Không thêm citation vào cổng bằng chứng hiện có · không khối/dải/huy hiệu quanh câu trả lời cuối · không nới trần ngữ
 cảnh (đường dài là đọc theo đoạn) · không tool song song trong một bước · không cho con sinh con · không thêm giá trị
-trạng thái mới · không nâng cổng lên `enforce` · không bật mạng cho box, không cài gói, không dựng lại box, không
-restart tiến trình chủ nhà · cổng chạy **trước khi ghi** và ghi sổ hỏng chỉ **log rồi đi tiếp**.
+trạng thái mới · không nâng cổng lên `enforce` · không bật mạng cho box, không cài gói **trong box** (máy chủ chỉ thêm
+`pdfplumber`), không dựng lại box, không restart tiến trình chủ nhà · cổng chạy **trước khi ghi** và ghi sổ hỏng chỉ
+**log rồi đi tiếp**.
 
 ## Điều kiện bắt đầu
 
-Duyệt kế hoạch ⇒ đợt 1–3 chạy được ngay (không phụ thuộc ba mảng còn mở). Ba mảng kia phỏng vấn tiếp; chốt xong thì
-cập nhật **bảng khai báo** và ghi vào bản kế hoạch kế tiếp trước khi thi công các đợt phụ thuộc.
+Duyệt kế hoạch (bản 2) ⇒ đợt 1–3 chạy được ngay (không phụ thuộc mảng phương pháp). Mảng phương pháp phỏng vấn tiếp ở
+vòng 12+; chốt xong thì cập nhật **bảng khai báo** và re-submit **bản 3** trước khi thi công các đợt phụ thuộc.

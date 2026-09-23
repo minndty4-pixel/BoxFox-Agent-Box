@@ -394,3 +394,18 @@ Owner đã chốt: *"tạo plan trước, ghi vào plan trước rồi tiếp t�
 ### Bàn giao UI (cho main dispatch design subagent)
 
 Ba khung cần mockup ở tab Design trước khi build C-5/C-2: (1) **composer khi lượt đang chạy** — ô nhập vẫn gõ được, nút "Gửi cho lượt đang chạy", dòng chú thích "áp dụng ở bước kế", dòng xác nhận sau khi gửi; (2) **dòng tiến độ giữa lượt** — trông như câu trả lời ngắn trong timeline (không khối, không badge), kèm trạng thái "chờ nhánh nào"; (3) **hàng tệp hồ sơ** — liên kết `.research/...` trong câu trả lời cuối mở đúng tệp trong Files panel, nhãn "hồ sơ nghiên cứu". Mockup cũ có thể tham chiếu: `/code/.plans/designs/lv24-answer-*.html`, `/code/.plans/designs/turns-*.html`.
+
+---
+
+## Phụ lục — điều chỉnh đã chốt ở vòng 9–11 (#6008–#6014, 2026-09-23)
+
+> Bản kế hoạch chính `v1-research-rework.md` (bản 2) đã cập nhật.
+
+1. **M3 đã có đáp án:** bão hoà săn đuổi trích dẫn ở mức 3 = **3 vòng** liên tiếp không thêm bài mới (#6008).
+2. **Phương pháp vẫn mở (vòng 12+):** số nhánh con tối đa theo mức · trần thời gian mặc định mỗi mức (+ D-number cho lượt
+   research dài, MỞ-G) · hình dạng hồ sơ mẫu mỗi mức · cách chủ nhà nới trần giữa việc · nhịp kiểm chứng (pha 4 chạy cho
+   mức nào). Mọi bảng trần trong tệp này **vẫn là nháp** cho tới khi chủ nhà chốt.
+3. **Thang đọc FULL năm tầng** (chốt #6010, #6011) ⇒ nhịp tiến độ và hồ sơ có thêm trạng thái "đang mở bản cấu trúc
+   (HTML/JATS/PDF)".
+4. **Gap TM-3** theo archetype C2′ (hai tầng số + luật chống deadlock) — nhịp báo mốc phải nói rõ khi một gap rơi vào
+   "tín hiệu, chưa kiểm".

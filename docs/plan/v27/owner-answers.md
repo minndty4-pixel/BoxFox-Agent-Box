@@ -1,6 +1,6 @@
 # Vòng 27 — Biên bản quyết định của chủ nhà (research agent + công cụ tìm kiếm)
 
-Nguồn: 8 vòng phỏng vấn bằng `ask_user`, decision #5955–#5997 (2026-09-23). Đây là bản ghi chính thức để
+Nguồn: 11 vòng phỏng vấn bằng `ask_user`, decision #5955–#6014 (2026-09-23). Đây là bản ghi chính thức để
 viết ADR + kế hoạch. Số đo kèm theo nằm ở `/var/tmp/v27/feasibility-probes.md` và các `probe*.log`.
 
 ## 1. Mục tiêu chủ nhà đặt ra
@@ -69,11 +69,39 @@ viết ADR + kế hoạch. Số đo kèm theo nằm ở `/var/tmp/v27/feasibilit
 ### 2.10 Khoá API (#5978)
 - **Chưa mua**: dùng keyless trước, **chừa sẵn chỗ cắm khoá**, kèm hàng dự phòng nhiều nhà cung cấp + tự thử lại khi bị chặn.
 
-## 3. CÒN ĐỂ MỞ — sẽ phỏng vấn tiếp (chủ nhà yêu cầu rõ ở #5998)
-Chủ nhà nói: *"chúng ta mới xong cho phần luật, y tế,... còn thị trường và paper/kỹ thuật, phương pháp thì chưa. tạo plan trước, ghi vào plan trước rồi tiếp tục interview, vì đây là big update đặc biệt quan trọng"*.
-1. **Nhóm 3 — Thị trường**: nguồn gốc là gì (trang giá, báo cáo thị trường, hồ sơ doanh nghiệp?), trường bắt buộc (ngày lấy giá? khu vực? phân khúc?), cách xử lý số liệu ước lượng/khảo sát, ngưỡng "đủ kỹ".
-2. **Nhóm 2 — Học thuật & kỹ thuật**: trường bắt buộc cho paper (DOI/mã, năm, venue, tác giả), luật săn đuổi trích dẫn ở mức 3 (bão hoà bao nhiêu vòng), tài liệu hãng/phiên bản, cách đọc PDF/bảng biểu.
-3. **Phương pháp nghiên cứu**: bốn pha (bản đồ → chốt → đào sâu → phản biện) chạy cụ thể thế nào; số nhánh con tối đa theo mức; trần thời gian/chi phí mặc định cho từng mức; nhịp kiểm chứng; hình dạng mẫu của hồ sơ từng mức; cách chủ nhà nới trần.
+### 2.11 Thị trường (nhóm 3) — chốt ở vòng 9–10 (#5999–#6001, #6005–#6007)
+- **Nguồn gốc "thị trường"**: tuỳ yêu cầu từng việc — *"có thể tất cả phần trên [trang giá, báo cáo thị trường, hồ sơ doanh nghiệp], tùy thuộc vào yêu cầu của user, vì thị trường rất rộng… cần dần làm rõ, thu hẹp nó lại"* (#5999).
+- **"Thị trường" bao gồm cả GAP**: *"vấn đề mà người dùng hay gặp phải, hay than nhiều, đó cũng tính là thị trường để research"* (#5999).
+- **Số ước lượng/khảo sát**: dùng được nhưng **phải ghi rõ** "là ước lượng · ai ước lượng · năm nào · cỡ mẫu nếu có", và **cần nơi thứ hai cùng nói** (#6000).
+- **Danh mục usecase**: chủ nhà giao tôi tổng hợp ⇒ **10 mục TM-1…TM-10** (hai trục: ngành × loại việc) + **4 archetype C1–C4**; chủ nhà **giữ đủ 10 mục** (#6001, #6005).
+- **Nỗi đau (gap)**: tiêu chí *"rất rất chặt… nhiều lượt phản ánh, k đơn giản là 5. Có thể lên tới hàng chục hoặc hàng trăm"*, nhưng *"ta k muốn agent đọc và tìm 100 phản ánh"* ⇒ chốt hướng **ba tầng ĐẾM → LẤY MẪU → LUẬT** (#6006).
+- **Trần đối thủ (TM-2)**: **10–15** đơn vị, *"vì thị trường Việt Nam nhiều đơn vị nhỏ"* (#6007).
+
+### 2.12 Học thuật & kỹ thuật (nhóm 2) — chốt ở vòng 9 và 11 (#6002–#6003, #6008, #6014)
+- **Trường bắt buộc của paper**: **mã bài (DOI/arXiv) + năm + nơi công bố + tác giả + phải mở được toàn văn** (#6002).
+- **Căn cứ trong paper**: **trích nguyên văn từ thân bài** (phương pháp/kết quả/kết luận); **số liệu phải lấy từ bảng hoặc hình**, không lấy từ tóm tắt (#6003).
+- **Bão hoà săn đuổi trích dẫn (mức 3)**: dừng sau **3 vòng liên tiếp không thêm bài mới** (#6008; bản nháp 2 vòng bị chủ nhà nới thành 3).
+- **Tài liệu hãng và kho mã**: **bắt buộc** ghi **phiên bản/tag hoặc commit + ngày truy cập**, và **ghi rõ là tài liệu hãng** (#6014).
+- **Đọc bảng biểu**: xem §2.13 — bảng phải lấy từ bản có cấu trúc hoặc dựng lại từ PDF, không chấp nhận bản đầu đọc làm mất bảng.
+
+### 2.13 Đọc FULL tài liệu + "đếm nỗi đau" không đọc 100 phản ánh — chốt ở vòng 10–11 (#6009–#6013)
+- **Thang đọc FULL (chủ nhà chốt dùng đủ thang, #6010):**
+  1. **HTML chính chủ** (arxiv.org/html, trang tạp chí/nhà xuất bản, PMC HTML) — bảng thật, chữ thật;
+  2. **Toàn văn XML/JATS** (Europe PMC `fullTextXML`, PMC OA) — bảng thật, mạnh cho y sinh;
+  3. **PDF + `pdfplumber`** phía máy chủ — bảng **dựng lại** (ghi rõ "bảng trích tự động");
+  4. **Đầu đọc** (r.jina.ai) — **chỉ cho chữ** (đo được: mất sạch bảng);
+  5. **Ảnh trang + đọc ảnh** — đường cuối, cho PDF scan.
+- **Thư viện mới phía máy chủ (#6011):** thêm **`pdfplumber`** (đo: 15 trang, 35 511 ký tự, **10 bảng** dựng lại được) và **`pypdfium2`** nếu cần dựng ảnh trang. Box vẫn **không cài gì**.
+- **Luật gap — HAI TẦNG SỐ (hoà giải #6012 + #6013):**
+  - **Sàn "đã kiểm"** (giữ nguyên, #6013): mẫu **≥20 lượt** trên **≥2 nền tảng**, trong đó **≥10 lượt cùng chủ đề**, cộng **1 nguồn tổng hợp** (báo chí/khảo sát/kênh tiếp nhận).
+  - **Đích lấy mẫu** khi dữ liệu đủ (#6012): **30–50 lượt**, **≥15 lượt cùng chủ đề**, trải trên **≥3 nền tảng**.
+  - **Không đủ mẫu ⇒ phải biết, không deadlock** (#6012): ghi **"tín hiệu, chưa kiểm"** + lý do cụ thể, thử **có trần** (số nền tảng/vòng thử hữu hạn, chốt khi thi công) rồi **kết luận và đi tiếp**, tuyệt đối không lặp vô hạn.
+
+## 3. CÒN ĐỂ MỞ — sẽ phỏng vấn tiếp
+Chủ nhà nói ở #5998: *"chúng ta mới xong cho phần luật, y tế,... còn thị trường và paper/kỹ thuật, phương pháp thì chưa"*.
+**Thị trường: ĐÃ CHỐT** (§2.11). **Học thuật & kỹ thuật: ĐÃ CHỐT** (§2.12, §2.13 phần đọc).
+1. **Phương pháp nghiên cứu (vòng 12+):** số nhánh con tối đa theo mức; trần thời gian/chi phí mặc định cho từng mức (+ D-number cho lượt research dài); hình dạng mẫu hồ sơ từng mức; cách chủ nhà nới trần giữa việc; nhịp kiểm chứng (pha 4 chạy cho mức nào).
+2. **Bảy câu kỹ thuật MỞ-A…MỞ-H** (bảng §8 của kế hoạch) — đã có sẵn phương án khuyến nghị, chờ chủ nhà xác nhận hoặc sửa.
 
 ## 4. Số đo đã có (không phải giả định)
 Chi tiết ở `/var/tmp/v27/feasibility-probes.md`; tóm tắt:

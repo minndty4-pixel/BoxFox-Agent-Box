@@ -1,8 +1,8 @@
 # ADR — Cải tổ research agent và công cụ tìm kiếm (Vòng 27)
 
 **Trạng thái:** các phần đã chốt (luật, y tế, tài chính; thang nguồn; số nguồn; đầu ra; điều phối) **đã được chủ nhà
-duyệt bằng 8 vòng phỏng vấn** (#5955–#5997). Ba mảng **thị trường**, **học thuật/kỹ thuật**, **phương pháp** còn mở —
-chủ nhà yêu cầu *"tạo plan trước, ghi vào plan trước rồi tiếp tục interview"* (#5998).
+duyệt bằng 11 vòng phỏng vấn** (#5955–#6014). **Thị trường và học thuật/kỹ thuật: ĐÃ CHỐT** (vòng 9–11, xem §C-bis).
+Mảng **phương pháp** còn mở — chủ nhà yêu cầu *"tạo plan trước, ghi vào plan trước rồi tiếp tục interview"* (#5998).
 
 **Ngày:** 2026-09-23 · **Nhánh:** `vorflux/v22-peer-mesh` · **HEAD khi viết:** `2add905`
 
@@ -52,7 +52,20 @@ con research làm việc nặng** (#5957).
 | C-8 | **Chưa mua khoá tìm kiếm**: dùng keyless trước, **chừa sẵn chỗ cắm khoá**, hàng dự phòng nhiều nhà cung cấp, tự thử lại khi bị chặn | Chủ nhà chốt (#5978) | Phải thiết kế lớp nhà cung cấp có thể cắm thêm, và chọn keyless làm mặc định |
 | C-9 | **Terminal trong box chỉ danh sách trắng hẹp** (curl/wget tải tệp, chạy script có sẵn của skill, đọc/ghi workspace; **không cài gói**); đường chính vẫn là công cụ phía máy chủ | Chủ nhà bỏ qua, giao tôi tự quyết (#5977) | Không mở shell tự do cho con research |
 
-## D. Bằng chứng đo được (đợt đo 2026-09-23, không dùng khoá API)
+## C-bis. Chốt bổ sung vòng 9–11 — thị trường, học thuật/kỹ thuật, đọc FULL, đếm nỗi đau (#5999–#6014)
+
+| ID | Quyết định | Vì sao | Hệ quả |
+|---|---|---|---|
+| A-6 | **Thang đọc FULL năm tầng**: HTML chính chủ → toàn văn XML/JATS → **PDF + `pdfplumber`** → đầu đọc **chỉ cho chữ** → ảnh trang là đường cuối | Đo `probe8.py`: bản HTML arXiv giữ **10 bảng thật**; Europe PMC giữ **6 bảng** trong XML; đầu đọc trên PDF **mất sạch bảng** (0 dòng có `\|`); `pdfplumber` dựng lại **10 bảng**; chủ nhà chốt #6010 | Thang đọc nằm **trong** thang dự phòng đợt 1–3; khẳng định dựa vào bảng phải ghi nguồn bảng; bảng dựng lại ghi "bảng trích tự động" |
+| A-7 | **Thêm hai thư viện phía MÁY CHỦ**: `pdfplumber` (bắt buộc) + `pypdfium2` (khi cần dựng ảnh trang) | Chủ nhà cho phép #6011; box vẫn **không cài gì** (đường chính ở máy chủ) | Sửa câu "không thêm thư viện ngoài" của kế hoạch v1: thư viện ngoài **được phép ở máy chủ**, vẫn **cấm ở box** |
+| B-11 | **Luật gap hai tầng số**: **sàn** ≥20 lượt / ≥10 cùng chủ đề / ≥2 nền tảng + 1 nguồn tổng hợp để gọi "gap đã kiểm" (#6013); **đích** 30–50 lượt / ≥15 / ≥3 nền tảng khi dữ liệu đủ (#6012) | Hai câu trả lời của chủ nhà ở vòng 10 và 11 nhìn nhau: ngưỡng giữ nguyên, *nỗ lực lấy mẫu* thì chặt hơn | Máy đếm được cả hai tầng; hồ sơ ghi rõ đang ở tầng nào |
+| B-12 | **Thiếu mẫu ⇒ phải biết, không deadlock**: ghi **"tín hiệu, chưa kiểm"** + lý do cụ thể; số nền tảng/vòng thử **có trần**; hết trần ⇒ kết luận và đi tiếp | Chủ nhà nói rõ ở #6012 (*"không đủ mẫu thì phải biết để tránh deadlock"*) | Cần một bộ đếm thử có trần trong `research_quality` + câu khắc phục "không đủ mẫu vì …" |
+| B-13 | **Nhóm học thuật/kỹ thuật**: paper cần **mã bài + năm + nơi công bố + tác giả + đã mở toàn văn** (#6002) và **căn cứ trích từ thân bài, số liệu lấy từ bảng/hình** (#6003); tài liệu hãng & kho mã cần **phiên bản/tag hoặc commit + ngày truy cập**, ghi rõ là tài liệu hãng (#6014) | Chủ nhà chốt hai vòng 9 và 11 | Sổ nguồn thêm trường *loại bản đã đọc* (`html` · `jats` · `pdf-table` · `reader-text` · `page-image`) + trường phiên bản/commit |
+| C-10 | **Danh mục thị trường giữ đủ 10 usecase TM-1…TM-10**; **TM-3 dùng archetype C2′** (đếm → mẫu → luật); **TM-2 trần đối thủ 10–15** | Chủ nhà chốt #6005, #6006, #6007 (*"thị trường Việt Nam nhiều đơn vị nhỏ"*) | Bảng khai báo usecase sửa: C2′ + trần 10–15 (không sửa luật trong mã) |
+| C-11 | **Bão hoà săn đuổi trích dẫn ở mức 3: 3 vòng liên tiếp không thêm bài mới** (không phải 2) | Chủ nhà chốt #6008 | Ngưỡng nằm trong bảng khai báo; ca `R4` chấm theo 3 vòng |
+| C-12 | **Số ước lượng/khảo sát chỉ dùng khi ghi rõ** "ước lượng · ai ước lượng · năm nào · cỡ mẫu nếu có" **+ nơi thứ hai cùng nói** | Chủ nhà chốt #6000 | Trường bắt buộc của nhóm thị trường (TM-4/TM-5/TM-8) |
+
+
 
 | Số đo | Kết quả |
 |---|---|
@@ -68,6 +81,12 @@ con research làm việc nặng** (#5957).
 | arXiv API / Europe PMC / Crossref / Semantic Scholar | 200 (arXiv chập chờn 301/406) / 200 / chập chờn 429→200 / **429 lặp lại** |
 | Firecrawl keyless + `site:` | 200; `site:vbpl.vn …` chạy; kết quả tiếng Việt lẫn YouTube/Facebook |
 | Hợp đồng delegation | con nhận goal+context(16.000)+expect(2.000); **trả 8.000**; research **không có `file_write`** |
+| **Đo bổ sung vòng 10–11 — `probe8.py`, 2026-09-23** | |
+| arXiv HTML chính chủ (`arxiv.org/html/1706.03762v7`) | **200**, 188.707 byte, tiêu đề đúng, **10 `<table>`** + 9 `<figure>`, có MathML |
+| Europe PMC `fullTextXML` (PMC13524156) | **200**, 102.171 byte, 22 `<sec>`, **6 `<table-wrap>`** |
+| Đầu đọc r.jina.ai trên PDF arXiv | 200, 40.895 byte chữ tốt, **0 dòng có `\|`** ⇒ **bảng mất** |
+| `pdfplumber` trên PDF gốc (venv riêng) | 15 trang, 35.511 ký tự, **10 bảng** `[9×39] [11×59] …`; dòng tiêu đề nhiều tầng **có thể lệch** ⇒ phải ghi "bảng trích tự động" |
+
 
 ## E. Hệ quả kiến trúc (tóm tắt)
 
@@ -82,10 +101,11 @@ con research làm việc nặng** (#5957).
 
 ## F. Câu hỏi còn mở (sẽ phỏng vấn tiếp)
 
-1. **Thị trường**: nguồn gốc hợp lệ, trường bắt buộc (ngày lấy giá, khu vực, phân khúc), xử lý số ước lượng.
-2. **Học thuật/kỹ thuật**: trường bắt buộc của paper, ngưỡng bão hoà khi săn đuổi trích dẫn, tài liệu hãng/phiên bản.
-3. **Phương pháp**: cách chạy bốn pha, số nhánh tối đa theo mức, trần thời gian/chi phí mặc định, hình dạng hồ sơ từng mức,
-   cách chủ nhà nới trần.
+1. **Phương pháp** (mảng duy nhất còn mở, vòng 12+): số nhánh con tối đa theo mức; trần thời gian/chi phí mặc định cho
+   từng mức (+ D-number cho lượt research dài); hình dạng mẫu hồ sơ từng mức; cách chủ nhà nới trần giữa việc; nhịp
+   kiểm chứng (pha 4 chạy cho mức nào).
+2. **Bảy câu kỹ thuật MỞ-A…MỞ-H** (§8 kế hoạch) — đã có phương án khuyến nghị, chờ chủ nhà xác nhận hoặc sửa.
+3. **Hai mục nhỏ của thị trường** (không chặn): ảnh chụp trang giá kèm hồ sơ; luật cross-nhóm (đã có #5995 làm mặc định).
 
 ## G. Ràng buộc không được phá
 

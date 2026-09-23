@@ -73,3 +73,5 @@
 ## Bàn giao UI
 
 Phạm vi A không có mặt giao diện mới và **không cần** dispatch design subagent. Chỉ hai chạm chữ: câu ghi chú nhóm `webResearch` ở `frontend/src/components/settings/HarnessEditor.tsx:40-41` (thêm `read_source`) và fixture tương ứng trong `HarnessEditor.test.tsx:34`. Chỉ báo "đang đọc nguồn" thuộc Phạm vi C.
+
+> **Cập nhật vòng 11 (#6010–#6011):** thang đọc nay là **năm tầng** — HTML chính chủ → toàn văn XML/JATS → PDF + `pdfplumber` → đầu đọc **chỉ cho chữ** → ảnh trang; thêm việc **A-10**; bão hoà săn đuổi = **3 vòng** (#6008). Chi tiết ở Phụ lục cuối `v27-reading-plan.md`.

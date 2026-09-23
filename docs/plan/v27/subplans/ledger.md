@@ -512,3 +512,21 @@ Chủ nhà nguyên văn (#5998): *"chúng ta mới xong cho phần luật, y t�
 
 
 
+
+---
+
+## Phụ lục — điều chỉnh đã chốt ở vòng 9–11 (#6002–#6014, 2026-09-23)
+
+> Bản kế hoạch chính `v1-research-rework.md` (bản 2) đã cập nhật; mục dưới đây **bổ sung** chi tiết cho tệp này.
+
+1. **Sổ nguồn thêm hai trường:** *loại bản đã đọc* (`html` · `jats` · `pdf-table` · `reader-text` · `page-image`) và
+   *phiên bản/tag hoặc commit + ngày truy cập* (bắt buộc cho nhóm học thuật/kỹ thuật — tài liệu hãng, kho mã; #6014).
+2. **Nhóm 2 — học thuật/kỹ thuật, trường bắt buộc:** mã bài (DOI/arXiv) · năm · nơi công bố · tác giả · **đã mở toàn văn**;
+   căn cứ **trích nguyên văn từ thân bài** (phương pháp/kết quả/kết luận); **số liệu lấy từ bảng/hình** (#6002, #6003).
+3. **Nhóm 3 — thị trường:** giữ **10 usecase TM-1…TM-10** (#6005); **TM-2 trần đối thủ 10–15** (#6007);
+   **TM-3 dùng archetype C2′** = ba tầng ĐẾM → LẤY MẪU → LUẬT với **hai tầng số** (sàn 20 lượt/10 cùng chủ đề/≥2 nền tảng
+   + 1 nguồn tổng hợp — #6013; đích 30–50/≥15/≥3 nền tảng — #6012) và **luật chống deadlock** (hết trần thử ⇒ ghi
+   "tín hiệu, chưa kiểm" + lý do cụ thể rồi đi tiếp — #6012).
+4. **Số ước lượng:** chỉ dùng khi ghi rõ "ước lượng · ai ước lượng · năm nào · cỡ mẫu nếu có" **và** có nơi thứ hai
+   cùng nói (#6000).
+5. Bảng khai báo `v27-market-usecases.md` §Phần 3 đã cập nhật `C2′` + hai tầng số + `tran_thu_nen_tang: 3`.
