@@ -2100,12 +2100,27 @@ giao diện; danh sách lỗi đầy đủ ở `bug-register.md` §6.34 — BUG-
   (`PlanReviewCard.VERIFY_CHIP`), `usePlanFiles.clearReviewFacts()`, bỏ **6 khoá i18n chết**. Cố ý để nguyên: hai khối notice "mode
   unknown" (test ghim **mã đơn lẻ**, gộp là đổi số notice), hai bản regex host giữa `plan_quality.py` (thuần) và runtime, biểu thức nhãn
   `v{n}` ở hai component, và kiểu xuống dòng của các tệp mới.
-- **Số đo sau hậu kiểm**: toàn bộ backend **1218 passed, 1 deselected in 212.42 s** (trước: 1210; tám ca mới); frontend **126 tệp /
+- **Số đo sau hậu kiểm**: toàn bộ backend **1219 passed, 1 deselected in 377.87 s** (trước: 1210; chín ca mới); frontend **126 tệp /
   1113 ca đạt** (trước: 1086) + `tsc -b --noEmit` exit 0; `test_plan_routes` 22, `test_plan_approval_ledger` 13, `test_plan_quality` 15,
-  `test_plan_sources_gate` 12, `test_plan_verify` 23.
+  `test_plan_sources_gate` 13, `test_plan_verify` 23.
 - **Ba ca then chốt chứng minh ĐỎ TRƯỚC / XANH SAU** (hoàn nguyên từng bản vá rồi chạy lại, `/var/tmp/v25c/redcheck.py`): BUG-80,
   BUG-81, BUG-82 mỗi ca **1 failed** khi thiếu bản vá và xanh khi có. Đây là bằng chứng ca kiểm **thật sự** ghim hành vi, không chỉ
   chạy qua.
+- **Vòng kiểm thử ĐỘC LẬP (subagent `testing-25`, harness riêng 3124/3125/3126, Vite 3142/3143/3144)**: bộ đối kháng mức mô-đun
+  **90/90 đạt** (nhóm A–E) trên `ef4517d` **và** trên `9f2fb95`; bộ thứ hai **55/55** cho ba luật mới (F: verdict ở DÒNG CUỐI; G: cổng ở
+  chỗ GHI + hằng số công tắc; H: chuẩn hoá theo tiền tố); bộ mức API trên ba harness sống **0 FAIL** (10 nhóm: `gates`, `missing-owner`,
+  `status`, `last-turn`, `wrong-version`, `verified`, `changes`, `busy`, `verify-route`, `repeat`). Mặt giao diện đo bằng trình duyệt thật:
+  **cùng một mặt `retry-model-calls@v4` (`revise`) khoá ở `enforce` (`disabled:true`, lý do `plan-not-reviewed`) và MỞ ở `warn`** — tab Plan
+  đi đúng theo công tắc của harness; cửa sổ "đang đọc sổ" cũng khoá (lấy mẫu 120 ms suốt 2,3 s đầu); đổi bản xoá mặt + bản nháp của bản cũ
+  (hàng sổ nhận `note: ""`); popup điều kiện đóng bằng `Escape`/bấm ngoài và **giữ** chữ đã gõ; nút *Run review session* hỏng nay hiện lỗi;
+  câu `wake` của harness in **nguyên văn**; duyệt mặt `ok` mở **lượt thật** (`turn …#3`, `resumed 1`, event `[Tab Plan] …`). Ghi hình
+  `/code/.generated_artifacts/recordings/v25r2_plan_states.webm`.
+- **Vòng kiểm thử tìm thêm MỘT lỗ (H7) và nó đã được sửa**: cổng nguồn quét **cả payload** `tool_end` nên host do chính model đặt vào
+  **tham số** được tính là "công cụ đã trả về" — trái docstring của hàm và trái câu từ chối của cổng. Bản vá `a93ebd6`: cổng chỉ đọc
+  `result`, kèm ca `test_a_host_the_model_named_only_in_its_own_call_args_is_not_evidence` (**đỏ trước / xanh sau**). Hai điểm khác của
+  vòng kiểm thử được **ghi nhận, không sửa** (có lý do): (i) khi `/plans/status` lỗi, mặt `unknown` vẫn **mở** nút Duyệt — cố ý, vì
+  `planState.ts` cấm đọc `unknown` thành `none` (khoá oan); (ii) tab Plan tự chọn lại identity theo ý định `plan` cũ sau mỗi lần làm mới
+  manifest (mã có sẵn từ trước, không thuộc vòng này) nên dải kết quả chỉ hiện ~5 s trước khi bị thay — nợ ghi lại.
 - **Hai lỗi `probe` tìm ra mà vòng thi công không thấy** — đáng nhớ cho lần sau: (i) một cổng đặt ở chỗ **hỏi** mà không đặt ở chỗ
   **ghi** thì fail-open trên đường thứ hai (`ask_user`); (ii) `str.lstrip()` cắt theo **tập ký tự** nên hai chỗ "cùng một luật" vẫn nói
   hai chuyện khác nhau (`web.dev` vs `docs.example.com`) — muốn chắc thì gom một hàm dùng chung, đừng chép luật.
