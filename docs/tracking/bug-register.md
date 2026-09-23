@@ -1412,7 +1412,7 @@ xoá `WORKER` trùng và `CAPTURE_TARGET_KEYS` không ai dùng.
 traversal mà model có thể tự bịa (schema chỉ kiểm `required`), và `test_system_media_tools.py` đang ghim hành vi đó.
 
 **Còn lại sau vòng này (ghi để không trôi).** `docker cp` bản `capture.py` mới vào box là bước **của vòng nghiệm thu sống** (chưa
-nạp lúc viết sổ): bản trong container vẫn là `19893dde…`, bản repo là `b24541cd…`; bản cũ **vẫn chạy đúng** vì nó bỏ qua khoá `label`.
+nạp lúc viết sổ): bản trong container vẫn là `19893dde…`, bản repo là `b24541cd…`; bản cũ **vẫn chạy đúng** vì nó bỏ qua khoá `label`. Vòng nghiệm thu sống đã nạp bản mới (`docker cp`, `19893dde…` → `b24541cd…`), nhưng tiến trình `ide-proxy` đang chạy vẫn giữ mô-đun cũ trong RAM — nên nhãn chỉ vào tên tệp sau khi box được dựng lại; chi tiết ở `docs/tracking/test-rounds.md` § *Vòng 23*, Phần 5.
 Mặt **"tệp đã thay đổi"** (diff/hunk) và **"agent verify"** (vai hậu kiểm thật: test/review/verify/main, báo cáo md + ảnh) chuyển
 sang vòng sau theo D-19/D-20; nợ cũ BUG-66/BUG-68/BUG-69, câu bị ghim > 200 ký tự bị cắt giữa từ, và bốn khoá `subagent*` trong
 `en.ts` vẫn nguyên.
