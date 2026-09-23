@@ -28,7 +28,7 @@ TOOL_GROUPS = [
      'tools': ['web_search', 'web_fetch'],
      'alwaysOn': False},
     {'key': 'delegationPlans',
-     'tools': ['delegate_task', 'session_search', 'write_plan', 'journal_write', 'journal_brief'],
+     'tools': ['delegate_task', 'session_search', 'write_plan', 'plan_verify', 'journal_write', 'journal_brief'],
      'alwaysOn': False},
     {'key': 'peerMesh',
      'tools': ['peer_read', 'await_children'],

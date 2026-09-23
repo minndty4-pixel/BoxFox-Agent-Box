@@ -63,8 +63,16 @@ const statusClient: PlanStatusClient = {
       reviewStale: false,
       indexAvailable: true,
       evaluation: null,
+      verification: { state: 'unknown', at: null, criticSessionId: null, issues: [] },
+      ownership: { sessionId: null },
     }) satisfies PlanStatusReport,
-  submitReview: async () => ({ review: null, forwarded: true }),
+  submitReview: async () => ({
+    review: null,
+    forwarded: true,
+    recorded: true,
+    resumed: null,
+    turnId: null,
+  }),
 }
 
 async function mount(repository: PlanRepository) {

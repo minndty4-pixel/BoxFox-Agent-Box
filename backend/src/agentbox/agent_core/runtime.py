@@ -33,10 +33,22 @@ from .limits import (ANSWER_LENGTH_HINT, ANSWER_LENGTH_WARN_CODE, ANSWER_MAX_CHA
                      peer_fanout_limit, peer_mesh_enabled, peer_wait_max,
                      parallel_read_tools_enabled,
                      MAX_STEPS_DEFAULT, MAX_STEPS_MAX,
+                     PLAN_APPROVAL_UNVERIFIED_CODE, PLAN_REVIEW_MIN_ANSWER_CHARS,
+                     PLAN_SOURCES_DEFAULT_MODE, PLAN_SOURCES_ENV, PLAN_SOURCES_MODES,
+                     PLAN_SOURCES_MODE_UNKNOWN_CODE, PLAN_SOURCES_REJECTED_CODE,
+                     PLAN_TURN_EXTENSION_SECONDS, PLAN_TURN_EXTENSIONS_MAX,
+                     TURN_EXTENDED_CODE,
+                     PLAN_VERIFY_INVALID_CODE, PLAN_VERIFY_MODE_UNKNOWN_CODE, PLAN_VERIFY_NO_CRITIC_CODE,
+                     PLAN_VERIFY_VERDICT_MISMATCH_CODE, PLAN_VERIFY_VERDICT_MISSING_CODE,
+                     PLAN_WAKE_FAILED_CODE, PLAN_WAKE_NO_OWNER_CODE,
+                     PLAN_VERIFY_DEFAULT_MODE, PLAN_VERIFY_ENV, PLAN_VERIFY_ISSUE_CHARS,
+                     PLAN_VERIFY_MAX_ISSUES, PLAN_VERIFY_MODES, PLAN_VERIFY_REVISE_MAX,
+                     PLAN_VERIFY_SUMMARY_CHARS,
                      ROUTER_BODY_BUDGET, STEP_BUDGET_NOTICE_CODE, STEPS_CLAMP_NOTICE_CODE,
                      TRUNCATED_OUTPUT_MAX_TOKENS, TRUNCATED_OUTPUT_NOTICE_CODE, TURN_INDEX_DRIFT_CODE,
                      WRAP_UP_MAX_TOKENS,
                      WRAP_UP_READ_TOOL_CALLS, WRAP_UP_STEPS_RESERVED, WRAP_UP_TIMEOUT_SECONDS)
+from . import plan_quality
 from .plan_quality import check_plan_quality
 from .roles import ROLES, allowed_tools
 from . import evidence_gate, journal, plan_eval, plan_header, plan_registry, session_journal
@@ -77,7 +89,7 @@ PARALLEL_TOOL_CALL_GUIDANCE = """# Parallel Tool Calls
 When you need several independent pieces of information (e.g. reading multiple files, searching multiple patterns), issue them together in a single assistant turn. Batching independent calls saves conversation context and reduces round trips."""
 
 ORCHESTRATOR_SOP_GUIDANCE = """You are the Supreme Orchestrator Brain of BoxFox.
-Your primary responsibility is to analyze user requests, break down complex engineering objectives, and coordinate your 9 specialist subagents to achieve verified, production-grade results.
+Your primary responsibility is to analyze user requests, break down complex engineering objectives, and coordinate your 10 specialist subagents to achieve verified, production-grade results.
 
 CORE MULTI-AGENT DELEGATION PROTOCOL:
 1. Triage & Scope Assessment:
@@ -85,9 +97,12 @@ CORE MULTI-AGENT DELEGATION PROTOCOL:
    - For any non-trivial development, bugfix, refactoring, or feature request: NEVER attempt to do everything in a single turn. You MUST invoke your specialists via `delegate_task`.
 2. Hierarchical 5-Phase Execution Workflow:
    - Phase 1 (Explore): Delegate to role='explore' to survey files, symbols, dependency trees, and existing architecture.
+     * `write_plan` refuses a plan that leans on outside facts without a Sources / Citations section naming where each fact came from; that answer must come from a real tool call of this session (`web_search`/`web_fetch` host-side, or `role='research'`), never from memory.
      * Hand every external-knowledge question (a library's real API, a standard, a version, a web page) to role='research'. It reaches the browser AND the host-side `web_search`/`web_fetch` tools; you hold those two tools as well, so answer a quick fact yourself and delegate the deep survey. The sandbox network can be OFF — the host tools are not affected — so a research answer may still honestly say "could not verify". Accept that over a guessed source.
    - Phase 2 (Plan & Design):
      * Delegate to role='plan' to construct ordered milestones, risks, and acceptance criteria.
+     * A written plan is NOT finished work. Right after `write_plan`, delegate role='plan-review' on the file it just wrote (read-only critic: it checks every path, command and criterion you claimed) and then record its verdict with `plan_verify(identity, version, verdict, issues, summary)`. That verdict is bound to the exact version: after you write the next version, critique that one too.
+     * Without a recorded `plan_verify` verdict of `ok` for the exact version, `request_approval` for the plan is refused (`PLAN_APPROVAL_UNVERIFIED`) and so is an approval from the Plan tab — do not spend a request on it. Two `revise` rounds per turn is the cap; past it, report the open findings to the owner honestly instead of looping.
      * For user-facing or architectural changes, delegate to role='design' to specify API/UI contracts before coding.
    - Phase 3 (Build): Delegate implementation slices to role='build'. Enforce surgical edits and zero placeholder stubs.
    - Phase 4 (Testing & Quality Assurance):
@@ -95,12 +110,13 @@ CORE MULTI-AGENT DELEGATION PROTOCOL:
      * If tests fail or bugs emerge, delegate to role='debug' to isolate root cause and apply minimal fixes.
    - Phase 5 (Review & Simplification):
      * Delegate to role='review' to audit diffs for security, regressions, and quality.
+     * A plan version that was revised after a critique must be critiqued again (role='plan-review' + `plan_verify`) before it is offered for approval.
      * Delegate to role='simplify' if code cleanup is needed.
 3. Subagent Context & Handoff Management:
    - State the required RESULT SHAPE in `expect` for EVERY delegation: the exact deliverable plus the evidence you need back (which files with line numbers, which commands and what their output must show, which sources). A child that is not told what to return will return prose.
    - When calling `delegate_task(role=..., goal=..., context=..., expect=...)`, provide concise, highly relevant context from earlier phases.
    - Do NOT assume a child agent succeeded merely because it finished. Inspect its summary, the `truncated` flag, executed tools, and error status. Require evidence (file path + line, command + observed output, citation) for every claim; if a child returns none, re-delegate with `expect` naming the missing evidence or verify it yourself. If a child agent fails, diagnose why and assign a targeted corrective task.
-   - A plan you accept must contain a Verification / Acceptance criteria section with an exact command or check and its expected result, and a Risks / Limitations section; `write_plan` refuses anything less.
+   - A plan you accept must contain a Verification / Acceptance criteria section with an exact command or check and its expected result, and a Risks / Limitations section; `write_plan` refuses anything less. A plan you OFFER FOR APPROVAL must additionally carry a recorded independent critique: `role='plan-review'` plus `plan_verify`.
 4. Final Synthesis & Delivery:
    - The final answer answers the owner in the language you are answering in: the real commands you ran, the real files you changed, no invented output. No filler, no sycophancy.
    - Deliver markdown only: the answer itself carries the text, the images and the links to the evidence files."""
@@ -606,7 +622,14 @@ class RouterClient:
                     headers={'x-boxfox-admin': '1'}, json={**route, 'messages': messages,
                         'tools': tools, 'stream': False, 'max_tokens': max_tokens})
                 if res.is_error:
-                    raise router_refusal(res.status_code, await res.read())
+                    # `Response.read()` is the SYNC reader: the body of a plain POST is already
+                    # buffered, so awaiting it raised "object bytes can't be used in 'await'
+                    # expression" and REPLACED the router's verdict. That cost the turn its
+                    # retry: a `Router HTTP 502` refusal is classified UPSTREAM_HTTP_502 and
+                    # retried, a bare TypeError is not (measured 2026-09-23, live turn
+                    # 1130c2042b6c445db5f1bafc88d8bb94: the provider stream came back empty,
+                    # the fallback POST got a 502, and the turn died as TURN_FAILED_TYPEERROR).
+                    raise router_refusal(res.status_code, res.read())
                 return res.json()
 
 
@@ -930,6 +953,21 @@ def plan_identity(relative_path):
 PLAN_IDENTITY_TEXT_RE = re.compile(rf'^{plan_header.IDENTITY_PATTERN}$')
 
 
+def tool_call_failed(payload):
+    """Một lời gọi công cụ đã HỎNG? — `is_error` nằm trong `result` (đo vòng 25).
+
+    Event `tool_end` là `{'id', 'name', 'args', 'result'}`; cờ hỏng do bộ thực thi đặt **bên trong**
+    `result`, không ở vỏ. Đọc cờ ở vỏ là đọc nhầm chỗ: một lời gọi hỏng vẫn được tính là bằng chứng
+    nguồn, đúng thứ mà cổng nguồn không được phép tin.
+    """
+    if not isinstance(payload, dict):
+        return False
+    if payload.get('is_error'):
+        return True
+    result = payload.get('result')
+    return isinstance(result, dict) and bool(result.get('is_error'))
+
+
 def plan_approval_target(args, tool='request_approval'):
     """`(identity, version)` của lượt xin duyệt kế hoạch, hoặc `(None, None)` khi không khai kế hoạch.
 
@@ -1233,6 +1271,10 @@ class HarnessRuntime(RuntimeCommands):
         self.pending = {}
         # sessionId -> the asyncio.timeout budget of the live turn (paused while a decision blocks).
         self.run_budget = {}
+        # Vòng 25 (D-35) — số lần đã nới hạn chót của lượt (`extend_turn_budget`) và mốc bắt đầu
+        # lượt theo `time.monotonic()`. Không phải trạng thái bền: cả hai sống đúng bằng một lượt.
+        self.turn_extensions = {}
+        self.turn_started_at = {}
         # T5 — fan-out theo CHA: `parent_slots` giữ một semaphore cho MỖI phiên cha (bỏ entry khi
         # bộ đếm về 0 và không còn ai chờ, để dict không phình theo số phiên), còn
         # `global_child_slots` là trần toàn cục của cả tiến trình. `parent_running` đếm con đang
@@ -2001,6 +2043,10 @@ class HarnessRuntime(RuntimeCommands):
         return {'messageCount': len(messages),
                 'contextEstimate': estimate_tokens(messages, tools),
                 'compressionCount': int(row['total']) if row is not None else 0,
+                # Vòng 25 (D-35): mặt DUY NHẤT giao diện đọc để nói "lượt này dở". Hàng
+                # `sessions.status` vẫn `completed` cho một lượt dở (bất biến #1), nên trước đây
+                # một lượt `DEADLINE_EXCEEDED` trông y như một lượt xong.
+                'lastTurn': self.store.last_turn_status(sid),
                 'deadlineClamped': bool(config.get('deadlineClamped')),
                 'stepsClamped': bool(config.get('stepsClamped')),
                 'peerMesh': bool(peer_mesh_enabled()),
@@ -2310,6 +2356,163 @@ class HarnessRuntime(RuntimeCommands):
         if answer is not None:
             self.ensured_sessions.add(sid)
         return answer
+
+    # --- Cổng vòng lặp kế hoạch (vòng 25, D-34/D-35) -----------------------------------------
+    def plan_verify_mode(self):
+        """`BOXFOX_PLAN_VERIFY` = `enforce|warn|off`, đọc MỖI LƯỢT (env có thể đổi giữa các lượt).
+
+        Trả `(mode, unknown)` đúng thoả thuận của `evidence_mode`: giá trị lạ ⇒ `enforce` + cờ
+        `unknown` để chỗ gọi NÓI RA rồi mới áp mặc định — hạ cấp cổng trong im lặng là thứ kế hoạch
+        cấm.
+        """
+        raw = (os.environ.get(PLAN_VERIFY_ENV) or '').strip().lower()
+        if not raw:
+            return PLAN_VERIFY_DEFAULT_MODE, None
+        if raw in PLAN_VERIFY_MODES:
+            return raw, None
+        return PLAN_VERIFY_DEFAULT_MODE, raw
+
+    def root_session_id(self, sid):
+        """Phiên GỐC của cây (đi lên theo `parent_id`), hoặc chính `sid` khi nó đã là gốc.
+
+        Đây là phiên mở được trong khung chat (`store.list` chỉ liệt kê gốc), nên nó là thứ duy nhất
+        đánh thức được. Vòng lặp bị chặn bằng một trần độ sâu: một cây hỏng (vòng `parent_id`) không
+        được biến hàm này thành vòng lặp vô hạn.
+        """
+        current = sid
+        for _ in range(32):
+            row = self.store.db.execute('SELECT parent_id FROM sessions WHERE id=?', (current,)).fetchone()
+            if row is None or not row['parent_id']:
+                return current
+            current = row['parent_id']
+        return current
+
+    def plan_verification_view(self, identity, version):
+        """Mặt phản biện của một bản cho tab Plan: LUÔN có mặt, kể cả khi chưa ai phản biện.
+
+        `state: 'none'` là một câu trả lời thật ("chưa ai phản biện"), khác hẳn một khoá thiếu
+        (harness cũ) — giao diện phải phân biệt được hai chuyện đó.
+        """
+        row = self.store.plan_verification(identity, version)
+        if row is None:
+            return {'state': 'none', 'at': None, 'criticSessionId': None, 'issues': []}
+        return {'state': str(row.get('verdict') or 'none'),
+                'at': journal.utc_now_iso(row['created']) if row.get('created') else None,
+                'criticSessionId': row.get('critic_session_id'), 'issues': row.get('issues') or []}
+
+    def plan_ownership_view(self, identity):
+        """Phiên sở hữu nhóm kế hoạch (`{'sessionId': None}` khi chưa biết) — đường đánh thức tab Plan."""
+        row = self.store.plan_owner(identity)
+        return {'sessionId': (row or {}).get('session_id')}
+
+    def plan_sources_mode(self):
+        """`BOXFOX_PLAN_SOURCES_GATE` = `enforce|warn|off`, đọc MỖI LƯỢT (cùng khuôn hai cổng kia)."""
+        raw = (os.environ.get(PLAN_SOURCES_ENV) or '').strip().lower()
+        if not raw:
+            return PLAN_SOURCES_DEFAULT_MODE, None
+        if raw in PLAN_SOURCES_MODES:
+            return raw, None
+        return PLAN_SOURCES_DEFAULT_MODE, raw
+
+    def plan_sources_evidence(self, sid):
+        """Bằng chứng nguồn của lượt: chỉ KẾT QUẢ CÔNG CỤ của cây phiên, không văn bản model tự viết.
+
+        Đây là điều kiện sống còn của cổng: một nguồn chỉ đáng tin khi có một lời gọi thật đã trả
+        nó về. Văn bản của model là thứ đang được kiểm, nên nó không bao giờ được làm bằng chứng cho
+        chính nó. Trả `{'children': [...], 'hosts': [...], 'paths': [...]}`.
+        """
+        children = self.store.children_of(sid)
+        hosts, paths = [], []
+        for pid in [sid] + [row['session_id'] for row in children]:
+            for event in self.store.events(pid):
+                if event['type'] != 'tool_end':
+                    continue
+                payload = event['data']
+                if tool_call_failed(payload):
+                    continue  # lời gọi hỏng không chứng minh được nguồn nào
+                for text in self.source_strings(payload):
+                    for match in re.finditer(r'https?://([^\s/)\'"<>\]]+)', text):
+                        host = match.group(1).strip().lower().rstrip('.')
+                        if host.startswith('www.'):
+                            host = host[4:]
+                        if host and host not in hosts:
+                            hosts.append(host)
+                    for match in re.finditer(r'(?:[\w.~-]+/)+[\w.~-]+', text):
+                        candidate = match.group(0).lstrip('./')
+                        if candidate and candidate not in paths:
+                            paths.append(candidate)
+                    if len(hosts) > 400 and len(paths) > 400:
+                        break
+        return {'children': [{'role': row['role'], 'status': row['status'], 'started': row['started'],
+                              'answer_chars': row['answer_chars']} for row in children],
+                'hosts': hosts, 'paths': paths}
+
+    @staticmethod
+    def source_strings(value, depth=0):
+        """Mọi chuỗi trong một payload (đệ quy), có trần độ sâu và trần số mục — không bao giờ ném."""
+        if depth > 6:
+            return []
+        found = []
+        if isinstance(value, str):
+            return [value[:4000]]
+        if isinstance(value, dict):
+            for item in list(value.values())[:200]:
+                found.extend(HarnessRuntime.source_strings(item, depth + 1))
+        elif isinstance(value, (list, tuple)):
+            for item in list(value)[:200]:
+                found.extend(HarnessRuntime.source_strings(item, depth + 1))
+        return found
+
+    def extend_turn_budget(self, sid, reason):
+        """Nới hạn chót của LƯỢT đang chạy đúng MỘT lần, cho một sự kiện có thật (D-35).
+
+        Đo vòng 25: lượt lập kế hoạch cơ bản chết ở 210 s trước cả `write_plan`, và một lượt khác
+        chạy 622 s vẫn chưa xong. Hạn chót mặc định nay là 600 s; phần nới này tồn tại cho đúng chỗ
+        lượt đang kết thúc vì hết giờ mà kế hoạch VỪA được ghi — nới theo cảm tính của model thì
+        biến hạn chót thành vô nghĩa, nới theo sự kiện thì không.
+
+        Trả `True` khi đã nới. Không có ngân sách (lượt đã đóng), hoặc đã dùng hết số lần nới, hoặc
+        `when()` là `None` ⇒ `False`, và bên gọi cứ đi tiếp như cũ.
+        """
+        budget = self.run_budget.get(sid)
+        if budget is None:
+            return False
+        when = budget.when()
+        if when is None:
+            return False
+        used = self.turn_extensions.get(sid, 0)
+        if used >= PLAN_TURN_EXTENSIONS_MAX:
+            return False
+        started = self.turn_started_at.get(sid)
+        ceiling = (started + DEADLINE_MAX_SECONDS) if started is not None else (when + PLAN_TURN_EXTENSION_SECONDS)
+        new_when = min(when + PLAN_TURN_EXTENSION_SECONDS, ceiling)
+        if new_when <= when:
+            return False
+        try:
+            budget.reschedule(new_when)
+        except RuntimeError:  # pragma: no cover - ngân sách đã đóng giữa hai bước
+            return False
+        self.turn_extensions[sid] = used + 1
+        self.store.emit(sid, 'notice', {
+            'code': TURN_EXTENDED_CODE, 'partial': False, 'reason': reason,
+            'seconds': round(new_when - when, 1), 'extensions': used + 1,
+            'message': (f'{TURN_EXTENDED_CODE}: +{round(new_when - when)}s cho lượt này ({reason})')})
+        system_log.write('turn.extend', level='info', session_id=sid, code=TURN_EXTENDED_CODE,
+                         reason=reason, seconds=round(new_when - when, 1), extensions=used + 1)
+        return True
+
+    def plan_approval_blocked(self, identity, version):
+        """Câu từ chối khi bản `(identity, version)` CHƯA có phán quyết `ok`; `None` khi đã có.
+
+        Một hàm, hai chỗ gọi (chat qua `decision()` và route tab Plan): chép câu này hai lần là
+        cách chắc chắn nhất để hai đường nói hai chuyện khác nhau.
+        """
+        row = self.store.plan_verification(identity, version)
+        if row is not None and row.get('verdict') == 'ok':
+            return None
+        return (f"{PLAN_APPROVAL_UNVERIFIED_CODE}: plan '{identity}'@v{int(version)} has no passing "
+                f"independent critique — delegate role='plan-review', then call plan_verify with its "
+                f"verdict before requesting approval")
 
     # --- Cổng bằng chứng sống (vòng 22 đợt 3) ------------------------------------------------
     def evidence_mode(self):
@@ -2726,8 +2929,11 @@ class HarnessRuntime(RuntimeCommands):
                 payload['evidence'] = evidence_info
             self.store.emit(sid, 'assistant', payload)
             close_turn('partial', 'stop', 0, None, extra={'partial': True, 'diagnosis': True})
+            # Vòng 25 (D-35): hàng `finish` phải nói được lượt này DỞ. Trước đây nó chỉ có
+            # `status: 'completed'`, nên đọc event thôi thì không phân biệt được một lượt xong với
+            # một lượt chết vì hết hạn chót.
             self.store.emit(sid, 'finish', {'status': 'completed', 'turn': turn_no,
-                                            'steps': steps_used,
+                                            'steps': steps_used, 'partial': True, 'code': reason_code,
                                             **self.peer_turn_cost(sid, turn_no)})
             elapsed_ms = round((time.time() - started) * 1000)
             notice = {'code': reason_code, 'partial': True, 'diagnosis': True,
@@ -2766,6 +2972,9 @@ class HarnessRuntime(RuntimeCommands):
             # đi tiếp. Đặt TRONG `try` này để một cú `stop()` rơi đúng vào lúc chờ box vẫn là
             # `cancelled` (không để phiên mắc ở `running`); chỉ trả một `docker exec` cho mỗi phiên.
             await self.ensure_session_dir(session)
+            # Vòng 25 (D-35): mốc bắt đầu lượt theo đồng hồ đơn điệu — `extend_turn_budget` cần nó
+            # để phần nới không bao giờ vượt trần `DEADLINE_MAX_SECONDS` của cả lượt.
+            self.turn_started_at[sid] = time.monotonic()
             async with asyncio.timeout(config['deadlineSeconds']) as budget:
                 self.run_budget[sid] = budget
                 for step in range(config['maxSteps']):
@@ -3097,9 +3306,20 @@ class HarnessRuntime(RuntimeCommands):
                         close_turn('partial' if partial else 'completed', choice.get('finish_reason'), 0,
                                    response.get('usage'), extra={'partial': True} if partial else None)
                         self.store.save(sid, messages, 'completed')
-                        self.store.emit(sid, 'finish', {'status': 'completed', 'turn': turn_no,
-                                                        'steps': steps_used,
-                                                        **self.peer_turn_cost(sid, turn_no)})
+                        # Vòng 25 (M8/T8): hàng `finish` phải nói được lượt này DỞ, ở MỌI đường
+                        # đóng lượt — không chỉ đường `finish_partial` (chẩn đoán bốn phần). Đường
+                        # này đóng một lượt bị cổng độ dài cắt (D2) hoặc bị nhà cung cấp cắt
+                        # (`truncated_partial`): `turn_end` đã nói `partial`, nên `finish` không được
+                        # nói `completed` trắng. Mã lý do đọc từ notice bền của chính lượt
+                        # (`partial_turn`), đúng một nguồn với `delegate`.
+                        finish_payload = {'status': 'completed', 'turn': turn_no, 'steps': steps_used,
+                                          **self.peer_turn_cost(sid, turn_no)}
+                        if partial:
+                            finish_payload['partial'] = True
+                            finish_payload['code'] = (self.partial_turn(sid)
+                                                      or (ANSWER_TOO_LONG_CODE if answer_partial
+                                                          else TRUNCATED_OUTPUT_NOTICE_CODE))
+                        self.store.emit(sid, 'finish', finish_payload)
                         elapsed_ms = (time.time() - started) * 1000
                         system_log.write('turn.end', session_id=sid, turn=turn_no, turn_id=steps_used,
                                          status='completed', steps=steps_used,
@@ -3231,6 +3451,8 @@ class HarnessRuntime(RuntimeCommands):
             return None
         finally:
             self.run_budget.pop(sid, None)
+            self.turn_started_at.pop(sid, None)
+            self.turn_extensions.pop(sid, None)
             # The turn ended (completed, failed or cancelled) while a decision was still open.
             for record in self.pending_for(sid):
                 self.settle(record, record['defaultChoice'], 'cancelled', 'session_cancelled', None)
@@ -3277,6 +3499,8 @@ class HarnessRuntime(RuntimeCommands):
             raise PermissionError('Research browser access is read-only navigation/snapshot')
         if name == 'write_plan':
             return await self.write_plan(session, args)
+        if name == 'plan_verify':
+            return await self.plan_verify(session, args)
         if name == 'journal_write':
             return await self.journal_write(sid, args)
         if name == 'journal_brief':
@@ -3763,9 +3987,35 @@ class HarnessRuntime(RuntimeCommands):
             question = None
         # §4.1: một lượt xin duyệt kế hoạch mang theo `planIdentity`/`planVersion` thì quyết định của
         # người dùng vào thẳng sổ duyệt — cùng hai khoá mà `plan_registry.pending_submissions` đọc.
-        plan_id, plan_version = (None, None)
-        if kind == 'approval':
-            plan_id, plan_version = plan_approval_target(args, name)
+        # §4.1 + vòng 25 (D-37, BUG-7): cặp khoá plan được đọc cho CẢ HAI đường. Đo vòng 25: chủ
+        # nhà bấm "Duyệt" ở một câu hỏi `ask_user` mang cặp khoá, quyết định đó không vào sổ, và tab
+        # Plan hiện "Changes requested" cho đúng bản vừa được duyệt và vừa được thi hành.
+        plan_id, plan_version = plan_approval_target(args, name)
+        # Vòng 25 (D-34) — CỔNG PHẢN BIỆN. Chặn ở đây, TRƯỚC khi dựng `record` và trước
+        # `decision_requested`: một lượt xin duyệt không đủ điều kiện thì phiên không được vào
+        # `awaiting_decision` (đo vòng 25: một lượt xin duyệt đứng chờ 600 s rồi `expired`).
+        if kind == 'approval' and plan_id:
+            blocked = self.plan_approval_blocked(plan_id, plan_version)
+            if blocked:
+                mode, unknown = self.plan_verify_mode()
+                if unknown is not None and not self._notice_seen(sid, PLAN_VERIFY_MODE_UNKNOWN_CODE):
+                    self.store.emit(sid, 'notice', {
+                        'code': PLAN_VERIFY_MODE_UNKNOWN_CODE, 'value': unknown, 'partial': False,
+                        'message': (f'{PLAN_VERIFY_MODE_UNKNOWN_CODE}: {PLAN_VERIFY_ENV}={unknown!r} là '
+                                    f'giá trị lạ — dùng {PLAN_VERIFY_DEFAULT_MODE!r} cho lượt này')})
+                    system_log.write('plan.verify.mode_unknown', level='warn', session_id=sid,
+                                     code=PLAN_VERIFY_MODE_UNKNOWN_CODE, value=unknown)
+                if mode == 'enforce':
+                    # Từ chối bằng lỗi công cụ: model thấy lý do và việc phải làm, lượt chạy tiếp.
+                    raise ValueError(blocked)
+                if mode == 'warn':
+                    if not self._notice_seen(sid, PLAN_APPROVAL_UNVERIFIED_CODE):
+                        self.store.emit(sid, 'notice', {
+                            'code': PLAN_APPROVAL_UNVERIFIED_CODE, 'partial': False, 'mode': mode,
+                            'identity': plan_id, 'version': plan_version, 'message': blocked})
+                    system_log.write('plan.approval.unverified', level='warn',
+                                     code=PLAN_APPROVAL_UNVERIFIED_CODE, message=blocked,
+                                     session_id=sid, identity=plan_id, version=plan_version, mode=mode)
         options = normalize_decision_options(args.get('options'), kind)
         decision_id = uuid.uuid4().hex[:16]
         record = {'decisionId': decision_id, 'sessionId': sid, 'kind': kind, 'options': options,
@@ -3831,12 +4081,21 @@ class HarnessRuntime(RuntimeCommands):
         return True
 
     def record_plan_decision(self, record, status, note):
-        """Duyệt kế hoạch trong chat vào sổ thật (§4.1): `request_approval` khai `planIdentity`/`planVersion`.
+        """Duyệt kế hoạch trong chat vào sổ thật (§4.1): `request_approval`/`ask_user` khai `planIdentity`/`planVersion`.
 
         Chỉ ghi khi record mang **đủ** hai khoá — một lượt xin phép cũ (không nói tới kế hoạch nào)
-        không được sinh một hàng duyệt giả. `approved` chỉ khi người dùng thật sự đồng ý; mọi kết cục
-        khác (từ chối, hết hạn, huỷ phiên) đều là "chưa đồng ý", tức `changes_requested` của luật R1 —
-        và đó cũng là điều kiện để bản sửa bắt buộc phải khai cha.
+        không được sinh một hàng duyệt giả. Vòng 25 (D-37) chốt lại NGỮ NGHĨA của các kết cục đo được:
+
+        * `approved` — người dùng thật sự đồng ý (kể cả khi họ trả lời qua `ask_user`, BUG-7): ghi một
+          hàng duyệt. Đây là sự thật duy nhất mà tab Plan phải thấy.
+        * `expired` — KHÔNG ai trả lời. Bản trước ghi `changes_requested` cho kết cục này, nên một lượt
+          hết hạn trông y như một lời từ chối (BUG-6) và luật R3 bật lên vô cớ. Nay: **không ghi hàng
+          nào**, phát `plan_decision_skipped` + một dòng `system_log` để sự thật vẫn có dấu vết, chỉ là
+          không nằm trong sổ duyệt.
+        * `cancelled` — phiên bị huỷ, cũng không ghi hàng.
+        * `rejected` — người dùng thật sự từ chối, và chỉ có nghĩa với đường `request_approval`
+          (`ask_user` không từ chối kế hoạch nào): ghi `changes_requested` của luật R1, điều kiện để bản
+          sửa bắt buộc khai cha.
 
         Cột `source` là `'approval'` để phân biệt với `'plan-tab'`: hai đường vào cùng một sổ, không
         đường nào ghi đè đường kia một cách âm thầm.
@@ -3844,6 +4103,31 @@ class HarnessRuntime(RuntimeCommands):
         identity = str(record.get('planIdentity') or '').strip().strip('/')
         version = record.get('planVersion')
         if not identity or isinstance(version, bool) or not isinstance(version, int) or version < 1:
+            return None
+        if status in ('expired', 'cancelled'):
+            # D-37: hết hạn KHÔNG phải một lời từ chối — không hàng nào, nhưng có dấu vết.
+            reason = 'timeout' if status == 'expired' else 'session_cancelled'
+            self.store.emit(record['sessionId'], 'plan_decision_skipped',
+                            {'identity': identity, 'version': version, 'status': status,
+                             'kind': record.get('kind'), 'reason': reason})
+            event = 'plan.review.expired' if status == 'expired' else 'plan.review.cancelled'
+            system_log.write(event, level='warn' if status == 'expired' else 'info',
+                             code=('PLAN_REVIEW_EXPIRED' if status == 'expired'
+                                   else 'PLAN_REVIEW_CANCELLED'),
+                             message=(f'không ghi sổ duyệt cho {identity} v{version}: {reason} '
+                                      f'(không phải một lời từ chối)'),
+                             session_id=record['sessionId'], identity=identity, version=version,
+                             status=status, kind=record.get('kind'))
+            return None
+        if status != 'approved' and record.get('kind') != 'approval':
+            # `ask_user` chỉ góp vào sổ khi câu trả lời là ĐỒNG Ý; một câu hỏi bị trả lời "không"
+            # KHÔNG phải một yêu cầu sửa kế hoạch — chỉ log, không ghi hàng.
+            system_log.write('plan.review.question_rejected', level='info',
+                             code='PLAN_REVIEW_QUESTION_REJECTED',
+                             message=(f'câu hỏi kèm cặp khoá plan {identity} v{version} bị trả lời '
+                                      f'"{status}": không ghi sổ duyệt'),
+                             session_id=record['sessionId'], identity=identity, version=version,
+                             status=status, kind=record.get('kind'))
             return None
         decision = 'approved' if status == 'approved' else 'changes_requested'
         try:
@@ -4013,6 +4297,27 @@ class HarnessRuntime(RuntimeCommands):
         # hàng `plan_evaluations`: chặn trước khi tốn một lượt ghi đĩa là hành vi mong muốn. Vì vậy nhánh
         # P3-0 trong `plan_eval` là lưới an toàn cho `write_plan` gọi từ nơi khác, không phải đường sống.
         check_plan_quality(markdown)
+        # Vòng 25 (D-34) — CỔNG NGUỒN, ngay sau cổng cấu trúc và TRƯỚC khi chạm đăng ký/đĩa: một
+        # kế hoạch viện dẫn dữ kiện ngoài mà nguồn không có bằng chứng công cụ thì không ghi tệp,
+        # không có hàng `plan_evaluations` — cùng hành vi đã tài liệu hoá của `PLAN_QUALITY_REJECTED`.
+        sources_mode, sources_unknown = self.plan_sources_mode()
+        if sources_unknown is not None and not self._notice_seen(sid, PLAN_SOURCES_MODE_UNKNOWN_CODE):
+            self.store.emit(sid, 'notice', {
+                'code': PLAN_SOURCES_MODE_UNKNOWN_CODE, 'value': sources_unknown, 'partial': False,
+                'message': (f'{PLAN_SOURCES_MODE_UNKNOWN_CODE}: {PLAN_SOURCES_ENV}={sources_unknown!r} '
+                            f'là giá trị lạ — dùng {PLAN_SOURCES_DEFAULT_MODE!r} cho lượt này')})
+            system_log.write('plan.sources.mode_unknown', level='warn', session_id=sid,
+                             code=PLAN_SOURCES_MODE_UNKNOWN_CODE, value=sources_unknown)
+        if sources_mode != 'off':
+            source_issues = plan_quality.sources_issues(markdown, **self.plan_sources_evidence(sid))
+            if source_issues and sources_mode == 'enforce':
+                raise ValueError(plan_quality.sources_message(source_issues))
+            if source_issues:
+                self.store.emit(sid, 'notice', {'code': 'PLAN_SOURCES_UNBACKED', 'partial': False,
+                                                'issues': source_issues, 'mode': sources_mode,
+                                                'message': plan_quality.sources_message(source_issues)})
+                system_log.write('plan.sources.unbacked', level='warn', session_id=sid,
+                                 code=PLAN_SOURCES_REJECTED_CODE, issues=source_issues, mode=sources_mode)
         title = plan_title(args.get('title'), markdown, slug)
         declared = plan_header.parse_plan_header(markdown)
         registration = await self.registration_or_refuse(session, sid, slug, args, declared)
@@ -4071,11 +4376,27 @@ class HarnessRuntime(RuntimeCommands):
                 # D-3: bản này ra đời từ dải mơ hồ (đi qua vé) — hàng `P:` phải nói được điều đó.
                 payload['identityAmbiguity'] = registration.ambiguity
         self.store.emit(sid, 'plan_written', payload)
+        # Vòng 25 (D-36) — SỔ SỞ HỮU: đường từ nhóm kế hoạch về phiên GỐC. Đo vòng 25: tab Plan ghi
+        # được hàng duyệt nhưng `session_id` toàn `NULL`, nên cú bấm không mở được lượt nào. Ghi
+        # hỏng thì log rồi đi tiếp — sổ này không bao giờ được làm hỏng một lần ghi kế hoạch.
+        try:
+            self.store.record_plan_owner(identity, self.root_session_id(session.get('parent_id') or sid),
+                                         slug=payload['slug'], relative_path=payload['relativePath'],
+                                         version=version)
+        except Exception as exc:  # pragma: no cover - sổ sở hữu là bổ trợ, không phải điều kiện
+            system_log.write('plan.owner.store_failed', level='warn', code='PLAN_OWNER_STORE_FAILED',
+                             message=f'không ghi được sổ sở hữu cho {identity}: {exc}',
+                             session_id=sid, identity=identity, version=version)
         if evaluation is not None:
             self.record_plan_evaluation(registration, evaluation.to_payload(written=True))
             self.store.emit(sid, 'plan_evaluated', evaluation.to_payload(written=True))
         self.store.emit(sid, 'ui_intent', {'tab': 'plan', 'target': {'identity': identity, 'version': version},
                                            'reason': 'plan_written'})
+        # Vòng 25 (D-35): lượt vừa ghi được kế hoạch thì được nới thêm một lần (nếu ngân sách còn
+        # sống). Đây đúng là chỗ lượt hay chết vì hết giờ, và là chỗ cần thời gian cho vòng phản
+        # biện ngay sau đó. Đặt SAU `ui_intent` để giữ nguyên hợp đồng dãy event của `write_plan`
+        # (`plan_written` → `ui_intent` liền nhau — test_write_plan.py ghim dãy đó).
+        self.extend_turn_budget(sid, 'plan_written')
         await self.pin_plan(sid, payload)
         answer = {'content': 'Plan written to ' + payload['relativePath'], 'version': version,
                   'relativePath': payload['relativePath'], 'slug': payload['slug'], 'title': payload['title'],
@@ -4083,6 +4404,169 @@ class HarnessRuntime(RuntimeCommands):
         if evaluation is not None:
             # Một dòng cho model biết điểm, để nó tự sửa ở lần ghi sau thay vì đoán vì sao bị từ chối.
             answer['rubric'] = evaluation.to_payload(written=True)
+        # Vòng 25 (D-33) — bước kế tiếp KHÔNG phải tuỳ chọn: một bản kế hoạch chưa qua phản biện
+        # độc lập thì cổng duyệt từ chối (PLAN_APPROVAL_UNVERIFIED), ở cả hai đường. Nói thẳng
+        # ngay tại chỗ model vừa ghi xong, vì đó là chỗ nó quyết định làm gì tiếp.
+        answer['next'] = ("Next: delegate_task(role='plan-review', goal='critique " + payload['relativePath']
+                          + "', ...) then plan_verify(identity='" + identity + "', version=" + str(version)
+                          + ", verdict=<its verdict>). Until that verdict is recorded, request_approval "
+                            "for this plan is refused with PLAN_APPROVAL_UNVERIFIED.")
+        return answer
+
+    # --------------------------------------------------------------------------------------------
+    # Vòng 25 (D-33) — cổng PHẢN BIỆN ĐỘC LẬP của một bản kế hoạch
+    # --------------------------------------------------------------------------------------------
+    def plan_verify_args(self, args):
+        """Chuẩn hoá + kiểm đầu vào của `plan_verify`; sai thì từ chối ngay, không ghi gì."""
+        identity = str(args.get('identity') or '').strip()
+        if not identity or not PLAN_IDENTITY_TEXT_RE.fullmatch(identity):
+            raise ValueError(f'{PLAN_VERIFY_INVALID_CODE}: identity must be a plan identity like '
+                             f'"billing-plan" or "subplans/api" (same grammar write_plan reported)')
+        version = args.get('version')
+        if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+            raise ValueError(f'{PLAN_VERIFY_INVALID_CODE}: version must be the positive integer '
+                             f'write_plan returned')
+        verdict = args.get('verdict')
+        if verdict not in ('ok', 'revise'):
+            raise ValueError(f"{PLAN_VERIFY_INVALID_CODE}: verdict must be 'ok' or 'revise'")
+        raw_issues = args.get('issues')
+        if raw_issues is None:
+            raw_issues = []
+        if not isinstance(raw_issues, list):
+            raise ValueError(f'{PLAN_VERIFY_INVALID_CODE}: issues must be the array of findings the '
+                             f'critique reported')
+        if len(raw_issues) > PLAN_VERIFY_MAX_ISSUES:
+            raise ValueError(f'{PLAN_VERIFY_INVALID_CODE}: issues is capped at {PLAN_VERIFY_MAX_ISSUES} '
+                             f'rows; collapse the tail of the list')
+        issues = []
+        for item in raw_issues:
+            if not isinstance(item, dict):
+                raise ValueError(f'{PLAN_VERIFY_INVALID_CODE}: every issue needs {{severity, text, fix?}}')
+            severity = item.get('severity')
+            if severity not in ('high', 'medium', 'low'):
+                raise ValueError(f"{PLAN_VERIFY_INVALID_CODE}: issue severity must be 'high', 'medium' "
+                                 f"or 'low'")
+            text = str(item.get('text') or '').strip()
+            if not text:
+                raise ValueError(f'{PLAN_VERIFY_INVALID_CODE}: every issue needs a non-empty text')
+            if len(text) > PLAN_VERIFY_ISSUE_CHARS:
+                raise ValueError(f'{PLAN_VERIFY_INVALID_CODE}: issue text is capped at '
+                                 f'{PLAN_VERIFY_ISSUE_CHARS} chars')
+            fix = str(item.get('fix') or '').strip()
+            if len(fix) > PLAN_VERIFY_ISSUE_CHARS:
+                raise ValueError(f'{PLAN_VERIFY_INVALID_CODE}: issue fix is capped at '
+                                 f'{PLAN_VERIFY_ISSUE_CHARS} chars')
+            issues.append({'severity': severity, 'text': text, 'fix': fix})
+        summary = str(args.get('summary') or '').strip()
+        if len(summary) > PLAN_VERIFY_SUMMARY_CHARS:
+            raise ValueError(f'{PLAN_VERIFY_INVALID_CODE}: summary is capped at '
+                             f'{PLAN_VERIFY_SUMMARY_CHARS} chars')
+        return identity, version, verdict, issues, summary
+
+    def plan_critique(self, sid, identity, version):
+        """Cổng provenance: `(critic_row, verdict_from_text)` của phê bình HỢP LỆ, hoặc ném lỗi.
+
+        Bốn điều kiện là bốn cách chặn một "phê bình giả": (i) phải có bản ghi thật cho đúng
+        `(identity, version)`; (ii) phiên con phải mang vai `plan-review`; (iii) nó phải chạy SAU
+        lần ghi đó (một phê bình của bản cũ không nói gì về bản mới); (iv) câu trả lời phải đủ dài
+        để có nội dung đọc được. Verdict đọc từ VĂN BẢN của chính nó, không phải từ lời khai.
+        """
+        tree = [sid] + [row['session_id'] for row in self.store.children_of(sid)]
+        written_at = self.store.plan_written_at(tree, identity, version)
+        if written_at is None:
+            raise ValueError(f'{PLAN_VERIFY_NO_CRITIC_CODE}: no plan write is recorded for '
+                             f'{identity}@v{version} — write the plan first with write_plan')
+        usable = []
+        for row in self.store.children_of(sid):
+            if row['role'] != 'plan-review':
+                continue
+            if row['status'] != 'completed':
+                continue
+            if float(row['started'] or 0) < written_at:
+                continue
+            if int(row['answer_chars'] or 0) < PLAN_REVIEW_MIN_ANSWER_CHARS:
+                continue
+            usable.append(row)
+        if not usable:
+            raise ValueError(f'{PLAN_VERIFY_NO_CRITIC_CODE}: {identity}@v{version} has no usable independent '
+                             f'critique — delegate a child with role=\'plan-review\' AFTER this version was '
+                             f'written and let it finish with an answer of at least '
+                             f'{PLAN_REVIEW_MIN_ANSWER_CHARS} chars')
+        critic = max(usable, key=lambda row: (float(row['started'] or 0), str(row['session_id'])))
+        # Câu trả lời ĐỌC ĐƯỢC: event `assistant` mới nhất có chữ khác rỗng (câu chốt của con).
+        text = ''
+        for event in self.store.events(critic['session_id']):
+            if event['type'] != 'assistant':
+                continue
+            candidate = event['data'].get('text') if isinstance(event['data'], dict) else None
+            if isinstance(candidate, str) and candidate.strip():
+                text = candidate
+        match = None
+        for found in re.finditer(r'(?im)^\s*VERDICT:\s*(ok|revise)\b', text or ''):
+            match = found
+        if match is None:
+            raise ValueError(f'{PLAN_VERIFY_VERDICT_MISSING_CODE}: the critique answer has no final line '
+                             f'"VERDICT: ok" or "VERDICT: revise" (critic {str(critic["session_id"])[:8]}) — '
+                             f'ask it for the verdict line, then call plan_verify again')
+        return critic, match.group(1).lower(), int(critic['answer_chars'] or 0)
+
+    async def plan_verify(self, session, args):
+        """Ghi phán quyết phản biện của một bản kế hoạch — CHỈ khi có phê bình độc lập thật.
+
+        Đây là một cổng bằng chứng, không phải thủ tục: cổng duyệt (`plan_approval_blocked`) đọc
+        đúng hàng mà hàm này ghi. Ba mã lỗi nói đúng phần thiếu (`PLAN_VERIFY_NO_CRITIC`,
+        `PLAN_VERIFY_VERDICT_MISSING`, `PLAN_VERIFY_VERDICT_MISMATCH`) để model sửa được thay vì
+        đoán. Ghi sổ không được làm hỏng lượt: mọi thứ sau hàng sổ đều là best-effort.
+        """
+        sid = session['id']
+        identity, version, verdict, issues, summary = self.plan_verify_args(args)
+        critic, critic_verdict, answer_chars = self.plan_critique(sid, identity, version)
+        if critic_verdict != verdict:
+            raise ValueError(f'{PLAN_VERIFY_VERDICT_MISMATCH_CODE}: the critique says {critic_verdict!r} but '
+                             f'you recorded {verdict!r} — record what it actually said, or ask it to '
+                             f'critique again if it was wrong')
+        self.store.record_plan_verification(identity, version, verdict, issues=issues, summary=summary,
+                                           critic_session_id=critic['session_id'],
+                                           critic_answer_chars=answer_chars, critic_verdict=critic_verdict)
+        self.store.emit(sid, 'plan_verified', {'identity': identity, 'version': version, 'verdict': verdict,
+                                               'issues': issues, 'summary': summary,
+                                               'criticSessionId': critic['session_id'],
+                                               'criticAnswerChars': answer_chars,
+                                               'at': journal.utc_now_iso()})
+        next_line = None
+        if verdict == 'revise':
+            next_line = f'sửa các điểm đã nêu rồi phản biện lại (còn tối đa {PLAN_VERIFY_REVISE_MAX} vòng)'
+        try:
+            await session_journal.append(
+                self.executor, self.store, sid, 'fact',
+                f'phê bình độc lập {identity}@v{version}: {verdict} — {len(issues)} vấn đề',
+                data={'planVerification': {'identity': identity, 'version': version, 'verdict': verdict,
+                                           'issueCount': len(issues),
+                                           'criticSessionId': critic['session_id']},
+                      **({'next': next_line} if next_line else {})},
+                turn=self.active_turn.get(sid))
+        except Exception:  # pragma: no cover - nhật ký hỏng không được làm hỏng lượt
+            pass
+        self.store.emit(sid, 'ui_intent', {'tab': 'plan', 'target': {'identity': identity, 'version': version},
+                                           'reason': 'plan_verified'})
+        answer = {'content': (f'Recorded the independent critique of {identity}@v{version}: {verdict} '
+                              f'({len(issues)} findings).'),
+                  'identity': identity, 'version': version, 'verdict': verdict, 'issueCount': len(issues),
+                  'criticSessionId': critic['session_id'], 'criticAnswerChars': answer_chars}
+        if verdict == 'revise':
+            since = self.store.turn_boundary_epoch(sid)
+            row = self.store.db.execute(
+                "SELECT COUNT(*) AS total FROM plan_verifications WHERE identity=? AND verdict='revise'"
+                + (' AND created>=?' if since is not None else ''),
+                (identity, since) if since is not None else (identity,)).fetchone()
+            rounds = int((row['total'] if row is not None else 0) or 0)
+            if rounds > PLAN_VERIFY_REVISE_MAX:
+                answer['capped'] = True
+                answer['content'] += (f' You are past the cap of {PLAN_VERIFY_REVISE_MAX} revise rounds in '
+                                      f'this turn: stop rewriting and report the open findings to the owner '
+                                      f'honestly, with the version that still needs work.')
+        if next_line:
+            answer['next'] = next_line
         return answer
 
     def plan_write_args(self, markdown, slug, title, registration):

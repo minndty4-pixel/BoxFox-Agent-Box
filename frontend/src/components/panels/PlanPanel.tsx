@@ -26,8 +26,9 @@ import { MarkdownRenderer } from '../chat/MarkdownRenderer'
 import { usePlanFiles } from '../../hooks/usePlanFiles'
 import { useT, type TKey } from '../../i18n/context'
 import { planRejection, planStamp } from '../../lib/plans'
-import type { PlanReviewState } from '../../lib/plans'
+import type { PlanReviewState, PlanVerificationState } from '../../lib/plans'
 import { PlanEvalCard } from './PlanEvalCard'
+import { PlanReviewCard } from './PlanReviewCard'
 import type { DiffLine } from '../../types/agent'
 
 /** Chip trạng thái duyệt thật: nguồn là sổ duyệt của harness, không phải vị trí trong dropdown. */
@@ -52,6 +53,30 @@ const STATE_CHIP_CLASSES: Record<PlanReviewState, string> = {
   unknown: 'border border-line bg-panel2 text-muted',
 }
 
+/** Ba mặt phản biện CÓ dữ liệu; mặt `unknown` (harness cũ) không vẽ chip nào. */
+type KnownVerificationState = Exclude<PlanVerificationState, 'unknown'>
+
+const VERIFY_CHIP_LABELS: Record<KnownVerificationState, TKey> = {
+  none: 'plan.verify.chip.none',
+  ok: 'plan.verify.chip.ok',
+  revise: 'plan.verify.chip.revise',
+}
+
+const VERIFY_CHIP_TITLES: Record<KnownVerificationState, TKey> = {
+  none: 'plan.verify.chip.noneTitle',
+  ok: 'plan.verify.chip.okTitle',
+  revise: 'plan.verify.chip.reviseTitle',
+}
+
+const VERIFY_CHIP_CLASSES: Record<KnownVerificationState, string> = {
+  none: 'bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/40',
+  ok: 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/40',
+  revise: 'bg-rose-500/15 text-rose-400 ring-1 ring-rose-500/40',
+}
+
+/** Id của dòng lý do khoá duyệt — nút `disabled` không hiện `title`, nên nối bằng `aria-describedby`. */
+const APPROVE_BLOCKED_ID = 'plan-approve-blocked'
+
 export function PlanPanel() {
   const t = useT()
   const mode = useAgentStore((s) => s.mode)
@@ -59,6 +84,11 @@ export function PlanPanel() {
   const endorsed = useAgentStore((s) => s.planEndorsed)
   const proposal = useAgentStore((s) => s.proposal)
   const sendCommand = useAgentStore((s) => s.sendCommand)
+  // M9: khung chat chỉ thấy lượt của PHIÊN ĐANG MỞ (ChatPanel poll theo activeSessionId), nên phải
+  // nói được lượt mới mở ở phiên nào. Danh sách phiên đọc từ store — không đoán id.
+  const activeSessionId = useAgentStore((s) => s.activeSessionId)
+  const agentSessions = useAgentStore((s) => s.sessions)
+  const setActiveSessionId = useAgentStore((s) => s.setActiveSessionId)
 
   const planViewMode = useUiStore((s) => s.planViewMode)
   const setPlanViewMode = useUiStore((s) => s.setPlanViewMode)
@@ -77,7 +107,9 @@ export function PlanPanel() {
   /** Danh sách version để render trong dropdown: chỉ lấy từ manifest thật. */
   const versionItems = (selectedPlan?.versions ?? []).map((v) => ({
     key: v.version,
-    label: `${v.label} (${v.status})`,
+    // Nhãn trần `v3`: chữ `(draft)`/`(approved)` của box gán theo VỊ TRÍ, không theo quyết định nào
+    // của người dùng (BUG-5) — trạng thái thật đã có chip riêng cạnh đó.
+    label: v.label,
     /**
      * Dòng thứ hai: cha–con khai trong **header của chính file đó** (`declaredParent`), đúng như mock
      * trạng thái (f). Chỉ file có header (`headerStatus === 'ok'`) mới được nói; file legacy/mismatch
@@ -119,6 +151,56 @@ export function PlanPanel() {
   /** Câu từ chối của lần ghi bị cổng cứng chặn (mã + số đo + cách sửa), hoặc `null`. */
   const rejection = planRejection(planFiles.evaluation, t)
 
+  /**
+   * Mặt phản biện của bản đang xem (sổ phản biện của harness). `unknown` = harness cũ không khai
+   * trường: KHÔNG vẽ chip và KHÔNG khoá duyệt — thà để harness trả 409 kèm lý do của chính nó.
+   */
+  const verificationState = planFiles.verification.state
+  const verifyChipState: KnownVerificationState | null =
+    verificationState === 'none' || verificationState === 'ok' || verificationState === 'revise'
+      ? verificationState
+      : null
+  const verifyStamp = planStamp(planFiles.verification.at)
+  const selectionVersion = planFiles.selection?.version ?? null
+  const versionLabel = selectionVersion === null ? '—' : `v${selectionVersion}`
+
+  /** Lý do khoá nút Duyệt: ưu tiên nguyên văn `remedy` harness trả ở 409, không có thì câu i18n. */
+  const approveBlockedReason = planFiles.reviewBlocked?.remedy.trim()
+    ? planFiles.reviewBlocked.remedy.trim()
+    : t('plan.verify.locked', { version: versionLabel })
+  const approveLocked = planFiles.approvalLocked
+
+  /** Dòng kết quả quyết định: chỉ khẳng định "đang mở lượt" khi harness NÓI `resumed: true`. */
+  const reviewResult = planFiles.reviewResult
+  const decisionSentText = !reviewResult
+    ? null
+    : reviewResult.resumed === null
+      ? t('plan.decisions.sent.unknown')
+      : reviewResult.resumed === false
+        ? t('plan.decisions.sent.notResumed')
+        : reviewResult.decision === 'changes_requested'
+          ? t('plan.decisions.sent.changes', { version: reviewResult.version })
+          : reviewResult.note.trim()
+            ? t('plan.decisions.sent.approvedWithNote')
+            : t('plan.decisions.sent.approved')
+  const decisionSentMeta = reviewResult
+    ? [
+        reviewResult.turnId ? t('plan.decisions.sent.turn', { turn: reviewResult.turnId }) : null,
+        planFiles.ownership.sessionId
+          ? t('plan.decisions.sent.session', { session: planFiles.ownership.sessionId })
+          : null,
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    : ''
+
+  /** Phiên sở hữu kế hoạch (harness khai ở `ownership`), chỉ hiện khi KHÁC phiên đang mở. */
+  const ownerSessionId = planFiles.ownership.sessionId
+  const ownerDiffers = Boolean(ownerSessionId) && ownerSessionId !== activeSessionId
+  const ownerInList = ownerSessionId
+    ? agentSessions.some((session) => session.session_id === ownerSessionId)
+    : false
+
   const targetIdentity = typeof planTarget?.identity === 'string' ? planTarget.identity : null
   const targetVersion = typeof planTarget?.version === 'number' ? planTarget.version : undefined
   const selectIdentity = planFiles.selectIdentity
@@ -129,6 +211,12 @@ export function PlanPanel() {
 
   const [copied, setCopied] = useState(false)
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null)
+  /** Popup "duyệt kèm điều kiện" — một mũi tên nhỏ cạnh nút Duyệt, không phải nút thứ hai. */
+  const [approveNoteOpen, setApproveNoteOpen] = useState(false)
+  const [approveNote, setApproveNote] = useState('')
+  /** Hộp lý do sửa — mở ngay dưới hàng công cụ, gửi kèm quyết định (BUG-3). */
+  const [changesFormOpen, setChangesFormOpen] = useState(false)
+  const [changesNote, setChangesNote] = useState('')
   const [identityMenuOpen, setIdentityMenuOpen] = useState(false)
   const [versionMenuOpen, setVersionMenuOpen] = useState(false)
   const identityMenuRef = useRef<HTMLDivElement>(null)
@@ -182,6 +270,8 @@ export function PlanPanel() {
    * đang xem một file kế hoạch thật; đường demo cũ chỉ còn khi không có file.
    */
   const handleApprove = () => {
+    // Bản chưa qua phản biện thì không gửi gì cả — kể cả khi nút bị bật bằng đường khác.
+    if (approveLocked) return
     if (planFiles.document) {
       void planFiles.submitReview('approved')
       return
@@ -196,9 +286,38 @@ export function PlanPanel() {
     }
   }
 
+  /** Ghi chú điều kiện: ô trống vẫn là duyệt thường — không dựng điều kiện rỗng. */
+  const handleApproveWithNote = () => {
+    if (approveLocked) return
+    const note = approveNote.trim()
+    setApproveNote('')
+    setApproveNoteOpen(false)
+    if (planFiles.document) {
+      void planFiles.submitReview('approved', note)
+      return
+    }
+    handleApprove()
+  }
+
+  /**
+   * Lần bấm đầu KHÔNG gửi gì: mở hộp lý do (BUG-3 — trước đây gửi đi một quyết định rỗng chữ).
+   * Gửi khi nào là do người dùng: ô trống vẫn gửi được (lượt chạy vẫn mở), chỉ là không có lý do.
+   */
   const handleRequestChanges = () => {
     if (!planFiles.document) return
-    void planFiles.submitReview('changes_requested')
+    setChangesFormOpen(true)
+  }
+
+  const handleSubmitChanges = () => {
+    if (!planFiles.document) return
+    const note = changesNote.trim()
+    setChangesNote('')
+    setChangesFormOpen(false)
+    void planFiles.submitReview('changes_requested', note)
+  }
+
+  const handleRunVerification = () => {
+    void planFiles.runVerification()
   }
 
   const handleCopy = () => {
@@ -269,11 +388,7 @@ export function PlanPanel() {
               onClick={() => setVersionMenuOpen(!versionMenuOpen)}
               className="flex items-center gap-1.5 rounded-md border border-line bg-panel2 px-2.5 py-1 text-xs font-medium text-fg outline-hidden transition hover:border-zinc-500 cursor-pointer"
             >
-              <span>
-                {selectedFileVersion
-                  ? `${selectedFileVersion.label} (${selectedFileVersion.status})`
-                  : t('plan.noVersions')}
-              </span>
+              <span>{selectedFileVersion ? selectedFileVersion.label : t('plan.noVersions')}</span>
               <ChevronDown className="size-3 text-muted" />
             </button>
 
@@ -307,8 +422,8 @@ export function PlanPanel() {
             )}
           </div>
 
-          {/* Trạng thái duyệt THẬT (sổ duyệt của harness) — đứng cạnh nhãn version mà box gán theo
-              vị trí, nên hai từ vựng cùng hiện mà không trộn vào nhau. */}
+          {/* Hai chip đọc từ SỔ của harness, không đọc từ tên file: chip trạng thái duyệt, rồi tới
+              chip phản biện (chỉ hiện khi harness có khai mặt `verification`). */}
           {planFiles.document && (
             <>
               <span
@@ -327,6 +442,21 @@ export function PlanPanel() {
                   className={`${STATE_CHIP_BASE} bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/40`}
                 >
                   {t('plan.state.stale')}
+                </span>
+              )}
+              {/* Mặt phản biện: `none` = vàng, `ok` = xanh, `revise` = đỏ. `unknown` (harness cũ)
+                  thì không chip — im lặng đúng hơn một lời khẳng định sai. */}
+              {verifyChipState && (
+                <span
+                  data-component-id="plan-review-chip"
+                  data-testid="plan-review-chip"
+                  title={t(VERIFY_CHIP_TITLES[verifyChipState])}
+                  className={`${STATE_CHIP_BASE} ${VERIFY_CHIP_CLASSES[verifyChipState]}`}
+                >
+                  {t(VERIFY_CHIP_LABELS[verifyChipState], {
+                    critic: t('plan.verify.critic'),
+                    stamp: verifyStamp ?? '',
+                  })}
                 </span>
               )}
             </>
@@ -399,29 +529,159 @@ export function PlanPanel() {
             </button>
           )}
 
-          {/* Approve Button in Sleek Solid Tone */}
-          <button
-            type="button"
-            data-testid="plan-approve"
-            onClick={handleApprove}
-            disabled={mode === 'ACT' || planFiles.reviewStatus === 'saving'}
-            className={`flex items-center gap-1.5 rounded-md px-3.5 py-1 text-xs font-semibold transition shadow-xs cursor-pointer disabled:cursor-not-allowed ${
-              mode === 'ACT' || approvedInForce
-                ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                : 'bg-zinc-100 text-zinc-900 hover:bg-white active:scale-98'
-            }`}
-          >
-            <Check className="size-3.5" />
-            <span>
-              {mode === 'ACT'
-                ? 'Approved (ACT)'
-                : approvedInForce
-                  ? t('plan.approvedStored')
-                  : t('plan.approvePlan')}
-            </span>
-          </button>
+          {/* Approve + MỘT mũi tên nhỏ mở popup "duyệt kèm điều kiện" (không phải nút thứ hai). */}
+          <div className="relative flex items-center">
+            <button
+              type="button"
+              data-testid="plan-approve"
+              data-component-id="plan-approve-button"
+              onClick={handleApprove}
+              // Khoá khi: đang ở Act, đang ghi, hoặc bản này CHƯA qua phiên phản biện
+              // (`verification.state === 'none'`). Harness cũ không khai mặt phản biện thì KHÔNG khoá.
+              disabled={mode === 'ACT' || planFiles.reviewStatus === 'saving' || approveLocked}
+              data-disabled-reason={approveLocked ? 'plan-not-reviewed' : undefined}
+              aria-label={approveLocked ? t('plan.verify.lockedAria') : undefined}
+              aria-describedby={approveLocked ? APPROVE_BLOCKED_ID : undefined}
+              className={`flex items-center gap-1.5 rounded-md px-3.5 py-1 text-xs font-semibold transition shadow-xs cursor-pointer disabled:cursor-not-allowed ${
+                approveLocked
+                  ? 'bg-panel2 text-muted border border-line opacity-60'
+                  : mode === 'ACT' || approvedInForce
+                    ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                    : 'bg-zinc-100 text-zinc-900 hover:bg-white active:scale-98'
+              }`}
+            >
+              <Check className="size-3.5" />
+              <span>
+                {mode === 'ACT'
+                  ? 'Approved (ACT)'
+                  : approvedInForce
+                    ? t('plan.approvedStored')
+                    : t('plan.approvePlan')}
+              </span>
+            </button>
+
+            {planFiles.document && (
+              <button
+                type="button"
+                data-testid="plan-approve-note-toggle"
+                data-component-id="plan-approve-conditions-toggle"
+                title={t('plan.decisions.chevronTitle')}
+                aria-label={t('plan.decisions.chevronTitle')}
+                aria-expanded={approveNoteOpen}
+                disabled={mode === 'ACT' || planFiles.reviewStatus === 'saving' || approveLocked}
+                onClick={() => setApproveNoteOpen((open) => !open)}
+                className="ml-0.5 rounded-md border border-line px-1 py-1 text-muted transition hover:bg-panel2 hover:text-fg cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <ChevronDown className="size-3" />
+              </button>
+            )}
+
+            {planFiles.document && approveNoteOpen && (
+              <div
+                data-component-id="plan-approve-conditions-popover"
+                data-testid="plan-approve-note-popover"
+                className="absolute right-0 top-full z-40 mt-1 w-80 space-y-2 rounded-lg border border-line bg-panel2 p-3 text-left shadow-xl animate-in fade-in zoom-in-95 duration-100"
+              >
+                <div className="text-xs font-semibold text-fg">{t('plan.decisions.conditionsLabel')}</div>
+                <p className="text-[11px] leading-relaxed text-muted">{t('plan.decisions.conditionsHint')}</p>
+                <textarea
+                  data-component-id="plan-approve-conditions-input"
+                  data-testid="plan-approve-note"
+                  rows={3}
+                  value={approveNote}
+                  onChange={(event) => setApproveNote(event.target.value)}
+                  placeholder={t('plan.decisions.conditionsPlaceholder')}
+                  className="w-full rounded-md border border-line bg-panel px-2 py-1.5 text-xs text-fg outline-hidden focus:border-zinc-500"
+                />
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    data-component-id="plan-approve-conditions-cancel"
+                    data-testid="plan-approve-note-cancel"
+                    onClick={() => {
+                      setApproveNote('')
+                      setApproveNoteOpen(false)
+                    }}
+                    className="rounded-md border border-line px-2.5 py-1 text-xs text-muted transition hover:bg-panel hover:text-fg cursor-pointer"
+                  >
+                    {t('plan.decisions.cancel')}
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="plan-approve-with-note"
+                    onClick={handleApproveWithNote}
+                    className="rounded-md bg-zinc-100 px-3 py-1 text-xs font-semibold text-zinc-900 transition hover:bg-white cursor-pointer"
+                  >
+                    {t('plan.decisions.conditionsSubmit')}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
+
+      {/* Vì sao nút Duyệt bị khoá — ngay dưới hàng công cụ, không im lặng (luật bất biến 1). */}
+      {planFiles.document && approveLocked && (
+        <div
+          data-component-id="plan-approve-blocked-reason"
+          data-testid="plan-approve-blocked"
+          id={APPROVE_BLOCKED_ID}
+          role="status"
+          className="flex items-start gap-2 border-b border-line bg-amber-500/10 px-4 py-1.5 text-xs text-amber-300"
+        >
+          <Shield className="mt-0.5 size-3.5 shrink-0" />
+          <span className="min-w-0 flex-1">{approveBlockedReason}</span>
+        </div>
+      )}
+
+      {/* Hộp lý do sửa: mở ngay dưới hàng công cụ, lý do đi cùng quyết định vào lượt chạy (BUG-3). */}
+      {planFiles.document && changesFormOpen && (
+        <div
+          data-component-id="plan-request-changes-form"
+          data-testid="plan-changes-form"
+          className="space-y-2 border-b border-line bg-panel2/30 px-4 py-2"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-[11px] font-semibold text-fg">{t('plan.decisions.changesTitle')}</span>
+            <span className="font-mono text-[10px] text-muted">
+              {t('plan.decisions.changesFor', { version: selectionVersion ?? '—' })}
+            </span>
+          </div>
+          <textarea
+            data-component-id="plan-request-changes-input"
+            data-testid="plan-changes-note"
+            rows={3}
+            value={changesNote}
+            onChange={(event) => setChangesNote(event.target.value)}
+            placeholder={t('plan.decisions.changesPlaceholder')}
+            className="w-full rounded-md border border-line bg-panel px-2 py-1.5 text-xs text-fg outline-hidden focus:border-zinc-500"
+          />
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              data-component-id="plan-request-changes-cancel"
+              data-testid="plan-changes-cancel"
+              onClick={() => {
+                setChangesNote('')
+                setChangesFormOpen(false)
+              }}
+              className="rounded-md border border-line px-2.5 py-1 text-xs text-muted transition hover:bg-panel hover:text-fg cursor-pointer"
+            >
+              {t('plan.decisions.cancel')}
+            </button>
+            <button
+              type="button"
+              data-component-id="plan-request-changes-submit"
+              data-testid="plan-changes-submit"
+              onClick={handleSubmitChanges}
+              className="rounded-md bg-zinc-100 px-3 py-1 text-xs font-semibold text-zinc-900 transition hover:bg-white cursor-pointer"
+            >
+              {t('plan.decisions.changesSubmit')}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Bản đã bị sửa sau khi duyệt: chuẩn thuận cũ không còn áp dụng, agent phải xin lại. */}
       {planFiles.reviewStale && (
@@ -505,6 +765,80 @@ export function PlanPanel() {
         >
           <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
           <span className="min-w-0 flex-1">{t('plan.notForwarded')}</span>
+        </div>
+      )}
+
+      {/* Harness CHẶN quyết định (409 `blocked: true`): mã + lý do + cách sửa, NGUYÊN VĂN của harness. */}
+      {planFiles.reviewBlocked && (
+        <div
+          data-testid="plan-review-blocked"
+          role="alert"
+          className="flex items-start gap-2 border-b border-line bg-rose-500/5 px-4 py-1.5 text-xs text-rose-400"
+        >
+          <Shield className="mt-0.5 size-3.5 shrink-0" />
+          <span className="min-w-0 flex-1 leading-relaxed">
+            <b className="font-semibold">{t('plan.verify.blockedTitle')}</b>{' '}
+            <span className="font-mono text-[11px]">({planFiles.reviewBlocked.code})</span>
+            <br />
+            <span className="text-muted">
+              {[planFiles.reviewBlocked.reason.trim(), planFiles.reviewBlocked.remedy.trim()]
+                .filter(Boolean)
+                .join(' — ')}
+            </span>
+          </span>
+        </div>
+      )}
+
+      {/* Quyết định vừa gửi: nói thật chuyện gì xảy ra sau cú bấm (BUG-2/BUG-7 nhìn từ giao diện). */}
+      {decisionSentText && (
+        <div
+          data-testid="plan-decision-sent"
+          role="status"
+          className="flex items-center gap-2 border-b border-line bg-panel2/40 px-4 py-1.5 text-xs text-muted"
+        >
+          <CircleCheck
+            className={`size-3.5 shrink-0 ${reviewResult?.resumed === true ? 'text-emerald-400' : 'text-muted'}`}
+          />
+          <span className="min-w-0 flex-1 truncate">{decisionSentText}</span>
+          {decisionSentMeta && (
+            <span className="shrink-0 font-mono text-[10px] text-muted">{decisionSentMeta}</span>
+          )}
+        </div>
+      )}
+
+      {/* M9: lượt mới mở ở phiên sở hữu — khung chat chỉ thấy lượt khi đang mở đúng phiên đó. */}
+      {ownerDiffers && (
+        <div
+          data-testid="plan-owner-hint"
+          role="status"
+          className="flex items-center gap-2 border-b border-line bg-panel2/40 px-4 py-1.5 text-xs text-muted"
+        >
+          <GitBranch className="size-3.5 shrink-0" />
+          <span id="plan-owner-hint-text" className="min-w-0 flex-1 truncate">
+            {ownerInList
+              ? t('plan.owner.hint', { session: ownerSessionId ?? '' })
+              : t('plan.owner.notInList', { session: ownerSessionId ?? '' })}
+          </span>
+          <button
+            type="button"
+            data-testid="plan-owner-open"
+            disabled={!ownerInList}
+            data-disabled-reason={ownerInList ? undefined : 'session-not-in-list'}
+            title={ownerInList ? t('plan.owner.openTitle') : undefined}
+            aria-label={t('plan.owner.openTitle')}
+            aria-describedby="plan-owner-hint-text"
+            onClick={() => {
+              // Chỉ đổi phiên đang mở bằng hàm có sẵn — không tạo phiên mới, không thêm vòng poll.
+              if (ownerInList && ownerSessionId) setActiveSessionId(ownerSessionId)
+            }}
+            className={`shrink-0 rounded border px-2 py-0.5 text-[11px] transition ${
+              ownerInList
+                ? 'cursor-pointer border-line text-fg hover:border-brand hover:text-brand'
+                : 'cursor-not-allowed border-line text-muted opacity-60'
+            }`}
+          >
+            {t('plan.owner.open')}
+          </button>
         </div>
       )}
 
@@ -669,6 +1003,18 @@ export function PlanPanel() {
                   )}
                 </div>
 
+                {/* Thẻ ĐẦU cột Overview: phiên phản biện độc lập đã đọc bản này chưa, và nó nêu gì.
+                    Trên cả metadata và lưới P1–P8, vì đây là điều kiện để được duyệt. */}
+                {planFiles.document && (
+                  <PlanReviewCard
+                    verification={planFiles.verification}
+                    version={selectionVersion}
+                    path={planFiles.document.relativePath}
+                    runPending={planFiles.verifyStatus === 'running'}
+                    onRun={handleRunVerification}
+                  />
+                )}
+
                 {/* Overview Highlights Card */}
                 <div className="rounded-lg border border-line bg-panel2/30 p-3.5 space-y-2.5">
                   <div className="flex items-center justify-between">
@@ -677,7 +1023,7 @@ export function PlanPanel() {
                     </h2>
                     {planFiles.document && (
                       <span className="rounded bg-panel px-2 py-0.5 text-[10px] font-mono text-brand border border-line">
-                        {planFiles.document.label} • {planFiles.document.status}
+                        {planFiles.document.label}
                       </span>
                     )}
                   </div>

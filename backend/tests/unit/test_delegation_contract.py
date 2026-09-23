@@ -80,14 +80,18 @@ def test_delegate_task_schema_states_the_result_shape_and_stays_backward_compati
         'existing callers send role/goal/context only: nothing new may become required'
     for name, spec in properties.items():
         assert spec.get('description', '').strip(), f'{name} must describe itself'
-    assert properties['role']['enum'] == ['explore', 'plan', 'design', 'build', 'debug', 'review',
-                                          'simplify', 'testing', 'research']
+    # Vòng 25 (D-33): vai thứ mười `plan-review` — người phản biện độc lập một bản kế hoạch đã ghi.
+    assert properties['role']['enum'] == ['explore', 'plan', 'plan-review', 'design', 'build', 'debug',
+                                          'review', 'simplify', 'testing', 'research']
     assert 'RESULT SHAPE' in properties['expect']['description']
     assert 'RESULT SHAPE' in schema['description'] and 'evidence' in schema['description']
     # the only web-capable role is named where the parent chooses it, together with its limits
     assert 'research' in properties['role']['description']
     assert 'web_search' in properties['role']['description']
     assert 'could not verify' in properties['role']['description']
+    # ...và vai phản biện được mô tả bằng đúng thứ nó phải trả về: dòng `VERDICT:`
+    assert 'plan-review' in properties['role']['description']
+    assert 'VERDICT:' in properties['role']['description']
 
 
 def test_child_prompt_carries_the_result_contract_and_the_parents_expected_shape(tmp_path):
@@ -110,15 +114,16 @@ def test_child_prompt_carries_the_result_contract_and_the_parents_expected_shape
 
 
 def test_child_budget_is_clamped_by_the_parent_and_by_the_engine_ceiling(tmp_path):
-    """B6 — con 40 bước / 300 s, nhưng KHÔNG BAO GIỜ vượt cha (luật `min()` giữ nguyên).
+    """B6 — con 40 bước / 420 s (vòng 25: 300 → 420), nhưng KHÔNG BAO GIỜ vượt cha (`min()` giữ nguyên).
 
-    `300 s` là **trần**, không phải bảo đảm: hạn chót mặc định của cha là 180 s nên lượt mặc
-    định luôn kẹp con xuống 180 s — không lượt nào thực sự dài thêm vì con.
+    `420 s` là **trần**, không phải bảo đảm: lượt cha nào có hạn chót nhỏ hơn thì kẹp con xuống
+    theo cha. Vòng 25 nâng hạn chót mặc định của cha lên 600 s (D-35), nên lượt mặc định cho con
+    đúng trần 420 s — vẫn là quyết định của CHA, không phải của con.
     """
     cases = [
-        ({'maxSteps': 60, 'deadlineSeconds': 600}, 40, 300),
+        ({'maxSteps': 60, 'deadlineSeconds': 900}, 40, 420),
         ({'maxSteps': 12, 'deadlineSeconds': 60}, 12, 60),
-        ({}, 40, 180),
+        ({}, 40, 420),
     ]
     for parent_values, steps, seconds in cases:
         _, _, child = run_delegation(tmp_path / f"p{steps}-{seconds}", delegate_args(),

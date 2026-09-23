@@ -80,6 +80,8 @@ const ROLE_DESCRIPTIONS: Record<string, string> = {
   build: 'Implement the assigned scope. Inspect before editing; report changed paths and verification.',
   debug: 'Reproduce, isolate and explain the root cause. Apply targeted fix and verify regressions.',
   review: 'Review without editing. Return actionable findings with severity and exact file evidence.',
+  'plan-review':
+    'Read the plan version on screen as an independent critic and return issues with severity, evidence and a concrete fix.',
   simplify: 'Simplify existing code without changing behavior. Preserve public contracts.',
   testing: 'Run meaningful tests in the sandbox, including UI/visual checks when relevant.',
   research: 'Research using observed repository or browser sources with grounded citations.',

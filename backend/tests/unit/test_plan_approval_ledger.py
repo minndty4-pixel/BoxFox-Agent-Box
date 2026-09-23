@@ -15,11 +15,21 @@ import copy
 import json
 import time
 
+import pytest
+
 from agentbox.agent_core import plan_registry
 from agentbox.agent_core.runtime import HarnessRuntime, plan_approval_target
 from agentbox.memory.session_store import SessionStore
 
 IDENTITY = 'clinical-patient-record-lookup-research'
+
+
+@pytest.fixture(autouse=True)
+def _approval_gate_off(monkeypatch):
+    """Vòng 25 đặt cổng "chưa phản biện thì không xin duyệt được" (`PLAN_APPROVAL_UNVERIFIED`) ở
+    `runtime.decision()`. Tệp này kiểm **sổ duyệt**, không kiểm cổng, nên tắt cổng cho đường ghi sổ
+    chạy trần — cổng có bộ ca riêng (`test_plan_verify_gate.py`), gồm cả ca `enforce` chặn thật."""
+    monkeypatch.setenv('BOXFOX_PLAN_VERIFY', 'off')
 
 
 def answer(text='done', calls=None, finish='stop'):
@@ -144,7 +154,13 @@ def test_a_rejection_in_chat_is_a_request_for_changes_with_the_note(tmp_path):
 
 
 def test_an_expired_approval_is_not_an_approval(tmp_path):
-    """Hết hạn: chưa ai đồng ý, nên sổ duyệt phải ghi "yêu cầu sửa" — không bao giờ ghi `approved`."""
+    """Hết hạn: chưa ai trả lời, nên **không** hàng nào — hết hạn không phải một lời từ chối (D-37).
+
+    Bản trước ghi `changes_requested` cho kết cục này (BUG-6), nên một lượt hết hạn trông y như một
+    lời từ chối: nhóm về `changes_requested` và luật R3 bật lên vô cớ, chặn oan một identity mới
+    cùng chủ đề. Nay sự thật vẫn có dấu vết, nhưng ở chỗ khác: event `plan_decision_skipped` + một
+    dòng nhật ký hệ thống.
+    """
 
     async def run():
         store = SessionStore(tmp_path / 'sessions.db')
@@ -155,13 +171,105 @@ def test_an_expired_approval_is_not_an_approval(tmp_path):
         sid, record = await blocked_session(runtime, store, 'Trình kế hoạch')
 
         assert await asyncio.wait_for(runtime.tasks[sid], 10) == 'Không ai trả lời nên tôi dừng.'
-        row = store.plan_review(IDENTITY, 1)
-        assert row['decision'] == 'changes_requested', 'hết hạn không được coi là đồng ý'
-        assert row['source'] == 'approval' and row['session_id'] == sid
+        assert store.plan_review(IDENTITY, 1) is None, 'hết hạn không được ghi hàng nào'
+        assert store.plan_reviews_for(IDENTITY) == []
+        skipped = [event['data'] for event in store.events(sid)
+                   if event['type'] == 'plan_decision_skipped']
+        assert len(skipped) == 1
+        assert (skipped[0]['identity'], skipped[0]['version'], skipped[0]['status']) == (IDENTITY, 1,
+                                                                                        'expired')
+        assert skipped[0]['reason'] == 'timeout' and skipped[0]['kind'] == 'approval'
+        # Nhóm về `draft` ⇒ R3 (`:865-884`) không chặn identity mới cùng chủ đề nữa.
+        assert plan_registry.group_state(versions_of(1), reviews=store.plan_reviews_for(IDENTITY),
+                                         submitted=()).state == 'draft'
         store.close()
 
     asyncio.run(run())
 
+
+
+def test_an_answer_to_a_question_about_a_plan_lands_in_the_ledger(tmp_path):
+    """BUG-7: chủ nhà bấm "Duyệt" ở một câu `ask_user` mang cặp khoá plan thì hàng duyệt phải có.
+
+    Đo vòng 25: cặp khoá chỉ được đọc cho `request_approval`, nên một câu hỏi có cặp khoá bị bỏ qua
+    — tab Plan hiện "Changes requested" cho đúng bản vừa được duyệt và vừa được thi hành.
+    """
+
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        model = FixtureModel([
+            answer('Hỏi trước khi làm', calls=[call('ask_user', {
+                'question': 'Thi hành bản v1 này?', 'options': [{'id': 'go', 'label': 'Chạy',
+                                                                'kind': 'approve'},
+                                                               {'id': 'wait', 'label': 'Chờ',
+                                                                'kind': 'reject'}],
+                'planIdentity': IDENTITY, 'planVersion': 1})]),
+            answer('Đã thi hành.')])
+        runtime = HarnessRuntime(store, FixtureExecutor(), model)
+        sid, record = await blocked_session(runtime, store, 'Trình kế hoạch')
+
+        assert record['kind'] == 'question'
+        assert (record['planIdentity'], record['planVersion']) == (IDENTITY, 1)
+        assert plan_registry.pending_submissions(runtime.pending.values(), IDENTITY) == ()
+        assert runtime.resolve_decision(sid, record['decisionId'], 'approve', None)['outcome'] == 'approved'
+        assert await asyncio.wait_for(runtime.tasks[sid], 5) == 'Đã thi hành.'
+
+        row = store.plan_review(IDENTITY, 1)
+        assert row is not None, 'đồng ý ở ask_user cũng là một quyết định thật về kế hoạch'
+        assert row['decision'] == 'approved' and row['source'] == 'approval'
+        assert row['session_id'] == sid and row['note'] == ''
+        assert store.plan_reviews_for(IDENTITY) == [row], 'đúng MỘT hàng'
+        store.close()
+
+    asyncio.run(run())
+
+
+def test_a_rejected_question_is_not_a_request_for_changes(tmp_path):
+    """Câu hỏi bị trả lời "không" **không** phải yêu cầu sửa kế hoạch: chỉ log, không hàng (D-37)."""
+
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        model = FixtureModel([
+            answer('Hỏi trước khi làm', calls=[call('ask_user', {
+                'question': 'Thi hành bản v1 này?',
+                'options': [{'id': 'go', 'label': 'Chạy', 'kind': 'approve'},
+                            {'id': 'wait', 'label': 'Chờ', 'kind': 'reject'}],
+                'planIdentity': IDENTITY, 'planVersion': 1})]),
+            answer('Thôi không làm nữa.')])
+        runtime = HarnessRuntime(store, FixtureExecutor(), model)
+        sid, record = await blocked_session(runtime, store, 'Trình kế hoạch')
+
+        assert runtime.resolve_decision(sid, record['decisionId'], 'reject', 'chưa cần')['outcome'] == 'rejected'
+        assert await asyncio.wait_for(runtime.tasks[sid], 5) == 'Thôi không làm nữa.'
+        assert store.plan_reviews_for(IDENTITY) == [], 'một câu hỏi bị từ chối không sửa kế hoạch nào'
+        # Không có hàng ⇒ nhóm vẫn `draft`, luật R3 không bật lên vì một câu hỏi.
+        assert plan_registry.group_state(versions_of(1), reviews=store.plan_reviews_for(IDENTITY),
+                                         submitted=()).state == 'draft'
+        store.close()
+
+    asyncio.run(run())
+
+
+def test_a_cancelled_session_does_not_claim_a_rejection(tmp_path):
+    """Phiên bị dừng khi đang chờ: không ai từ chối, nên không hàng — chỉ `plan_decision_skipped`."""
+
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        model = FixtureModel([
+            answer('Xin bạn duyệt', calls=[call('request_approval', approval_args())]),
+            answer('Im lặng.')])
+        runtime = HarnessRuntime(store, FixtureExecutor(), model)
+        sid, _record = await blocked_session(runtime, store, 'Trình kế hoạch')
+
+        await runtime.stop(sid)
+        assert store.get(sid)['status'] == 'cancelled'
+        assert store.plan_reviews_for(IDENTITY) == []
+        skipped = [event['data'] for event in store.events(sid)
+                   if event['type'] == 'plan_decision_skipped']
+        assert [(item['status'], item['reason']) for item in skipped] == [('cancelled', 'session_cancelled')]
+        store.close()
+
+    asyncio.run(run())
 
 def test_an_approval_that_never_named_a_plan_writes_nothing(tmp_path):
     """Đường cũ (không khai kế hoạch) không được sinh một hàng duyệt giả."""

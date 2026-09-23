@@ -10,6 +10,7 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { PlanReviewBlockedError } from '../lib/plans'
 import type { PlanDocument, PlanManifest, PlanRepository, PlanStatusClient, PlanStatusReport } from '../lib/plans'
 import { usePlanFiles } from './usePlanFiles'
 import type { PlanFilesState } from './usePlanFiles'
@@ -64,6 +65,9 @@ function reportFor(overrides: Partial<PlanStatusReport> = {}): PlanStatusReport 
     reviewStale: false,
     indexAvailable: true,
     evaluation: null,
+    // Mặc định = harness CHƯA khai mặt phản biện (bản cũ); ca nào cần thì tự khai.
+    verification: { state: 'unknown', at: null, criticSessionId: null, issues: [] },
+    ownership: { sessionId: null },
     ...overrides,
   }
 }
@@ -122,6 +126,9 @@ describe('usePlanFiles — duyệt kế hoạch (§2)', () => {
           decidedAt: 1_758_300_000,
         },
         forwarded: true,
+        recorded: true,
+        resumed: null,
+        turnId: null,
       })
     const read = vi
       .fn()
@@ -193,6 +200,9 @@ describe('usePlanFiles — duyệt kế hoạch (§2)', () => {
         decidedAt: 1_758_300_000,
       },
       forwarded: false,
+      recorded: true,
+      resumed: null,
+      turnId: null,
     })
     const repository: PlanRepository = {
       list: vi.fn(async () => manifestWith('agent-box-plan', [1])),
@@ -362,6 +372,158 @@ describe('usePlanFiles — duyệt kế hoạch (§2)', () => {
     })
 
     expect(hook.state.selection).toEqual({ identity: 'agent-box-plan', version: 4 })
+    await hook.unmount()
+  })
+})
+
+describe('usePlanFiles — mặt phản biện + kết quả quyết định (vòng 25)', () => {
+  it('mặt phản biện đọc từ sổ: `none` mới khoá duyệt, kèm `ownership.sessionId`', async () => {
+    const repository: PlanRepository = {
+      list: vi.fn(async () => manifestWith('agent-box-plan', [1])),
+      read: vi.fn(async (identity, version) => documentFor(identity, version)),
+    }
+    const hook = await mount(repository, {
+      read: vi.fn(async () =>
+        reportFor({
+          version: 1,
+          verification: { state: 'none', at: null, criticSessionId: null, issues: [] },
+          ownership: { sessionId: '9481bf87' },
+        }),
+      ),
+      submitReview: vi.fn(),
+    })
+
+    expect(hook.state.verification.state).toBe('none')
+    expect(hook.state.ownership.sessionId).toBe('9481bf87')
+    expect(hook.state.approvalLocked).toBe(true)
+    await hook.unmount()
+  })
+
+  it('harness cũ không khai mặt phản biện → `unknown` và KHÔNG khoá duyệt oan', async () => {
+    const repository: PlanRepository = {
+      list: vi.fn(async () => manifestWith('agent-box-plan', [1])),
+      read: vi.fn(async (identity, version) => documentFor(identity, version)),
+    }
+    const hook = await mount(repository, {
+      read: vi.fn(async () => reportFor({ version: 1 })),
+      submitReview: vi.fn(),
+    })
+
+    expect(hook.state.verification.state).toBe('unknown')
+    expect(hook.state.verification.issues).toEqual([])
+    expect(hook.state.approvalLocked).toBe(false)
+    await hook.unmount()
+  })
+
+  it('409 "bị khoá vì chưa phản biện" → `blocked` + giữ nguyên văn harness, và VẪN đọc lại sổ', async () => {
+    const blocked = new PlanReviewBlockedError(
+      'PLAN_APPROVAL_UNVERIFIED',
+      'Bản v1 chưa có phiên phản biện nào đọc.',
+      'Chạy phiên plan-review cho bản v1 rồi duyệt lại.',
+    )
+    const submitReview = vi.fn().mockRejectedValue(blocked)
+    const repository: PlanRepository = {
+      list: vi.fn(async () => manifestWith('agent-box-plan', [1])),
+      read: vi.fn(async (identity, version) => documentFor(identity, version)),
+    }
+    const hook = await mount(repository, {
+      read: vi.fn(async () =>
+        reportFor({ version: 1, verification: { state: 'none', at: null, criticSessionId: null, issues: [] } }),
+      ),
+      submitReview,
+    })
+
+    await act(async () => {
+      await hook.state.submitReview('approved', '')
+    })
+
+    expect(hook.state.reviewStatus).toBe('blocked')
+    expect(hook.state.reviewBlocked).toMatchObject({
+      code: 'PLAN_APPROVAL_UNVERIFIED',
+      reason: 'Bản v1 chưa có phiên phản biện nào đọc.',
+      remedy: 'Chạy phiên plan-review cho bản v1 rồi duyệt lại.',
+    })
+    expect(hook.state.reviewError).toBeNull()
+    expect(hook.state.reviewResult).toBeNull()
+    // Sổ harness là nguồn sự thật kể cả khi quyết định không vào được: đọc lại đúng một lần nữa.
+    expect(repository.list).toHaveBeenCalledTimes(2)
+    await hook.unmount()
+  })
+
+  it('200: `resumed`/`turnId` vào dòng kết quả; thiếu `resumed` (harness cũ) thì là `null`', async () => {
+    const submitReview = vi
+      .fn()
+      .mockResolvedValueOnce({
+        review: null,
+        forwarded: true,
+        recorded: true,
+        resumed: true,
+        turnId: 'turn-7',
+      })
+      .mockResolvedValue({ review: null, forwarded: true, recorded: null, resumed: null, turnId: null })
+    const repository: PlanRepository = {
+      list: vi.fn(async () => manifestWith('agent-box-plan', [1])),
+      read: vi.fn(async (identity, version) => documentFor(identity, version)),
+    }
+    const hook = await mount(repository, { read: vi.fn(async () => reportFor({ version: 1 })), submitReview })
+
+    await act(async () => {
+      await hook.state.submitReview('approved', 'kèm điều kiện: chạy trong conda ld')
+    })
+
+    expect(hook.state.reviewResult).toMatchObject({
+      decision: 'approved',
+      version: 1,
+      note: 'kèm điều kiện: chạy trong conda ld',
+      resumed: true,
+      turnId: 'turn-7',
+    })
+
+    await act(async () => {
+      await hook.state.submitReview('changes_requested', 'tách M3 thành hai bước')
+    })
+
+    expect(hook.state.reviewResult).toMatchObject({
+      decision: 'changes_requested',
+      note: 'tách M3 thành hai bước',
+      resumed: null,
+      turnId: null,
+    })
+    await hook.unmount()
+  })
+
+  it('đổi version thì dòng kết quả của bản cũ biến mất, không dán sang bản mới', async () => {
+    const submitReview = vi.fn().mockResolvedValue({
+      review: null,
+      forwarded: true,
+      recorded: true,
+      resumed: true,
+      turnId: 'turn-7',
+    })
+    const read = vi.fn(async (_identity: string, version: number | null) =>
+      reportFor({
+        version,
+        verification: { state: 'ok', at: null, criticSessionId: 'critic-1', issues: [] },
+      }),
+    )
+    const repository: PlanRepository = {
+      list: vi.fn(async () => manifestWith('agent-box-plan', [2, 1])),
+      read: vi.fn(async (identity, version) => documentFor(identity, version)),
+    }
+    const hook = await mount(repository, { read, submitReview })
+
+    await act(async () => {
+      await hook.state.submitReview('approved', '')
+    })
+    expect(hook.state.reviewResult).not.toBeNull()
+
+    await act(async () => {
+      hook.state.selectVersion(1)
+    })
+
+    expect(read).toHaveBeenLastCalledWith('agent-box-plan', 1)
+    expect(hook.state.reviewResult).toBeNull()
+    expect(hook.state.reviewBlocked).toBeNull()
     await hook.unmount()
   })
 })

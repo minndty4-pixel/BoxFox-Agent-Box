@@ -10,9 +10,11 @@ import {
   PLAN_MAX_CHARS,
   planCount,
   planStamp,
+  PlanReviewBlockedError,
   readPlanEvaluation,
   readPlanStatus,
   readPlanStatusReview,
+  readPlanVerification,
 } from './planState'
 
 /** Payload thật của `Evaluation.to_payload`, rút gọn còn các trường giao diện dùng. */
@@ -200,6 +202,154 @@ describe('HarnessPlanStatusClient', () => {
       })
       expect(outcome.forwarded).toBe(false)
       expect(outcome.review).toMatchObject({ decision: 'approved', version: 3 })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
+describe('readPlanVerification', () => {
+  it('đọc mặt phản biện: phiên nào đọc bản này, lúc nào, lỗi kèm cách sửa', () => {
+    const verification = readPlanVerification({
+      state: 'revise',
+      at: '2026-09-23T03:12:00Z',
+      criticSessionId: '5cc2b0cf',
+      issues: [
+        {
+          severity: 'high',
+          text: 'M3 gộp hai việc vào một bước — không đo được là đã xong hay chưa.',
+          fix: 'Tách M3a (chạy migrate) và M3b (đọc manifest).',
+          code: 'step-not-measurable',
+        },
+        { severity: 'low', text: 'M8 không nói chạy trong conda env nào.' },
+      ],
+    })
+
+    expect(verification).toMatchObject({ state: 'revise', criticSessionId: '5cc2b0cf' })
+    expect(verification.at).toBe('2026-09-23T03:12:00Z')
+    expect(verification.issues).toHaveLength(2)
+    expect(verification.issues[0]).toEqual({
+      severity: 'high',
+      text: 'M3 gộp hai việc vào một bước — không đo được là đã xong hay chưa.',
+      fix: 'Tách M3a (chạy migrate) và M3b (đọc manifest).',
+      code: 'step-not-measurable',
+    })
+    // Thiếu `fix`/`code` thì trường VẮNG MẶT — giao diện ẩn dòng đó thay vì bịa mã lỗi.
+    expect(verification.issues[1]).toEqual({ severity: 'low', text: 'M8 không nói chạy trong conda env nào.' })
+    expect('fix' in verification.issues[1]).toBe(false)
+  })
+
+  it('harness cũ không trả `verification` thì là "chưa biết", KHÔNG suy ra `none`', () => {
+    const verification = readPlanVerification(undefined)
+
+    expect(verification).toMatchObject({ state: 'unknown', at: null, criticSessionId: null })
+    expect(verification.issues).toEqual([])
+    expect(readPlanVerification({ state: 'weird' }).state).toBe('unknown')
+  })
+
+  it('lỗi thiếu mức thì mức là `unknown` (không hạ xuống `low`); `issues` không phải mảng thì rỗng', () => {
+    expect(
+      readPlanVerification({ state: 'ok', issues: [{ text: 'không có mức' }, 'rác', null] }).issues,
+    ).toEqual([{ severity: 'unknown', text: 'không có mức' }])
+    expect(readPlanVerification({ state: 'ok', issues: 'không phải mảng' }).issues).toEqual([])
+  })
+})
+
+describe('readPlanStatus — mặt phản biện + chủ phiên', () => {
+  it('đọc thêm `verification` và `ownership.sessionId` của đúng bản đang hỏi', () => {
+    const report = readPlanStatus({
+      state: 'draft',
+      verification: { state: 'ok', at: '2026-09-23T03:12:00Z', criticSessionId: 'critic-1', issues: [] },
+      ownership: { sessionId: '9481bf87' },
+    })
+
+    expect(report?.verification.state).toBe('ok')
+    expect(report?.verification.criticSessionId).toBe('critic-1')
+    expect(report?.ownership.sessionId).toBe('9481bf87')
+  })
+
+  it('harness cũ (thiếu cả hai trường) thì nói đúng "chưa biết", không đoán', () => {
+    const report = readPlanStatus({ state: 'draft' })
+
+    expect(report?.verification).toMatchObject({ state: 'unknown', criticSessionId: null })
+    expect(report?.ownership).toEqual({ sessionId: null })
+  })
+})
+
+describe('HarnessPlanStatusClient — kết quả quyết định', () => {
+  it('đọc `recorded`/`resumed`/`turnId`; thiếu `resumed` thì là `null`, không mặc định `false`', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        recorded: true,
+        forwarded: true,
+        resumed: true,
+        turnId: 'turn-7',
+        review: { identity: 'agent-box-plan', version: 3, decision: 'approved', decidedAt: 1_758_300_000 },
+      }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const outcome = await new HarnessPlanStatusClient().submitReview('agent-box-plan', 3, 'approved', '')
+      expect(outcome).toMatchObject({ recorded: true, forwarded: true, resumed: true, turnId: 'turn-7' })
+
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ forwarded: true, review: { decision: 'approved' } }),
+      })
+      const older = await new HarnessPlanStatusClient().submitReview('agent-box-plan', 3, 'approved', '')
+      // Harness cũ không nói gì về lượt chạy: ba trạng thái, `null` = "không biết" — KHÔNG phải "không mở".
+      expect(older.resumed).toBeNull()
+      expect(older.recorded).toBeNull()
+      expect(older.turnId).toBeNull()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('409 + `blocked: true` ném `PlanReviewBlockedError` giữ NGUYÊN chữ của harness', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: async () => ({
+        blocked: true,
+        code: 'PLAN_APPROVAL_UNVERIFIED',
+        reason: 'Bản v3 chưa có phiên phản biện nào đọc.',
+        remedy: 'Chạy phiên plan-review cho bản v3 rồi duyệt lại.',
+      }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const failure = await new HarnessPlanStatusClient()
+        .submitReview('agent-box-plan', 3, 'approved', '')
+        .catch((error: unknown) => error)
+
+      expect(failure).toBeInstanceOf(PlanReviewBlockedError)
+      expect(failure).toMatchObject({
+        name: 'PlanReviewBlockedError',
+        code: 'PLAN_APPROVAL_UNVERIFIED',
+        reason: 'Bản v3 chưa có phiên phản biện nào đọc.',
+        remedy: 'Chạy phiên plan-review cho bản v3 rồi duyệt lại.',
+      })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('409 KHÔNG kèm `blocked: true` (lỗi khác) vẫn là lỗi thường, không thành thẻ "bị khoá"', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: async () => ({ error: 'Ledger busy', code: 'REVIEW_BUSY' }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const failure = await new HarnessPlanStatusClient()
+        .submitReview('agent-box-plan', 3, 'approved', '')
+        .catch((error: unknown) => error)
+
+      expect(failure).not.toBeInstanceOf(PlanReviewBlockedError)
+      expect((failure as Error).message).toBe('REVIEW_BUSY: Ledger busy')
     } finally {
       vi.unstubAllGlobals()
     }

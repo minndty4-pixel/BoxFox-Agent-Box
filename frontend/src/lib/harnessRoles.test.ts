@@ -10,6 +10,11 @@ describe('harness role migration', () => {
     }
     expect(roles.find(r => r.id === 'research')?.enabled).toBe(true)
   })
+  it('carries the independent plan critic as its own role with a readable name', () => {
+    const roles = expandSubagents([])
+    expect(roles.some(r => r.id === 'plan-review')).toBe(true)
+    expect(roles.find(r => r.id === 'plan-review')).toMatchObject({ name: 'Plan Review', enabled: true })
+  })
   it('retains explicitly selected live model routes', () => {
     expect(expandSubagents([{ id: 'build', name: 'Build', enabled: true, model: 'model:connection:model-id', systemPromptAppended: '' }]).find(r => r.id === 'build')?.model).toBe('model:connection:model-id')
   })

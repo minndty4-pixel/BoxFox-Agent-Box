@@ -766,6 +766,81 @@ const vi = {
         other: 'sửa theo mã từ chối ở trên rồi gọi lại write_plan',
       },
     },
+    /**
+     * Mặt phản biện (vòng 25) — đọc từ sổ phản biện của harness, KHÔNG suy từ vị trí trong dropdown.
+     * Chữ ở đây phải nói đúng cái đang biết: `unknown` là "chưa biết", không phải "chưa phản biện".
+     */
+    verify: {
+      chip: {
+        none: 'Chưa phản biện',
+        ok: 'Đã phản biện · {{critic}} · {{stamp}}',
+        revise: 'Cần sửa',
+        noneTitle: 'Bản đang xem chưa có phiên phản biện nào — nguồn: sổ phản biện của harness',
+        okTitle: 'Bản đang xem đã có phiên phản biện độc lập: {{critic}} · {{stamp}}',
+        reviseTitle: 'Phiên phản biện của bản đang xem còn nêu lỗi phải sửa',
+      },
+      cardTitle: 'Phản biện độc lập',
+      cardEmpty:
+        'Phản biện độc lập chưa chạy — chưa có phiên phản biện nào đọc bản {{version}}. Phiên phản biện chạy riêng với vai {{critic}}: nó đọc đúng bản đang xem, so với bản trước rồi trả về danh sách lỗi kèm cách sửa. Bản chưa phản biện thì chưa duyệt được — thẻ này sẽ đầy lên khi phiên đó trả kết quả.',
+      cardEmptyMinimum: 'Yêu cầu tối thiểu: một phiên {{critic}} · đọc {{path}} · ghi kết quả vào sổ phản biện',
+      cardOk: 'Phiên phản biện đã đọc bản {{version}} và không nêu lỗi nào.',
+      cardUnreadable:
+        'Chưa đọc được sổ phản biện nên chưa biết bản này đã qua phản biện hay chưa — ở đây không đoán.',
+      run: 'Chạy phiên phản biện',
+      runPending: 'Đang chạy phiên phản biện…',
+      critic: 'plan-review',
+      count: '{{count}} lỗi',
+      countHigh: '{{n}} cao',
+      countMedium: '{{n}} trung bình',
+      countLow: '{{n}} thấp',
+      severity: {
+        high: 'cao',
+        medium: 'trung bình',
+        low: 'thấp',
+        unknown: 'không rõ mức',
+      },
+      fix: 'Cách sửa:',
+      fixed: 'Đã sửa ở v{{version}}',
+      unfixed: 'Chưa sửa',
+      remaining: 'Còn {{count}} lỗi mức {{severity}}',
+      locked: 'Cần một phiên plan-review phản biện bản {{version}} trước khi duyệt',
+      lockedAria: 'Duyệt kế hoạch — đang khoá',
+      blockedTitle: 'Harness chặn duyệt',
+    },
+    /** Hai quyết định ở hàng công cụ: duyệt kèm điều kiện và gửi lý do sửa (vòng 25). */
+    decisions: {
+      chevronTitle: 'Tuỳ chọn duyệt kèm điều kiện',
+      conditionsLabel: 'Điều kiện',
+      conditionsHint:
+        'Điều kiện vào sổ duyệt cùng quyết định, rồi đi theo lượt chạy tiếp theo như một yêu cầu kèm theo.',
+      conditionsPlaceholder: 'Ví dụ: M8 chỉ được coi là xong khi chạy trong conda activate ld và in ra số dòng đã đổi.',
+      conditionsSubmit: 'Duyệt kèm điều kiện',
+      cancel: 'Huỷ',
+      changesTitle: 'Lý do sửa — gửi thẳng vào lượt chạy tiếp theo',
+      changesFor: 'bản đang xem: v{{version}}',
+      changesPlaceholder: 'Ví dụ: tách M3 thành hai bước, M8 ghi rõ chạy trong conda activate ld.',
+      changesSubmit: 'Gửi yêu cầu sửa',
+      sent: {
+        approved: 'Đã gửi — agent đang mở lượt chạy tiếp theo',
+        approvedWithNote: 'Đã gửi — điều kiện vào sổ duyệt và đi theo lượt chạy tiếp theo',
+        changes: 'Đã gửi — agent đang mở lượt sửa kế hoạch v{{version}}',
+        notResumed: 'Đã vào sổ duyệt nhưng chưa mở được lượt chạy nào.',
+        unknown: 'Đã vào sổ duyệt. Harness không nói có mở lượt chạy hay không — ở đây không đoán.',
+        turn: 'lượt {{turn}}',
+        started: 'bắt đầu {{stamp}}',
+        child: 'agent con: {{role}}',
+        session: 'phiên {{session}}',
+      },
+      storedNote: 'Lý do đã vào sổ duyệt của harness và đi vào lượt chạy — không còn im lặng sau khi bấm nút.',
+    },
+    /** Chủ sở hữu kế hoạch (vòng 25, M9): lượt mới mở ở phiên nào và khung chat đang xem phiên nào. */
+    owner: {
+      hint: 'Kế hoạch này thuộc phiên {{session}} — lượt mới mở ở đó, còn khung chat đang xem phiên khác.',
+      notInList:
+        'Kế hoạch thuộc phiên {{session}}, nhưng phiên đó không có trong danh sách phiên harness đang trả về — không mở được từ đây.',
+      open: 'Mở phiên đó',
+      openTitle: 'Chuyển khung chat sang phiên đang sở hữu kế hoạch',
+    },
   },
   audit: {
     title: 'Sổ audit',

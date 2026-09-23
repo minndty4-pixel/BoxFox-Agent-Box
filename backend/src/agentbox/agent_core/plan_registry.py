@@ -689,6 +689,8 @@ class GroupState:
                 'decidedAt': review.get('decided_at'),
                 'contentSize': review.get('content_size'),
                 'contentModifiedAt': review.get('content_modified_at'),
+                # Vòng 25 (M6): hàng duyệt nói được nó đã MỞ một lượt thật hay chưa.
+                'resumed': bool(review.get('resumed')),
             },
             'reviewStale': bool(self.review_stale),
             'indexAvailable': bool(self.index_available),

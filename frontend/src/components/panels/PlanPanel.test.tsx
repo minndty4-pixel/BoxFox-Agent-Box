@@ -65,6 +65,19 @@ function statusPayload(overrides: Record<string, unknown> = {}) {
   }
 }
 
+/** Phiên ở thanh bên — chỉ đủ trường để `useAgentStore.sessions` dùng được trong ca M9. */
+function sessionSummary(sessionId: string) {
+  return {
+    session_id: sessionId,
+    initials: sessionId.slice(0, 2).toUpperCase(),
+    title: sessionId,
+    relative_time: 'vừa xong',
+    status: 'idle' as const,
+    mode: 'PLAN' as const,
+    active_lease_count: 0,
+  }
+}
+
 const APPROVED_EVALUATION = {
   identity: 'agent-box-plan',
   version: 3,
@@ -132,6 +145,15 @@ function installPlanFetch(
     /** Làm hỏng đường đọc sổ duyệt (thiếu quyền 403, mất mạng…). */
     statusFails?: { error: string; code?: string; status: number }
     reviewForwarded?: boolean
+    /** Trả 409 `blocked: true` cho lần ghi quyết định (harness chặn duyệt bản chưa phản biện). */
+    reviewBlocked?: { reason: string; remedy: string }
+    /** `resumed`/`turnId` harness khai ở lần ghi thành công; `null` = harness cũ không khai. */
+    reviewResumed?: boolean | null
+    reviewTurnId?: string | null
+    /** Thân trả về của `POST /api/agent/plans/verify`. */
+    verify?: Record<string, unknown>
+    /** Trạng thái sổ phản biện sau khi phiên phản biện được nhờ chạy. */
+    statusAfterVerify?: Record<string, unknown>
     /** Thay payload `GET /__box/plans` (dùng cho ca header cha–con). */
     plans?: unknown
   } = {},
@@ -170,15 +192,29 @@ function installPlanFetch(
       }
       return jsonResponse(current)
     }
+    if (target === '/api/agent/plans/verify' && init?.method === 'POST') {
+      if (options.statusAfterVerify) current = options.statusAfterVerify
+      return jsonResponse(options.verify ?? { recorded: false, resumed: true, turnId: '9' })
+    }
     if (target === '/api/agent/plans/review' && init?.method === 'POST') {
+      if (options.statusAfterReview) current = options.statusAfterReview
       if (options.reviewFails) {
         return jsonResponse({ error: 'unknown plan identity' }, false, 404)
       }
+      if (options.reviewBlocked) {
+        return jsonResponse(
+          { blocked: true, code: 'PLAN_APPROVAL_UNVERIFIED', ...options.reviewBlocked },
+          false,
+          409,
+        )
+      }
       const body = JSON.parse(String(init.body)) as ReviewRecord
-      if (options.statusAfterReview) current = options.statusAfterReview
       return jsonResponse({
         ...body,
         forwarded: options.reviewForwarded ?? true,
+        recorded: true,
+        resumed: options.reviewResumed === undefined ? true : options.reviewResumed,
+        turnId: options.reviewTurnId === undefined ? '7' : options.reviewTurnId,
         review: { ...body, source: 'plan-tab', decidedAt: 1_758_300_000 },
       })
     }
@@ -203,6 +239,28 @@ function click(el: Element | null) {
   })
 }
 
+/** React gắn onChange trên setter gốc của DOM nên phải gọi qua setter gốc thì `onChange` mới chạy. */
+function typeInto(textarea: HTMLTextAreaElement, value: string) {
+  const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')!.set!
+  act(() => {
+    nativeSetter.call(textarea, value)
+    textarea.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+}
+
+/** Hai mặt phản biện dùng lại nhiều lần: chưa phiên nào đọc, và đã đọc xong không lỗi. */
+const NONE_VERIFICATION = { state: 'none', at: null, criticSessionId: null, issues: [] }
+const OK_VERIFICATION = { state: 'ok', at: '2026-09-23T03:12:00Z', criticSessionId: 'critic-1', issues: [] }
+
+function reviewBody(): Record<string, unknown> {
+  const call = fetchMock.mock.calls.find(([url]) => String(url) === '/api/agent/plans/review')
+  return JSON.parse(String((call?.[1] as RequestInit | undefined)?.body ?? '{}')) as Record<string, unknown>
+}
+
+function reviewRequested(): boolean {
+  return fetchMock.mock.calls.some(([url]) => String(url) === '/api/agent/plans/review')
+}
+
 /** Đủ nhịp vi nhỏ cho chuỗi list → read → status (và cho lượt ghi quyết định). */
 async function flush() {
   await act(async () => {
@@ -219,7 +277,14 @@ beforeEach(() => {
   vi.stubGlobal('fetch', fetchMock)
   fetchMock.mockReset()
   installPlanFetch()
-  useAgentStore.setState({ mode: 'PLAN', planWorkspace: null, planEndorsed: null, proposal: null })
+  useAgentStore.setState({
+    mode: 'PLAN',
+    planWorkspace: null,
+    planEndorsed: null,
+    proposal: null,
+    activeSessionId: '',
+    sessions: [],
+  })
   useHarnessChatStore.setState({ sessions: {} })
   useUiStore.setState({ planRevision: 0, tabIntentTargets: {}, planViewMode: 'plan', planSubTab: 'overview' })
 })
@@ -288,19 +353,29 @@ describe('PlanPanel — kế hoạch thật (§2 + đợt 2)', () => {
     expect(host.querySelector('[data-testid="plan-review-error"]')).toBeNull()
   })
 
-  it('nút Yêu cầu sửa gửi đúng quyết định `changes_requested`', async () => {
+  it('nút Yêu cầu sửa mở hộp lý do rồi gửi `changes_requested` KÈM lý do', async () => {
     const host = render(<PlanPanel />)
     await flush()
 
+    // Lần bấm đầu KHÔNG gửi gì: mở hộp lý do (BUG-3 — trước đây gửi đi một quyết định rỗng chữ).
     click(host.querySelector('[data-testid="plan-request-changes"]'))
     await flush()
+    expect(reviewRequested()).toBe(false)
+    expect(text(host, 'plan-changes-form')).toContain('Reason for changes — sent straight into the next turn')
+    expect(text(host, 'plan-changes-form')).toContain('version under review: v3')
 
-    const reviewCall = fetchMock.mock.calls.find(([url]) => String(url) === '/api/agent/plans/review')
-    expect(JSON.parse(String((reviewCall?.[1] as RequestInit).body))).toMatchObject({
+    typeInto(host.querySelector('[data-testid="plan-changes-note"]') as HTMLTextAreaElement, 'tách M3 thành hai bước')
+    click(host.querySelector('[data-testid="plan-changes-submit"]'))
+    await flush()
+
+    expect(reviewBody()).toEqual({
       identity: 'agent-box-plan',
       version: 3,
       decision: 'changes_requested',
+      note: 'tách M3 thành hai bước',
     })
+    expect(host.querySelector('[data-testid="plan-changes-form"]')).toBeNull()
+    expect(text(host, 'plan-decision-sent')).toContain('the agent is opening the plan-fix turn for v3')
   })
 
   it('route ghi 404 thì hiện dải lỗi thật, không giả vờ đã duyệt', async () => {
@@ -573,5 +648,305 @@ describe('PlanPanel — kế hoạch thật (§2 + đợt 2)', () => {
     expect(host.querySelector('[data-testid="plan-approve"]')).toBeTruthy()
     expect(host.querySelector('[data-testid="plan-state-chip"]')).toBeNull()
     expect(host.textContent).not.toContain('v3 (latest)')
+  })
+})
+
+describe('PlanPanel — vòng 25: chưa phản biện thì chưa duyệt được (§vòng 25)', () => {
+  it('`state = none`: chip vàng, nút Duyệt khoá kèm lý do, bấm cũng không gửi gì', async () => {
+    installPlanFetch({ status: statusPayload({ verification: NONE_VERIFICATION }) })
+    const host = render(<PlanPanel />)
+    await flush()
+
+    expect(text(host, 'plan-review-chip')).toBe('Not reviewed')
+    const approve = host.querySelector('[data-testid="plan-approve"]') as HTMLButtonElement
+    expect(approve.disabled).toBe(true)
+    expect(approve.getAttribute('data-disabled-reason')).toBe('plan-not-reviewed')
+    expect(approve.getAttribute('aria-label')).toBe('Approve plan — locked')
+    expect(approve.getAttribute('aria-describedby')).toBe('plan-approve-blocked')
+    expect(text(host, 'plan-approve-blocked')).toContain(
+      'A plan-review session must review version v3 before you approve',
+    )
+    expect(text(host, 'plan-review-card')).toMatch(/no review session has read version v3 yet/u)
+
+    // Bấm được bằng đường khác (bàn phím, script) cũng không có gì đi ra mạng.
+    click(approve)
+    await flush()
+    expect(reviewRequested()).toBe(false)
+  })
+
+  it('`state = ok`: chip xanh, nút Duyệt mở, thẻ phản biện đứng ĐẦU cột Overview', async () => {
+    installPlanFetch({ status: statusPayload({ verification: OK_VERIFICATION }) })
+    const host = render(<PlanPanel />)
+    await flush()
+
+    expect(text(host, 'plan-review-chip')).toContain('Reviewed · plan-review')
+    expect((host.querySelector('[data-testid="plan-approve"]') as HTMLButtonElement).disabled).toBe(false)
+    expect(host.querySelector('[data-testid="plan-approve-blocked"]')).toBeNull()
+
+    const body = host.textContent ?? ''
+    expect(body.indexOf('Independent review')).toBeGreaterThan(-1)
+    expect(body.indexOf('Independent review')).toBeLessThan(body.indexOf('Plan Metadata & Status'))
+  })
+
+  it('`state = revise`: chip đỏ + từng lỗi một hàng, chữ lỗi nguyên văn harness', async () => {
+    installPlanFetch({
+      status: statusPayload({
+        verification: {
+          state: 'revise',
+          at: '2026-09-23T03:12:00Z',
+          criticSessionId: 'critic-2',
+          issues: [
+            { severity: 'high', text: 'M3 gộp hai việc vào một bước.', fix: 'Tách M3a và M3b.', code: 'step-not-measurable' },
+            { severity: 'low', text: 'M8 không nói chạy trong conda env nào.' },
+          ],
+        },
+      }),
+    })
+    const host = render(<PlanPanel />)
+    await flush()
+
+    expect(text(host, 'plan-review-chip')).toBe('Needs changes')
+    const rows = Array.from(host.querySelectorAll('[data-testid^="plan-review-finding-"]'))
+    expect(rows).toHaveLength(2)
+    expect(rows[0].textContent).toContain('M3 gộp hai việc vào một bước.')
+    expect(rows[0].textContent).toContain('step-not-measurable')
+    expect(rows[1].textContent).toContain('M8 không nói chạy trong conda env nào.')
+    // `revise` KHÔNG tự khoá nút: harness là bên chặn, và nó trả lý do của chính nó ở 409.
+    expect((host.querySelector('[data-testid="plan-approve"]') as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('harness cũ thiếu hẳn `verification`: không chip, không dòng khoá, nút Duyệt vẫn bật', async () => {
+    installPlanFetch()
+    const host = render(<PlanPanel />)
+    await flush()
+
+    expect(host.querySelector('[data-testid="plan-review-chip"]')).toBeNull()
+    expect(host.querySelector('[data-testid="plan-approve-blocked"]')).toBeNull()
+    expect((host.querySelector('[data-testid="plan-approve"]') as HTMLButtonElement).disabled).toBe(false)
+    expect(text(host, 'plan-review-card')).toMatch(/could not be read, so whether this version has been reviewed is unknown/u)
+  })
+
+  it('nút `plan-review-run` nhờ harness mở phiên phản biện rồi đọc lại sổ', async () => {
+    installPlanFetch({ status: statusPayload({ verification: NONE_VERIFICATION }), statusAfterVerify: statusPayload({ verification: OK_VERIFICATION }) })
+    const host = render(<PlanPanel />)
+    await flush()
+
+    click(host.querySelector('[data-testid="plan-review-run"]'))
+    await flush()
+
+    const call = fetchMock.mock.calls.find(([url]) => String(url) === '/api/agent/plans/verify')
+    expect(call).toBeTruthy()
+    expect(JSON.parse(String((call?.[1] as RequestInit).body))).toEqual({ identity: 'agent-box-plan', version: 3 })
+    // Mặt phản biện chỉ đổi khi SỔ đổi, không suy từ thân trả về của lệnh chạy.
+    expect(text(host, 'plan-review-chip')).toContain('Reviewed · plan-review')
+    expect((host.querySelector('[data-testid="plan-approve"]') as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('Duyệt kèm điều kiện: một mũi tên mở popup, ô trống vẫn là duyệt thường', async () => {
+    installPlanFetch({ status: statusPayload({ verification: OK_VERIFICATION }) })
+    const host = render(<PlanPanel />)
+    await flush()
+
+    expect(host.querySelector('[data-testid="plan-approve-note-popover"]')).toBeNull()
+    click(host.querySelector('[data-testid="plan-approve-note-toggle"]'))
+    expect(text(host, 'plan-approve-note-popover')).toContain(
+      'travels with the next turn as an attached requirement',
+    )
+
+    // Huỷ: không gửi gì cả.
+    click(host.querySelector('[data-testid="plan-approve-note-cancel"]'))
+    await flush()
+    expect(host.querySelector('[data-testid="plan-approve-note-popover"]')).toBeNull()
+    expect(reviewRequested()).toBe(false)
+
+    click(host.querySelector('[data-testid="plan-approve-note-toggle"]'))
+    click(host.querySelector('[data-testid="plan-approve-with-note"]'))
+    await flush()
+
+    expect(reviewBody()).toEqual({ identity: 'agent-box-plan', version: 3, decision: 'approved', note: '' })
+    expect(host.querySelector('[data-testid="plan-approve-note-popover"]')).toBeNull()
+  })
+
+  it('Duyệt kèm điều kiện có chữ: điều kiện đi nguyên văn vào `note`', async () => {
+    installPlanFetch({ status: statusPayload({ verification: OK_VERIFICATION }) })
+    const host = render(<PlanPanel />)
+    await flush()
+
+    click(host.querySelector('[data-testid="plan-approve-note-toggle"]'))
+    typeInto(
+      host.querySelector('[data-testid="plan-approve-note"]') as HTMLTextAreaElement,
+      'M8 chỉ xong khi chạy trong conda activate ld',
+    )
+    click(host.querySelector('[data-testid="plan-approve-with-note"]'))
+    await flush()
+
+    expect(reviewBody()).toEqual({
+      identity: 'agent-box-plan',
+      version: 3,
+      decision: 'approved',
+      note: 'M8 chỉ xong khi chạy trong conda activate ld',
+    })
+    expect(text(host, 'plan-decision-sent')).toContain('the condition goes into the review ledger')
+  })
+
+  it('hộp lý do để trống vẫn gửi được: lượt sửa vẫn mở, chỉ là không có lý do', async () => {
+    const host = render(<PlanPanel />)
+    await flush()
+
+    click(host.querySelector('[data-testid="plan-request-changes"]'))
+    click(host.querySelector('[data-testid="plan-changes-submit"]'))
+    await flush()
+
+    expect(reviewBody()).toMatchObject({ decision: 'changes_requested', note: '' })
+    // Lượt sửa vẫn mở dù lý do trống — đúng ý chốt "ô trống không chặn quyết định".
+    expect(text(host, 'plan-decision-sent')).toContain('the agent is opening the plan-fix turn for v3')
+  })
+
+  it('huỷ hộp lý do: không gửi quyết định nào', async () => {
+    const host = render(<PlanPanel />)
+    await flush()
+
+    click(host.querySelector('[data-testid="plan-request-changes"]'))
+    click(host.querySelector('[data-testid="plan-changes-cancel"]'))
+    await flush()
+
+    expect(reviewRequested()).toBe(false)
+    expect(host.querySelector('[data-testid="plan-changes-form"]')).toBeNull()
+  })
+
+  it('409 `blocked: true`: dải đỏ giữ NGUYÊN VĂN code/reason/remedy và nút Duyệt lại bị khoá', async () => {
+    installPlanFetch({
+      status: statusPayload(),
+      statusAfterReview: statusPayload({ verification: NONE_VERIFICATION }),
+      reviewBlocked: {
+        reason: 'Bản v3 chưa có phiên phản biện nào đọc.',
+        remedy: 'Chạy phiên plan-review cho bản v3 rồi duyệt lại.',
+      },
+    })
+    const host = render(<PlanPanel />)
+    await flush()
+
+    click(host.querySelector('[data-testid="plan-approve"]'))
+    await flush()
+
+    const strip = text(host, 'plan-review-blocked')
+    expect(strip).toContain('Harness blocked the approval')
+    expect(strip).toContain('PLAN_APPROVAL_UNVERIFIED')
+    expect(strip).toContain('Bản v3 chưa có phiên phản biện nào đọc.')
+    expect(strip).toContain('Chạy phiên plan-review cho bản v3 rồi duyệt lại.')
+    // Dòng dưới nút lấy nguyên văn `remedy` của harness, không dịch lại.
+    expect(text(host, 'plan-approve-blocked')).toBe('Chạy phiên plan-review cho bản v3 rồi duyệt lại.')
+    expect((host.querySelector('[data-testid="plan-approve"]') as HTMLButtonElement).disabled).toBe(true)
+    expect(host.querySelector('[data-testid="plan-review-error"]')).toBeNull()
+  })
+
+  it('`resumed: false`: dòng kết quả nói thật là chưa mở được lượt nào', async () => {
+    installPlanFetch({
+      statusAfterReview: statusPayload({
+        state: 'approved',
+        review: { identity: 'agent-box-plan', version: 3, decision: 'approved', note: '', source: 'plan-tab', decidedAt: 1_758_300_000 },
+      }),
+      reviewResumed: false,
+    })
+    const host = render(<PlanPanel />)
+    await flush()
+
+    click(host.querySelector('[data-testid="plan-approve"]'))
+    await flush()
+
+    expect(text(host, 'plan-decision-sent')).toContain('no new turn was opened')
+  })
+
+  it('thiếu `resumed` (harness cũ): câu trung tính, không hứa đã mở lượt', async () => {
+    installPlanFetch({
+      statusAfterReview: statusPayload({
+        state: 'approved',
+        review: { identity: 'agent-box-plan', version: 3, decision: 'approved', note: '', source: 'plan-tab', decidedAt: 1_758_300_000 },
+      }),
+      reviewResumed: null,
+      reviewTurnId: null,
+    })
+    const host = render(<PlanPanel />)
+    await flush()
+
+    click(host.querySelector('[data-testid="plan-approve"]'))
+    await flush()
+
+    expect(text(host, 'plan-decision-sent')).toContain('did not say whether a turn was opened')
+  })
+
+  it('nhãn version bỏ chữ trạng thái gán theo vị trí của box (BUG-5)', async () => {
+    installPlanFetch()
+    const host = render(<PlanPanel />)
+    await flush()
+
+    const versionToggle = Array.from(host.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('v3'),
+    )
+    expect(versionToggle?.textContent).toBe('v3')
+    expect(host.textContent).not.toContain('(draft)')
+    expect(host.textContent).not.toContain('v3 •')
+
+    click(versionToggle ?? null)
+    await flush()
+    expect(host.textContent).toContain('v2')
+    expect(host.textContent).not.toContain('v2 (undefined)')
+  })
+})
+
+describe('PlanPanel — phiên sở hữu kế hoạch và khung chat (M9)', () => {
+  it('đang xem phiên khác: chỉ ra phiên sở hữu và mở được phiên đó', async () => {
+    useAgentStore.setState({
+      activeSessionId: 's-viewing',
+      sessions: [sessionSummary('s-owner'), sessionSummary('s-viewing')],
+    })
+    installPlanFetch({ status: statusPayload({ ownership: { sessionId: 's-owner' } }) })
+    const host = render(<PlanPanel />)
+    await flush()
+
+    expect(text(host, 'plan-owner-hint')).toContain('belongs to session s-owner')
+    const open = host.querySelector('[data-testid="plan-owner-open"]') as HTMLButtonElement
+    expect(open.disabled).toBe(false)
+    expect(open.getAttribute('aria-describedby')).toBe('plan-owner-hint-text')
+
+    click(open)
+    await flush()
+    // Nút chỉ đổi phiên đang mở bằng hàm có sẵn: không tạo phiên mới, không gọi mạng.
+    expect(useAgentStore.getState().activeSessionId).toBe('s-owner')
+    expect(useAgentStore.getState().sessions).toHaveLength(2)
+  })
+
+  it('phiên sở hữu không có trong danh sách harness: nói thật là không mở được, nút bị khoá', async () => {
+    useAgentStore.setState({ activeSessionId: 's-viewing', sessions: [sessionSummary('s-viewing')] })
+    installPlanFetch({ status: statusPayload({ ownership: { sessionId: 's-gone' } }) })
+    const host = render(<PlanPanel />)
+    await flush()
+
+    expect(text(host, 'plan-owner-hint')).toContain('not in the session list the harness returns')
+    const open = host.querySelector('[data-testid="plan-owner-open"]') as HTMLButtonElement
+    expect(open.disabled).toBe(true)
+    expect(open.getAttribute('data-disabled-reason')).toBe('session-not-in-list')
+
+    click(open)
+    await flush()
+    expect(useAgentStore.getState().activeSessionId).toBe('s-viewing')
+  })
+
+  it('đang mở đúng phiên sở hữu: không vẽ dòng nhắc nào', async () => {
+    useAgentStore.setState({ activeSessionId: 's-owner', sessions: [sessionSummary('s-owner')] })
+    installPlanFetch({ status: statusPayload({ ownership: { sessionId: 's-owner' } }) })
+    const host = render(<PlanPanel />)
+    await flush()
+
+    expect(host.querySelector('[data-testid="plan-owner-hint"]')).toBeNull()
+  })
+
+  it('harness cũ thiếu hẳn `ownership`: không đoán phiên nào, không vẽ dòng nhắc', async () => {
+    useAgentStore.setState({ activeSessionId: 's-viewing', sessions: [sessionSummary('s-viewing')] })
+    installPlanFetch({ status: statusPayload() })
+    const host = render(<PlanPanel />)
+    await flush()
+
+    expect(host.querySelector('[data-testid="plan-owner-hint"]')).toBeNull()
   })
 })

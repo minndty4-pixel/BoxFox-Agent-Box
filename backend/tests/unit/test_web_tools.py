@@ -43,7 +43,7 @@ def test_research_and_orchestrator_hold_the_web_tools():
     research = allowed_tools('research')
     assert {'web_search', 'web_fetch'} <= research
     assert {'web_search', 'web_fetch'} <= allowed_tools('orchestrator')
-    for role in ('explore', 'plan', 'review', 'simplify', 'build', 'debug', 'testing'):
+    for role in ('explore', 'plan', 'plan-review', 'review', 'simplify', 'build', 'debug', 'testing'):
         assert not ({'web_search', 'web_fetch'} & allowed_tools(role)), role
 
 

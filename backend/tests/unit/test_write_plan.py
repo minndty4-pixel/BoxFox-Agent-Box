@@ -822,3 +822,45 @@ def test_the_ticket_does_not_leak_to_another_slug_or_session(tmp_path):
         store.close()
 
     asyncio.run(run())
+
+
+def test_a_plan_written_by_a_delegated_session_belongs_to_the_root_session(tmp_path):
+    """Vòng 25 (D-36): sổ sở hữu phải trỏ về phiên GỐC, vì chỉ phiên gốc mở được trong khung chat.
+
+    Đo vòng 25: ba cú bấm ở tab Plan đều ghi được hàng duyệt nhưng `plan_reviews.session_id` là
+    `NULL`, nên không có phiên nào để đánh thức. Con `plan` ghi kế hoạch hộ cây là chuyện thường —
+    đường về phải là phiên gốc, không phải phiên con (phiên con không có chat để hiện lượt mới).
+    """
+
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        executor = PlanFixtureExecutor()
+        model = FixtureModel([
+            answer('Viết plan', calls=[call('write_plan', {'slug': 'Workspace Plan',
+                                                           'markdown': PLAN_MARKDOWN})]),
+            answer('Đã ghi plan')])
+        runtime = HarnessRuntime(store, executor, model)
+        root = runtime.create({'skills': []})['id']
+        # Con thật trong cây: cùng cấu hình đã chuẩn hoá của phiên gốc, khác `parent_id`.
+        child = store.create(store.get(root)['config'], role='plan', parent_id=root)['id']
+
+        await runtime.start(child, 'Viết plan hộ phiên gốc')
+
+        owner = store.plan_owner('workspace-plan')
+        assert owner is not None, 'ghi kế hoạch phải để lại hàng sở hữu'
+        assert owner['session_id'] == root, 'phiên sở hữu là phiên GỐC, không phải phiên con'
+        assert owner['first_session_id'] == root
+        assert owner['relative_path'] == '.plans/v1-workspace-plan.md'
+        assert events_of(store, child, 'plan_written'), 'bản ghi vẫn thuộc phiên đã viết nó'
+
+        # Ghi từ chính phiên gốc: vẫn cùng một hàng, không nhân đôi theo người viết.
+        model.responses = iter([answer('Viết tiếp', calls=[call('write_plan', {
+            'slug': 'Workspace Plan', 'markdown': PLAN_MARKDOWN_V2})]), answer('Đã ghi bản 2')])
+        await runtime.start(root, 'Viết bản 2')
+        rows = store.db.execute('SELECT COUNT(*) AS total FROM plan_owners').fetchone()['total']
+        assert rows == 1
+        assert store.plan_owner('workspace-plan')['session_id'] == root
+        assert store.plan_owner('workspace-plan')['first_session_id'] == root
+        store.close()
+
+    asyncio.run(run())

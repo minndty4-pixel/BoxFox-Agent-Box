@@ -8,7 +8,10 @@ DEFAULT_SKILLS = {'codebase-inspection', 'systematic-debugging', 'requesting-cod
                   # Vòng 24 (D-31): dạng câu trả lời cuối (menu phần, đoạn mở đầu, ảnh khép
                   # câu trả lời) nằm trong chính kỹ năng này — phiên MỚI nhận mặc định; phiên
                   # đang chạy giữ danh sách kỹ năng của nó (không hồi tố).
-                  'final-report'}
+                  'final-report',
+                  # Vòng 25 (D-33): vòng lặp kế hoạch (nghiên cứu → ghi → phản biện → ghi nhận
+                  # verdict → duyệt). Nhận mặc định vì lượt lập kế hoạch nào cũng cần nó.
+                  'planning'}
 
 
 class SkillCatalog:

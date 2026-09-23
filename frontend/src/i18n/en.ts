@@ -771,6 +771,81 @@ const en: SameShape<typeof vi> = {
         other: 'fix what the rejection code above points at, then call write_plan again',
       },
     },
+    /**
+     * Independent-review face (round 25) — read from the harness review ledger, never inferred from a
+     * dropdown position. `unknown` reads as "unknown", never as "not reviewed".
+     */
+    verify: {
+      chip: {
+        none: 'Not reviewed',
+        ok: 'Reviewed · {{critic}} · {{stamp}}',
+        revise: 'Needs changes',
+        noneTitle: 'This version has no review session yet — source: the harness review ledger',
+        okTitle: 'This version has an independent review: {{critic}} · {{stamp}}',
+        reviseTitle: 'The review session for this version still lists issues to fix',
+      },
+      cardTitle: 'Independent review',
+      cardEmpty:
+        'The independent review has not run — no review session has read version {{version}} yet. A review runs in its own {{critic}} session: it reads this exact version, compares it with the previous one and returns the issues with fixes. A version without a review cannot be approved — this card fills up when that session returns.',
+      cardEmptyMinimum: 'Minimum requirement: one {{critic}} session · reads {{path}} · writes the result into the review ledger',
+      cardOk: 'The review session read version {{version}} and listed no issues.',
+      cardUnreadable:
+        'The review ledger could not be read, so whether this version has been reviewed is unknown — nothing is claimed here.',
+      run: 'Run review session',
+      runPending: 'Starting the review session…',
+      critic: 'plan-review',
+      count: '{{count}} issue(s)',
+      countHigh: '{{n}} high',
+      countMedium: '{{n}} medium',
+      countLow: '{{n}} low',
+      severity: {
+        high: 'high',
+        medium: 'medium',
+        low: 'low',
+        unknown: 'severity unknown',
+      },
+      fix: 'Fix:',
+      fixed: 'Fixed in v{{version}}',
+      unfixed: 'Not fixed',
+      remaining: '{{count}} {{severity}} issue(s) left',
+      locked: 'A plan-review session must review version {{version}} before you approve',
+      lockedAria: 'Approve plan — locked',
+      blockedTitle: 'Harness blocked the approval',
+    },
+    /** The two decisions in the toolbar row: approve with conditions, and send a change reason. */
+    decisions: {
+      chevronTitle: 'Approve with conditions',
+      conditionsLabel: 'Condition',
+      conditionsHint:
+        'The condition goes into the review ledger with the decision and travels with the next turn as an attached requirement.',
+      conditionsPlaceholder: 'e.g. M8 only counts as done when it runs under conda activate ld and prints the changed row count.',
+      conditionsSubmit: 'Approve with condition',
+      cancel: 'Cancel',
+      changesTitle: 'Reason for changes — sent straight into the next turn',
+      changesFor: 'version under review: v{{version}}',
+      changesPlaceholder: 'e.g. split M3 into two steps, and say in M8 that it runs under conda activate ld.',
+      changesSubmit: 'Send change request',
+      sent: {
+        approved: 'Sent — the agent is opening the next turn',
+        approvedWithNote: 'Sent — the condition goes into the review ledger and travels with the next turn',
+        changes: 'Sent — the agent is opening the plan-fix turn for v{{version}}',
+        notResumed: 'Stored in the review ledger, but no new turn was opened.',
+        unknown: 'Stored in the review ledger. The harness did not say whether a turn was opened — nothing is claimed here.',
+        turn: 'turn {{turn}}',
+        started: 'started {{stamp}}',
+        child: 'sub-agent: {{role}}',
+        session: 'session {{session}}',
+      },
+      storedNote: 'The reason went into the harness review ledger and into the next turn — no more silence after the click.',
+    },
+    /** Plan owner (round 25, M9): which session the new turn opens in, and which one chat is showing. */
+    owner: {
+      hint: 'This plan belongs to session {{session}} — the new turn opens there, while the chat column is showing a different session.',
+      notInList:
+        'The plan belongs to session {{session}}, but that session is not in the session list the harness returns — it cannot be opened from here.',
+      open: 'Open that session',
+      openTitle: 'Switch the chat column to the session that owns this plan',
+    },
   },
   audit: {
     title: 'Audit log',

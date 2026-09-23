@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { agentApi } from '../lib/agentApi'
 import {
   PlanRepositoryHttpError,
+  PlanReviewBlockedError,
   createPlanRepository,
   createPlanStatusClient,
   reconcilePlanSelection,
@@ -9,11 +11,13 @@ import type {
   PlanDocument,
   PlanEvaluation,
   PlanManifest,
+  PlanOwnership,
   PlanRepository,
   PlanReviewState,
   PlanSelection,
   PlanStatusClient,
   PlanStatusReview,
+  PlanVerification,
 } from '../lib/plans'
 import { useUiStore } from '../store/uiStore'
 
@@ -29,7 +33,35 @@ export interface PlanReview {
   updatedAt: number
 }
 
-export type PlanReviewStatus = 'idle' | 'saving' | 'error'
+export type PlanReviewStatus = 'idle' | 'saving' | 'error' | 'blocked'
+
+/** Trạng thái gọi `POST /api/agent/plans/verify` (nhờ harness mở phiên phản biện). */
+export type PlanVerifyStatus = 'idle' | 'running' | 'error'
+
+/** Mặt phản biện CHƯA BIẾT — đúng hình dạng `readPlanVerification(undefined)` trả về. */
+const UNKNOWN_VERIFICATION: PlanVerification = {
+  state: 'unknown',
+  at: null,
+  criticSessionId: null,
+  issues: [],
+}
+
+const NO_OWNER: PlanOwnership = { sessionId: null }
+
+/**
+ * Kết quả một lần ghi quyết định, đủ để nói thật chuyện gì xảy ra sau cú bấm: quyết định vào sổ
+ * chưa, có mở được lượt chạy mới không, lượt đó là lượt nào. `resumed`/`recorded` giữ ba trạng thái
+ * — `null` là "harness không nói", không được đọc thành "không mở".
+ */
+export interface PlanReviewResult {
+  decision: PlanReviewDecision
+  version: number
+  note: string
+  recorded: boolean | null
+  forwarded: boolean | null
+  resumed: boolean | null
+  turnId: string | null
+}
 
 /**
  * Đọc `review` mà `GET /__box/plans` trả kèm mỗi bản ghi (hoặc `null`). Dữ liệu
@@ -74,12 +106,35 @@ export interface PlanFilesState {
   indexAvailable: boolean
   /** Bản chấm P1–P8 của đúng bản đang chọn; `null` với bản cũ chưa từng được chấm. */
   evaluation: PlanEvaluation | null
+  /** Mặt phản biện của đúng bản đang chọn (`none | ok | revise | unknown`); `unknown` = chưa biết. */
+  verification: PlanVerification
+  /** Phiên đang sở hữu bản kế hoạch — lượt chạy tiếp theo mở trong phiên này. */
+  ownership: PlanOwnership
+  /**
+   * `true` chỉ khi harness NÓI RÕ bản này chưa qua phiên phản biện (`verification.state === 'none'`).
+   * `unknown` (harness cũ không trả trường) KHÔNG khoá: thà để harness trả 409 kèm lý do của chính nó
+   * còn hơn giao diện tự khoá oan một đường vẫn hợp lệ.
+   */
+  approvalLocked: boolean
   /** Lỗi đọc trạng thái duyệt; hiện ở dải cảnh báo riêng, không lẫn với lỗi tải kế hoạch. */
   statusError: string | null
   /** `false` = quyết định đã vào sổ harness nhưng chưa chuyển được sang box; `null` = chưa ghi lần nào. */
   reviewForwarded: boolean | null
   reviewStatus: PlanReviewStatus
   reviewError: string | null
+  /** Kết quả quyết định vừa gửi (`null` = chưa gửi lần nào trong bản đang xem). */
+  reviewResult: PlanReviewResult | null
+  /** 409 "bị khoá vì chưa phản biện" — giữ nguyên văn `code`/`reason`/`remedy` của harness. */
+  reviewBlocked: PlanReviewBlockedError | null
+  /** `running` = đã nhờ harness mở phiên phản biện, đang chờ nó nhận. */
+  verifyStatus: PlanVerifyStatus
+  verifyError: string | null
+  /**
+   * Nhờ harness mở phiên `plan-review` cho bản đang xem rồi đọc lại sổ. Thân trả về
+   * (`recorded`/`resumed`/`turnId`) không được hứa hẹn gì ở đây: mặt phản biện chỉ đổi khi phiên đó
+   * THẬT SỰ chạy xong, nên giao diện chờ sổ, không tự suy.
+   */
+  runVerification: () => Promise<void>
   /** Ghi quyết định duyệt / yêu cầu sửa xuống harness rồi tải lại kế hoạch + trạng thái. */
   submitReview: (decision: PlanReviewDecision, note?: string) => Promise<void>
 }
@@ -109,6 +164,12 @@ export function usePlanFiles(
   const [evaluation, setEvaluation] = useState<PlanEvaluation | null>(null)
   const [selectedReview, setSelectedReview] = useState<PlanStatusReview | null>(null)
   const [statusError, setStatusError] = useState<string | null>(null)
+  const [verification, setVerification] = useState<PlanVerification>(UNKNOWN_VERIFICATION)
+  const [ownership, setOwnership] = useState<PlanOwnership>(NO_OWNER)
+  const [reviewResult, setReviewResult] = useState<PlanReviewResult | null>(null)
+  const [reviewBlocked, setReviewBlocked] = useState<PlanReviewBlockedError | null>(null)
+  const [verifyStatus, setVerifyStatus] = useState<PlanVerifyStatus>('idle')
+  const [verifyError, setVerifyError] = useState<string | null>(null)
   // `plan_written` của agent làm số này tăng → manifest được tải lại; lần nạp
   // khi mount vẫn giữ nguyên.
   const planRevision = useUiStore((s) => s.planRevision)
@@ -117,6 +178,8 @@ export function usePlanFiles(
   // đang bay, và ngược lại.
   const statusGenerationRef = useRef(0)
   const selectionRef = useRef<PlanSelection | null>(null)
+  // Bản mà dòng kết quả / dải "bị khoá" đang nói tới: đổi bản thì hai thứ đó hết đúng.
+  const statusSelectionRef = useRef<string | null>(null)
   const refreshRef = useRef<(() => Promise<void>) | null>(null)
 
   useEffect(() => {
@@ -125,12 +188,19 @@ export function usePlanFiles(
 
   const resetStatus = useCallback(() => {
     statusGenerationRef.current += 1
+    statusSelectionRef.current = null
     setPlanState('unknown')
     setReviewStale(false)
     setIndexAvailable(true)
     setEvaluation(null)
     setSelectedReview(null)
     setStatusError(null)
+    setVerification(UNKNOWN_VERIFICATION)
+    setOwnership(NO_OWNER)
+    // Dòng kết quả + dải "bị khoá" nói về MỘT bản cụ thể; đổi bản thì chúng hết đúng.
+    setReviewResult(null)
+    setReviewBlocked(null)
+    setReviewStatus((current) => (current === 'blocked' ? 'idle' : current))
   }, [])
 
   /**
@@ -146,6 +216,13 @@ export function usePlanFiles(
         return
       }
       const generation = ++statusGenerationRef.current
+      const selectionKey = `${nextSelection.identity}:${nextSelection.version}`
+      if (statusSelectionRef.current !== selectionKey) {
+        statusSelectionRef.current = selectionKey
+        setReviewResult(null)
+        setReviewBlocked(null)
+        setReviewStatus((current) => (current === 'blocked' ? 'idle' : current))
+      }
       try {
         const report = await activeStatusClient.read(nextSelection.identity, nextSelection.version)
         if (generation !== statusGenerationRef.current) return
@@ -154,6 +231,8 @@ export function usePlanFiles(
         setIndexAvailable(report.indexAvailable)
         setEvaluation(report.evaluation)
         setSelectedReview(report.review)
+        setVerification(report.verification)
+        setOwnership(report.ownership)
         setStatusError(null)
       } catch (cause) {
         if (generation !== statusGenerationRef.current) return
@@ -164,6 +243,9 @@ export function usePlanFiles(
         // Không đọc được sổ duyệt thì không có quyết định nào để hiện: thà nói "không đọc được"
         // còn hơn giữ lại một quyết định cũ và để người dùng tưởng nó còn hiệu lực.
         setSelectedReview(null)
+        // Không đọc được sổ thì cũng không biết mặt phản biện của bản này: để `unknown`, không đoán.
+        setVerification(UNKNOWN_VERIFICATION)
+        setOwnership(NO_OWNER)
         setStatusError(messageFor(cause))
       }
     },
@@ -290,6 +372,22 @@ export function usePlanFiles(
     [loadDocument, manifest, selection],
   )
 
+  const runVerification = useCallback(async () => {
+    const current = selectionRef.current
+    if (!current) return
+    setVerifyStatus('running')
+    setVerifyError(null)
+    try {
+      await agentApi<unknown>('/plans/verify', { identity: current.identity, version: current.version })
+      // Kết quả chỉ hiện qua sổ phản biện — đọc lại, không tự vẽ "đã phản biện".
+      await refresh()
+      setVerifyStatus('idle')
+    } catch (cause) {
+      setVerifyStatus('error')
+      setVerifyError(messageFor(cause))
+    }
+  }, [refresh])
+
   const submitReview = useCallback(
     async (decision: PlanReviewDecision, note = '') => {
       const current = selectionRef.current
@@ -301,6 +399,8 @@ export function usePlanFiles(
       setReviewStatus('saving')
       setReviewError(null)
       setReviewForwarded(null)
+      setReviewResult(null)
+      setReviewBlocked(null)
       try {
         // Ghi vào SỔ DUYỆT của harness (kèm số version, để duyệt v1 không làm v2 thành đã duyệt);
         // harness tự chuyển tiếp sang box và trả `forwarded`.
@@ -311,9 +411,26 @@ export function usePlanFiles(
           note,
         )
         setReviewForwarded(outcome.forwarded)
+        setReviewResult({
+          decision,
+          version: current.version,
+          note,
+          recorded: outcome.recorded,
+          forwarded: outcome.forwarded,
+          resumed: outcome.resumed,
+          turnId: outcome.turnId,
+        })
         await refresh()
         setReviewStatus('idle')
       } catch (cause) {
+        if (cause instanceof PlanReviewBlockedError) {
+          // 409: quyết định KHÔNG vào sổ. Vẫn đọc lại sổ harness — sổ là nguồn sự thật, và nó có thể
+          // vừa đổi vì một phiên phản biện vừa chạy xong.
+          setReviewStatus('blocked')
+          setReviewBlocked(cause)
+          await refresh()
+          return
+        }
         setReviewStatus('error')
         setReviewError(messageFor(cause))
       }
@@ -335,10 +452,18 @@ export function usePlanFiles(
     reviewStale,
     indexAvailable,
     evaluation,
+    verification,
+    ownership,
+    approvalLocked: verification.state === 'none',
     statusError,
     reviewForwarded,
     reviewStatus,
     reviewError,
+    reviewResult,
+    reviewBlocked,
+    verifyStatus,
+    verifyError,
+    runVerification,
     submitReview,
   }
 }

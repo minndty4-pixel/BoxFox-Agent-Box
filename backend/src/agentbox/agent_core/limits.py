@@ -21,10 +21,14 @@ INSTRUCTIONS_MAX_CHARS = 12000
 # `300 s` của con là **trần**, không phải bảo đảm — `runtime.delegate()` vẫn `min()` theo cha.
 MAX_STEPS_DEFAULT = 40
 MAX_STEPS_MAX = 60
-DEADLINE_DEFAULT_SECONDS = 180
-DEADLINE_MAX_SECONDS = 600
+# Vòng 25 (D-35) — đo sống: một lượt lập kế hoạch CƠ BẢN chết ở 210 s trước cả `write_plan` khi
+# mặc định là 180 s, và một lượt khác ở 622 s vẫn `partial` (chưa xong). Lượt lập kế hoạch đầu
+# tiên không có dấu vết tất định nào để nhận ra TRƯỚC khi nó chạy, nên nâng toàn cục; phần nới
+# theo sự kiện (`PLAN_TURN_EXTENSION_SECONDS`) chỉ để lượt kịp đi hết vòng phản biện.
+DEADLINE_DEFAULT_SECONDS = 600
+DEADLINE_MAX_SECONDS = 1200
 CHILD_MAX_STEPS = 40
-CHILD_DEADLINE_SECONDS = 300
+CHILD_DEADLINE_SECONDS = 420
 
 # Trần BYTE của một request mà router chấp nhận, và phần byte của request không nằm trong
 # `messages` (prompt vai + schema công cụ). Bộ nén phải biết cả hai: trên cửa sổ 1M, ngưỡng
@@ -242,6 +246,45 @@ EVIDENCE_GATE_FAILED_CODE = 'EVIDENCE_GATE_FAILED'
 # Giá trị lạ của công tắc: rơi về mặc định **kèm notice** — đổi hành vi trong im lặng là
 # thứ kế hoạch cấm (và là thứ đã làm vòng 21 tốn thời gian để tìm ra sự thật).
 EVIDENCE_MODE_UNKNOWN_CODE = 'EVIDENCE_GATE_MODE_UNKNOWN'
+
+# --------------------------------------------------------------------------------------------
+# Vòng 25 (D-33/D-34/D-35) — vòng lặp kế hoạch: cổng phản biện, cổng nguồn, và phần nới hạn chót
+# --------------------------------------------------------------------------------------------
+# Cùng khuôn ba chế độ với cổng bằng chứng: `off` không kiểm; `warn` ghi sổ + cảnh báo nhưng cho
+# đi tiếp; `enforce` từ chối. Giá trị lạ ⇒ rơi về mặc định KÈM notice.
+PLAN_VERIFY_ENV = 'BOXFOX_PLAN_VERIFY'
+PLAN_VERIFY_MODES = ('enforce', 'warn', 'off')
+PLAN_VERIFY_DEFAULT_MODE = 'enforce'
+# Cổng nguồn có công tắc RIÊNG: hạ cấp nó (để ghi một kế hoạch dựa vào dữ kiện ngoài) không được
+# kéo theo việc cho phép duyệt một kế hoạch chưa ai phản biện.
+PLAN_SOURCES_ENV = 'BOXFOX_PLAN_SOURCES_GATE'
+PLAN_SOURCES_MODES = ('enforce', 'warn', 'off')
+PLAN_SOURCES_DEFAULT_MODE = 'enforce'
+# Ngưỡng của cổng bằng chứng `plan_verify` (xem `runtime.plan_verify` cho bốn điều kiện đầy đủ).
+PLAN_REVIEW_MIN_ANSWER_CHARS = 400
+PLAN_VERIFY_MAX_ISSUES = 30
+PLAN_VERIFY_ISSUE_CHARS = 400
+PLAN_VERIFY_SUMMARY_CHARS = 800
+# Trần số vòng `revise` trong MỘT lượt: quá trần thì model phải báo chủ nhà trung thực kèm danh
+# sách lỗi chưa sửa, không được lặp vô hạn.
+PLAN_VERIFY_REVISE_MAX = 2
+# Nới hạn chót ĐÚNG MỘT LẦN cho mỗi lượt, theo sự kiện `plan_written` (đúng chỗ lượt đang kết
+# thúc vì hết giờ), không theo cảm tính của model. Trần hiệu dụng vẫn là `DEADLINE_MAX_SECONDS`.
+PLAN_TURN_EXTENSION_SECONDS = 420
+PLAN_TURN_EXTENSIONS_MAX = 1
+TURN_EXTENDED_CODE = 'TURN_EXTENDED'
+# Mã của cổng phản biện, cổng nguồn và đường đánh thức phiên. Một chỗ khai báo để route, sổ và
+# giao diện không bao giờ lệch chữ (giao diện đọc chúng từ `runtime_info`, không chép tay).
+PLAN_APPROVAL_UNVERIFIED_CODE = 'PLAN_APPROVAL_UNVERIFIED'
+PLAN_VERIFY_MODE_UNKNOWN_CODE = 'PLAN_VERIFY_MODE_UNKNOWN'
+PLAN_SOURCES_MODE_UNKNOWN_CODE = 'PLAN_SOURCES_GATE_MODE_UNKNOWN'
+PLAN_VERIFY_INVALID_CODE = 'PLAN_VERIFY_INVALID'
+PLAN_VERIFY_NO_CRITIC_CODE = 'PLAN_VERIFY_NO_CRITIC'
+PLAN_VERIFY_VERDICT_MISSING_CODE = 'PLAN_VERIFY_VERDICT_MISSING'
+PLAN_VERIFY_VERDICT_MISMATCH_CODE = 'PLAN_VERIFY_VERDICT_MISMATCH'
+PLAN_SOURCES_REJECTED_CODE = 'PLAN_SOURCES_REJECTED'
+PLAN_WAKE_NO_OWNER_CODE = 'PLAN_WAKE_NO_OWNER'
+PLAN_WAKE_FAILED_CODE = 'PLAN_WAKE_FAILED'
 # P1.1 — mã của dòng log nói bộ đếm lượt và transcript lệch nhau.
 TURN_INDEX_DRIFT_CODE = 'TURN_INDEX_DRIFT'
 

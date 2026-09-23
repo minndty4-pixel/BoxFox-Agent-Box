@@ -149,7 +149,7 @@ def test_busy_controls_never_start_second_model_call(registry):
     asyncio.run(run())
 
 
-@pytest.mark.parametrize('sid', ['codebase-inspection', 'systematic-debugging', 'requesting-code-review', 'simplify-code', 'test-driven-development', 'grounded-citations', 'final-report'])
+@pytest.mark.parametrize('sid', ['codebase-inspection', 'systematic-debugging', 'requesting-code-review', 'simplify-code', 'test-driven-development', 'grounded-citations', 'final-report', 'planning'])
 @pytest.mark.parametrize('scenario', ['full', 'dedup', 'compression', 'new-child', 'disabled'])
 def test_skill_lifecycle(registry, sid, scenario):
     runtime = HarnessRuntime(registry.store, Executor(), Model(), registry.catalog)

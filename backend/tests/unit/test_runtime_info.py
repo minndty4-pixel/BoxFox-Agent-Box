@@ -138,7 +138,7 @@ def test_the_turn_offers_the_model_exactly_the_narrowed_set(tmp_path):
     narrowed = asyncio.run(run('narrow.db', {'tools': ['file_read', 'sudo_rm_rf']}))
     assert narrowed == ['file_read']
     full = asyncio.run(run('full.db', {}))
-    assert sorted(full) == sorted(ORCHESTRATOR_TOOLS), 'thiếu trường thì lượt vẫn thấy đủ 24 công cụ'
+    assert sorted(full) == sorted(ORCHESTRATOR_TOOLS), 'thiếu trường thì lượt vẫn thấy đủ 25 công cụ'
 
 
 def test_the_eight_groups_cover_the_orchestrator_exactly():
@@ -150,7 +150,7 @@ def test_the_eight_groups_cover_the_orchestrator_exactly():
     assert all(set(g) == {'key', 'tools', 'alwaysOn'} for g in groups)
     assert all(g['tools'] for g in groups)
     union = [tool for g in groups for tool in g['tools']]
-    assert len(union) == len(set(union)) == 24, 'tám nhóm không chồng nhau, tổng 24 công cụ'
+    assert len(union) == len(set(union)) == 25, 'tám nhóm không chồng nhau, tổng 25 công cụ'
     assert set(union) == set(ORCHESTRATOR_TOOLS)
 
     assert [g['key'] for g in groups if g['alwaysOn']] == ['questionsApprovals']
@@ -162,7 +162,7 @@ def test_the_route_answers_the_same_eight_groups(tmp_path):
     info = runtime_info(tmp_path)
     assert info['toolGroups'] == tool_groups_module.tool_groups()
     assert info['tools'] == sorted(ORCHESTRATOR_TOOLS)
-    assert len(info['tools']) == 24
+    assert len(info['tools']) == 25
 
 
 def test_every_role_row_equals_the_roles_definition(tmp_path):
@@ -242,6 +242,17 @@ def test_the_limits_are_the_numbers_the_runtime_applies(tmp_path):
             'probeTimeoutSeconds': limits.EVIDENCE_PROBE_TIMEOUT_SECONDS,
             'probeMaxFiles': limits.EVIDENCE_PROBE_MAX_FILES,
             'maxArtifacts': limits.EVIDENCE_MAX_ARTIFACTS,
+            # Vòng 25 (D-33/D-34): hai cổng của vòng lặp kế hoạch đi cùng luật — số báo cho giao
+            # diện là số engine đang áp, đọc qua chính hàm engine dùng.
+            'planVerifyMode': HarnessRuntime.plan_verify_mode(None)[0],
+            'planVerifyModes': list(limits.PLAN_VERIFY_MODES),
+            'planVerifyDefault': limits.PLAN_VERIFY_DEFAULT_MODE,
+            'planSourcesMode': HarnessRuntime.plan_sources_mode(None)[0],
+            'planSourcesModes': list(limits.PLAN_SOURCES_MODES),
+            'planSourcesDefault': limits.PLAN_SOURCES_DEFAULT_MODE,
+            'planReviewMinAnswerChars': limits.PLAN_REVIEW_MIN_ANSWER_CHARS,
+            'planVerifyReviseMax': limits.PLAN_VERIFY_REVISE_MAX,
+            'planTurnExtensionSeconds': limits.PLAN_TURN_EXTENSION_SECONDS,
         },
     }
     assert info['limits']['instructionsChars'] == limits.INSTRUCTIONS_MAX_CHARS

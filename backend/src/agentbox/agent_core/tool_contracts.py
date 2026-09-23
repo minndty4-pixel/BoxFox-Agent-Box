@@ -128,11 +128,14 @@ SCHEMAS = [
          '(`deliverTo`), and you read it with `await_children`. The default `wait=true` blocks this '
          'call until the child answers.',
          {'role': {'type': 'string',
-                   'enum': ['explore', 'plan', 'design', 'build', 'debug', 'review', 'simplify', 'testing', 'research'],
+                   'enum': ['explore', 'plan', 'plan-review', 'design', 'build', 'debug', 'review', 'simplify', 'testing', 'research'],
                    'description': 'Specialist id. Only `research` can look things up outside the workspace: it holds '
                                   'web_search and web_fetch (host-side, real Internet) plus read-only browser_use '
                                   'for box-local pages. Ask it for external facts and expect "could not verify" '
-                                  'with a named source instead of an invented one.'},
+                                  'with a named source instead of an invented one. `plan-review` is the independent '
+                                  'critic of a plan that is already written: read-only, ends its answer with a line '
+                                  '`VERDICT: ok` or `VERDICT: revise`, and its verdict must be recorded with '
+                                  '`plan_verify` before that plan can be approved.'},
           'goal': {'type': 'string',
                    'description': 'The one outcome the child must reach, in its own words. It cannot see your chat, so '
                                   'embed anything it needs to know in goal or context.'},
@@ -151,9 +154,10 @@ SCHEMAS = [
                         'description': 'Who the child must hand its result to when it finishes (roles or '
                                        'session ids, e.g. ["main", "review"]). Empty = the parent only.'}},
          ['role', 'goal']),
-    tool('ask_user', 'Ask the user a question and BLOCK this turn until they answer. Give 2-5 options; the runtime always adds the approve/reject pair when you omit it. If nobody answers before the deadline (default 300 s) the answer is a rejection, so ask only when the answer changes what you do next.',
-         {'question': STRING, 'options': DECISION_OPTIONS, 'deadlineSeconds': {'type': 'integer'}}, ['question', 'options']),
-    tool('request_approval', 'Ask the user to approve ONE concrete risky action (delete, overwrite, command outside the allowlist) BEFORE you run it, and BLOCK this turn until they answer. Default deadline 600 s; no answer means rejected, so never assume approval. When the thing you are asking about is a plan you just wrote, pass planIdentity (the plan group write_plan reported) and planVersion: the answer then lands in the plan review ledger as a real approval or a request for changes, instead of only being a chat message.',
+    tool('ask_user', 'Ask the user a question and BLOCK this turn until they answer. Give 2-5 options; the runtime always adds the approve/reject pair when you omit it. If nobody answers before the deadline (default 300 s) the answer is a rejection, so ask only when the answer changes what you do next. When the question is about a plan you wrote, pass planIdentity and planVersion: the answer then lands in the plan review ledger, so the Plan tab stops disagreeing with what the owner decided.',
+         {'question': STRING, 'options': DECISION_OPTIONS, 'deadlineSeconds': {'type': 'integer'},
+          'planIdentity': STRING, 'planVersion': {'type': 'integer'}}, ['question', 'options']),
+    tool('request_approval', 'Ask the user to approve ONE concrete risky action (delete, overwrite, command outside the allowlist) BEFORE you run it, and BLOCK this turn until they answer. Default deadline 600 s; no answer means rejected, so never assume approval. When the thing you are asking about is a plan you just wrote, pass planIdentity (the plan group write_plan reported) and planVersion: the answer then lands in the plan review ledger as a real approval or a request for changes, instead of only being a chat message. Approving a plan needs a passing independent critique first: delegate `plan-review`, then record its verdict with `plan_verify`; without that the harness refuses this call with PLAN_APPROVAL_UNVERIFIED.',
          {'action': STRING, 'reason': STRING, 'options': DECISION_OPTIONS, 'deadlineSeconds': {'type': 'integer'},
           'planIdentity': STRING, 'planVersion': {'type': 'integer'}}, ['action', 'reason']),
     tool('write_plan',
@@ -166,9 +170,34 @@ SCHEMAS = [
          'the version it revises (the harness tells you the number to write in the header block it generates). '
          'Pass `identity` (e.g. "billing-plan", or "subplans/api" for a nested folder; it wins over `slug`) when you '
          'know which plan group this belongs to, and `relatesTo` ("none", "<identity>", or "<identity>@vN") when the new '
-         'plan is a deliberate fork; without them the harness decides by slug similarity.',
+         'plan is a deliberate fork; without them the harness decides by slug similarity. '
+         'Next step is mandatory: delegate `plan-review` to critique the file you just wrote (tell it the exact path '
+         'write_plan returned and that its answer must end with `VERDICT: ok` or `VERDICT: revise`), then record that '
+         'verdict with `plan_verify`. Until a passing critique exists for this exact version, `request_approval` for '
+         'the plan is refused.',
          {'slug': STRING, 'markdown': STRING, 'title': STRING, 'identity': STRING, 'relatesTo': STRING},
          ['slug', 'markdown']),
+    tool('plan_verify',
+         'Record the verdict of the independent `plan-review` critique of one written plan version, in the harness '
+         'review book. This is an EVIDENCE gate, not a formality: the harness only accepts it when a `plan-review` '
+         'child of THIS session ran after that version was written, that child completed, its answer is long enough, '
+         'and the `VERDICT:` line in its answer matches the verdict you record. Otherwise it returns '
+         'PLAN_VERIFY_NO_CRITIC, PLAN_VERIFY_VERDICT_MISSING or PLAN_VERIFY_VERDICT_MISMATCH with the fix. Record '
+         '`revise` when the critique found real problems, fix them by writing the next version with `write_plan`, and '
+         'critique again: two revise rounds per turn is the cap, after that report the remaining findings to the '
+         'owner honestly. Approving a plan in chat (request_approval) or from the Plan tab needs a recorded `ok` for '
+         'the exact version being approved.',
+         {'identity': STRING, 'version': {'type': 'integer'},
+          'verdict': {'type': 'string', 'enum': ['ok', 'revise'],
+                      'description': 'Must match the VERDICT line of the critique answer itself.'},
+          'issues': {'type': 'array',
+                     'description': 'The findings the critique reported, verbatim in meaning: severity, text, and the fix.',
+                     'items': {'type': 'object', 'properties': {
+                         'severity': {'type': 'string', 'enum': ['high', 'medium', 'low']},
+                         'text': STRING, 'fix': STRING},
+                         'required': ['severity', 'text']}},
+          'summary': STRING},
+         ['identity', 'version', 'verdict']),
 ]
 
 

@@ -61,6 +61,26 @@ class SessionStore:
                 total INTEGER NOT NULL, verdict TEXT NOT NULL, evaluated_at REAL NOT NULL,
                 PRIMARY KEY (identity, version));
         ''')
+        # Vòng 25 (D-33) — hai sổ của VÒNG LẶP KẾ HOẠCH. `plan_verifications` là phán quyết của
+        # người phản biện độc lập cho ĐÚNG một bản ghi: không có hàng ở đây thì cổng duyệt
+        # (`PLAN_APPROVAL_UNVERIFIED`) từ chối lời xin duyệt của bản đó. `plan_owners` giữ đường
+        # từ nhóm kế hoạch về phiên đã ghi nó — thứ mà tab Plan cần để mở một lượt thật thay vì
+        # chỉ ghi sổ rồi im lặng (BUG-2 đo được: `plan_reviews.session_id` toàn `NULL`).
+        # `resumed` là cột cộng thêm của hàng duyệt: nó nói lượt đã được mở lại thật hay chưa.
+        self.db.executescript('''
+            CREATE TABLE IF NOT EXISTS plan_verifications (
+                identity TEXT NOT NULL, version INTEGER NOT NULL,
+                verdict TEXT NOT NULL CHECK(verdict IN ('ok','revise')),
+                issues TEXT NOT NULL DEFAULT '[]', summary TEXT NOT NULL DEFAULT '',
+                critic_session_id TEXT, critic_answer_chars INTEGER, critic_verdict TEXT,
+                created REAL NOT NULL,
+                PRIMARY KEY (identity, version));
+            CREATE TABLE IF NOT EXISTS plan_owners (
+                identity TEXT PRIMARY KEY, session_id TEXT NOT NULL, first_session_id TEXT NOT NULL,
+                slug TEXT NOT NULL DEFAULT '', relative_path TEXT NOT NULL DEFAULT '',
+                version INTEGER NOT NULL DEFAULT 1, created REAL NOT NULL, updated REAL NOT NULL);
+        ''')
+        self._add_missing_columns('plan_reviews', {'resumed': 'INTEGER NOT NULL DEFAULT 0'})
         # Vòng 22 (peer mesh) T1 — sổ con + bảng giao hàng. Hai bảng này là NGUỒN CHÂN LÝ cho
         # "phiên này sinh con nào, ở lượt nào, đã giao kết quả cho ai": `runtime.delegate` ghi,
         # `peer_read`/`await_children` đọc, watchdog quét. Khoá `UNIQUE(child_id, recipient,
@@ -584,6 +604,175 @@ class SessionStore:
             item['payload'] = {}
         return item
 
+    # ------------------------------------------------------------------
+    # Vòng 25 (D-33) — sổ PHẢN BIỆN kế hoạch + sổ SỞ HỮU kế hoạch
+    #
+    # `plan_verifications` là phán quyết của người phản biện độc lập cho ĐÚNG một bản ghi.
+    # Cổng duyệt (`PLAN_APPROVAL_UNVERIFIED`, runtime) đọc nó; giao diện đọc nó qua
+    # `plan_verification_view`. Khoá `(identity, version)` nên phán quyết của bản mới KHÔNG
+    # bao giờ ghi đè bản cũ — cùng luật với `plan_reviews`.
+    # `plan_owners` giữ đường từ nhóm kế hoạch về PHIÊN GỐC đã ghi nó: đó là thứ tab Plan cần
+    # để mở một lượt thật (`plan_reviews.session_id` đo được toàn `NULL` ở vòng 25).
+    # ------------------------------------------------------------------
+
+    def record_plan_verification(self, identity, version, verdict, issues=(), summary='',
+                                 critic_session_id=None, critic_answer_chars=None, critic_verdict=None):
+        """Ghi phán quyết phản biện cho một bản; trả hàng đã lưu.
+
+        `critic_*` là DẤU VẾT: phiên phản biện nào, câu trả lời dài bao nhiêu, và verdict đọc
+        được từ văn bản của chính nó. Cổng provenance đã kiểm trước khi gọi hàm này, nhưng hàng
+        sổ vẫn phải giữ được bằng chứng — người đọc sau không chạy lại được lần đo đó.
+        """
+        if not isinstance(identity, str) or not identity.strip():
+            raise ValueError('plan verification needs a non-empty identity')
+        version = int(version)
+        if version < 1:
+            raise ValueError('plan verification needs a positive version')
+        if verdict not in ('ok', 'revise'):
+            raise ValueError("verdict must be 'ok' or 'revise'")
+        rows = []
+        for item in (issues or ()):
+            if not isinstance(item, dict):
+                continue
+            rows.append({'severity': str(item.get('severity') or 'medium')[:16],
+                         'text': str(item.get('text') or ''),
+                         'fix': str(item.get('fix') or '')})
+        with self.db:
+            self.db.execute(
+                'INSERT OR REPLACE INTO plan_verifications'
+                '(identity,version,verdict,issues,summary,critic_session_id,critic_answer_chars,'
+                ' critic_verdict,created) VALUES(?,?,?,?,?,?,?,?,?)',
+                (identity, version, verdict, json.dumps(rows, ensure_ascii=False), str(summary or '')[:2000],
+                 critic_session_id, None if critic_answer_chars is None else int(critic_answer_chars),
+                 None if critic_verdict is None else str(critic_verdict), time.time()))
+        return self.plan_verification(identity, version)
+
+    def plan_verification(self, identity, version):
+        """Hàng phán quyết của một bản (đã giải `issues`), hoặc `None` khi chưa ai phản biện."""
+        row = self.db.execute('SELECT * FROM plan_verifications WHERE identity=? AND version=?',
+                              (identity, int(version))).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        try:
+            item['issues'] = json.loads(item['issues'])
+        except (TypeError, ValueError):
+            item['issues'] = []
+        return item
+
+    def record_plan_owner(self, identity, session_id, slug='', relative_path='', version=1):
+        """Ghi phiên GỐC sở hữu một nhóm kế hoạch; gọi lại thì cập nhật, không nhân hàng.
+
+        `first_session_id` và `created` là dấu vết của lần ghi ĐẦU TIÊN và không bao giờ bị ghi
+        đè: một kế hoạch được sửa từ phiên con vẫn phải mở lại được ở phiên gốc.
+        """
+        if not isinstance(identity, str) or not identity.strip():
+            raise ValueError('plan owner needs a non-empty identity')
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError('plan owner needs a session id')
+        now = time.time()
+        with self.db:
+            self.db.execute(
+                'INSERT INTO plan_owners(identity,session_id,first_session_id,slug,relative_path,'
+                'version,created,updated) VALUES(?,?,?,?,?,?,?,?)'
+                ' ON CONFLICT(identity) DO UPDATE SET session_id=excluded.session_id,'
+                ' slug=excluded.slug, relative_path=excluded.relative_path,'
+                ' version=excluded.version, updated=excluded.updated',
+                (identity, session_id, session_id, str(slug or ''), str(relative_path or ''),
+                 int(version), now, now))
+        return self.plan_owner(identity)
+
+    def plan_owner(self, identity):
+        """Hàng sở hữu của một nhóm kế hoạch, hoặc `None` khi harness chưa biết."""
+        row = self.db.execute('SELECT * FROM plan_owners WHERE identity=?', (identity,)).fetchone()
+        return dict(row) if row is not None else None
+
+    def plan_written_at(self, session_ids, identity, version):
+        """Epoch của hàng `plan_written` MỚI NHẤT khớp `(identity, version)` trong tập phiên.
+
+        Đây là mốc thời gian của cổng provenance (M3): một phê bình chỉ có giá trị nếu phiên
+        phản biện chạy SAU khi chính bản đó được ghi. Trả `None` khi không có hàng nào — và
+        `None` làm cổng từ chối, không phải làm nó bỏ qua.
+        """
+        ids = [sid for sid in (session_ids or ()) if isinstance(sid, str) and sid]
+        if not ids:
+            return None
+        marks = ','.join('?' * len(ids))
+        rows = self.db.execute(
+            f"SELECT payload, created FROM events WHERE kind='plan_written' "
+            f"AND session_id IN ({marks}) ORDER BY seq", tuple(ids)).fetchall()
+        found = None
+        for row in rows:
+            try:
+                payload = json.loads(row['payload'])
+            except (TypeError, ValueError):
+                continue  # hàng hỏng bị BỎ QUA, không làm hỏng cả phép tìm
+            if not isinstance(payload, dict):
+                continue
+            if payload.get('identity') != identity:
+                continue
+            try:
+                row_version = int(payload.get('version'))
+            except (TypeError, ValueError):
+                continue
+            if row_version == int(version):
+                found = float(row['created'])
+        return found
+
+    def last_turn_status(self, sid):
+        """Bộ số của hàng `turn_end` MỚI NHẤT: `{'turn','status','partial','code','at'}`.
+
+        `sessions.status` là trạng thái của PHIÊN (một lượt dở vẫn để phiên `completed` — bất
+        biến #1). Muốn nói được "lượt này dở" thì phải đọc chính hàng `turn_end`, và mã lý do
+        nằm ở hàng `notice` bền (`partial: true`) mà `finish_partial` phát sau đó.
+        """
+        row = self.db.execute(
+            "SELECT payload, created FROM events WHERE session_id=? AND kind='turn_end' "
+            "ORDER BY seq DESC LIMIT 1", (sid,)).fetchone()
+        if row is None:
+            return None
+        try:
+            payload = json.loads(row['payload'])
+        except (TypeError, ValueError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        status = str(payload.get('status') or '')
+        partial = status == 'partial' or bool(payload.get('partial'))
+        code = None
+        if partial:
+            notices = self.db.execute(
+                "SELECT payload FROM events WHERE session_id=? AND kind='notice' ORDER BY seq DESC LIMIT 20",
+                (sid,)).fetchall()
+            for notice_row in notices:
+                try:
+                    notice = json.loads(notice_row['payload'])
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(notice, dict) and notice.get('partial'):
+                    code = notice.get('code')
+                    break
+        return {'turn': payload.get('turn'), 'status': status, 'partial': partial, 'code': code,
+                'at': float(row['created'])}
+
+    def turn_boundary_epoch(self, sid):
+        """Epoch bắt đầu LƯỢT đang chạy: hàng `events` `kind='user'` mới nhất.
+
+        `start()` phát hàng `user` trước khi chạy lượt, nên đây là ranh giới lượt mà không cần
+        thêm trạng thái trong bộ nhớ và không cần đồng hồ thứ hai (M3 đếm vòng `revise` từ đây).
+        """
+        row = self.db.execute(
+            "SELECT created FROM events WHERE session_id=? AND kind='user' ORDER BY seq DESC LIMIT 1",
+            (sid,)).fetchone()
+        return None if row is None else float(row['created'])
+
+    def set_plan_review_resumed(self, identity, version, resumed=True):
+        """Đánh dấu hàng duyệt đã mở được lượt thật (`resumed`) — giao diện đọc để nói sự thật."""
+        with self.db:
+            self.db.execute('UPDATE plan_reviews SET resumed=? WHERE identity=? AND version=?',
+                            (1 if resumed else 0, identity, int(version)))
+        return self.plan_review(identity, version)
+
     def delete(self, sid):
         with self.db:
             child_rows = self.db.execute('SELECT id FROM sessions WHERE parent_id=?', (sid,)).fetchall()
@@ -598,6 +787,11 @@ class SessionStore:
             self.db.execute(f'DELETE FROM children WHERE parent_id IN ({placeholders})', all_sids)
             self.db.execute(f'DELETE FROM child_deliveries WHERE child_id IN ({placeholders})', all_sids)
             self.db.execute(f'DELETE FROM child_deliveries WHERE recipient IN ({placeholders})', all_sids)
+            # Vòng 25 (D-33): HAI SỔ CỦA VÒNG LẶP KẾ HOẠCH **CỐ Ý** không nằm trong cascade này.
+            # `plan_verifications`/`plan_owners` nói về một NHÓM KẾ HOẠCH, không về một phiên: cùng
+            # một kế hoạch có thể được sửa ở phiên khác, và xoá phiên cũ mà làm biến mất phán quyết
+            # phản biện của bản đang nằm trên đĩa thì cổng duyệt sẽ từ chối một bản đã được phản
+            # biện thật. Xoá hàng `.plans/` mới là cách kết thúc vòng đời của một kế hoạch.
         return True
 
     def close(self):

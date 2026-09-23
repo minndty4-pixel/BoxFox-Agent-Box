@@ -10,8 +10,13 @@
  *
  * Mọi trường đều đọc phòng thủ: dữ liệu tới từ mạng, nên một trường thiếu phải thành "chưa biết",
  * không được thành một lời khẳng định (điểm ảo, "đã duyệt" ảo).
+ *
+ * Vòng 25 thêm mặt `verification` (phiên `plan-review` nào đã đọc bản này, lỗi kèm cách sửa) và
+ * `ownership.sessionId` (phiên đang sở hữu bản kế hoạch). Cùng luật cũ: harness CHƯA trả trường nào
+ * thì trường đó là "chưa biết" (`unknown`/`null`) — giao diện không được tự suy ra "chưa phản biện"
+ * rồi khoá nút duyệt oan.
  */
-import { agentApi } from '../agentApi'
+import { agentApi, ApiError } from '../agentApi'
 
 export const EVAL_DIMENSIONS = ['P1', 'P2', 'P3', 'P4', 'P5', 'P6', 'P7', 'P8'] as const
 export type PlanEvalDimension = (typeof EVAL_DIMENSIONS)[number]
@@ -32,6 +37,54 @@ export const PLAN_REVIEW_STATES = [
 export type PlanReviewState = (typeof PLAN_REVIEW_STATES)[number]
 
 export type PlanDecision = 'approved' | 'changes_requested'
+
+/**
+ * Mặt phản biện của một bản kế hoạch. `none` = chưa phiên `plan-review` nào đọc bản này; `ok` = đã
+ * đọc và không còn lỗi; `revise` = đã đọc và còn lỗi phải sửa; `unknown` = harness không nói gì.
+ */
+export const PLAN_VERIFICATION_STATES = ['none', 'ok', 'revise'] as const
+export type PlanVerificationState = (typeof PLAN_VERIFICATION_STATES)[number] | 'unknown'
+
+const PLAN_ISSUE_SEVERITIES = ['high', 'medium', 'low'] as const
+/** Mức lỗi — `unknown` khi harness không khai; KHÔNG hạ xuống `low` cho dễ nhìn. */
+export type PlanIssueSeverity = (typeof PLAN_ISSUE_SEVERITIES)[number] | 'unknown'
+
+export interface PlanVerificationIssue {
+  severity: PlanIssueSeverity
+  text: string
+  /** Cách sửa. VẮNG MẶT = harness không nói; giao diện ẩn dòng đó, không bịa. */
+  fix?: string
+  /** Mã lỗi của phiên phản biện (`step-not-measurable`, …). Vắng mặt thì không in mã nào. */
+  code?: string
+}
+
+export interface PlanVerification {
+  state: PlanVerificationState
+  /** ISO lúc phiên phản biện trả kết quả. */
+  at: string | null
+  criticSessionId: string | null
+  issues: PlanVerificationIssue[]
+}
+
+/** Phiên đang sở hữu bản kế hoạch — lượt chạy tiếp theo mở trong phiên này. */
+export interface PlanOwnership {
+  sessionId: string | null
+}
+
+/** `POST /api/agent/plans/review` bị chặn vì bản kế hoạch chưa qua phản biện (HTTP 409). */
+export class PlanReviewBlockedError extends Error {
+  readonly code: string
+  readonly reason: string
+  readonly remedy: string
+
+  constructor(code: string, reason: string, remedy: string) {
+    super(reason || code || 'Plan approval is blocked.')
+    this.name = 'PlanReviewBlockedError'
+    this.code = code
+    this.reason = reason
+    this.remedy = remedy
+  }
+}
 
 /** Ngưỡng độ dài của `plan_eval.py` — dùng để nói "306.721 ký tự > 150.000" trên giao diện. */
 export const PLAN_MAX_CHARS = 150_000
@@ -83,12 +136,22 @@ export interface PlanStatusReport {
   reviewStale: boolean
   indexAvailable: boolean
   evaluation: PlanEvaluation | null
+  verification: PlanVerification
+  ownership: PlanOwnership
 }
 
 export interface PlanReviewOutcome {
   review: PlanStatusReview | null
   /** `false` = đã ghi vào sổ harness nhưng chưa chuyển được sang box; `null` = không đọc được. */
   forwarded: boolean | null
+  /** `null` = harness không khai (bản cũ), KHÔNG phải "không ghi được". */
+  recorded: boolean | null
+  /**
+   * Ba trạng thái: `true` = có lượt chạy mới được mở, `false` = không mở, `null` = harness không nói.
+   * Mặc định về `false` sẽ biến "chưa biết" thành một lời khẳng định sai.
+   */
+  resumed: boolean | null
+  turnId: string | null
 }
 
 /** Hợp đồng tối thiểu mà `usePlanFiles` cần — test bơm bản giả, không cần mạng. */
@@ -194,6 +257,40 @@ export function readPlanEvaluation(raw: unknown): PlanEvaluation | null {
   }
 }
 
+function readVerificationIssues(raw: unknown): PlanVerificationIssue[] {
+  if (!Array.isArray(raw)) return []
+  const issues: PlanVerificationIssue[] = []
+  for (const entry of raw) {
+    if (!isRecord(entry)) continue
+    const text = asText(entry.text)
+    if (!text) continue
+    // Mức lạ/thiếu ⇒ `unknown`; thà nói "không rõ mức" còn hơn vẽ nó thành lỗi thấp.
+    const severity = PLAN_ISSUE_SEVERITIES.find((candidate) => candidate === entry.severity) ?? 'unknown'
+    const issue: PlanVerificationIssue = { severity, text }
+    const fix = asText(entry.fix)
+    if (fix) issue.fix = fix
+    const code = asText(entry.code)
+    if (code) issue.code = code
+    issues.push(issue)
+  }
+  return issues
+}
+
+/**
+ * Chuẩn hoá `verification` của `GET /api/agent/plans/status`. Harness cũ không có trường này ⇒
+ * `state: 'unknown'` — giao diện KHÔNG được đọc thành `none` rồi khoá duyệt oan.
+ */
+export function readPlanVerification(raw: unknown): PlanVerification {
+  const source = isRecord(raw) ? raw : {}
+  const state = PLAN_VERIFICATION_STATES.find((candidate) => candidate === source.state)
+  return {
+    state: state ?? 'unknown',
+    at: asText(source.at),
+    criticSessionId: asText(source.criticSessionId),
+    issues: readVerificationIssues(source.issues),
+  }
+}
+
 export function readPlanStatusReview(raw: unknown): PlanStatusReview | null {
   if (!isRecord(raw)) return null
   const decision = raw.decision
@@ -223,7 +320,26 @@ export function readPlanStatus(raw: unknown): PlanStatusReport | null {
     // Chỉ `false` tường minh mới là "không đọc được chỉ mục"; thiếu trường thì giữ giả định cũ.
     indexAvailable: raw.indexAvailable !== false,
     evaluation: readPlanEvaluation(raw.evaluation),
+    verification: readPlanVerification(raw.verification),
+    ownership: {
+      sessionId: asText(isRecord(raw.ownership) ? raw.ownership.sessionId : null),
+    },
   }
+}
+
+/**
+ * 409 kèm `blocked: true` là "bị khoá vì chưa phản biện" — giữ NGUYÊN `code`/`reason`/`remedy` của
+ * harness (không dịch lại, không viết lại); mọi lỗi khác đi đường cũ.
+ */
+function toPlanReviewError(error: unknown): unknown {
+  if (!(error instanceof ApiError) || error.status !== 409 || !isRecord(error.body)) return error
+  const body = error.body
+  if (body.blocked !== true) return error
+  return new PlanReviewBlockedError(
+    asText(body.code) || error.code || 'PLAN_APPROVAL_UNVERIFIED',
+    asText(body.reason) ?? '',
+    asText(body.remedy) ?? '',
+  )
 }
 
 /** `306.721` — nhóm nghìn kiểu Việt Nam, cùng cách mockup đang ghi số đo. */
@@ -267,11 +383,19 @@ export class HarnessPlanStatusClient implements PlanStatusClient {
     decision: PlanDecision,
     note: string,
   ): Promise<PlanReviewOutcome> {
-    const payload = await agentApi<unknown>('/plans/review', { identity, version, decision, note })
+    let payload: unknown
+    try {
+      payload = await agentApi<unknown>('/plans/review', { identity, version, decision, note })
+    } catch (error) {
+      throw toPlanReviewError(error)
+    }
     const body = isRecord(payload) ? payload : {}
     return {
       review: readPlanStatusReview(body.review),
       forwarded: typeof body.forwarded === 'boolean' ? body.forwarded : null,
+      recorded: typeof body.recorded === 'boolean' ? body.recorded : null,
+      resumed: typeof body.resumed === 'boolean' ? body.resumed : null,
+      turnId: asText(body.turnId),
     }
   }
 }

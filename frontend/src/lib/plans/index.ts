@@ -12,7 +12,9 @@ export {
   HarnessPlanStatusClient,
   PLAN_MAX_CHARS,
   PLAN_REVIEW_STATES,
+  PLAN_VERIFICATION_STATES,
   PLAN_WARN_CHARS,
+  PlanReviewBlockedError,
   createPlanStatusClient,
   planCount,
   planMeasure,
@@ -21,6 +23,7 @@ export {
   readPlanEvaluation,
   readPlanStatus,
   readPlanStatusReview,
+  readPlanVerification,
 } from './planState'
 export type {
   PlanDecision,
@@ -29,11 +32,16 @@ export type {
   PlanEvalLevel,
   PlanEvalVerdict,
   PlanEvaluation,
+  PlanIssueSeverity,
+  PlanOwnership,
   PlanReviewOutcome,
   PlanReviewState,
   PlanStatusClient,
   PlanStatusReport,
   PlanStatusReview,
+  PlanVerification,
+  PlanVerificationIssue,
+  PlanVerificationState,
 } from './planState'
 export { planRejection } from './rejection'
 export type { PlanRejection } from './rejection'

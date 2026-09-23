@@ -45,6 +45,14 @@ KNOWN_PREFIXES = (
     'PLAN_SLUG_INVALID',
     'PLAN_WRITE_FAILED',
     'PLAN_WRITE_CONFLICT',     # hai người ghi cùng số version: đọc lại chỉ mục một lần rồi thôi
+    # Vòng 25 (D-33/D-34): bốn mã của vòng lặp kế hoạch được `ValueError('MÃ: câu')` ném ra từ
+    # `plan_verify`/`decision` — thiếu chúng ở đây thì model nhận `TURN_FAILED_VALUEERROR` thay vì
+    # mã nói đúng phần còn thiếu, và chính cổng duyệt (`PLAN_APPROVAL_UNVERIFIED`) cũng mất tên.
+    'PLAN_VERIFY_INVALID',
+    'PLAN_VERIFY_NO_CRITIC',
+    'PLAN_VERIFY_VERDICT_MISSING',
+    'PLAN_VERIFY_VERDICT_MISMATCH',
+    'PLAN_APPROVAL_UNVERIFIED',
     'DECISION_UNAVAILABLE',
     'DECISION_INVALID',
     'DECISION_NOT_FOUND',
