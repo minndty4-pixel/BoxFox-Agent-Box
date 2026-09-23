@@ -2354,6 +2354,24 @@ giao diện; danh sách lỗi đầy đủ ở `bug-register.md` §6.34 — BUG-
   nhịp của chân keyless); `docs/architecture/tools-and-skills.md` (Nhóm 6: `web_extract`/`max_results`
   đã cũ ⇒ `web_fetch` + `read_source` + `paper_citations`, `web_search` nay có `queries`/`site`/
   `freshness`/`lang`/`exclude`); tệp này.
+- **Hậu kiểm sau thi công (cùng ngày)**: một lượt soát dọn (`v27e2-simplify`) + một lượt soát mã
+  (`v27e2-review`, điểm rủi ro **3/10 — Low**, verdict *ship with mitigations*) trên đúng `8d1c676`.
+  Ba việc đã làm ở bản sửa SAU soát (`dc5306e`): (a) xoá lớp dò chữ ký `_call_provider` — bảy chân
+  không dùng bộ lọc nay cùng nhận `options: dict | None = None`, nên một `TypeError` thật bên trong
+  chân không còn bị nuốt; (b) **một lời gọi tìm kiếm = MỘT dòng `web.search`** (nhánh cache từng tự
+  ghi thêm một dòng thiếu `session_id`/`durationMs`) — có ca ghim mới; (c) **ngân sách ký tự cho
+  payload tìm kiếm** (`SEARCH_PAYLOAD_CHARS = 18 000`, cắt ở đuôi, nói ra bằng `dropped`): 3 chân ×
+  10 hàng × đoạn trích 400 ký tự = ~27 000 ký tự, vượt trần 24 000 của runtime nên JSON từng bị cắt
+  GIỮA CHỪNG. Kèm sửa tài liệu: `read_source` trả `matches: {term, offset}[]` (không phải `hits`),
+  hai chỗ còn ghi Nhóm 6 "4 tools", thông điệp ghim số công cụ trong test nói "26" trong khi khẳng
+  định 27. Thêm một ca ghim **biên** của luật gần trùng (cặp vừa qua ngưỡng vẫn gộp, URL bị gộp nằm
+  trong `alsoFrom` nên không mất dấu vết).
+- **Hai phát hiện ngoài phạm vi đợt này** (đã `surface`, ghi ở mục `Out-of-Scope Feedback` của PR #6):
+  `read_source`/`paper_citations` chưa nằm trong `READ_TOOLS` của `evidence_gate.py` nên mỗi lượt
+  research tốn thêm một phép dò box + một tệp bằng chứng; và `compression.TOOL_RESULT_SUMMARIES`
+  chưa có mục cho hai công cụ ấy. Cả hai bị kế hoạch cấm chạm ở đợt 1–2.
+- **Bộ đơn vị sau hậu kiểm**: **1339 passed, 1 deselected** trong 215,98 s (`/var/tmp/v27/unit_run_9.log`);
+  bản trước hậu kiểm (`8d1c676`): **1336 passed** trong 215,02 s; bản chỉ có soát dọn: 1337 passed.
 - **Bất biến giữ nguyên**: D-13/F7 (các chân chạy **tuần tự** trong một lời gọi, không công cụ song
   song trong một step); nhật ký DEV **không** chứa truy vấn/URL (`web.retry` chỉ `attempt` + `code`);
   `untrusted: true` + `note` vẫn có trong mọi payload; SSRF vẫn **ném** lỗi chứ không lùi về đầu đọc;
