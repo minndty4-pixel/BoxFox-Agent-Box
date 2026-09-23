@@ -18,7 +18,7 @@ CAPTURE_TARGET_STRING_KEYS = ('windowId', 'class', 'title', 'tabId', 'url')
 CAPTURE_LABEL_MAX_CHARS = 40
 
 
-def capture_label(caption, limit=CAPTURE_LABEL_MAX_CHARS):
+def capture_label(caption):
     """Nhãn ASCII cho TÊN TỆP ảnh, sinh từ `caption` của model (P2.3).
 
     `capture.py._slug` thay mọi ký tự ngoài `[0-9A-Za-z_.-]` bằng `-`, nên để nguyên chữ có dấu
@@ -28,7 +28,7 @@ def capture_label(caption, limit=CAPTURE_LABEL_MAX_CHARS):
     text = unicodedata.normalize('NFD', str(caption or ''))
     text = ''.join(char for char in text if not unicodedata.combining(char))
     text = re.sub(r'[^0-9A-Za-z]+', '-', text).strip('-').lower()
-    return text[:limit].strip('-')
+    return text[:CAPTURE_LABEL_MAX_CHARS].strip('-')
 
 
 def normalize_capture_target(args):
@@ -60,8 +60,6 @@ def normalize_capture_target(args):
         # Nhãn rỗng sau khi bỏ dấu vẫn phải nói được "đây là một lần chụp": `shot`.
         target['label'] = capture_label(caption) or 'shot'
     return target, caption
-
-WORKER = Path(__file__).with_name('worker.py').read_text(encoding='utf-8')
 
 
 def box_identity(session, step=None, tool_call_id=None):

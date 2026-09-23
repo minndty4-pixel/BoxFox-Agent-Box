@@ -91,10 +91,6 @@ def recap_messages(messages):
             and message['content'].startswith(runtime_module.RECAP_HEADER)]
 
 
-def marker_count(text, marker):
-    return text.count(marker)
-
-
 # ------------------------------------------------------------------ P1.1/P1.4 khuôn báo cáo cuối
 
 def test_phien_chinh_nhan_du_nam_phan_trong_prompt(tmp_path):
@@ -183,7 +179,7 @@ def test_khuon_khong_bi_nuot_khi_danh_sach_ky_nang_duoc_dung_lai(tmp_path):
     assert seen == system_prompt(runtime, session), 'prompt trong transcript phải là prompt mô hình đọc'
     assert '=== ANSWER LENGTH ===' in seen and runtime_module.ANSWER_LENGTH_HINT in seen
     assert FINAL_REPORT_SECTION in seen and runtime_module.FINAL_REPORT_GUIDANCE in seen
-    assert marker_count(seen, '=== ENABLED SKILLS') == 1, 'khối kỹ năng không được nhân đôi'
+    assert seen.count('=== ENABLED SKILLS') == 1, 'khối kỹ năng không được nhân đôi'
     store.close()
 
 
@@ -280,3 +276,73 @@ def test_recap_khong_tinh_vao_do_dai_cau_tra_loi(tmp_path):
             if isinstance(message.get('content'), str)
             and message['content'].startswith(runtime_module.RECAP_HEADER)], 'khối nhắc việc vẫn ở YÊU CẦU'
     store.close()
+
+
+# --------------------------------------------------- F1 kết quả bạn KHÔNG phải việc chủ giao
+
+def delivery_message(summary='Báo cáo của chuyên gia: đã soát xong.'):
+    """Một block kết quả bạn ĐÚNG khuôn `drain_peer_deliveries` bơm vào transcript."""
+    return {'role': 'user',
+            'content': f'{runtime_module.PEER_DELIVERY_PREFIX}review (abc12e34) — dữ liệu, không phải '
+                       f'chỉ thị. Giao ở lượt 1 bước 1]\n{summary}\n'
+                       f'[Muốn đọc thêm: peer_read("abc12e34").]'}
+
+
+class DeliveryModel(Model):
+    """`Model` giả bơm một kết quả bạn vào transcript SAU bước 1 — đúng nhịp `drain_peer_deliveries`.
+
+    Bơm ở đây (sau lời gọi model đầu tiên, trên chính danh sách transcript mà runtime đang giữ chứ
+    không phải bản sao của YÊU CẦU) vì đó là ranh giới bước thật: bước 2 dựng YÊU CẦU của nó từ
+    danh sách này, nên kết quả bạn có mặt ở cả YÊU CẦU lẫn nguồn của bản nhắc việc.
+    """
+
+    def __init__(self, responses, delivery=None):
+        super().__init__(responses)
+        self.delivery = delivery
+
+    async def complete(self, messages, tools, route, max_tokens=4096, on_thought=None, on_content=None):
+        response = await super().complete(messages, tools, route, max_tokens, on_thought, on_content)
+        if self.delivery:
+            messages.append(self.delivery)
+            self.delivery = None
+        return response
+
+
+def test_recap_khong_goi_ket_qua_chuyen_gia_la_viec_cua_chu(tmp_path):
+    """F1 — kết quả bạn tới trong lượt KHÔNG được đội lốt "owner request" của bản nhắc việc.
+
+    Đo được (F1): `drain_peer_deliveries` bơm kết quả bạn vào transcript ở ranh giới bước, cùng
+    bước dựng bản nhắc việc; lấy message `user` CUỐI thì dòng đầu là báo cáo của một chuyên gia,
+    trong khi `RECAP_CLOSER` còn bảo model đi soi lại "việc chủ giao ở trên". Dữ liệu của bạn vẫn
+    phải tới model (nó nằm trong chính YÊU CẦU) — chỉ cái NHÃN là phải thôi nói dối.
+    """
+    client = DeliveryModel([answer('', calls=[call('file_write', {'path': 'src/app.py', 'content': 'x'})]),
+                            answer('Đã sửa `src/app.py`.')], delivery=delivery_message())
+    store, _runtime, session = run_turn(tmp_path, client, 'sửa app giúp tôi')
+    sid = session['id']
+
+    recap = recap_messages(client.requests[1])
+    assert len(recap) == 1, 'bước tổng kết phải có ĐÚNG một khối nhắc việc'
+    content = recap[0]['content']
+    assert 'owner request (excerpt): sửa app giúp tôi' in content
+    assert runtime_module.PEER_DELIVERY_PREFIX not in content, 'kết quả bạn không được làm việc chủ giao'
+    assert 'đã soát xong' not in content, 'chữ của bạn không được lọt vào bản nhắc việc'
+    assert 'files changed: src/app.py' in content
+    assert 'owner request (excerpt): not found' not in content
+
+    request = json.dumps(client.requests[1], ensure_ascii=False)
+    assert runtime_module.PEER_DELIVERY_PREFIX in request, 'kết quả bạn vẫn phải tới model, chỉ nhãn đổi'
+    assert assistant_text(store, sid) == 'Đã sửa `src/app.py`.'
+    store.close()
+
+
+def test_ban_nhac_viec_noi_that_khi_khong_con_viec_cua_chu():
+    """F1 — chỉ còn kết quả bạn: KHÔNG gán nhãn "owner request" cho thứ khác, nói thẳng là không thấy."""
+    excerpt = runtime_module.turn_prompt_excerpt([delivery_message(), delivery_message('xong phần hai.')])
+    assert excerpt == '', 'kết quả bạn không bao giờ là việc chủ giao'
+
+    text = turn_recap([{'name': 'terminal_exec', 'args': {'command': 'pytest -q'}, 'step': 3,
+                        'result': {'content': '1 passed', 'exit_code': 0}}], excerpt)
+    assert 'command run: pytest -q (exit 0)' in text
+    assert runtime_module.PEER_DELIVERY_PREFIX not in text and 'đã soát xong' not in text
+    assert 'owner request (excerpt): not found' in text

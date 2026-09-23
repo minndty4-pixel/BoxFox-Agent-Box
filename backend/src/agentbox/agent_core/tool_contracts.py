@@ -19,7 +19,6 @@ STRING = {'type': 'string'}
 # `sandbox/executor.normalize_capture_target` — gửi xuống box một khoá nó không hiểu là cách chắc
 # nhất để nhận `_invalid` cho một lần chụp đáng lẽ chạy được.
 CAPTURE_TARGET_KINDS = ('window', 'tab', 'screen')
-CAPTURE_TARGET_KEYS = ('kind', 'windowId', 'pid', 'class', 'title', 'tabId', 'url')
 CAPTURE_CAPTION_MAX_CHARS = 200
 CAPTURE_TARGET_SCHEMA = {'type': 'object', 'properties': {
     'kind': {'type': 'string', 'enum': list(CAPTURE_TARGET_KINDS)},

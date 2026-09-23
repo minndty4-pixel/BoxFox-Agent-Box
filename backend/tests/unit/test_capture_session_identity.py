@@ -91,11 +91,6 @@ def test_a_box_that_ignores_the_session_still_works():
     assert result['artifact'] == 'screen/1700000000000-screen.png'
     assert set(result) >= {'content', 'artifact', 'image', 'mime', 'dimensions'}
 
-    executor = OldBox()
-    result = asyncio.run(executor.execute('computer_screen_capture', {}, SID))
-    assert result['artifact'] == 'screen/1700000000000-screen.png'
-    assert set(result) >= {'content', 'artifact', 'image', 'mime', 'dimensions'}
-
 
 # ---------------------------------------------------------------------------------------------
 # Vòng 23 (P2.2/P2.4/P2.5) — `target` của model đi tới box, lỗi của box đi lên nguyên văn.
