@@ -67,13 +67,13 @@ Ghi theo từng đợt đã xong, kèm ngày đo.
 | Trang | Trước (commit `2add905`) | Sau (đợt 1) |
 |---|---|---|
 | `nhandan.vn` | 17 421 "ký tự" mà **55 %** là rác nhị phân, junk 0,550 | `textChars` ≈ 8 264, **junk 0,0000** |
-| `vanban.chinhphu.vn` | 46 692 ký tự rác, junk 0,517 | `textChars` ≈ 8 079, **junk 0,0000** |
+| `vanban.chinhphu.vn` | 46 692 ký tự rác, junk 0,517 | 31 792 ký tự, **junk 0,0000**, `readTier: html` |
 | `vietnamplus.vn` | 37 798 ký tự rác | `textChars` ≈ 16 455, **junk 0,0000** |
-| `thuvienphapluat.vn` (403) | thân bài rỗng ⇒ mất cả trang, dù đầu đọc có 91 032 byte | đầu đọc trả ≥ 20 000 ký tự, `readerReason: http-status` |
-| PDF arXiv `1706.03762v7` | chuỗi `%PDF-1.4…`, junk 0,517, `textChars` 10 205 | ≈ 40 895 ký tự chữ, **bảng dựng lại tại chỗ** bằng `pdfplumber` |
-| HTML arXiv `1706.03762v7` | — | giữ **10 bảng** (nhãn `bảng trích tự động`) |
-| `vbpl.vn/TW/Pages/vbpq-toanvan.aspx?ItemID=1` | trả "Trang chủ" (27 378 byte) mà không ai biết | `verdict: wrong-page` |
-| `moh.gov.vn` | "Warning: This page maybe not yet fully loaded" (165–259 byte) | `verdict: error-page` |
+| `thuvienphapluat.vn` (403) | thân bài rỗng ⇒ mất cả trang, dù đầu đọc có 91 032 byte | **không còn mất trang**: 281 ký tự, `verdict: error-page`, đầu đọc không cứu được (xem §4.6) |
+| PDF arXiv `1706.03762v7` | chuỗi `%PDF-1.4…`, junk 0,517, `textChars` 10 205 | 46 128 ký tự chữ, `readTier: pdf-table`, **10 bảng** / 15 trang dựng tại chỗ bằng `pdfplumber` |
+| HTML arXiv `1706.03762v7` | — | 45 814 ký tự, tầng `html`: **9 bảng** mang nhãn `bảng trích tự động` (HTML có 10 thẻ `<table>`) |
+| `vbpl.vn/TW/Pages/vbpq-toanvan.aspx?ItemID=1` | trả "Trang chủ" (27 378 byte) mà không ai biết | 87 ký tự, `verdict: wrong-page`, đầu đọc **không** được nhận (xem §4.6) |
+| `moh.gov.vn` | "Warning: This page maybe not yet fully loaded" (165–259 byte) | ném `WEB_FETCH_FAILED` sau 15,44 s — không bao giờ `ok` |
 | `r.jina.ai` trên PDF | (chỉ đường này) | **0 dòng `|`** ⇒ bảng mất sạch: vì vậy đầu đọc chỉ là tầng 4, sau tầng PDF |
 
 ### 4.2 Thang đọc năm tầng (A-3/A-10)
@@ -122,3 +122,35 @@ không nằm trong một lời gọi mà nằm ở bộ đệm đọc: `ReadStor
 `pdfplumber` + `pypdfium2` nay là phụ thuộc của host (`backend/requirements.txt`, chủ nhà cho phép
 #6011) và **không** được cài trong box (`#5977`: box không cài gói; box cũng không có mạng mặc
 định). Thiếu thư viện ⇒ tầng PDF trả `''` kèm `pdfNote` nói rõ, chứ **không** trả nhị phân thô.
+
+### 4.6 Bốn sửa đổi mà thước đo bắt được (chốt đợt 1, 2026-09-23)
+
+`scripts/probe-reading.py` chạy lần 6: **11/11 mục đạt ngưỡng**. Bốn chỗ dưới đây không nằm trong
+chữ của plan nhưng chính thước đo phơi ra; mỗi chỗ đều có số đo trước/sau.
+
+1. **Nội dung trong `<form>` không còn bị bỏ.** `vanban.chinhphu.vn/?pageid=27160&docid=207396` là
+   trang ASP.NET bọc **toàn bộ thân bài** trong `<form id="form1">`; `_TextExtractor` bỏ nội dung form
+   nên 81 697 byte HTML ⇒ **2 ký tự**. Sau bản sửa: **5 053** (trang chủ cùng host: 942 → **31 792**).
+   `nav`/`footer`/`aside`/`svg`/`script`/`style` vẫn bị bỏ.
+2. **Tên miền không phải slug.** Phép cắt chuỗi cũ lấy cả host khi đường dẫn chỉ là `/`, nên
+   `https://vanban.chinhphu.vn/` sinh token `['vanban','chinhphu']` và **mọi** trang của host đó ra
+   `wrong-page` (một báo sai, không phải một phép kiểm). Nay chỉ lấy phần `path`; ca đã đo của `vbpl.vn`
+   vẫn bắt đúng.
+3. **Đầu đọc không được "rửa" trang sai thành `ok`.** `reading.slug_clue` là cửa hậu của `wrong_page`:
+   một trang đã đo là SAI chỉ được xoá verdict bằng một bản đọc **có tiêu đề** chia sẻ token với slug.
+   Đo được: `r.jina.ai` trả 26 522 ký tự *site chrome* cho `vbpq-toanvan.aspx?ItemID=1` và không có dòng
+   `Title:` nào. Phép kiểm chỉ nhìn tiêu đề (`Title:` hoặc dòng `#`) — bản chrome có chứa chính chuỗi URL
+   đó trong liên kết, nên quét cả thân bài thì cửa hậu không chặn được gì (lần chạy đầu đã lọt).
+4. **Trang chặn bot là `error-page`.** Thêm dấu hiệu `'performing security verification'` vào
+   `ERROR_MARKERS`: `thuvienphapluat.vn` trả 403 cho client thường, và đầu đọc không khoá nhận đúng
+   trang chặn bot 281 ký tự — trước bản sửa chỗ đó ra `thin`, tức vẫn là một dạng thành công giả.
+
+Hai sửa đổi của cùng lượt này (đã ghi ở §4.2/§4.5) được xác nhận sống: **trần PDF riêng 8 MiB** tải lại
+đúng một lần, và **tầng JATS nhận theo dấu hiệu `table-wrap` trong thân bài** (Europe PMC trả
+`text/plain` cho `fullTextXML`, không phải `application/xml`).
+
+**Một chỗ lệch kỳ vọng của plan, nói thẳng:** A-3 kỳ vọng `thuvienphapluat.vn` đọc được **≥ 20 000 ký tự**
+(đo được 91 032 byte ngày 2026-09-23). Đo lại cùng ngày, muộn hơn: `r.jina.ai` **không khoá** trả về đúng
+trang chặn bot 281 ký tự. Ngưỡng ấy không còn đứng được, và đó là thay đổi của dịch vụ bên ngoài chứ
+không phải của mã. Bất biến giữ được và đã đo: chủ nhà 403 **không bao giờ** ra `ok`. Muốn đọc được
+trang này cần khoá hoặc một chân đọc khác — việc của A-7 (đợt 2).

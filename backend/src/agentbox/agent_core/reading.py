@@ -23,6 +23,7 @@ Five read tiers, best first (chốt #6010/#6011):
 
 import io
 import re
+import urllib.parse
 import unicodedata
 import zlib
 from html.parser import HTMLParser
@@ -39,6 +40,10 @@ ERROR_MARKERS = (
     'cached snapshot',
     'just a moment',
     'attention required',
+    # ĐO ĐƯỢC 2026-09-23: thuvienphapluat.vn trả 403 cho client thường, và `r.jina.ai`
+    # (không khoá) nhận đúng trang chặn bot 281 ký tự "Performing security verification".
+    # Không có dấu hiệu này thì 281 ký tự đó ra `thin` — vẫn là một dạng thành công giả.
+    'performing security verification',
     'đang tải dữ liệu',
     'enable javascript',
     'please wait while we load',
@@ -108,6 +113,59 @@ def reader_title(text: str) -> str:
     return ''
 
 
+def _slug_tokens(url: str) -> list[str]:
+    """Token chữ của slug cuối ĐƯỜNG DẪN (>=3 ký tự, bỏ đuôi tệp) — dùng chung cho hai phép kiểm.
+
+    ĐO ĐƯỢC 2026-09-23: phép cắt chuỗi cũ lấy cả tên miền khi đường dẫn chỉ là `/`, nên
+    `https://vanban.chinhphu.vn/` sinh token `['vanban', 'chinhphu']` rồi so với tiêu đề
+    "Hệ thống văn bản" ⇒ **mọi** trang của host đó bị gọi là `wrong-page` (một báo sai, không
+    phải một phép kiểm). Nay chỉ lấy phần `path` của URL.
+    """
+    path = urllib.parse.urlsplit(str(url or '')).path or ''
+    path = path.split('?', 1)[0].split('#', 1)[0].rstrip('/')
+    if not path:
+        return []
+    slug = path.rsplit('/', 1)[-1].lower()
+    for extension in _SLUG_EXTENSIONS:
+        if slug.endswith(extension):
+            slug = slug[: -len(extension)]
+            break
+    return [tok for tok in _tokens(slug, min_len=3) if any(ch.isalpha() for ch in tok)]
+
+
+def _first_heading(text: str) -> str:
+    """Dòng tiêu đề đầu của một bản đọc: `Title: …` của đầu đọc, hoặc `# …`/`## …` markdown."""
+    title = reader_title(text)
+    if title:
+        return title
+    for line in str(text or '').splitlines()[:40]:
+        stripped = line.strip()
+        if stripped.startswith('#') and len(stripped) > 2:
+            return stripped.lstrip('# ').strip()[:200]
+    return ''
+
+
+def slug_clue(text: str, *, url: str = '') -> bool:
+    """True khi TIÊU ĐỀ của bản đọc chia sẻ token với slug URL — cửa hậu của `wrong_page`.
+
+    ĐO ĐƯỢC (2026-09-23): `r.jina.ai` trả đúng *site chrome* cho `vbpq-toanvan.aspx?ItemID=1`
+    ("Tùy chọn · Chính sách bảo mật · …", 26 522 ký tự) và không có dòng `Title:` nào, nên
+    `wrong_page()` không bắt được — bản đọc ấy sẽ "rửa" một trang SAI thành `ok`.
+
+    Phép kiểm chỉ nhìn **tiêu đề**, không nhìn cả thân bài: thân bài của chrome có chứa chuỗi
+    URL `…/vbpq-toanvan.aspx?ItemID=1` trong liên kết, nên nếu quét cả thân bài thì cửa hậu
+    không chặn được gì (đã đo: lần chạy đầu cho `slug_clue=True` với đúng trang chrome ấy).
+    """
+    tokens = _slug_tokens(url)
+    if not tokens:
+        return False
+    heading = _first_heading(text)
+    if not heading:
+        return False
+    heading_tokens = [tok for tok in _tokens(_plain(heading), min_len=3) if any(ch.isalpha() for ch in tok)]
+    return bool(set(tokens) & set(heading_tokens))
+
+
 def wrong_page(text: str, *, url: str = '', title: str = '') -> bool:
     """True when the title shares no clue with the URL slug — "Trang chủ" for a document URL.
 
@@ -122,16 +180,8 @@ def wrong_page(text: str, *, url: str = '', title: str = '') -> bool:
     if plain_heading in GENERIC_TITLES or any(plain_heading.startswith(g + ' ') or
                                              plain_heading.startswith(g + ' -') for g in GENERIC_TITLES):
         return True
-    path = (url or '').split('?', 1)[0].split('#', 1)[0].rstrip('/')
-    if not path:
-        return False
-    slug = path.rsplit('/', 1)[-1].lower()
-    for extension in _SLUG_EXTENSIONS:
-        if slug.endswith(extension):
-            slug = slug[: -len(extension)]
-            break
-    slug_tokens = _tokens(slug, min_len=3)
-    if len([tok for tok in slug_tokens if any(ch.isalpha() for ch in tok)]) < 2:
+    slug_tokens = _slug_tokens(url)
+    if len(slug_tokens) < 2:
         return False
     title_tokens = [tok for tok in _tokens(heading, min_len=3) if any(ch.isalpha() for ch in tok)]
     if not title_tokens:

@@ -2168,3 +2168,58 @@ giao diện; danh sách lỗi đầy đủ ở `bug-register.md` §6.34 — BUG-
   replacement.
 - Giao thức test model + khoá: `docs/plan/v27/research-quality-tests.md` §2. Bộ ca chất lượng
   research (`RQ1–RQ8` + sáu tiêu chí + oracle): cùng tài liệu, §3.
+- **Chốt đợt 1 — đo lại toàn bộ bằng `scripts/probe-reading.py` (2026-09-23, lần 6): 11/11 đạt ngưỡng.**
+  Mỗi dòng là một lời gọi `web_fetch` thật trên host; số là ký tự mô hình nhận được sau cắt trần:
+
+  | Nguồn | giây | ký tự | junk | verdict | `readTier` | reader |
+  |---|---|---|---|---|---|---|
+  | `nhandan.vn` | 1,30 | 18 832 | 0,0 | `ok` | `html` | — |
+  | `vanban.chinhphu.vn` (trang chủ) | 1,38 | 31 792 | 0,0 | `ok` | `html` | — |
+  | `vietnamplus.vn` | 1,19 | 16 455 | 0,0 | `ok` | `html` | — |
+  | `thuvienphapluat.vn/…Luat-Doanh-nghiep-2020…` | 11,66 | 281 | 0,0 | `error-page` | `reader-text` | `r.jina.ai` |
+  | `vbpl.vn/…vbpq-toanvan.aspx?ItemID=1` | 1,71 | 87 | 0,0 | `wrong-page` | `html` | — |
+  | `moh.gov.vn` | 15,44 | — | — | lỗi `WEB_FETCH_FAILED` (timeout) | — | — |
+  | `arxiv.org/pdf/1706.03762v7` | 2,53 | 46 128 | 0,0 | `ok` | `pdf-table` (**10** bảng, 15 trang) | — |
+  | `arxiv.org/html/1706.03762v7` | 0,08 | 45 814 | 0,0 | `ok` | `html` (**9** bảng có nhãn; HTML có 10 thẻ `<table>`) | — |
+  | Europe PMC `PMC7090843/fullTextXML` | 1,03 | 136 836 | 0,0 | `ok` | `jats` (**5** bảng) | — |
+  | `web_search` (firecrawl) | 0,13 | 5 kết quả | — | — | — | — |
+  | `web_search` (wikipedia) | 0,26 | 5 kết quả | — | — | — | — |
+
+- **Bốn sửa đổi mà chính thước đo bắt được** (không nằm trong chữ của plan, đều có số đo trước/sau):
+  1. **`<form>` không còn bị bỏ nội dung.** Trang ASP.NET `vanban.chinhphu.vn/?pageid=27160&docid=207396`
+     bọc **toàn bộ thân bài** trong `<form id="form1">`, nên `_TextExtractor` bỏ hết: 81 697 byte HTML
+     ⇒ `html_to_text` trả **2 ký tự**; sau bản sửa ⇒ **5 053**. Trang chủ cùng host: **942 → 31 792**
+     (đúng cỡ 32 173 ký tự của lần đo đầu). `nav/footer/aside/svg/script/style` vẫn bị bỏ.
+  2. **Tên miền không phải slug.** Phép cắt chuỗi cũ lấy cả host khi đường dẫn chỉ là `/`, nên
+     `https://vanban.chinhphu.vn/` sinh token `['vanban', 'chinhphu']` rồi so với tiêu đề
+     "Hệ thống văn bản" ⇒ **mọi** trang của host đó ra `wrong-page` (báo sai). Nay chỉ lấy phần `path`;
+     ca đã đo của `vbpl.vn` (`vbpq-toanvan.aspx?ItemID=1` ⇒ `['vbpq','toanvan']`) vẫn ra `wrong-page`.
+  3. **Đầu đọc không được "rửa" trang sai thành `ok`.** Cửa hậu `reading.slug_clue` chỉ nhìn **tiêu đề**
+     (`Title:` hoặc dòng `#`): đo được `r.jina.ai` trả 26 522 ký tự *site chrome* cho
+     `vbpq-toanvan.aspx?ItemID=1` và không có dòng `Title:` nào. Lần chạy đầu cửa hậu vẫn lọt vì bản
+     chrome có chứa chính chuỗi URL đó trong liên kết ⇒ phép kiểm phải bỏ qua thân bài.
+  4. **Trang chặn bot là `error-page`, không phải `thin`.** Thêm dấu hiệu `'performing security verification'`
+     (`ERROR_MARKERS`) sau khi đo `thuvienphapluat.vn`; cùng lượt này hai sửa trước đó được xác nhận:
+     trần PDF riêng `MAX_PDF_BYTES = 8 MiB` (tải lại **đúng một lần**) và tầng JATS nhận **theo dấu hiệu
+     `table-wrap` trong thân bài** (Europe PMC trả `text/plain`, không phải `application/xml`).
+- **Chỗ lệch kỳ vọng của plan thì nói thẳng, không làm tròn:**
+  - `thuvienphapluat.vn`: A-3 kỳ vọng đầu đọc cứu được **≥ 20 000 ký tự**. Đo lại cùng ngày, muộn hơn:
+    `r.jina.ai` **không khoá** nhận đúng *trang chặn bot* 281 ký tự ⇒ ngưỡng ấy không còn đứng được, và
+    đó là thay đổi của dịch vụ bên ngoài chứ không phải của mã. Bất biến giữ được: **không bao giờ `ok`**
+    (`error-page`, `readerReason: unreachable`). Muốn đọc được trang này phải có khoá hoặc chân đọc khác
+    — việc của A-7 (đợt 2).
+  - `moh.gov.vn`: 15,44 s rồi ném `WEB_FETCH_FAILED` (timeout). Không ra `ok` (đúng), nhưng cũng chưa
+    "nói thẳng" ra `error-page`; chính sách trần thời gian của lượt thuộc đợt 5 (D-40), không sửa ở đây.
+  - Europe PMC: bài `PMC3258128` dùng ở lần chạy trước **không có** `<table-wrap>` nào nên nhánh JATS
+    không chạy và tầng ra `html` — lỗi ở **mẫu đo**, không ở mã. Mẫu nay là `PMC7090843` (10 thẻ, 5 khối ngoài).
+- **Bộ đơn vị đầy đủ trên cây này**: `./.venv/bin/python -m pytest backend/tests/unit -q -p no:randomly
+  --deselect backend/tests/unit/test_terminal_tools.py::test_terminal_exec_echo` ⇒ **1254 passed, 1 deselected**
+  trong 215,16 s (mốc trước bốn sửa đổi: 1247 passed). `test_web_reading.py` một mình **27 ca**;
+  `test_web_reading.py` + `test_web_tools.py` ⇒ **62 passed**; `test_runtime_info.py` ⇒ **12 passed**.
+  Ca deselected là `Write-Output` PowerShell trên Linux — đỏ có sẵn từ trước, đỏ y hệt trên `git archive HEAD` sạch.
+- **Lượt sống với model (giao thức và khoá: `docs/plan/v27/research-quality-tests.md` §2)**:
+  (i) job `b89d2e4b` — 3 lời gọi `web_fetch` (`nhandan.vn`, `vanban.chinhphu.vn`, PDF arXiv), **0 lỗi**,
+  model trả lời đúng cả ba con số, không bịa; (ii) job `d01e9ed8` (chỉ PDF, sau khi vá trần):
+  `readTier: pdf-table`, `tables: 10`, `pdfPages: 15`, 46 128 ký tự, junk 0,0, 0 lỗi.
+  Cả hai lượt cho thấy **ngữ cảnh model chỉ nhận 8 000 ký tự đầu** ⇒ phần bảng nằm ở đuôi bị cắt —
+  đúng lý do tồn tại của A-4 (bộ đệm đọc + `read_source`) ở đợt 2.

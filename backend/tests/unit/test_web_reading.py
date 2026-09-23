@@ -56,7 +56,7 @@ class _FakeResponse:
     def read(self, size=-1):
         if self._incomplete:
             raise web_module.http.client.IncompleteRead(self._body)
-        return self._body
+        return self._body[:size] if size and size > 0 else self._body
 
     def geturl(self):
         return self._url
@@ -86,7 +86,7 @@ def _serve(monkeypatch, handler):
 def test_a_gzip_answer_is_inflated_before_it_reaches_the_model(tools, monkeypatch):
     body = gzip.compress(NHAN_DAN_HTML.encode())
     _serve(monkeypatch, lambda url: _FakeResponse(body, encoding='gzip', url=url))
-    payload = tools.fetch({'url': 'https://nhandan.vn/trang-chu'})
+    payload = tools.fetch({'url': 'https://nhandan.vn/bao-nhan-dan-dien-tu'})
     assert payload['contentEncoding'] == 'gzip' and payload['decoded'] is True
     assert payload['quality']['junkRatio'] == 0.0
     assert 'Kinh tế · Chính trị · Xã hội' in payload['text']
@@ -349,3 +349,100 @@ def test_pdf_without_the_library_says_so_instead_of_returning_junk(monkeypatch):
 def test_a_body_that_is_not_a_pdf_is_refused_by_the_pdf_tier():
     markdown, info = reading.pdf_to_markdown(b'<html>not a pdf</html>')
     assert markdown == '' and info['reason'] == 'not a PDF body'
+
+
+def test_a_pdf_bigger_than_the_body_cap_is_fetched_again_with_the_pdf_cap(tools, monkeypatch):
+    """ĐO ĐƯỢC: PDF arXiv 1706.03762v7 nặng hơn 2 MiB — cắt ở trần thì pdfplumber không dựng lại được."""
+    pdf = _tiny_pdf()
+    padded = pdf + b'\n%' + b'0' * (web_module.MAX_BODY_BYTES + 4096) + b'\n%%EOF\n'
+    seen: list[str] = []
+
+    def handler(url: str):
+        seen.append(url)
+        body = padded if len(seen) == 1 else pdf
+        return _FakeResponse(body, ctype='application/pdf', url=url)
+
+    _serve(monkeypatch, handler)
+    payload = tools.fetch({'url': 'https://arxiv.org/pdf/1706.03762v7'})
+    assert len(seen) == 2, 'bản bị cắt phải được tải lại ĐÚNG một lần'
+    assert payload['readTier'] == 'pdf-table' and payload['pdfPages'] == 1
+    assert payload['reader'] is None and 'Bang du lieu thuc nghiem' in payload['text']
+
+
+def test_a_pdf_that_stays_broken_keeps_its_note_when_the_reader_saves_the_page(tools, monkeypatch):
+    # `%PDF-` đúng nhưng phần thân không có cấu trúc: pdfplumber trả `''` kèm lý do.
+    padded = b'%PDF-1.4\n' + b'junk ' * (web_module.MAX_BODY_BYTES // 2)
+
+    def handler(url: str):
+        if url.startswith(web_module.READER_PREFIX):
+            return _FakeResponse(('Markdown Content:\nTitle: Bản chỉ chữ\n\n' + 'nội dung ' * 200).encode(),
+                                 ctype='text/markdown', url=url)
+        return _FakeResponse(padded, ctype='application/pdf', url=url)
+
+    _serve(monkeypatch, handler)
+    payload = tools.fetch({'url': 'https://arxiv.org/pdf/1706.03762v7'})
+    assert payload['reader'] == 'r.jina.ai' and payload['readTier'] == 'reader-text'
+    assert 'PdfminerException' in (payload.get('pdfNote') or ''), 'lý do tầng PDF hỏng phải đi cùng payload'
+
+
+def test_the_reader_cannot_launder_a_wrong_page_into_ok(tools, monkeypatch):
+    """ĐO ĐƯỢC: `vbpq-toanvan.aspx?ItemID=1` trả "Trang chủ" ở bản trực tiếp, và đầu đọc trả về
+    đúng site chrome (17 567 ký tự "Tùy chọn · Chính sách bảo mật…") không có dòng `Title:`.
+    Không có cửa hậu thì một "thành công giả" đã đo được sẽ được ghi là `ok`."""
+    chrome = ('## Tùy chọn\n\n×\n\nCài đặt Chính sách bảo mật Khả dụng\n\n'
+              '[vbpq toanvan](https://vbpl.vn/TW/Pages/vbpq-toanvan.aspx?ItemID=1)\n\n'
+              + 'danh mục văn bản ' * 200)
+    home = '<html><head><title>Trang chủ</title></head><body>' + 'Danh mục ' * 200 + '</body></html>'
+
+    def handler(url: str):
+        if url.startswith(web_module.READER_PREFIX):
+            return _FakeResponse(chrome.encode(), ctype='text/markdown', url=url)
+        return _FakeResponse(home.encode(), url=url)
+
+    _serve(monkeypatch, handler)
+    payload = tools.fetch({'url': 'https://vbpl.vn/TW/Pages/vbpq-toanvan.aspx?ItemID=1'})
+    assert payload['reader'] is None, 'trang SAI thì đầu đọc không được xoá verdict'
+    assert payload['quality']['verdict'] == 'wrong-page'
+    assert payload['readerReason'] == 'wrong-page'
+
+
+def test_a_reader_answer_that_names_the_slug_still_replaces_a_wrong_page(tools, monkeypatch):
+    """Cửa hậu chỉ chặn bản KHÔNG nhắc gì tới slug: một bản đọc đúng chủ đề vẫn được nhận."""
+    text = ('Markdown Content:\nTitle: toanvan vbpq luật 15/2023\n\n'
+            + 'toanvan vbpq toàn văn luật 15/2023 ' * 80)
+
+    def handler(url: str):
+        if url.startswith(web_module.READER_PREFIX):
+            return _FakeResponse(text.encode(), ctype='text/markdown', url=url)
+        return _FakeResponse(('<html><head><title>Trang chủ</title></head><body>' + 'Danh mục ' * 200
+                              + '</body></html>').encode(), url=url)
+
+    _serve(monkeypatch, handler)
+    payload = tools.fetch({'url': 'https://vbpl.vn/TW/Pages/vbpq-toanvan.aspx?ItemID=1'})
+    assert payload['reader'] == 'r.jina.ai' and payload['quality']['verdict'] == 'ok'
+
+
+def test_a_bot_check_page_is_an_error_page_not_a_thin_success():
+    """ĐO ĐƯỢC: 403 của thuvienphapluat.vn, đầu đọc (không khoá) trả 281 ký tự
+    "Performing security verification" — phải là `error-page`, không phải `thin`."""
+    text = ('![Image 1: Icon for thuvienphapluat.vn](https://thuvienphapluat.vn/favicon.ico)\n\n'
+            '## thuvienphapluat.vn\n\n## Performing security verification\n\n'
+            'This website uses a security service to protect against malicious bots. '
+            'This page is displayed while the website verifies you are not a bot.')
+    quality = reading.body_check(text, url='https://thuvienphapluat.vn/van-ban/a-472429.aspx',
+                                status=403, content_type='text/markdown', reader='r.jina.ai')
+    assert quality['verdict'] == 'error-page'
+    assert 'performing security verification' in quality['reason']
+
+
+def test_a_host_name_is_not_a_slug():
+    """ĐO ĐƯỢC 2026-09-23: phép cắt chuỗi cũ lấy tên miền làm slug khi đường dẫn chỉ là `/`,
+    nên MỌI trang của `vanban.chinhphu.vn` (tiêu đề "Hệ thống văn bản") bị gọi là `wrong-page`."""
+    assert reading._slug_tokens('https://vanban.chinhphu.vn/') == []
+    assert reading._slug_tokens('https://vanban.chinhphu.vn/?pageid=27160&docid=207396') == []
+    assert not reading.wrong_page('Hệ thống văn bản', url='https://vanban.chinhphu.vn/',
+                                  title='Hệ thống văn bản')
+    # Còn slug thật thì phép kiểm vẫn bắt đúng ca đã đo của `vbpl.vn`.
+    assert reading._slug_tokens('https://vbpl.vn/TW/Pages/vbpq-toanvan.aspx?ItemID=1') == ['vbpq', 'toanvan']
+    assert reading.wrong_page('Trang chủ', url='https://vbpl.vn/TW/Pages/vbpq-toanvan.aspx?ItemID=1',
+                              title='Trang chủ')

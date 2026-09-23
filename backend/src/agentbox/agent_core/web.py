@@ -64,6 +64,11 @@ READER_PREFIX = 'https://r.jina.ai/'
 READER_TIMEOUT = 20.0
 # Trần chống bom nén: 8 lần thân bài cho phép, cùng lớp rủi ro với `GHSA-j5g9-f88f-gfj3`.
 MAX_INFLATED_BYTES = 8 * MAX_BODY_BYTES
+# ĐO ĐƯỢC (2026-09-23): PDF arXiv `1706.03762v7` nặng hơn trần 2 MiB nên bị cắt,
+# `pdfplumber` không dựng lại được, và cả trang rơi về đầu đọc chỉ-chữ (bảng mất).
+# Một PDF bị cắt được tải lại ĐÚNG MỘT lần với trần riêng này — vẫn có chặn, vì PDF
+# học thuật thường 2–8 MiB.
+MAX_PDF_BYTES = 8 * 1024 * 1024
 PUBLIC_SOURCES = ('web', 'wikipedia', 'stackoverflow', 'github', 'papers')
 
 # Web content is data. The envelope is repeated in every payload so neither the
@@ -200,6 +205,9 @@ def http_request_meta(url: str, *, method: str = 'GET', body: bytes | None = Non
     meta = dict(decode_meta)
     meta['partial'] = partial
     meta['bodyBytes'] = len(raw)
+    # True khi `read(max_bytes)` dừng ĐÚNG ở trần: thân bài có thể còn nữa (A-10 dùng cờ này
+    # để tải lại một PDF bị cắt, thay vì lặng lẽ mất tầng bảng).
+    meta['truncatedBytes'] = len(raw) >= max_bytes
     if raw[:5].startswith(b'%PDF-'):
         # Tầng 3 cần đúng byte gốc của PDF, không phải bản đã giải mã thành chữ.
         meta['rawBody'] = raw
@@ -217,7 +225,8 @@ def http_request(url: str, *, method: str = 'GET', body: bytes | None = None,
 _ORIGINAL_HTTP_REQUEST = http_request
 
 
-def _request_with_meta(url: str, *, timeout: float = FETCH_TIMEOUT) -> tuple[int, str, str, str, dict]:
+def _request_with_meta(url: str, *, timeout: float = FETCH_TIMEOUT,
+                       max_bytes: int = MAX_BODY_BYTES) -> tuple[int, str, str, str, dict]:
     """Transport seam of ``fetch``.
 
     ``http_request`` (four elements) stays the public name every caller and every
@@ -229,7 +238,7 @@ def _request_with_meta(url: str, *, timeout: float = FETCH_TIMEOUT) -> tuple[int
         status, ctype, text, final = http_request(url, timeout=timeout)
         return status, ctype, text, final, {'contentEncoding': 'identity', 'decoded': False,
                                             'partial': False}
-    return http_request_meta(url, timeout=timeout)
+    return http_request_meta(url, timeout=timeout, max_bytes=max_bytes)
 
 
 # ------------------------------------------------------------------- extraction
@@ -237,7 +246,10 @@ def _request_with_meta(url: str, *, timeout: float = FETCH_TIMEOUT) -> tuple[int
 class _TextExtractor(HTMLParser):
     """Readable text from HTML: title, headings, paragraphs, lists, links; scripts dropped."""
 
-    _SKIP = {'script', 'style', 'noscript', 'template', 'svg', 'nav', 'footer', 'aside', 'form'}
+    # `form` KHÔNG nằm trong danh sách bỏ: ĐO ĐƯỢC 2026-09-23 — trang ASP.NET của
+    # `vanban.chinhphu.vn` bọc TOÀN BỘ thân bài trong `<form id="form1">`, nên bỏ nội dung
+    # form thì `html_to_text` trả về đúng 2 ký tự cho một trang 81 KB có thật nội dung.
+    _SKIP = {'script', 'style', 'noscript', 'template', 'svg', 'nav', 'footer', 'aside'}
     _BLOCK = {'p', 'div', 'section', 'article', 'li', 'tr', 'br', 'pre', 'blockquote', 'table',
               'h1', 'h2', 'h3', 'h4', 'h5', 'h6'}
 
@@ -583,6 +595,20 @@ class WebTools:
             title, text, links, reader, read_tier, extra = self._extract(
                 ctype, final, body, meta.get('rawBody'))
 
+        if (direct_error is None and ctype == 'application/pdf' and not text.strip()
+                and meta.get('truncatedBytes')
+                and len(meta.get('rawBody') or b'') >= MAX_BODY_BYTES):
+            # PDF bị cắt ở trần 2 MiB thì tầng 3 không dựng lại được; tải lại ĐÚNG MỘT lần với
+            # trần riêng của PDF. Lỗi ở lần hai KHÔNG xoá bản đầu (nó vẫn là một bản đọc thiếu).
+            try:
+                status2, ctype2, body2, final2, meta2 = _request_with_meta(final, max_bytes=MAX_PDF_BYTES)
+            except WebError:
+                meta2 = {}
+            if meta2.get('rawBody') and not meta2.get('truncatedBytes'):
+                status, ctype, body, final, meta = status2, ctype2, body2, final2, meta2
+                title, text, links, reader, read_tier, extra = self._extract(
+                    ctype, final, body, meta.get('rawBody'))
+
         quality = reading.body_check(text, url=final, status=status or None, content_type=ctype,
                                      reader=reader, title=title)
         is_pdf = ctype == 'application/pdf' or body[:5].startswith('%PDF-')
@@ -597,10 +623,19 @@ class WebTools:
                 reader_quality = reading.body_check(reader_text, url=final, status=reader_status or None,
                                                     content_type='text/markdown', reader='r.jina.ai',
                                                     title=reader_title)
-                if reading.is_better_grade(reader_quality['verdict'], quality['verdict']):
+                # Cửa hậu `wrong-page`: một trang đã đo được là SAI trang thì chỉ được xoá bằng
+                # một bản đọc NHẮC tới slug của URL. ĐO ĐƯỢC: đầu đọc trả về site chrome của
+                # `vbpq-toanvan.aspx?ItemID=1` ("Tùy chọn · Chính sách bảo mật") và không có `Title:`,
+                # nên nếu không chặn ở đây thì một "thành công giả" đã đo được biến thành `ok`.
+                clears_wrong_page = (quality['verdict'] != 'wrong-page'
+                                     or reading.slug_clue(reader_text, url=final))
+                if reading.is_better_grade(reader_quality['verdict'], quality['verdict']) and clears_wrong_page:
                     title = title or reader_title[:200]
                     text, reader, read_tier = reader_text, 'r.jina.ai', 'reader-text'
-                    quality, extra = reader_quality, {}
+                    # Lý do tầng PDF hỏng phải đi cùng payload kể cả khi đầu đọc đã cứu được trang:
+                    # người đọc cần biết bảng đã bị bỏ chứ không phải “không có bảng”.
+                    quality = reader_quality
+                    extra = {k: v for k, v in extra.items() if k == 'pdfNote'}
 
         if direct_error is not None and not text.strip():
             # The reader did not save this page: keep the ORIGINAL failure (A-3: "đầu đọc
@@ -640,6 +675,16 @@ class WebTools:
                 return '', markdown, [], None, 'pdf-table', extra
             extra['pdfNote'] = info.get('reason') or 'the PDF could not be rebuilt on the host'
             return '', '', [], None, 'pdf-table', extra
+        if 'table-wrap' in body.lower() and not ctype.startswith('text/html'):
+            # JATS full text (Europe PMC) tới dưới dạng `application/xml` **hoặc** `text/plain`,
+            # nên nhận theo DẤU HIỆU trong thân bài chứ không theo tiêu đề (ĐO ĐƯỢC: tiêu đề
+            # nói `text/plain` và 6 `<table-wrap>` từng bị mất ở nhánh này).
+            tables = reading.jats_tables_to_markdown(body)
+            text = _clean_text(body)
+            if tables:
+                extra['tables'] = tables.count('**Bảng ')
+                text = f'{text}\n\n{tables}' if text.strip() else tables
+            return '', text, [], None, 'jats', extra
         if ctype in {'application/json', 'text/plain', 'text/markdown', 'text/x-markdown'} or ctype.endswith('+json'):
             return '', _clean_text(body), [], None, reading.read_tier(content_type=ctype, text=body), extra
         title, text, links = html_to_text(body)

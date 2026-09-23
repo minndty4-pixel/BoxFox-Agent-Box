@@ -108,6 +108,18 @@ def test_html_becomes_readable_text():
     assert links == ['https://example.com/x nguồn']
 
 
+def test_a_body_wrapped_in_a_form_is_still_read():
+    """ĐO ĐƯỢC 2026-09-23: trang ASP.NET của `vanban.chinhphu.vn` bọc TOÀN BỘ thân bài trong
+    `<form id="form1">`; khi `form` còn nằm trong danh sách bỏ thì một trang 81 KB trả về
+    đúng 2 ký tự — bản đọc thật biến mất mà không có lỗi nào."""
+    html = ('<html><body><form method="post" action="/?pageid=27160">'
+            '<div>Điều 1. Phạm vi điều chỉnh của Luật Khám bệnh, chữa bệnh.</div>'
+            '<input type="hidden" name="__VIEWSTATE" value="tSnAoQbT3Xtfc1cVvjyu" />'
+            '</form></body></html>')
+    _, text, _ = html_to_text(html)
+    assert 'Phạm vi điều chỉnh' in text
+
+
 def test_malformed_markup_still_yields_what_was_parsed():
     _, text, _ = html_to_text('<p>còn đọc được<div><span>')
     assert 'còn đọc được' in text
