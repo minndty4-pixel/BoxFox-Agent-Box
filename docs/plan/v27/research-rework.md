@@ -7,8 +7,8 @@
 > nguồn, **không có vòng phản biện** cho nghiên cứu, và **không có case đo** nào. Kế hoạch này sửa lớp đọc (đợt 1),
 > dựng sổ nguồn + thang nguồn + hồ sơ việc + cổng chất lượng + pha phản biện (đợt 2–3), rồi dạy luồng chạy ba mức
 > nghiên cứu, bốn pha, nhịp báo, can thiệp giữa lượt và **đầu ra 100 % là tệp** (đợt 4–6), cuối cùng là đo được bằng
-> bộ ca + oracle máy (đợt 8). Ba mảng **thị trường**, **học thuật/kỹ thuật**, **phương pháp** được phỏng vấn tiếp sau khi
-> kế hoạch này được duyệt; cơ chế dựng sẵn với giá trị nháp nên chốt xong chỉ đổi **bảng khai báo**.
+> bộ ca + oracle máy (đợt 8). Ba mảng **thị trường**, **học thuật/kỹ thuật** và **phương pháp** đã phỏng vấn xong
+> **trước** khi thi công (13 vòng, #5955–#6025); giá trị nháp trong ba kế hoạch con chỉ còn việc đổi sang số đã chốt.
 > **Cập nhật bản 3 (vòng 9–13, #5999–#6025):** thị trường, học thuật/kỹ thuật và **phương pháp đã chốt hết** — thang đọc FULL
 > năm tầng (HTML/JATS → PDF + `pdfplumber` → đầu đọc chỉ chữ → ảnh trang), luật gap **hai tầng số** (sàn 20/10/≥2 + đích
 > 30–50/15/3, thiếu mẫu thì nói rõ chứ không deadlock), bão hoà săn đuổi **3 vòng**, trần đối thủ **10–15**, tài liệu hãng
@@ -17,14 +17,14 @@
 > loại phản biện**, nhịp kiểm chứng (mức 2 cổng máy · mức 3 con phản biện độc lập + **mục soi ý kiến chủ nhà**), **bảng
 > MỞ-A…MỞ-H duyệt nguyên bảng** và **tự dựng công cụ tìm kiếm/tải, KHÔNG mua khoá**. Phỏng vấn đã đóng.
 
-**Trạng thái:** bản 3 — phỏng vấn đã đóng (13 vòng) · chờ chủ nhà duyệt · **Nhánh:** `vorflux/v22-peer-mesh` · **HEAD khi viết:** `2add905` (cây sạch)
+**Trạng thái:** bản 3 — phỏng vấn đã đóng (13 vòng) · chờ chủ nhà duyệt · **Nhánh:** `vorflux/v22-peer-mesh` · **HEAD khi viết:** `698521b` (cây sạch)
 **Chủ nhà chốt:** *"tạo plan trước, ghi vào plan trước rồi tiếp tục interview"* (#5998)
 
 **Kế hoạch con (chi tiết tới tệp/hàm/test):**
 - `subplans/v27-reading-plan.md` + `-summary.md` — Phạm vi A: lớp đọc nguồn & lớp tìm kiếm (9 việc A-1…A-9, 4 đợt)
 - `subplans/v27-ledger-plan.md` + `-summary.md` — Phạm vi B: sổ nguồn, thang nguồn, hồ sơ việc, cổng chất lượng, pha phản biện (8 mục, 6 đợt)
 - `subplans/v27-flow-plan.md` + `-summary.md` — Phạm vi C: ba mức, bốn pha, điều phối, nhịp & can thiệp, ngân sách, đầu ra tệp, benchmark (C-1…C-8)
-- `v27-owner-answers.md` — biên bản 11 vòng phỏng vấn (#5955–#6014)
+- `v27-owner-answers.md` — biên bản **13 vòng** phỏng vấn (#5955–#6025)
 - `v27-adr-research-rework.md` — ADR: quyết định đã chốt + lý do + bằng chứng đo
 - `v27-market-usecases.md` — danh mục 10 usecase thị trường (TM-1…TM-10) + 4 archetype C1–C4/C2′ (chốt vòng 10–11)
 - `v27-full-read-and-pain-count.md` — đo năm đường đọc FULL + luật gap hai tầng số (chốt vòng 11)
