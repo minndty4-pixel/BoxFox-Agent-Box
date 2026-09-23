@@ -5,8 +5,9 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1] / 'vendor/hermes'
 DEFAULT_SKILLS = {'codebase-inspection', 'systematic-debugging', 'requesting-code-review', 'simplify-code', 'test-driven-development', 'grounded-citations',
-                  # Vòng 23 (P1.3): khuôn báo cáo cuối kèm luật ảnh bằng chứng — phiên MỚI nhận
-                  # mặc định; phiên đang chạy giữ danh sách kỹ năng của nó (không hồi tố).
+                  # Vòng 24 (D-31): dạng câu trả lời cuối (menu phần, đoạn mở đầu, ảnh khép
+                  # câu trả lời) nằm trong chính kỹ năng này — phiên MỚI nhận mặc định; phiên
+                  # đang chạy giữ danh sách kỹ năng của nó (không hồi tố).
                   'final-report'}
 
 

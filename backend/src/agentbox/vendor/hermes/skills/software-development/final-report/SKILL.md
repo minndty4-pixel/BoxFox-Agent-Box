@@ -1,8 +1,8 @@
 ---
 name: final-report
-description: "Final report: five fixed parts, finished-state image evidence, honest gaps."
-version: 1.0.0
-author: BoxFox Agent (vòng 23, P1.3)
+description: "Final answer: a light menu of parts, a plain-prose opening, and the finished-state image evidence that closes the answer."
+version: 2.0.0
+author: BoxFox Agent (vòng 24, D-31)
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
@@ -11,82 +11,64 @@ metadata:
     related_skills: [systematic-debugging, requesting-code-review]
 ---
 
-# Final Report
+# Final Report — the answer guide
 
 ## Overview
 
-The final answer to the owner **is** a short report, not a diary of the work. Five parts, in the
-same order every time, so the owner can skim: what was done, what is left, what they must decide,
-what is unclear, and the evidence.
+The final answer is a normal answer to the owner, not a form. Its shape is a **light menu**: pick the
+parts that fit this turn, in the order that reads best. **The evidence part closes the answer, and it
+is the most important part of the answer.** No mandatory order, no fixed number of parts.
 
-**Core principle:** prove the finished work with your own words, the real commands you ran, and
-finished-state images. Never with adjectives, never with invented output, never with a desktop
-screenshot that proves nothing.
+## When to open it
 
-## When to Use
+- Main session, when the turn produced work or something to show: the prompt carries one hard evidence
+  line for that turn, and the turn recap points here. Skip it when the turn is a plain question — a
+  question gets a normal answer, not a report.
+- Not for a child session: a child returns the parent's result contract.
 
-- Every turn of the main session that answers the owner. The runtime also carries this shape in its
-  prompt (see `FINAL REPORT` there) - this skill is the long form.
-- **Not** for a child session: a child returns the parent's result contract, not this report.
+## The menu, not a template
 
-## The five parts
+- **What you did** — the finished work, with the real commands you ran and the real files you changed;
+  if you did not run a check, do not imply you did.
+- **What is left** — only when something really is unfinished, skipped or not run.
+- **What the owner must decide** — only when a decision is really needed.
+- **What is unclear** — open questions and assumptions, only when there are any.
+- **Evidence** — the finished-state captures that prove each item, one label per image, plus links to
+  the evidence files. Not optional when the turn produced something observable.
 
-1. **What was done** - the finished work. Name the commands you really ran and the files you really
-   changed; if you did not run a check, do not imply you did.
-2. **What is left** - what is unfinished, skipped, or not run.
-3. **What the owner must decide** - only when a decision is really needed; otherwise say there is none.
-4. **What is unclear** - open points, assumptions you made, questions to ask back.
-5. **Evidence** - the finished-state images, each labelled with the feature it proves, plus links to
-   the test-result files.
+Pick by content, not habit: a turn that changed one file and ran one test opens with the outcome,
+shows `What you did`, and closes with the evidence. **Never print an empty part** — drop it instead.
+Never invent a command or a file.
 
-Write it in the language you are answering in. Keep it short: a few lines per part. Markdown only -
-headings, lists, images and links.
+## The opening paragraph
 
-A short example of the shape (the words are yours, the order is not):
+Start with ONE short paragraph of plain prose (one or two sentences) that states the outcome, then the
+parts you picked — no markdown heading and no bullet list in that first paragraph.
 
-```markdown
-**What was done.** Added the capture target contract: `computer_screen_capture` now takes
-`target={kind, url|title|windowId|tabId}` and `caption`. Ran `pytest backend/tests/unit -q` ->
-1080 passed, 1 pre-existing failure.
+Why: the chat shows that first paragraph as the collapsed summary of the turn and holds the rest
+behind **"View details"**. An answer that opens with a heading or a list breaks that split, and the
+owner sees a raw cut of the text instead of a summary.
 
-**What is left.** Live acceptance of the label suffix in the image file names.
+## The evidence part closes the answer
 
-**What you must decide.** Whether window captures should also be allowed while a recording is on.
-
-**What is unclear.** Whether the box's tab enumerator sees tabs in other windows.
-
-**Evidence.**
-![Tab capture of the runs page, with the label in the file name](.generated_artifacts/captures/tab/2e4f1a20/2e4f1a20_007_tab-3f9a2b1c-runs-page.png)
-- Test log: `.generated_artifacts/captures/evidence/2e4f1a20/2e4f1a20_009_pytest-result.txt`
-```
-
-## Images: capture the FINISHED state
-
-- Capture at the report step, when the work is done - not while you are still editing. A
-  work-in-progress shot is not evidence.
-- One capture = one finished item of the owner's request. If an item has several faces (list + detail
-  panel), take several shots; if you finished three items, take three shots.
-- Label each image with the feature it proves. The label goes in the markdown alt text **and** in the
-  `caption` you pass to the capture, so the file name on disk says the same thing.
-- Never a bare desktop shot, never a window that shows only the wallpaper, never a picture of your
-  editor. If the picture does not prove a finished item, do not put it in the answer.
+- The evidence goes at the END, after the other parts — never in the middle, never at the top. It is
+  the part that proves the turn: the owner reads the words, then sees the finished state.
+- A turn with nothing observable says so in the evidence part instead of showing a picture.
 
 ## Evidence by kind of work
 
 | Work | What proves it |
 | --- | --- |
-| GUI / frontend / web | The tab that renders the change after the change: `computer_screen_capture(target={'kind': 'tab', 'url': '<url>'}, caption='<feature>')`. |
-| Backend / RAG / CLI | The real test run, then a capture of the returned result (its text output) **and** the result file saved under `.generated_artifacts/captures/evidence/<sid8>/<sid8>_<step>_<slug>.txt`. |
-| Desktop app in the sandbox | A window capture of the app after the change: `target={'kind': 'window', 'windowId': '<id>'}`. |
-| A change with nothing observable | No image. Say so in "what is unclear" / "what is left". |
+| GUI / frontend / web | The tab that renders the change: `computer_screen_capture(target={'kind': 'tab', 'url': '<url>'}, caption='<feature>')`. |
+| Backend / RAG / CLI | The real test run, then a capture of the returned result **and** the result file under `.generated_artifacts/captures/evidence/<sid8>/<sid8>_<step>_<slug>.txt`. |
+| Desktop app in the sandbox | A window capture after the change: `target={'kind': 'window', 'windowId': '<id>'}`. |
+| A change with nothing observable | No image; say so in the evidence part. |
 
 ## Embedding the evidence in the answer
 
-The answer carries the evidence itself - the owner should not have to open another panel:
-
-- Image: `![<feature it proves>](.generated_artifacts/captures/<kind>/<sid8>/<sid8>_<step>_<slug>.<ext>)` -
-  relative to the workspace root, the same path the capture returned.
-- Result file: a markdown link with the path, one per check you ran.
+- Image: `![<feature it proves>](.generated_artifacts/captures/<kind>/<sid8>/<sid8>_<step>_<slug>.<ext>)` —
+  relative to the workspace root, the path the capture returned.
+- Result file: a markdown link, one per check you ran. The owner should not have to open another panel.
 - Quote the exact command and its real observed result in the text; the image supports the words, it
   does not replace them.
 
@@ -94,23 +76,30 @@ The answer carries the evidence itself - the owner should not have to open anoth
 
 `computer_screen_capture(target={...}, caption='...')`
 
-- `target.kind` is `tab`, `window` or `screen`. A target you do not pass means `screen`; anything the
-  box does not understand is dropped and you get a screen capture.
-- Tab: `{'kind': 'tab', 'url': '127.0.0.1:5173'}` or `{'kind': 'tab', 'title': 'Runs'}`. Several tabs
-  often match a short url: name more of it (a path, a hash) so exactly one matches.
-- If the box answers `ambiguous` or names a conflict, it is telling you the truth - never swallow it
-  into "capture failed". Read its message, then narrow the target (`url`, `title`, `class`) or take
-  `{'kind': 'screen'}` first, look at what is on the display, and capture the right tab by its url.
-- Window: `{'kind': 'window', 'windowId': '<id>'}` (or `pid` / `class` / `title`); a window id you do
-  not have can be read from a screen capture.
-- A recording in progress conflicts with a window capture: stop the recording
-  (`computer_screen_record(action='stop')`) before you take the report images.
-- `caption` is the label of that one shot (keep it short). It becomes the file name suffix and the
-  alt text.
+- Capture at the report step, when the work is done — never a work-in-progress shot.
+- One capture = one finished item. Items with several faces get several shots; label each with the
+  feature it proves, in the markdown alt text **and** in `caption`.
+- `target.kind` is `tab`, `window` or `screen`; a target you do not pass means `screen`, and anything
+  the box does not understand is dropped.
+- Tab: `{'kind': 'tab', 'url': '127.0.0.1:5173'}` or `{'kind': 'tab', 'title': 'Runs'}` — name enough
+  of the url so exactly one tab matches. On `ambiguous`, read the box's message and narrow the target
+  instead of calling it "capture failed".
+- Window: `{'kind': 'window', 'windowId': '<id>'}` (or `pid`/`class`/`title`); a window id you do not
+  have can be read from a screen capture. Stop a running recording first
+  (`computer_screen_record(action='stop')`).
+- Never a bare desktop shot, never a window showing only wallpaper, never a picture of your editor.
+
+## Worked example — the owner's own accepted turn (9481bf87)
+
+He called this one right: "được model quyết định theo công việc chứ không theo 1 form gốc". Shape
+only; the words are yours: one natural opening line ("Đã gắn xong gói bằng chứng sống vào lượt này…"),
+then the ONE part that turn needed (**Đã làm.** — two bullets with real commands and real files), a
+short prose paragraph recalling the system, then the evidence block **at the end** — each image
+labelled with the feature it proves, then the result-file link, then the PR link and one question
+waiting for his decision.
 
 ## Honesty
 
-- A turn that produced nothing observable must say so under "what is unclear" / "what is left".
-  Never fabricate an image, never reuse an older capture as if it were the finished state.
-- If a check could not run, say which one and why. A report with an honest gap is worth more than a
-  report with a fabricated success.
+- A turn that produced nothing observable says so in the evidence part. Never fabricate an image,
+  never reuse an older capture as if it were the finished state.
+- If a check could not run, say which one and why. An honest gap beats a fabricated success.

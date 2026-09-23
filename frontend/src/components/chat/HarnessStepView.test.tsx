@@ -44,8 +44,12 @@ function rerender(host: HTMLElement, node: ReactNode) {
   })
 }
 
-function renderSession(events: HarnessEvent[]): HTMLElement {
-  return render(<HarnessStepView events={events} status="idle" error={null} />)
+// Vòng 24: lượt thật trong app luôn có `onOpenLightbox` (ChatPanel truyền xuống), nên ca về ảnh
+// bằng chứng truyền một hàm rỗng để ảnh được dựng thành tile đúng như lúc chạy thật.
+function renderSession(events: HarnessEvent[], onOpenLightbox?: () => void): HTMLElement {
+  return render(
+    <HarnessStepView events={events} status="idle" error={null} onOpenLightbox={onOpenLightbox} />,
+  )
 }
 
 function click(el: Element) {
@@ -588,6 +592,10 @@ describe('HarnessStepView — R2 một khối hoạt động', () => {
 describe('HarnessStepView — R3 tách tóm tắt / chi tiết', () => {
   const AUTHORED = 'Xong — đã sửa lỗi múi giờ.\n\n## Diễn biến\n| Bước | Việc |\n| --- | --- |\n| 1 | sửa |\n'
 
+  // Đường dẫn ảnh bằng chứng do model tự viết trong câu trả lời (tương đối gốc workspace), dùng cho
+  // hai ca vòng 24: tóm tắt là đoạn mở bài, và ảnh bằng chứng đóng thân câu trả lời.
+  const ANSWER_CAPTURE = '.generated_artifacts/captures/tab/2e4f1a20/2e4f1a20_007_tab-runs-page.png'
+
   it('R3.1 đoạn đầu nguyên văn là tóm tắt, phần còn lại trả về nguyên vẹn', () => {
     expect(splitAuthoredSummary(AUTHORED)).toEqual({
       summary: 'Xong — đã sửa lỗi múi giờ.',
@@ -732,5 +740,88 @@ describe('HarnessStepView — R3 tách tóm tắt / chi tiết', () => {
 
     expect(host.querySelector('[data-final-text="summary"]')).toBeTruthy()
     expect(host.querySelector('[data-final-expander="true"]')).toBeNull()
+  })
+
+  it('F6 (vòng 24) lượt có việc: mở bài MỘT đoạn văn xuôi, thân kết bằng ẢNH bằng chứng', () => {
+    // Dạng chủ nhà chốt (D-29/D-30): đoạn văn xuôi đầu là TÓM TẮT hiện trên chat; phần model tự chọn
+    // — kể cả ảnh bằng chứng ĐÓNG THÂN câu trả lời — chỉ hiện khi bấm "Xem chi tiết".
+    const lead = 'Đã gắn xong gói bằng chứng sống vào lượt này.'
+    const body = [
+      '## Đã làm.',
+      '- chạy `pytest -q` trên bộ kiểm của lượt (exit 0)',
+      '- sửa `frontend/src/components/chat/HarnessStepView.tsx`',
+      '',
+      `![Bảng chạy đã đổi nhãn](${ANSWER_CAPTURE})`,
+    ].join('\n')
+    const text = `${lead}\n\n${body}`
+
+    // Hợp đồng tách: đoạn đầu NGUYÊN VĂN là tóm tắt, phần còn lại (kết bằng ảnh) giữ nguyên.
+    expect(splitAuthoredSummary(text)).toEqual({ summary: lead, rest: body })
+
+    const events = [
+      ev('user', { text: 'Làm nốt phần bằng chứng' }),
+      ev('assistant', { text, final: true }),
+      ev('finish', { status: 'completed' }),
+    ]
+    const host = renderSession(events, () => {})
+
+    const summaryBlock = host.querySelector('[data-final-text="summary"]')!
+    // Tóm tắt ĐÚNG đoạn mở bài: không mục, không ảnh, không chữ nào của phần sau.
+    expect(summaryBlock.querySelector('p')?.textContent).toBe(lead)
+    expect(summaryBlock.textContent).not.toContain('Đã làm.')
+    expect(host.querySelector('[data-final-answer="true"] [data-capture-tile="true"]')).toBeNull()
+    expect(summaryBlock.querySelector('[data-final-expander="true"]')).toBeTruthy()
+
+    click(summaryBlock.querySelector('[data-final-expander="true"]')!)
+
+    const expanded = host.querySelector('[data-final-text="expanded"]')!
+    expect(expanded.textContent).toContain('Đã làm.')
+    const tile = expanded.querySelector('[data-capture-tile="true"]')
+    expect(tile).toBeTruthy()
+    // D-30: khối CUỐI của thân câu trả lời là ảnh bằng chứng, không phải chữ.
+    const blocks = [...expanded.querySelectorAll('p, h1, h2, h3, ul, ol, table, pre, blockquote')]
+    expect(blocks[blocks.length - 1]?.contains(tile!)).toBe(true)
+  })
+
+  it('F6 (vòng 24) mở bài bằng TIÊU ĐỀ: không nhận tóm tắt model viết, rơi về lát cắt cũ (ghim nguyên trạng)', () => {
+    // Ghim NGUYÊN TRẠNG hành vi cũ: đoạn đầu không phải văn xuôi ⇒ `splitAuthoredSummary` trả `null`
+    // và `summarizeFinalText` quay về lát cắt 6 dòng/600 ký tự. Vòng 24 cố ý KHÔNG nới luật này
+    // (kế hoạch §7: giảm thiểu bằng luật trong kỹ năng `final-report`), nên đây là bài chống trôi.
+    const headed = [
+      '# Báo cáo lượt',
+      '',
+      'Đoạn thân thứ nhất.',
+      'Đoạn thân thứ hai.',
+      'Dòng ba của thân.',
+      'Dòng bốn của thân.',
+      'Dòng năm của thân.',
+      '',
+      `![Bảng chạy đã đổi nhãn](${ANSWER_CAPTURE})`,
+      'HET-CUOI-CUNG',
+    ].join('\n')
+    const sixLines = headed.split('\n').slice(0, 6).join('\n')
+
+    expect(splitAuthoredSummary(headed)).toBeNull()
+    expect(summarizeFinalText(headed)).toEqual({ summary: `${sixLines}…`, truncated: true })
+
+    const events = [
+      ev('user', { text: 'Báo cáo lượt này' }),
+      ev('assistant', { text: headed, final: true }),
+      ev('finish', { status: 'completed' }),
+    ]
+    const host = renderSession(events, () => {})
+
+    const summaryBlock = host.querySelector('[data-final-text="summary"]')!
+    expect(summaryBlock.textContent).toContain('Dòng bốn của thân.')
+    expect(summaryBlock.textContent).toContain('…')
+    expect(summaryBlock.textContent).not.toContain('Dòng năm của thân.')
+    expect(summaryBlock.textContent).not.toContain('HET-CUOI-CUNG')
+    expect(summaryBlock.querySelector('[data-final-expander="true"]')).toBeTruthy()
+
+    click(summaryBlock.querySelector('[data-final-expander="true"]')!)
+
+    const expanded = host.querySelector('[data-final-text="expanded"]')!
+    expect(expanded.textContent).toContain('HET-CUOI-CUNG')
+    expect(expanded.querySelector('[data-capture-tile="true"]')).toBeTruthy()
   })
 })

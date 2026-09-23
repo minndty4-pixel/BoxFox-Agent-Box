@@ -163,8 +163,8 @@ class RuntimeCommands:
             prefix, tail = messages[0]['content'].split(marker, 1)
             # Chỗ này chỉ được thay DANH SÁCH KỸ NĂNG. Bản cũ cắt từ marker tới hết chuỗi nên nuốt
             # luôn mọi khối phía sau: đo sống 2026-09-21 thấy lượt đầu tiên mất `=== ANSWER LENGTH ===`
-            # và mất cả khối `=== FINAL REPORT ===` trước khi tới tay mô hình — khuôn báo cáo của
-            # vòng 23 thành vô hiệu. Giữ nguyên phần đuôi (mọi khối `\n\n=== ` sau danh sách).
+            # trước khi tới tay mô hình (vòng 23 lúc đó còn mất thêm khối khuôn báo cáo). Giữ nguyên
+            # phần đuôi (mọi khối `\n\n=== ` sau danh sách).
             _, _, body = tail.partition('\n\n=== ')
             rest = ('\n\n=== ' + body) if body else ''
             messages[0]['content'] = prefix + marker + self.catalog.prompt(enabled) + rest

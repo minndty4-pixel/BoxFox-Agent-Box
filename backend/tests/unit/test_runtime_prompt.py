@@ -1,29 +1,46 @@
-"""Vòng 23 — khuôn báo cáo cuối và bản nhắc việc của lượt đi vào PROMPT, không vào cổng (P1.1–P1.5).
+"""Vòng 24 — dạng câu trả lời DỜI khỏi prompt: kỹ năng `final-report` giữ nó, prompt chỉ còn MỘT
+dòng bằng chứng (phiên chính) và MỘT con trỏ ở bước tổng kết của lượt có việc (P1/P2 vòng 24).
 
-Chủ nhà chốt (D-18/D-20/D-24): cổng bằng chứng không được thêm tiêu chí nào về cấu trúc hay ngôn
-ngữ của câu trả lời, nên hai thứ dưới đây phải sống ở tầng prompt và phải kiểm được mà KHÔNG cần
-model thật:
+Chủ nhà chốt (D-26…D-32, `owner-decisions.md` §4.1): form năm phần bị bỏ; model tự chọn phần hợp
+lượt, không in phần rỗng; lượt chỉ hỏi thì trả lời như thường, không báo cáo; tóm tắt do model viết
++ "View details" phải chạy lại; ảnh bằng chứng đóng thân câu trả lời.
 
-- **P1.1/P1.2/P1.4** — một khuôn NĂM PHẦN, một nguồn tên phần (`runtime.FINAL_REPORT_PARTS`), mặt
-  chữ thật sự được nạp (`AGENT.md` §3.4) và câu chỉ dẫn trong SOP chỉ TRỎ VỀ khuôn, không chép lời.
-  Không một chuỗi tiếng Việt nào trong khuôn: chữ thật do model viết, bằng ngôn ngữ nó đang trả lời.
-- **P1.5** — bản nhắc việc của lượt (`turn_recap`) có mặt khi lượt đã đổi/lệnh, VẮNG khi lượt chỉ đọc,
-  chỉ vào phiên chính, và không bao giờ lọt vào transcript hay câu trả lời.
+Ba thứ dưới đây sống ở tầng PROMPT/KỸ NĂNG và phải kiểm được mà KHÔNG cần model thật:
+
+- **Hợp đồng mới** — `runtime.py` không còn `FINAL_REPORT_PARTS`/`FINAL_REPORT_GUIDANCE` và không còn
+  khối `=== FINAL REPORT ===`; đúng MỘT hằng `ANSWER_EVIDENCE_LINE` được chèn ngay sau
+  `=== ANSWER LENGTH ===`, và CHỈ ở phiên chính (D-18/D-31/D-32).
+- **Kỹ năng là nơi chứa** — `final-report` ở lại `DEFAULT_SKILLS`, tên nó có trong khối
+  `=== ENABLED SKILLS`, và nội dung kỹ năng (đọc qua `SkillCatalog`) giữ đủ menu, luật mở bài bằng
+  một đoạn văn xuôi và luật ảnh bằng chứng đóng thân câu trả lời.
+- **Con trỏ ở bước tổng kết** — bản nhắc việc của LƯỢT trỏ tới kỹ năng, nên nó chỉ xuất hiện ở lượt có
+  việc: lượt chỉ hỏi không bao giờ thấy nó (recap rỗng, xem các ca P1.5 giữ nguyên ở dưới).
+
+Ghi chú lịch sử: bản kế hoạch v2 của chính vòng này có nhắc một hằng `ANSWER_PART_MENU` để chứa menu
+ngay trong prompt, nhưng hằng đó CHƯA BAO GIỜ được tạo (bản v3 bỏ ý đó — menu nằm trong kỹ năng), nên
+ở đây không có ghim "vắng mặt" cho nó: ghim một thứ chưa từng tồn tại là ghim vào khoảng không.
 """
 from __future__ import annotations
 
 import asyncio
 import copy
 import json
+from pathlib import Path
+
 from agentbox.agent_core import runtime as runtime_module
-from agentbox.agent_core.roles import ROLES
+from agentbox.agent_core.roles import ORCHESTRATOR_TOOLS, ROLES
 from agentbox.agent_core.runtime import HarnessRuntime, get_agent_identity, turn_recap
 from agentbox.memory.session_store import SessionStore
+from agentbox.skills.catalog import DEFAULT_SKILLS, SkillCatalog
 
-FINAL_REPORT_SECTION = '=== FINAL REPORT ==='
 SECTION_34 = '### 3.4.'
-# Tên NĂM phần (phần trước ' - ' của mỗi mục) — thứ tự là hợp đồng, lời giải thích thì không.
-PART_HEADS = tuple(part.split(' - ')[0] for part in runtime_module.FINAL_REPORT_PARTS)
+SKILL_ID = 'final-report'
+# Bốn câu của khuôn CŨ (vòng 23): mỗi câu là một hình dạng câu trả lời bị chủ nhà bỏ (D-26/D-28).
+RETIRED = ('with these five parts', 'in this order', 'as a short report')
+# Năm mục của kỹ năng — một MENU, không phải khuôn: model tự chọn phần hợp lượt (D-26/D-27).
+MENU = ('What you did', 'What is left', 'What the owner must decide', 'What is unclear', 'Evidence')
+# Dạng "danh sách" của menu: chỗ duy nhất được phép dựng danh sách này là kỹ năng.
+MENU_BULLETS = tuple(f'- **{name}**' for name in MENU)
 
 
 def answer(text='done', calls=None):
@@ -91,102 +108,145 @@ def recap_messages(messages):
             and message['content'].startswith(runtime_module.RECAP_HEADER)]
 
 
-# ------------------------------------------------------------------ P1.1/P1.4 khuôn báo cáo cuối
+def section_34(identity):
+    """Mục §3.4 của `AGENT.md` — bản được NẠP THẬT cho mọi vai, nên đọc nó chứ không đọc tệp."""
+    start = identity.index(SECTION_34)
+    return identity[start:identity.index('### 3.5.', start)]
 
-def test_phien_chinh_nhan_du_nam_phan_trong_prompt(tmp_path):
-    """P1.4(a) — prompt của phiên chính mang đủ năm phần, đúng thứ tự của `FINAL_REPORT_PARTS`."""
+
+# ------------------------------------------------- P2(a) prompt sạch mọi khối dạng câu trả lời
+
+def test_prompt_khong_con_khoi_dang_cau_tra_loi_nao(tmp_path):
+    """P2(a) — prompt phiên chính không còn khối `=== FINAL REPORT ===` và không còn lời khuôn."""
     store, runtime, session = run_turn(tmp_path, Model([answer('xong')]), 'việc gì đó')
     prompt = system_prompt(runtime, session)
 
-    assert FINAL_REPORT_SECTION in prompt
-    assert runtime_module.FINAL_REPORT_GUIDANCE in prompt
-    positions = [prompt.index(head) for head in PART_HEADS]
-    assert positions == sorted(positions) and all(position >= 0 for position in positions)
-    assert prompt.index('=== ANSWER LENGTH ===') < prompt.index(FINAL_REPORT_SECTION)
+    assert '=== FINAL REPORT ===' not in prompt
+    for phrase in ('five parts', 'with these five parts', 'in this order'):
+        assert phrase not in prompt, f'{phrase!r} vẫn còn trong prompt phiên chính'
     store.close()
 
 
-def test_moi_vai_nhan_chu_dan_do_dai_nhung_chi_phien_chinh_nhan_khuon_bao_cao(tmp_path):
-    """P1.4(b) — `ANSWER LENGTH` cho MỌI vai; khối `FINAL REPORT` chỉ cho phiên chính (D-18)."""
+def test_hai_hang_so_cua_khuon_nam_phan_da_bi_xoa_han():
+    """P2(a) — hợp đồng là "xoá hẳn": hai hằng số cũ không được còn để ai đó chèn lại."""
+    assert not hasattr(runtime_module, 'FINAL_REPORT_PARTS')
+    assert not hasattr(runtime_module, 'FINAL_REPORT_GUIDANCE')
+
+
+def test_chu_da_nghi_huu_khong_con_o_bon_cho(tmp_path):
+    """P2(a) — bốn câu của khuôn cũ vắng ở BỐN chỗ: runtime.py, SOP, `AGENT.md` §3.4, kỹ năng.
+
+    Đọc thẳng TỆP `runtime.py` (không chỉ hằng số) vì khuôn cũ nằm rải ở cả hằng số lẫn SOP: một bản
+    chép sót lại ở bất cứ đâu là một lần model được dạy lại form cũ.
+    """
+    identity = get_agent_identity()
+    assert identity != runtime_module.IDENTITY, 'bài kiểm này chỉ có nghĩa khi AGENT.md đang được nạp'
+    places = (('runtime.py', Path(runtime_module.__file__).read_text(encoding='utf-8')),
+              ('ORCHESTRATOR_SOP_GUIDANCE', runtime_module.ORCHESTRATOR_SOP_GUIDANCE),
+              ('AGENT.md §3.4', section_34(identity)),
+              (f'kỹ năng {SKILL_ID}', SkillCatalog().read(SKILL_ID)['content']))
+    for where, text in places:
+        for phrase in RETIRED:
+            assert phrase not in text, f'{phrase!r} còn ở {where}'
+
+
+def test_cau_chi_dan_sop_chi_con_mot_dong_trung_thuc():
+    """P2(a) — SOP không còn TRỎ về khối nào, cũng không chép lời khuôn: chỉ một dòng trung thực."""
+    sop = runtime_module.ORCHESTRATOR_SOP_GUIDANCE
+    assert 'FINAL REPORT block' not in sop
+    assert 'the real commands you ran, the real files you changed, no invented output' in sop
+    assert [bullet for bullet in MENU_BULLETS if bullet in sop] == [], \
+        'khuôn chỉ được định nghĩa ở MỘT chỗ: kỹ năng'
+
+
+# ------------------------------------- P2(b) một dòng bằng chứng cứng, chỉ phiên chính (D-18/D-32)
+
+def test_dong_bang_chung_dung_mot_lan_va_nam_sau_answer_length(tmp_path):
+    """P2(b) — dòng bằng chứng: đúng một lần, ngay sau `=== ANSWER LENGTH ===`, ASCII, ngắn."""
+    line = runtime_module.ANSWER_EVIDENCE_LINE
+    assert line.isascii(), 'prompt là tiếng Anh: dòng bằng chứng phải thuần ASCII'
+    assert len(line) <= 200, 'một dòng, không phải một khối'
+
+    store, runtime, session = run_turn(tmp_path, Model([answer('xong')]), 'việc gì đó')
+    prompt = system_prompt(runtime, session)
+
+    assert prompt.count(line) == 1, 'phiên chính nhận ĐÚNG một lần'
+    assert prompt.index('=== ANSWER LENGTH ===') < prompt.index(line)
+    store.close()
+
+
+def test_moi_vai_nhan_chu_dan_do_dai_nhung_chi_phien_chinh_nhan_dong_bang_chung(tmp_path):
+    """P2(b) — `ANSWER LENGTH` cho MỌI vai; dòng bằng chứng CHỈ phiên chính (D-18)."""
     store = SessionStore(tmp_path / 'roles.db')
     runtime = HarnessRuntime(store, Executor(), Model([]))
     main = runtime.create({'skills': [], 'connectionId': 'c1', 'modelId': 'm'})
     prompt = system_prompt(runtime, main)
-    assert runtime_module.ANSWER_LENGTH_HINT in prompt and FINAL_REPORT_SECTION in prompt
+    assert runtime_module.ANSWER_LENGTH_HINT in prompt
+    assert runtime_module.ANSWER_EVIDENCE_LINE in prompt
 
     for role in ROLES:
         child = runtime.create({'skills': [], 'connectionId': 'c1', 'modelId': 'm'},
                                parent_id=main['id'], role=role)
         child_prompt = system_prompt(runtime, child)
         assert runtime_module.ANSWER_LENGTH_HINT in child_prompt, f'vai {role} phải biết độ dài câu trả lời'
-        assert FINAL_REPORT_SECTION not in child_prompt, f'vai {role} trả kết quả cho CHA, không báo cáo chủ nhà'
+        assert runtime_module.ANSWER_EVIDENCE_LINE not in child_prompt, \
+            f'vai {role} trả kết quả cho CHA, không báo cáo chủ nhà'
         assert f'=== ASSIGNED ROLE: {role.upper()} ===' in child_prompt
         assert ROLES[role].instructions in child_prompt
     store.close()
 
 
-def test_cau_chi_dan_sop_tro_ve_khuon_chu_khong_chep_lai_loi():
-    """P1.1 — câu chỉ dẫn cuối trong SOP trỏ về khối `FINAL REPORT`, không có bản chép thứ hai.
+# ------------------------------------------------ P2(c) kỹ năng `final-report` giữ cả dạng câu trả lời
 
-    Hai bản chép là cách hai mặt lệch nhau: bản được nạp thật là `AGENT.md`, còn SOP chỉ phải nói
-    "viết theo khuôn đã nêu".
+def test_ky_nang_final_report_giu_menu_va_luat_mo_bai():
+    """P2(c) — nội dung kỹ năng (đọc qua `SkillCatalog`) giữ menu, luật mở bài và luật ảnh ở cuối."""
+    content = SkillCatalog().read(SKILL_ID)['content']
+
+    for bullet in MENU_BULLETS:
+        assert bullet in content, f'menu thiếu mục {bullet!r}'
+    for phrase in ('ONE short paragraph of plain prose', 'View details', 'closes the answer'):
+        assert phrase in content, f'kỹ năng thiếu luật {phrase!r}'
+    # Chữ trong kỹ năng viết hoa "Never print an empty part" — luật là luật, không phụ thuộc viết hoa.
+    assert 'never print an empty part' in content.lower(), 'D-27: hết việc thì không in mục rỗng'
+    assert SKILL_ID in DEFAULT_SKILLS, 'D-31: kỹ năng Ở LẠI DEFAULT_SKILLS'
+
+
+def test_ten_ky_nang_co_trong_khoi_enabled_skills_cua_prompt(tmp_path):
+    """P2(c) — phiên mới thấy tên kỹ năng trong khối `=== ENABLED SKILLS`, và mở được bằng `skill_view`.
+
+    Không truyền `skills` khi tạo phiên: mặc định của engine là `DEFAULT_SKILLS` — đúng đường mà một
+    phiên thật đi qua, nên bài này đo cả danh sách mặc định lẫn khối prompt.
     """
-    sop = runtime_module.ORCHESTRATOR_SOP_GUIDANCE
-    assert 'FINAL REPORT block' in sop
-    assert 'Deliver a clear, professional summary to the user highlighting' not in sop
-    # Mỗi phần chỉ được ĐỊNH NGHĨA ở một chỗ: SOP không lặp lại lời của khuôn.
-    assert [head for head in PART_HEADS if head in sop] == [], 'khuôn chỉ được định nghĩa ở MỘT chỗ'
+    store = SessionStore(tmp_path / 'skills.db')
+    runtime = HarnessRuntime(store, Executor(), Model([]))
+    session = runtime.create({'connectionId': 'c1', 'modelId': 'm'})
+    prompt = system_prompt(runtime, session)
 
-
-def test_agent_md_muc_34_la_ban_that_su_duoc_nap_va_co_du_nam_muc(tmp_path):
-    """P1.2/P1.4(c) — `get_agent_identity()` (nguồn THẬT của prompt) có §3.4 với năm mục, đúng thứ tự."""
-    identity = get_agent_identity()
-    assert identity != runtime_module.IDENTITY, 'bài kiểm này chỉ có nghĩa khi AGENT.md đang được nạp'
-    start = identity.index(SECTION_34)
-    end = identity.index('### 3.5.', start)
-    section = identity[start:end]
-
-    positions = [section.index(head) for head in PART_HEADS]
-    assert positions == sorted(positions), 'năm mục phải cùng thứ tự với `FINAL_REPORT_PARTS`'
-    assert 'Never invent either' in section
-    assert 'Evidence' in section and 'never tell the owner to open an "Evidence" block' in section
-
-
-def test_khuon_khong_mang_mot_chu_tieng_viet_nao():
-    """P1.4(d)/C2/D-24 — tên phần và câu chỉ dẫn là tiếng Anh (ngôn ngữ của prompt): chữ thật của
-    câu trả lời do model viết, bằng ngôn ngữ nó đang trả lời, nên khuôn không được gài sẵn câu mẫu."""
-    for text in (runtime_module.FINAL_REPORT_GUIDANCE, *runtime_module.FINAL_REPORT_PARTS):
-        assert text.isascii(), 'khuôn phải thuần ASCII'
-    identity = get_agent_identity()
-    section = identity[identity.index(SECTION_34):identity.index('### 3.5.', identity.index(SECTION_34))]
-    assert section.isascii(), 'mục §3.4 trong AGENT.md phải thuần ASCII'
-    assert len(runtime_module.FINAL_REPORT_GUIDANCE.splitlines()) <= 8
-
-
-def test_khuon_khong_bi_nuot_khi_danh_sach_ky_nang_duoc_dung_lai(tmp_path):
-    """P1.1/P1.4(e) — đo được: mọi lượt gửi đi đều dựng lại khối KỸ NĂNG, không được nuốt phần đuôi.
-
-    Bản cũ của `_next_turn_skills` cắt từ marker kỹ năng tới hết chuỗi rồi chỉ ghép lại khối
-    `OWNER-CONFIGURED DIRECTIVES`, nên ngay lượt ĐẦU TIÊN mô hình đã không còn `=== ANSWER LENGTH ===`
-    và không còn khối `=== FINAL REPORT ===` — khuôn báo cáo của vòng 23 thành vô hiệu dù mọi bài
-    kiểm gọi thẳng `create()` đều xanh. Bài này kiểm ĐÚNG `messages` mà mô hình nhận.
-    """
-    client = Model([answer('xong')])
-    store, runtime, session = run_turn(tmp_path, client, 'việc gì đó')
-    sid = session['id']
-    seen = client.requests[0][0]['content']
-
-    assert seen == system_prompt(runtime, session), 'prompt trong transcript phải là prompt mô hình đọc'
-    assert '=== ANSWER LENGTH ===' in seen and runtime_module.ANSWER_LENGTH_HINT in seen
-    assert FINAL_REPORT_SECTION in seen and runtime_module.FINAL_REPORT_GUIDANCE in seen
-    assert seen.count('=== ENABLED SKILLS') == 1, 'khối kỹ năng không được nhân đôi'
+    assert '=== ENABLED SKILLS' in prompt
+    assert f'- {SKILL_ID}: ' in prompt, 'kỹ năng phải có tên trong danh sách kỹ năng của prompt'
+    assert 'skill_view' in ORCHESTRATOR_TOOLS, 'kỹ năng phải MỞ ĐƯỢC: vai chính có công cụ đọc kỹ năng'
     store.close()
 
 
-# ------------------------------------------------------------------------- P1.5 bản nhắc việc
+def test_agent_md_muc_34_tro_ve_ky_nang_chu_khong_chep_khuon(tmp_path):
+    """P2(c) — `AGENT.md` §3.4 (bản NẠP THẬT cho mọi vai) chỉ TRỎ về kỹ năng, không dựng khuôn thứ hai.
 
-def test_recap_co_mat_khi_luot_co_thay_doi_va_khong_lot_vao_cau_tra_loi(tmp_path):
-    """P1.5 — lượt có việc để nhắc: bước tổng kết nhận danh sách máy đọc được của chính lượt đó."""
+    §3.4 cố ý nói lại luật bằng lời của nó (kể cả luật markdown-only của vòng 23) nhưng KHÔNG được
+    chép danh sách phần — chép lại là có hai bản khuôn, và bản nạp thật (tệp này) lại là bản không ai
+    đọc khi sửa prompt.
+    """
+    section = section_34(get_agent_identity())
+
+    assert SKILL_ID in section and 'skill_view' in section, '§3.4 phải chỉ model mở kỹ năng'
+    assert [bullet for bullet in MENU_BULLETS if bullet in section] == [], \
+        '§3.4 không được chép menu của kỹ năng'
+    assert section.isascii(), 'mục §3.4 trong AGENT.md phải thuần ASCII'
+
+
+# ---------------------------------------------------- P2(d) con trỏ chỉ có ở lượt có việc (D-31)
+
+def test_con_tro_o_buoc_tong_ket_tro_toi_ky_nang(tmp_path):
+    """P2(d) — recap của LƯỢT CÓ VIỆC trỏ tới kỹ năng, và vẫn là chữ KHÔNG được dán vào câu trả lời."""
     client = Model([answer('', calls=[call('file_write', {'path': 'src/app.py', 'content': 'x'})]),
                     answer('Đã sửa `src/app.py`.')])
     store, runtime, session = run_turn(tmp_path, client, 'sửa app giúp tôi')
@@ -195,10 +255,11 @@ def test_recap_co_mat_khi_luot_co_thay_doi_va_khong_lot_vao_cau_tra_loi(tmp_path
     recap = recap_messages(client.requests[1])
     assert len(recap) == 1, 'bước tổng kết phải có ĐÚNG một khối nhắc việc'
     content = recap[0]['content']
+    assert SKILL_ID in content and 'skill_view' in content, 'con trỏ phải chỉ đúng kỹ năng và cách mở'
+    assert 'must not be pasted into it' in content
     assert 'owner request (excerpt): sửa app giúp tôi' in content
     assert 'files changed: src/app.py' in content
     assert content.startswith(runtime_module.RECAP_HEADER)
-    assert 'must not be pasted into it' in content
     assert len(content.splitlines()) <= runtime_module.RECAP_MAX_LINES + 2
     assert recap_messages(client.requests[0]) == [], 'lượt chưa làm gì thì không tốn một dòng nào'
 
@@ -209,8 +270,10 @@ def test_recap_co_mat_khi_luot_co_thay_doi_va_khong_lot_vao_cau_tra_loi(tmp_path
     store.close()
 
 
+# ------------------------------------- P1.5 giữ nguyên: bản nhắc việc của lượt, mọi ca cũ còn giá trị
+
 def test_recap_vang_khi_luot_chi_doc(tmp_path):
-    """P1.5 — lượt chỉ đọc không có gì để nhắc: khối này không được ăn ngữ cảnh của mọi lượt."""
+    """P1.5 + P2(d) — lượt chỉ đọc không có gì để nhắc: KHÔNG recap ⇒ lượt hỏi thường không thấy con trỏ."""
     client = Model([answer('', calls=[call('file_read', {'path': 'src/app.py'})]),
                     answer('Đã đọc tệp: nội dung là x.')])
     store, _runtime, session = run_turn(tmp_path, client, 'đọc tệp này')
@@ -278,6 +341,27 @@ def test_recap_khong_tinh_vao_do_dai_cau_tra_loi(tmp_path):
     store.close()
 
 
+def test_dong_bang_chung_khong_bi_nuot_khi_danh_sach_ky_nang_duoc_dung_lai(tmp_path):
+    """P1.1/P2(b) — đo được: mọi lượt gửi đi đều dựng lại khối KỸ NĂNG, không được nuốt phần đuôi.
+
+    Bản cũ của `_next_turn_skills` cắt từ marker kỹ năng tới hết chuỗi rồi chỉ ghép lại khối
+    `OWNER-CONFIGURED DIRECTIVES`, nên ngay lượt ĐẦU TIÊN mô hình đã không còn `=== ANSWER LENGTH ===`
+    (và, ở vòng 23, không còn khối `=== FINAL REPORT ===`) — mọi thứ chèn sau danh sách kỹ năng thành
+    vô hiệu dù các bài kiểm gọi thẳng `create()` đều xanh. Bài này kiểm ĐÚNG `messages` mà mô hình nhận.
+    """
+    client = Model([answer('xong')])
+    store, runtime, session = run_turn(tmp_path, client, 'việc gì đó')
+    sid = session['id']
+    seen = client.requests[0][0]['content']
+
+    assert seen == system_prompt(runtime, session), 'prompt trong transcript phải là prompt mô hình đọc'
+    assert '=== ANSWER LENGTH ===' in seen and runtime_module.ANSWER_LENGTH_HINT in seen
+    assert seen.count(runtime_module.ANSWER_EVIDENCE_LINE) == 1
+    assert '=== ENABLED SKILLS' in seen, 'khối kỹ năng không được nhân đôi'
+    assert seen.count('=== ENABLED SKILLS') == 1
+    store.close()
+
+
 # --------------------------------------------------- F1 kết quả bạn KHÔNG phải việc chủ giao
 
 def delivery_message(summary='Báo cáo của chuyên gia: đã soát xong.'):
@@ -313,7 +397,7 @@ def test_recap_khong_goi_ket_qua_chuyen_gia_la_viec_cua_chu(tmp_path):
 
     Đo được (F1): `drain_peer_deliveries` bơm kết quả bạn vào transcript ở ranh giới bước, cùng
     bước dựng bản nhắc việc; lấy message `user` CUỐI thì dòng đầu là báo cáo của một chuyên gia,
-    trong khi `RECAP_CLOSER` còn bảo model đi soi lại "việc chủ giao ở trên". Dữ liệu của bạn vẫn
+    trong khi phần cuối recap còn bảo model đi soi lại "việc chủ giao ở trên". Dữ liệu của bạn vẫn
     phải tới model (nó nằm trong chính YÊU CẦU) — chỉ cái NHÃN là phải thôi nói dối.
     """
     client = DeliveryModel([answer('', calls=[call('file_write', {'path': 'src/app.py', 'content': 'x'})]),
@@ -329,6 +413,7 @@ def test_recap_khong_goi_ket_qua_chuyen_gia_la_viec_cua_chu(tmp_path):
     assert 'đã soát xong' not in content, 'chữ của bạn không được lọt vào bản nhắc việc'
     assert 'files changed: src/app.py' in content
     assert 'owner request (excerpt): not found' not in content
+    assert SKILL_ID in content and 'skill_view' in content, 'con trỏ kỹ năng vẫn phải có ở lượt có việc'
 
     request = json.dumps(client.requests[1], ensure_ascii=False)
     assert runtime_module.PEER_DELIVERY_PREFIX in request, 'kết quả bạn vẫn phải tới model, chỉ nhãn đổi'

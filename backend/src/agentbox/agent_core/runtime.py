@@ -102,8 +102,7 @@ CORE MULTI-AGENT DELEGATION PROTOCOL:
    - Do NOT assume a child agent succeeded merely because it finished. Inspect its summary, the `truncated` flag, executed tools, and error status. Require evidence (file path + line, command + observed output, citation) for every claim; if a child returns none, re-delegate with `expect` naming the missing evidence or verify it yourself. If a child agent fails, diagnose why and assign a targeted corrective task.
    - A plan you accept must contain a Verification / Acceptance criteria section with an exact command or check and its expected result, and a Risks / Limitations section; `write_plan` refuses anything less.
 4. Final Synthesis & Delivery:
-   - The final answer IS the report shape in the FINAL REPORT block of this prompt: those five parts, in that order, in your own words and in the language you are answering in. No filler, no sycophancy.
-   - Name the commands you really ran and the files you really changed - never invent either. Before you write it, re-capture every item of the owner's request that is now finished and put those images in the answer as markdown, each labelled with the feature it proves; no work-in-progress shots, no plain desktop captures.
+   - The final answer answers the owner in the language you are answering in: the real commands you ran, the real files you changed, no invented output. No filler, no sycophancy.
    - Deliver markdown only: the answer itself carries the text, the images and the links to the evidence files."""
 
 IDENTITY = f'''You are BoxFox, an elite autonomous multi-agent software engineering system operating in a dedicated Docker sandbox.
@@ -753,30 +752,14 @@ def diagnosis_prompt(reason, steps_left=None, out_of_time=False):
     return f'{head} {DIAGNOSIS_PROMPT} This turn is stopping because: {reason}.'
 
 
-# --- Vòng 23 (P1.1): khuôn BÁO CÁO CUỐI — chuyện của PROMPT, không phải luật của cổng ----------
-# Chủ nhà chốt (D-18/D-20/D-24): cổng bằng chứng không được thêm tiêu chí nào về cấu trúc hay ngôn
-# ngữ của câu trả lời, nên khuôn nằm ở đây và ở `AGENT.md` §3.4 — không nằm trong `evidence_gate.py`.
-# NĂM phần, thứ tự cố định. Đây là TÊN PHẦN bằng tiếng Anh (ngôn ngữ của prompt), không phải câu
-# mẫu: chữ thật do model viết, bằng ngôn ngữ nó đang trả lời (C2/D-24) — nên không có một chuỗi
-# tiếng Việt nào trong khuôn. Câu chỉ dẫn trong `ORCHESTRATOR_SOP_GUIDANCE` và mục §3.4 của
-# `AGENT.md` chỉ TRỎ VỀ cùng năm tên này, không chép lại lời.
-FINAL_REPORT_PARTS = (
-    'What was done - the finished work, with the commands you ran and the files you changed',
-    'What is left - what is unfinished or was not run',
-    'What the owner must decide - only when a decision is really needed',
-    'What is unclear - open points and questions to ask back',
-    'Evidence - the finished-state captures that prove each item, one label per image, plus links to '
-    'the test-result files',
-)
-FINAL_REPORT_GUIDANCE = (
-    'Write the final answer as a short report with these five parts, in this order, in the language '
-    'you are answering in - name the commands you ran and the files you changed, never invent either:\n'
-    + '\n'.join(f'{index}. {part}' for index, part in enumerate(FINAL_REPORT_PARTS, 1))
-    + "\nBefore you write it, re-capture every item of the owner's request that is now finished and put "
-      'those images in the answer as markdown images, each labelled with the feature it proves - no '
-      'work-in-progress shots, no plain desktop captures.'
-      '\nDeliver markdown only: the text you write, the images, and the links to the evidence files.'
-)
+# --- Vòng 24 (D-31/D-32): dạng câu trả lời KHÔNG còn nằm ở prompt --------------------------------
+# Cổng bằng chứng vẫn không được thêm tiêu chí nào về cấu trúc hay ngôn ngữ của câu trả lời
+# (D-18/D-20/D-24 nguyên hiệu lực). Vòng 24 dồn cả dạng câu trả lời vào kỹ năng `final-report`
+# (nơi duy nhất giữ menu phần, luật mở đầu bằng một đoạn văn xuôi, luật ảnh khép câu trả lời);
+# model tự mở kỹ năng khi bước tổng kết nhắc. Prompt chỉ còn MỘT dòng bằng chứng cứng, và chỉ
+# phiên chính nhận dòng đó.
+ANSWER_EVIDENCE_LINE = ('A turn with something observable closes the answer with the finished-state '
+                        'captures, one label per image - never a fabricated image.')
 
 
 EMPTY_ANSWER_INSTRUCTION = ('You produced no answer and no tool call. Answer in plain text now, '
@@ -1060,9 +1043,11 @@ RECAP_REQUEST_CHARS = 240
 RECAP_COMMAND_CHARS = 160
 RECAP_HEADER = ('TURN RECAP (machine list of this turn - raw material for your final report, '
                 'NOT text to send to the owner)')
-RECAP_CLOSER = ("This is not the answer and must not be pasted into it. Before you write the report "
-                "in the FINAL REPORT shape: go through the owner's request above and re-capture "
-                "every item that is now finished, one labelled image per item.")
+RECAP_CLOSER = ("This is not the answer and must not be pasted into it. Before you write the answer, "
+                "read the `final-report` skill with `skill_view` - it holds the answer shape and the "
+                "evidence rules; skip it only when this turn needs neither. If the owner handed over "
+                "work, go through the owner's request above and re-capture every item that is now "
+                "finished, one labelled image per item, and close the answer with those images.")
 
 
 def turn_recap(calls, owner_prompt=None):
@@ -1484,10 +1469,10 @@ class HarnessRuntime(RuntimeCommands):
                             '(T14), so this flag changes no behaviour yet'),
             })
         role_instructions = ROLES[role].instructions if role in ROLES else ORCHESTRATOR_SOP_GUIDANCE
-        # Vòng 23 (P1.1): khuôn báo cáo cuối vào prompt của CHÍNH phiên chính, ở đúng một chỗ dựng
-        # prompt cho mọi vai. Phiên con không nhận khối này: chúng trả kết quả cho cha theo
-        # `CHILD_RESULT_CONTRACT`, không trả báo cáo cho chủ nhà.
-        final_report = '' if role in ROLES else f'\n\n=== FINAL REPORT ===\n{FINAL_REPORT_GUIDANCE}'
+        # Vòng 24 (D-31/D-32): phiên chính chỉ nhận MỘT dòng bằng chứng; dạng câu trả lời nằm
+        # trong kỹ năng `final-report`. Phiên con không nhận dòng này: chúng trả kết quả cho cha
+        # theo `CHILD_RESULT_CONTRACT`, không trả báo cáo cho chủ nhà.
+        evidence_line = '' if role in ROLES else f'\n\n{ANSWER_EVIDENCE_LINE}'
         prompt = (
             f"{get_agent_identity()}\n\n"
             f"=== ASSIGNED ROLE: {role.upper()} ===\n"
@@ -1495,7 +1480,7 @@ class HarnessRuntime(RuntimeCommands):
             f"=== ENABLED SKILLS (Load full content via skill_view before executing complex workflows) ===\n"
             f"{self.catalog.prompt(skills)}"
             f'\n\n=== ANSWER LENGTH ===\n{ANSWER_LENGTH_HINT}'
-            f'{final_report}'
+            f'{evidence_line}'
         )
         if config['instructions']:
             prompt += f"\n\n=== OWNER-CONFIGURED DIRECTIVES ===\n{config['instructions']}"

@@ -54,17 +54,9 @@ BoxFox operates as an orchestrated multi-agent network with clearly defined resp
 - Avoid duplicate session creation. Track progress transparently via event streams and checkpoints.
 
 ### 3.4. Final Report
-- The final answer IS a short report, in the language you are answering in, with these five parts in this order:
-  1. What was done - the finished work, with the commands you ran and the files you changed.
-  2. What is left - what is unfinished or was not run.
-  3. What the owner must decide - only when a decision is really needed.
-  4. What is unclear - open points and questions to ask back.
-  5. Evidence - the finished-state captures that prove each item (one label per image) and links to the test-result files.
-- Name the commands you really ran and the files you really changed. Never invent either.
-- A capture is a capture of ONE finished item, taken at the report step when the work is done - never a work-in-progress shot, never a bare desktop shot. One item may need several shots; label each image with the feature it proves.
-- For a GUI change, capture the tab that renders it. For backend, RAG or CLI work, run the real test and capture the returned result, then save the result file under `.generated_artifacts/captures/evidence/<session-id8>/`.
+- The shape of the final answer lives in the `final-report` skill, not in this file: open it with `skill_view` when the turn produced work or something to show. No part list and no order lives here.
+- The runtime appends ONE hard evidence line to the main session's prompt (child sessions do not carry it): a turn that has something to show closes its answer with the finished-state captures, one label per image, never a fabricated image. Treat that line as the rule.
 - The answer itself carries markdown only: the text, the images and the links to the evidence files. No assistant-surface block, strip or badge wraps it, so never tell the owner to open an "Evidence" block.
-- A turn with nothing observable to show says so under "what is unclear / what is left". Never fabricate an image.
 
 ### 3.5. Computer Use Agent (CUA) & Autonomous Element Selection
 When operating the sandbox GUI, desktop, or web applications:
