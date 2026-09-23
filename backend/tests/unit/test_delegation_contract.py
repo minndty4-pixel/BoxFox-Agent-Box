@@ -51,7 +51,7 @@ def delegate_args(**overrides):
     return args
 
 
-def run_delegation(tmp_path, delegate_task_args, child_answer):
+def run_delegation(tmp_path, delegate_task_args, child_answer, parent_values=None):
     """Parent delegates once, the child answers with `child_answer`, the parent finishes."""
 
     async def run():
@@ -59,7 +59,7 @@ def run_delegation(tmp_path, delegate_task_args, child_answer):
         model = FixtureModel([answer(calls=[call('delegate_task', delegate_task_args)]),
                               answer(child_answer), answer('parent final')])
         runtime = HarnessRuntime(store, FixtureExecutor(), model)
-        sid = runtime.create({'skills': []})['id']
+        sid = runtime.create({'skills': [], **(parent_values or {})})['id']
         await runtime.start(sid, 'Delegate to a specialist')
         child_events = [event['data'] for event in store.events(sid) if event['type'] == 'child']
         tool_messages = [message for message in store.get(sid)['messages'] if message['role'] == 'tool']
@@ -73,19 +73,25 @@ def run_delegation(tmp_path, delegate_task_args, child_answer):
 def test_delegate_task_schema_states_the_result_shape_and_stays_backward_compatible():
     schema = next(s for s in SCHEMAS if s['function']['name'] == 'delegate_task')['function']
     properties = schema['parameters']['properties']
-    assert set(properties) == {'role', 'goal', 'context', 'expect'}
+    # T6 (vòng 22) thêm `wait` (sinh con không chặn) và `deliverTo` (con giao kết quả cho ai).
+    assert set(properties) == {'role', 'goal', 'context', 'expect', 'wait', 'deliverTo'}
+    assert properties['wait']['type'] == 'boolean' and properties['deliverTo']['type'] == 'array'
     assert schema['parameters']['required'] == ['role', 'goal'], \
         'existing callers send role/goal/context only: nothing new may become required'
     for name, spec in properties.items():
         assert spec.get('description', '').strip(), f'{name} must describe itself'
-    assert properties['role']['enum'] == ['explore', 'plan', 'design', 'build', 'debug', 'review',
-                                          'simplify', 'testing', 'research']
+    # Vòng 25 (D-33): vai thứ mười `plan-review` — người phản biện độc lập một bản kế hoạch đã ghi.
+    assert properties['role']['enum'] == ['explore', 'plan', 'plan-review', 'design', 'build', 'debug',
+                                          'review', 'simplify', 'testing', 'research']
     assert 'RESULT SHAPE' in properties['expect']['description']
     assert 'RESULT SHAPE' in schema['description'] and 'evidence' in schema['description']
     # the only web-capable role is named where the parent chooses it, together with its limits
     assert 'research' in properties['role']['description']
     assert 'web_search' in properties['role']['description']
     assert 'could not verify' in properties['role']['description']
+    # ...và vai phản biện được mô tả bằng đúng thứ nó phải trả về: dòng `VERDICT:`
+    assert 'plan-review' in properties['role']['description']
+    assert 'VERDICT:' in properties['role']['description']
 
 
 def test_child_prompt_carries_the_result_contract_and_the_parents_expected_shape(tmp_path):
@@ -105,6 +111,25 @@ def test_child_prompt_carries_the_result_contract_and_the_parents_expected_shape
     assert len(CHILD_RESULT_CONTRACT) <= 1200
     assert len(prompt) <= len('Find out how FHIR Patient search works') + 16000 + CHILD_EXPECT_MAX_CHARS \
         + len(CHILD_RESULT_CONTRACT) + 64
+
+
+def test_child_budget_is_clamped_by_the_parent_and_by_the_engine_ceiling(tmp_path):
+    """B6 — con 40 bước / 420 s (vòng 25: 300 → 420), nhưng KHÔNG BAO GIỜ vượt cha (`min()` giữ nguyên).
+
+    `420 s` là **trần**, không phải bảo đảm: lượt cha nào có hạn chót nhỏ hơn thì kẹp con xuống
+    theo cha. Vòng 25 nâng hạn chót mặc định của cha lên 600 s (D-35), nên lượt mặc định cho con
+    đúng trần 420 s — vẫn là quyết định của CHA, không phải của con.
+    """
+    cases = [
+        ({'maxSteps': 60, 'deadlineSeconds': 900}, 40, 420),
+        ({'maxSteps': 12, 'deadlineSeconds': 60}, 12, 60),
+        ({}, 40, 420),
+    ]
+    for parent_values, steps, seconds in cases:
+        _, _, child = run_delegation(tmp_path / f"p{steps}-{seconds}", delegate_args(),
+                                     'child answer', parent_values=parent_values)
+        assert child['config']['maxSteps'] == steps, parent_values
+        assert child['config']['deadlineSeconds'] == seconds, parent_values
 
 
 def test_a_runaway_child_answer_is_bounded_and_reported_honestly(tmp_path):

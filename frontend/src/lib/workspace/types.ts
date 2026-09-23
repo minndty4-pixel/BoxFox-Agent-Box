@@ -49,6 +49,28 @@ export interface WorkspaceContent {
 }
 
 /** Kết quả `mkdir` — đúng khoá của hợp đồng (`POST /__box/files/mkdir`). */
+/**
+ * Tuỳ chọn cho `upload` (đợt 22 / A4).
+ *
+ * `assignNumber` để **box** cấp số RULE-5 (`<số>.<ext>`, không zero-pad, tăng một chiều —
+ * `docs/naming.md` RULE-5) thay vì dùng nguyên `filename`; số thật nằm ở `name` trong kết quả.
+ * `mkdirs` để box tạo các thư mục cha còn thiếu, nhờ đó tệp trong thư mục vừa chọn giữ nguyên
+ * cây thư mục (`proj/src/a.ts`).
+ */
+export interface WorkspaceUploadOptions {
+  assignNumber?: boolean
+  mkdirs?: boolean
+  signal?: AbortSignal
+}
+
+/** Kết quả `upload` — đúng khoá của hợp đồng (`POST /__box/file/upload`). */
+export interface WorkspaceUploadResult {
+  path: string
+  /** Tên thật trên đĩa; chỉ có khi box cấp số (`assignNumber`) — thường khác `filename`. */
+  name?: string
+  sizeBytes: number
+}
+
 export interface WorkspaceMkdirResult {
   path: string
   type: 'directory'
@@ -94,8 +116,8 @@ export interface WorkspaceRepository {
     targetDir: string,
     filename: string,
     body: Blob,
-    signal?: AbortSignal,
-  ): Promise<{ path: string; sizeBytes: number }>
+    options?: WorkspaceUploadOptions,
+  ): Promise<WorkspaceUploadResult>
   unzip(
     path: string,
     signal?: AbortSignal,

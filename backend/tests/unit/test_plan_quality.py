@@ -10,7 +10,8 @@ import pytest
 
 from agentbox.agent_core.failures import KNOWN_PREFIXES, classify_failure, describe_failure
 from agentbox.agent_core.plan_quality import (PLAN_QUALITY_PREFIX, REQUIRED_SECTIONS, check_plan_quality,
-                                              plan_quality_issues, plan_quality_message)
+                                              normalize_path, plan_quality_issues, plan_quality_message,
+                                              strip_www)
 from agentbox.agent_core.runtime import HarnessRuntime
 from agentbox.memory.session_store import SessionStore
 
@@ -125,6 +126,29 @@ def test_a_verification_section_must_name_a_command_and_an_expected_result():
     assert plan_quality_issues(no_expectation) == ['verification-expected']
     # an empty section is not a section
     assert plan_quality_issues('# P\n\n## Verification\n## Risks\n- none known\n') == ['verification-section']
+
+
+def test_host_and_path_normalisation_is_prefix_based_not_character_set_based():
+    """H2 (hậu kiểm vòng 25): `lstrip('www.')` / `lstrip('./')` cắt theo TẬP ký tự.
+
+    Hệ quả đo được ở cổng nguồn: `web.dev` → `eb.dev`, `w3.org` → `3.org`, và
+    `.github/workflows/ci.yml` mất dấu chấm đầu. Một kế hoạch viện dẫn đúng host mà bằng chứng công cụ
+    trả về bị `sources-unbacked` chặn — cổng từ chối một kế hoạch có bằng chứng thật.
+    """
+    assert strip_www('www.docs.example.com') == 'docs.example.com'
+    assert strip_www('Docs.Example.com') == 'docs.example.com'
+    assert strip_www('docs.example.com.') == 'docs.example.com'
+    assert strip_www('web.dev') == 'web.dev', 'chữ `w` đầu KHÔNG phải tiền tố `www.`'
+    assert strip_www('w3.org') == 'w3.org'
+    assert strip_www('wikipedia.org') == 'wikipedia.org'
+    assert strip_www(None) == '' and strip_www('') == ''
+
+    assert normalize_path('./docs/v1-plan.md') == 'docs/v1-plan.md'
+    assert normalize_path('.//docs/v1-plan.md') == 'docs/v1-plan.md'
+    assert normalize_path('/docs/v1-plan.md') == 'docs/v1-plan.md'
+    assert normalize_path('.github/workflows/ci.yml') == '.github/workflows/ci.yml', \
+        'tệp ẩn trong repo vẫn là tệp ẩn'
+    assert normalize_path('docs/v1-plan.md') == 'docs/v1-plan.md'
 
 
 def test_external_facts_require_a_sources_section_but_repo_links_do_not():

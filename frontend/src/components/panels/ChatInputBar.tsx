@@ -6,7 +6,10 @@ import {
   Square,
   Paperclip,
   Crosshair,
+  Loader2,
   X,
+  Check,
+  FolderOpen,
 } from 'lucide-react'
 import { useAgentStore } from '../../store/agentStore'
 import { useUiStore } from '../../store/uiStore'
@@ -16,7 +19,14 @@ import { useT } from '../../i18n/context'
 import { useCompactComposer } from '../../hooks/useCompactComposer'
 import { HarnessModelPicker, type RouterSingleModel } from '../chat/HarnessModelPicker'
 import { RepoPicker } from '../chat/RepoPicker'
-import { AttachmentPicker, type AttachedFile } from '../chat/AttachmentPicker'
+import {
+  AttachmentPicker,
+  formatAttachmentSize,
+  shortenAttachmentPath,
+  type AttachedFile,
+} from '../chat/AttachmentPicker'
+import { uploadAttachments, type OutgoingAttachment } from '../../lib/chat/attachmentUpload'
+import { createWorkspaceRepository, type WorkspaceRepository } from '../../lib/workspace'
 import { ShortcutsPopover } from '../chat/ShortcutsPopover'
 import { useSlashCompletion } from '../chat/useSlashCompletion'
 import { LabelDot } from '../LabelDot'
@@ -38,8 +48,16 @@ export interface RouterComposerAdapter {
   /**
    * Trả `false` (hoặc Promise resolve `false`) khi lần gửi thất bại — khi đó
    * composer khôi phục lại nội dung vừa gõ thay vì xoá trắng (BUG-17/F1).
+   *
+   * `images` là **mọi** ảnh đính kèm (đã cắt còn 2 ảnh đầu, xem `collectTurnImages`) chứ
+   * không chỉ ảnh đầu như trước; `attachments` là các tệp đã nằm THẬT trên đĩa box
+   * (`uploadAttachments` chạy xong mới gọi tới đây, nên đường dẫn trong đó luôn đọc được).
    */
-  onSend: (prompt: string, image?: string | null) => void | Promise<boolean>
+  onSend: (
+    prompt: string,
+    images?: string[] | null,
+    attachments?: OutgoingAttachment[],
+  ) => void | Promise<boolean>
   onStop: () => void
 }
 
@@ -55,11 +73,69 @@ export function isControlCommand(text: string): boolean {
   return (CONTROL_COMMANDS as readonly string[]).includes(normalized)
 }
 
-export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
+/**
+ * Trần ảnh inline của một lượt: harness chỉ nhận nhiều nhất 2 ảnh và thân request bị chặn ở
+ * 1 MiB, nên hai ảnh phải nằm gọn trong 800 000 ký tự base64 (phần còn lại là JSON + prompt).
+ */
+export const MAX_TURN_IMAGES = 2
+export const MAX_TURN_IMAGE_CHARS = 800_000
+
+/** Tất cả ảnh có `dataUrl`, cắt còn 2 ảnh đầu và tổng ≤ 800 000 ký tự. */
+function collectTurnImages(attachments: readonly AttachedFile[]): string[] | undefined {
+  const images: string[] = []
+  let total = 0
+  for (const attachment of attachments) {
+    if (!attachment.dataUrl) continue
+    if (images.length >= MAX_TURN_IMAGES) break
+    // Ảnh quá lớn bị bỏ qua nhưng KHÔNG chặn các ảnh nhỏ hơn phía sau (nếu còn chỗ).
+    if (total + attachment.dataUrl.length > MAX_TURN_IMAGE_CHARS) continue
+    images.push(attachment.dataUrl)
+    total += attachment.dataUrl.length
+  }
+  return images.length ? images : undefined
+}
+
+/**
+ * `repository` để test (và nhúng) truyền repo riêng; mặc định lấy đúng repo của ứng dụng
+ * (`createWorkspaceRepository`) — cùng nguồn với panel Workspace Files, không tạo kênh thứ hai.
+ *
+ * E5 — trạng thái tải lên của một chip đính kèm. `attachment` chỉ có khi box ĐÃ nhận tệp
+ * (đường dẫn + dung lượng box cấp), nhờ vậy lượt gửi sau không phải tải lại tệp đó.
+ */
+interface ChipUpload {
+  status: 'uploading' | 'uploaded' | 'failed'
+  done: number
+  total: number
+  attachment?: OutgoingAttachment
+}
+
+export function ChatInputBar({
+  router,
+  repository,
+}: {
+  router?: RouterComposerAdapter
+  repository?: WorkspaceRepository
+}) {
   const t = useT()
   const [input, setInput] = useState('')
   const slash = useSlashCompletion(input, setInput)
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
+  const [uploading, setUploading] = useState(false)
+  const [attachError, setAttachError] = useState<string | null>(null)
+  /**
+   * E5 — trạng thái tải lên của TỪNG chip, đúng thứ mockup `attachments-chip-row` vẽ
+   * (`đang tải` / `✓ đã tải lên` / `tải lên thất bại` + Thử lại).
+   *
+   * Chỉ chứa trạng thái ĐỌC ĐƯỢC TỪ SỰ THẬT: tệp nào đang bay, tệp nào box đã nhận (kèm
+   * đường dẫn + dung lượng box trả về), tệp nào hỏng. KHÔNG có phần trăm: `uploadAttachments`
+   * chỉ báo số tệp xong và `SandboxWorkspaceRepository.upload` không đọc được luồng byte,
+   * nên phần trăm sẽ là con số bịa.
+   */
+  const [uploadStates, setUploadStates] = useState<Record<string, ChipUpload>>({})
+  const defaultRepositoryRef = useRef<WorkspaceRepository | null>(null)
+  if (!defaultRepositoryRef.current) defaultRepositoryRef.current = createWorkspaceRepository()
+  const repositoryRef = useRef<WorkspaceRepository>(repository ?? defaultRepositoryRef.current)
+  repositoryRef.current = repository ?? defaultRepositoryRef.current
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const barRef = useRef<HTMLDivElement>(null)
   const compact = useCompactComposer(barRef)
@@ -67,6 +143,8 @@ export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
   const agentBusy = useAgentStore((s) => s.isBusy)
   const isBusy = router?.isBusy ?? agentBusy
   const workspaceHidden = useUiStore((s) => s.workspaceHidden)
+  // E5 — chip "Mở trong Files" của tệp ĐÃ lên box dùng đúng hành động có sẵn của app.
+  const selectFile = useUiStore((s) => s.selectFile)
   const autopilotEnabled = useUiStore((s) => s.autopilotEnabled)
   const setAutopilotEnabled = useUiStore((s) => s.setAutopilotEnabled)
   const pendingElements = useComposerStore((s) => s.pendingElements)
@@ -95,7 +173,11 @@ export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
                 id: `pasted-${Date.now()}`,
                 name: `Pasted_Image_${Date.now().toString(36)}.png`,
                 source: 'computer',
-                size: `${(blob.size / 1024).toFixed(0)} KB`,
+                size: formatAttachmentSize(blob.size),
+                sizeBytes: blob.size,
+                // Giữ chính đối tượng File: ảnh dán từ clipboard cũng phải đi tới box (A2/A5),
+                // không chỉ nằm lại trong `dataUrl` của trình duyệt.
+                file: blob,
                 dataUrl: reader.result as string,
               },
             ])
@@ -106,24 +188,79 @@ export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
     }
   }
 
-  const handleSend = () => {
+  const handleSend = async () => {
+    // Chặn gửi hai lần: `handleSend` giờ bất đồng bộ (upload xong mới gửi), nên Enter
+    // hai lần liên tiếp sẽ tạo hai lượt cùng bản nháp nếu không khoá.
+    if (uploading) return
     if (!input.trim() && attachments.length === 0 && pendingElements.length === 0) return
     const draftText = input
     const draftAttachments = attachments
-    const textToSend = attachments.length > 0
-      ? `${input.trim()}${attachments.some(a => !a.dataUrl) ? `\n\n[Attached Files: ${attachments.filter(a => !a.dataUrl).map((a) => a.name).join(', ')}]` : ''}`
-      : input.trim()
-    const firstImage = attachments.find((a) => Boolean(a.dataUrl))?.dataUrl
+    const draftElements = pendingElements
+    // Text gửi đi là ĐÚNG những gì người dùng gõ: không còn chuỗi `[Attached Files: …]`
+    // — khối mô tả tệp do harness dựng từ `attachments` (hợp đồng A7).
+    const textToSend = input.trim()
+    const images = collectTurnImages(attachments)
+
+    // Lệnh điều khiển (`/stop`, `/status`, …) không mang tệp: upload sẽ chỉ tạo rác
+    // trong `.uploaded_artifacts` mà không ai đọc.
+    let outgoing: OutgoingAttachment[] | undefined
+    if (attachments.length > 0 && !isControlCommand(textToSend)) {
+      const files = attachments.filter((a) => Boolean(a.file))
+      if (files.length > 0) {
+        setAttachError(null)
+        setUploading(true)
+        // E5 — gửi TỪNG tệp (không gọi một lượt cả mảng) để mỗi chip biết chính xác tệp nào
+        // đang bay, tệp nào box đã nhận, tệp nào hỏng. Luật cũ giữ nguyên: tuần tự, và tệp
+        // đầu tiên lỗi thì DỪNG CẢ LƯỢT (`return` trước `onSend`), bản nháp còn nguyên.
+        // Tệp đã lên box ở lần bấm trước được dùng lại — bấm Gửi lần hai không nhân bản tệp.
+        const total = files.length
+        const uploaded: OutgoingAttachment[] = []
+        let done = 0
+        for (const file of files) {
+          const cached = uploadStates[file.id]
+          if (cached?.status === 'uploaded' && cached.attachment) {
+            uploaded.push(cached.attachment)
+            done += 1
+            continue
+          }
+          setUploadStates((prev) => ({ ...prev, [file.id]: { status: 'uploading', done: done + 1, total } }))
+          try {
+            const [result] = await uploadAttachments(
+              [{ name: file.name, file: file.file as File, relativePath: file.relativePath }],
+              { repo: repositoryRef.current },
+            )
+            uploaded.push(result)
+            done += 1
+            setUploadStates((prev) => ({
+              ...prev,
+              [file.id]: { status: 'uploaded', done, total, attachment: result },
+            }))
+          } catch (error) {
+            // Chip đỏ + giữ nguyên bản nháp: người dùng bấm Thử lại (hoặc Gửi lại) là đi tiếp
+            // được, chứ không mất công chọn tệp từ đầu.
+            setUploadStates((prev) => ({ ...prev, [file.id]: { status: 'failed', done, total } }))
+            setUploading(false)
+            setAttachError(error instanceof Error ? error.message : String(error))
+            return
+          }
+        }
+        outgoing = uploaded
+        setUploading(false)
+      }
+    }
 
     let result: void | Promise<boolean> = undefined
-    if (router) result = router.onSend(textToSend, firstImage)
+    if (router) result = router.onSend(textToSend, images, outgoing)
     else sendCommand({
         type: 'user_message',
         text: textToSend,
-        ...(pendingElements.length > 0 ? { elements: pendingElements } : {}),
+        ...(draftElements.length > 0 ? { elements: draftElements } : {}),
       })
     setInput('')
     setAttachments([])
+    // Chip biến mất thì trạng thái tải lên của nó cũng hết — không giữ lại đường dẫn cũ
+    // cho một lượt đã gửi.
+    setUploadStates({})
     clearPendingElements()
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
@@ -138,6 +275,32 @@ export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
       }
       void result.then((ok) => { if (!ok) restoreDraft() }).catch(restoreDraft)
     }
+  }
+
+  /**
+   * E5 — "Thử lại" cho MỘT tệp hỏng: chỉ tải lại chính tệp đó (không đụng các tệp đã lên
+   * box, không gửi lượt). Tệp đã nhận thì giữ đường dẫn box cấp để lần bấm Gửi kế tiếp
+   * không nhân bản tệp trên box.
+   */
+  const handleRetryUpload = async (file: AttachedFile) => {
+    if (!file.file || uploading) return
+    setAttachError(null)
+    setUploading(true)
+    setUploadStates((prev) => ({ ...prev, [file.id]: { status: 'uploading', done: 1, total: 1 } }))
+    try {
+      const [result] = await uploadAttachments(
+        [{ name: file.name, file: file.file, relativePath: file.relativePath }],
+        { repo: repositoryRef.current },
+      )
+      setUploadStates((prev) => ({
+        ...prev,
+        [file.id]: { status: 'uploaded', done: 1, total: 1, attachment: result },
+      }))
+    } catch (error) {
+      setUploadStates((prev) => ({ ...prev, [file.id]: { status: 'failed', done: 0, total: 1 } }))
+      setAttachError(error instanceof Error ? error.message : String(error))
+    }
+    setUploading(false)
   }
 
   const handleInterrupt = () => {
@@ -176,12 +339,17 @@ export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
         className={`relative rounded-xl border border-line bg-panel2/70 p-2.5 shadow-xs transition-all focus-within:border-zinc-500 focus-within:ring-1 focus-within:ring-zinc-600/40 ${readingColumnClass(workspaceHidden)}`}
       >
         {slash.popup}
-        {/* Attached files chips */}
+        {/* Attached files chips — E5: mỗi chip mang trạng thái tải lên THẬT của nó
+            (`data-attach-state`, đúng tên thuộc tính của mockup `attachments-chip-row`). */}
         {attachments.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-1.5 px-1">
-            {attachments.map((file) => (
+            {attachments.map((file) => {
+              const upload = uploadStates[file.id]
+              return (
               <div
                 key={file.id}
+                data-testid="composer-attach-chip"
+                data-attach-state={upload?.status}
                 className="flex items-center gap-1.5 rounded-lg border border-line bg-panel px-2 py-1 text-[11px] text-fg shadow-2xs"
               >
                 {file.source === 'drive' ? (
@@ -197,17 +365,99 @@ export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
                   <Paperclip className="size-3 text-muted shrink-0" />
                 )}
                 <span className="truncate max-w-[140px] font-mono">{file.name}</span>
+                {file.size && <span className="shrink-0 text-muted">{file.size}</span>}
+                {/* Tệp trong thư mục vừa chọn: nói rõ nó nằm ở đâu, không chỉ tên tệp. */}
+                {file.relativePath && (
+                  <span className="shrink-0 text-muted" title={file.relativePath}>
+                    {shortenAttachmentPath(file.relativePath)}
+                  </span>
+                )}
+                {/* Trạng thái thật. Không có phần trăm: nguồn không cho biết số byte đã đi. */}
+                {upload?.status === 'uploading' && (
+                  <span
+                    data-testid="composer-attach-state"
+                    data-attach-state="uploading"
+                    className="inline-flex shrink-0 items-center gap-0.5 text-amber-400"
+                  >
+                    <Loader2 className="size-3 animate-spin" />
+                    đang tải lên {upload.done}/{upload.total} tệp
+                  </span>
+                )}
+                {upload?.status === 'uploaded' && (
+                  <span
+                    data-testid="composer-attach-state"
+                    data-attach-state="uploaded"
+                    className="inline-flex shrink-0 items-center gap-0.5 text-emerald-400"
+                  >
+                    <Check className="size-3" />
+                    đã tải lên
+                  </span>
+                )}
+                {upload?.status === 'failed' && (
+                  <span className="inline-flex shrink-0 items-center gap-1">
+                    <span
+                      data-testid="composer-attach-state"
+                      data-attach-state="failed"
+                      className="text-rose-400"
+                    >
+                      tải lên thất bại
+                    </span>
+                    <button
+                      type="button"
+                      data-testid="composer-attach-retry"
+                      onClick={() => void handleRetryUpload(file)}
+                      title={`Thử lại tải lên ${file.name}`}
+                      className="rounded border border-rose-500/40 px-1 py-0.5 text-rose-300 transition hover:bg-rose-500/10 cursor-pointer"
+                    >
+                      Thử lại
+                    </button>
+                  </span>
+                )}
+                {/* Chỉ hiện khi box ĐÃ nhận tệp: lúc đó mới có đường dẫn thật để mở. */}
+                {upload?.status === 'uploaded' && upload.attachment && (
+                  <button
+                    type="button"
+                    data-testid="composer-attach-open"
+                    onClick={() => selectFile(upload.attachment!.path)}
+                    title={`Mở ${upload.attachment.path} trong tab Files`}
+                    className="inline-flex shrink-0 items-center gap-0.5 text-muted transition hover:text-fg cursor-pointer"
+                  >
+                    <FolderOpen className="size-3" />
+                    Mở trong Files
+                  </button>
+                )}
                 <button
                   type="button"
-                  onClick={() => setAttachments((prev) => prev.filter((a) => a.id !== file.id))}
+                  onClick={() => {
+                    setAttachments((prev) => prev.filter((a) => a.id !== file.id))
+                    // Chip bị bỏ thì trạng thái của nó cũng bỏ — không giữ lại đường dẫn cũ.
+                    setUploadStates((prev) => {
+                      const next = { ...prev }
+                      delete next[file.id]
+                      return next
+                    })
+                  }}
                   className="text-muted hover:text-rose-500 transition ml-0.5 cursor-pointer"
                   title="Remove attachment"
                 >
                   <X className="size-3" />
                 </button>
               </div>
-            ))}
+              )
+            })}
           </div>
+        )}
+
+        {/* Lỗi upload: chip đỏ + giữ nguyên bản nháp (A6). Nói thẳng tệp nào hỏng thay vì
+            im lặng bỏ tệp — đây là bài học của BUG-40. */}
+        {attachError && (
+          <p
+            data-testid="composer-attach-error"
+            role="alert"
+            className="mb-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-[11px] text-rose-400"
+          >
+            {attachError}
+          </p>
         )}
 
         {/* Element context chips (khung ④ Element Selector, plan §8-F12) —
@@ -338,12 +588,14 @@ export function ChatInputBar({ router }: { router?: RouterComposerAdapter }) {
               <button
                 type="button"
                 onClick={handleSend}
-                disabled={!canSend}
+                disabled={!canSend || uploading}
                 data-testid="composer-send"
+                data-uploading={uploading ? 'true' : undefined}
+                aria-busy={uploading || undefined}
                 className="flex size-7 items-center justify-center rounded-lg bg-zinc-100 text-zinc-900 shadow-xs transition hover:bg-white disabled:opacity-30 disabled:hover:bg-zinc-100 cursor-pointer animate-in fade-in zoom-in-90 duration-150"
-                title={isBusy ? t('composer.sendControlWhileBusy') : 'Send prompt (Enter)'}
+                title={uploading ? t('composer.uploadingAttachments') : isBusy ? t('composer.sendControlWhileBusy') : 'Send prompt (Enter)'}
               >
-                <ArrowUp className="size-3.5" />
+                {uploading ? <Loader2 className="size-3.5 animate-spin" /> : <ArrowUp className="size-3.5" />}
               </button>
             )}
           </div>

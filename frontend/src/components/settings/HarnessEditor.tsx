@@ -30,6 +30,7 @@ const TOOL_GROUP_LABELS: Record<string, string> = {
   screenBrowser: 'Screen & browser',
   webResearch: 'Web research',
   delegationPlans: 'Delegation & plans',
+  peerMesh: 'Peer mesh',
   questionsApprovals: 'Questions & approvals',
 }
 
@@ -38,6 +39,8 @@ const TOOL_GROUP_NOTES: Record<string, string> = {
   filesTerminal: 'off means the agent can only read',
   webResearch:
     'web_search · web_fetch run on the host and see the real Internet; the sandbox has none, so browser_use only reaches box-local pages.',
+  peerMesh:
+    "a child reads a peer's work stream and waits for the result it delivers; off means children cannot see each other",
   questionsApprovals:
     'always on. The agent cannot be silenced on the things it must ask you about.',
 }

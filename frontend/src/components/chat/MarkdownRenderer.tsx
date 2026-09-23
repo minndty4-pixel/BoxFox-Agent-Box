@@ -11,18 +11,31 @@
  *     + Plugin và Components tĩnh + React.memo
  *     + content-visibility: auto + contain-intrinsic-size cho các khối off-screen.
  */
-import { useState, useMemo, memo } from 'react'
+import { useState, useMemo, memo, createContext, useContext, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import type { Components } from 'react-markdown'
 import remarkMath from 'remark-math'
 import remarkGfm from 'remark-gfm'
 import rehypeKatex from 'rehype-katex'
 import { Copy, Check, Camera } from 'lucide-react'
+import type { LightboxMediaProps } from './MediaLightboxModal'
 
 interface MarkdownRendererProps {
   content: string
   isStreaming?: boolean
   variant?: 'chat' | 'document'
+  /**
+   * P4.1 — bấm ảnh trong câu trả lời ⇒ mở khung xem lớn (`MediaLightboxModal` đã có zoom/kéo).
+   * Không truyền ⇒ giữ nguyên hành vi cũ (ảnh lớn trong mạch chữ), nên các chỗ dùng khác không đổi.
+   */
+  onOpenImage?: (media: LightboxMediaProps) => void
+  /**
+   * P4.1 — bấm liên kết tệp bằng chứng trong workspace ⇒ mở tab Files đúng tệp, thay vì điều hướng
+   * tab trình duyệt (hôm nay `<a target="_blank">` ⇒ mở ra một tab trắng).
+   */
+  onOpenFile?: (path: string) => void
+  /** Nhãn nút mở tệp — chữ do người gọi cấp, vì nó phải theo ngôn ngữ câu trả lời (P5.3). */
+  fileLinkLabel?: string
 }
 
 /** Hằng số plugin tĩnh — tránh khởi tạo lại mảng ở mỗi frame render */
@@ -47,6 +60,81 @@ export function makeStreamingSafe(rawText: string): string {
   }
 
   return text
+}
+
+/** Đuôi ảnh: dùng để biết một `href` là ảnh hay là tệp bằng chứng (P4.1). */
+const IMAGE_FILE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp', '.svg', '.gif']
+
+/** Nhãn mặc định của nút mở tệp khi người gọi không cấp chữ (xem `fileLinkLabel`). */
+const DEFAULT_FILE_LINK_LABEL = 'Open in Files'
+
+/**
+ * Đường dẫn artifact đã CHUẨN HOÁ: bỏ dấu cách thừa, bỏ `?query` và `#fragment` ở cuối, bỏ `./` đầu.
+ *
+ * Vì sao phải có: việc PHÂN LOẠI một link (ảnh? tệp bằng chứng? link ngoài?) và việc GỬI ĐI giá trị
+ * (`onOpenFile`/`onOpenImage`, `data-artifact-path`, URL `/__box/file/media`) trước đây đọc hai giá
+ * trị khác nhau — phân loại thì cắt `?query`, còn giá trị gửi đi là chuỗi thô. Hệ quả: `…x.txt?raw=1`,
+ * `…x.txt#L12`, `./.generated_artifacts/a.png`, `shots/a.png` đều dẫn tới đường dẫn KHÔNG mở được
+ * (route media nhận sai đường dẫn, tab Files không tìm thấy tệp). Nay một hàm chuẩn hoá dùng cho cả hai.
+ *
+ * Chuỗi thô vẫn được giữ cho đường DỰ PHÒNG (thẻ `<a href>` nguyên bản) — trình duyệt tự hiểu link của nó.
+ */
+function normalizeArtifactPath(path: string): string {
+  let clean = path.trim().split('#')[0].split('?')[0].trim()
+  while (clean.startsWith('./')) clean = clean.slice(2)
+  return clean
+}
+
+/**
+ * Đường dẫn media của box đi qua route `/__box/file/media`. Box báo tệp theo hai khuôn: đường dẫn
+ * TUYỆT ĐỐI trong workspace (`/home/agent/workspace/…`) và đường dẫn TƯƠNG ĐỐI
+ * (`.generated_artifacts/…`, `captures/…`, hoặc `shots/…`). Cả hai khuôn về cùng một URL.
+ */
+function resolveMediaSrc(path: string): string {
+  const relative = workspaceRelative(path)
+  if (!relative) return path
+  return `/__box/file/media?path=${encodeURIComponent(relative)}`
+}
+
+/**
+ * Đường dẫn TƯƠNG ĐỐI trong workspace, hoặc `null` nếu đường dẫn không nằm trong workspace.
+ * Đây là khuôn mà tab Files và mọi mảnh cổng đang dùng.
+ *
+ * Mọi đường dẫn TƯƠNG ĐỐI đều được coi là đường dẫn trong workspace: model viết đường dẫn theo gốc
+ * workspace (`.generated_artifacts/…`, `frontend/src/…`, `shots/a.png`), và không có gốc nào khác để
+ * chúng dựa vào. Ba thứ KHÔNG nằm trong workspace: link có scheme (`https:`, `data:`, `blob:`,
+ * `//host`), đường dẫn tuyệt đối của hệ điều hành (`/etc/…`), và neo trong trang (`#mục`).
+ */
+function workspaceRelative(path: string): string | null {
+  const clean = normalizeArtifactPath(path)
+  if (!clean) return null
+  if (/^[a-z][a-z0-9+.-]*:/i.test(clean) || clean.startsWith('//')) return null
+  if (clean.startsWith('/home/agent/workspace/')) return clean.replace(/^\/home\/agent\/workspace\//, '')
+  if (clean.startsWith('/')) return null
+  return clean
+}
+
+/** Tên tệp đọc được của một đường dẫn (P4.1: dòng nhãn dưới tile ảnh). */
+function fileNameOf(path: string): string {
+  const clean = normalizeArtifactPath(path).replace(/\/+$/, '')
+  const slash = clean.lastIndexOf('/')
+  return slash === -1 ? clean : clean.slice(slash + 1)
+}
+
+/** Link trỏ tới ẢNH: đuôi ảnh, hoặc thư mục ảnh chụp của box (khuôn cũ, không có đuôi đọc được). */
+function isImageLink(href: string): boolean {
+  const clean = normalizeArtifactPath(href).toLowerCase()
+  return (
+    IMAGE_FILE_EXTENSIONS.some((ext) => clean.endsWith(ext)) || clean.includes('.generated_artifacts/captures')
+  )
+}
+
+/** Link trỏ tới tệp BẰNG CHỨNG trong workspace (không phải ảnh) — mở bằng tab Files, không mở tab mới. */
+function isEvidenceFileLink(href: string): boolean {
+  const clean = normalizeArtifactPath(href)
+  if (!workspaceRelative(clean)) return false
+  const lower = clean.toLowerCase()
+  return !IMAGE_FILE_EXTENSIONS.some((ext) => lower.endsWith(ext))
 }
 
 /** Từ điển components tĩnh — áp dụng content-visibility:auto giúp bỏ qua layout off-screen */
@@ -156,13 +244,7 @@ const STATIC_COMPONENTS: Components = {
 
   // Hình ảnh (Image) — Tự động phân giải đường dẫn media và fallback mock SVG
   img({ src, alt }) {
-    let resolvedSrc = String(src || '')
-    if (resolvedSrc.startsWith('/home/agent/workspace/')) {
-      const rel = resolvedSrc.replace(/^\/home\/agent\/workspace\//, '')
-      resolvedSrc = `/__box/file/media?path=${encodeURIComponent(rel)}`
-    } else if (resolvedSrc.startsWith('.generated_artifacts/') || resolvedSrc.startsWith('captures/')) {
-      resolvedSrc = `/__box/file/media?path=${encodeURIComponent(resolvedSrc)}`
-    }
+    const resolvedSrc = resolveMediaSrc(String(src || ''))
 
     return (
       <span className="block my-2.5 max-w-2xl overflow-hidden rounded-xl border border-line bg-panel2 shadow-xs group">
@@ -181,22 +263,9 @@ const STATIC_COMPONENTS: Components = {
   // Đường link (Anchor) — Nếu trỏ tới ảnh artifact thì render ảnh trực tiếp thay vì chỉ để lại link
   a({ href, children }) {
     const hrefStr = String(href || '')
-    const isImageLink =
-      hrefStr.endsWith('.png') ||
-      hrefStr.endsWith('.jpg') ||
-      hrefStr.endsWith('.jpeg') ||
-      hrefStr.endsWith('.webp') ||
-      hrefStr.endsWith('.svg') ||
-      hrefStr.includes('.generated_artifacts/captures')
 
-    if (isImageLink) {
-      let resolvedSrc = hrefStr
-      if (resolvedSrc.startsWith('/home/agent/workspace/')) {
-        const rel = resolvedSrc.replace(/^\/home\/agent\/workspace\//, '')
-        resolvedSrc = `/__box/file/media?path=${encodeURIComponent(rel)}`
-      } else if (resolvedSrc.startsWith('.generated_artifacts/')) {
-        resolvedSrc = `/__box/file/media?path=${encodeURIComponent(resolvedSrc)}`
-      }
+    if (isImageLink(hrefStr)) {
+      const resolvedSrc = resolveMediaSrc(hrefStr)
 
       return (
         <span className="block my-2 max-w-2xl">
@@ -236,14 +305,175 @@ const STATIC_COMPONENTS: Components = {
   },
 }
 
+/**
+ * P4.1 — hai bộ dựng cần thấy callback của lượt render (`img`, `a`); bộ tĩnh ở trên là đường KHÔNG
+ * có callback, nên mọi chỗ dùng khác giữ nguyên hành vi cũ. Bộ có callback chỉ được dựng trong
+ * `useMemo` (khoá là chính hai callback) — giữ đúng lời hứa "components tĩnh + `React.memo`".
+ */
+interface MarkdownTools {
+  onOpenImage?: (media: LightboxMediaProps) => void
+  onOpenFile?: (path: string) => void
+  fileLinkLabel?: string
+}
+
+type ImgProps = { src?: string; alt?: string }
+type AnchorProps = { href?: string; children?: ReactNode }
+
+/** Gọi lại đúng renderer tĩnh khi lượt render này không có callback tương ứng. */
+function renderStaticImage(props: ImgProps): ReactNode {
+  const renderer = STATIC_COMPONENTS.img as unknown as (p: ImgProps) => ReactNode
+  return renderer(props)
+}
+
+/**
+ * P4.1 — một ảnh trong câu trả lời: tile nhìn thấy ngay, nhãn của model ở dưới, tên tệp đọc được,
+ * bấm ra khung xem lớn. Nhiều ảnh thì `inline-block` tự xuống dòng thành lưới.
+ */
+function AnswerImageTile({ path, caption, tools }: { path: string; caption: string; tools: MarkdownTools }) {
+  // Một đường dẫn, MỘT giá trị: phân loại và gửi đi đều dùng khuôn đã chuẩn hoá.
+  const artifactPath = normalizeArtifactPath(path)
+  const resolvedSrc = resolveMediaSrc(artifactPath)
+  const fileName = fileNameOf(artifactPath)
+  return (
+    <span className="my-2.5 mr-2.5 inline-block max-w-full align-top" data-capture-tile="true" data-artifact-path={artifactPath || undefined}>
+      <button
+        type="button"
+        onClick={() =>
+          tools.onOpenImage?.({
+            type: 'image',
+            src: resolvedSrc,
+            caption: caption || undefined,
+            artifactPath: artifactPath || undefined,
+          })
+        }
+        data-artifact-open="media"
+        aria-label={caption || fileName || 'Image'}
+        title={artifactPath || caption || undefined}
+        className="group/tile block w-40 cursor-zoom-in text-left"
+      >
+        <span className="block h-24 w-full overflow-hidden rounded-lg border border-line bg-panel2 transition group-hover/tile:border-brand/60">
+          <img
+            src={resolvedSrc}
+            alt={caption}
+            onError={(e) => {
+              ;(e.currentTarget as HTMLElement).style.display = 'none'
+            }}
+            className="h-full w-full object-cover"
+          />
+        </span>
+        {caption && (
+          <span className="mt-1 block text-[11px] leading-snug text-zinc-300" data-capture-label="true">
+            {caption}
+          </span>
+        )}
+        {fileName && (
+          <span className="mt-0.5 block truncate font-mono text-[10px] text-zinc-500" data-capture-file="true" title={artifactPath || undefined}>
+            {fileName}
+          </span>
+        )}
+      </button>
+    </span>
+  )
+}
+
+/**
+ * Ảnh nằm BÊN TRONG một liên kết phải là ảnh thường, không phải tile bấm được.
+ *
+ * `[![nhãn](anh.png)](https://tài-liệu)` là khuôn markdown hợp lệ: ảnh là chữ của liên kết. Nếu ảnh
+ * vẫn là tile (`<button>`) thì markup thành `<a><button>…</button></a>` — ARIA sai, và một cú bấm vừa
+ * mở khung xem lớn vừa mở tab trình duyệt (mất mạch chat). Liên kết bật cờ này quanh chữ của nó, và
+ * bộ dựng ảnh đọc cờ ấy để vẽ ảnh TĨNH: liên kết giữ nguyên việc của nó, ảnh chỉ để nhìn.
+ *
+ * Dùng context (không phải thay element của `children`) vì `children` ở đây do react-markdown dựng
+ * sẵn — bộ dựng `img` của mình chỉ chạy lúc render, khi cờ đã nằm trong cây.
+ */
+const PassiveMediaContext = createContext(false)
+
+function makeImgRenderer(tools: MarkdownTools): (props: ImgProps) => ReactNode {
+  return function AnswerImage({ src, alt }) {
+    const passive = useContext(PassiveMediaContext)
+    if (passive || !tools.onOpenImage) return renderStaticImage({ src, alt })
+    return <AnswerImageTile path={String(src || '')} caption={String(alt || '')} tools={tools} />
+  }
+}
+
+function makeAnchorRenderer(tools: MarkdownTools): (props: AnchorProps) => ReactNode {
+  return function AnswerAnchor({ href, children }) {
+    const hrefStr = String(href || '')
+    // Một giá trị đã chuẩn hoá cho cả việc PHÂN LOẠI lẫn việc GỬI ĐI (xem `normalizeArtifactPath`).
+    const cleanHref = normalizeArtifactPath(hrefStr)
+    // Tệp bằng chứng trong workspace (không phải ảnh) được xét TRƯỚC phép thử ảnh: tệp kết quả test
+    // nằm trong `.generated_artifacts/captures/evidence/…`, mà khuôn cũ coi cả thư mục `captures/`
+    // là ảnh — nếu xét sau thì một tệp `.txt` lại thành tile ảnh hỏng.
+    const relativePath = workspaceRelative(cleanHref)
+    if (relativePath && tools.onOpenFile && isEvidenceFileLink(cleanHref)) {
+      const label = tools.fileLinkLabel ?? DEFAULT_FILE_LINK_LABEL
+      return (
+        <button
+          type="button"
+          onClick={() => tools.onOpenFile?.(relativePath)}
+          data-artifact-open="files"
+          data-artifact-path={relativePath}
+          aria-label={`${label}: ${relativePath}`}
+          title={relativePath}
+          className="inline-flex max-w-full items-center gap-1 rounded-md border border-line bg-panel2/70 px-1.5 py-0.5 font-mono text-[11px] text-brand transition cursor-pointer hover:border-brand/60"
+        >
+          {/* Nút không được chứa nút: ảnh trong liên kết ở đây cũng là ảnh thường. */}
+          <span className="max-w-full truncate">
+            <PassiveMediaContext.Provider value={true}>{children}</PassiveMediaContext.Provider>
+            {!children && relativePath}
+          </span>
+          <span className="shrink-0 text-[10px] font-sans text-muted">{label}</span>
+        </button>
+      )
+    }
+    if (isImageLink(cleanHref)) {
+      if (tools.onOpenImage) {
+        const label = typeof children === 'string' ? children : ''
+        return <AnswerImageTile path={cleanHref} caption={label} tools={tools} />
+      }
+      return renderStaticAnchor({ href, children })
+    }
+    // Link thường: giữ NGUYÊN `href` thô (trình duyệt tự hiểu), nhưng bên trong không có điều khiển
+    // tương tác nào — ảnh lồng trong link là ảnh thường, bấm cả khối thì đi theo link.
+    return (
+      <a
+        href={href}
+        target="_blank"
+        rel="noreferrer"
+        className="text-brand hover:underline font-medium cursor-pointer"
+      >
+        <PassiveMediaContext.Provider value={true}>{children}</PassiveMediaContext.Provider>
+      </a>
+    )
+  }
+}
+
+function renderStaticAnchor(props: AnchorProps): ReactNode {
+  const renderer = STATIC_COMPONENTS.a as unknown as (p: AnchorProps) => ReactNode
+  return renderer(props)
+}
+
 export const MarkdownRenderer = memo(function MarkdownRenderer({
   content,
   isStreaming = false,
   variant = 'chat',
+  onOpenImage,
+  onOpenFile,
+  fileLinkLabel,
 }: MarkdownRendererProps) {
   const safeContent = useMemo(() => {
     return isStreaming ? makeStreamingSafe(content) : content
   }, [content, isStreaming])
+
+  // Không có callback nào ⇒ dùng thẳng bộ tĩnh (không dựng lại gì), như trước vòng 23.
+  const components = useMemo(
+    () =>
+      onOpenImage || onOpenFile
+        ? ({ ...STATIC_COMPONENTS, img: makeImgRenderer({ onOpenImage, onOpenFile, fileLinkLabel }), a: makeAnchorRenderer({ onOpenImage, onOpenFile, fileLinkLabel }) } as Components)
+        : STATIC_COMPONENTS,
+    [onOpenImage, onOpenFile, fileLinkLabel],
+  )
 
   return (
     <div
@@ -254,7 +484,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
       <ReactMarkdown
         remarkPlugins={REMARK_PLUGINS}
         rehypePlugins={REHYPE_PLUGINS}
-        components={STATIC_COMPONENTS}
+        components={components}
       >
         {safeContent}
       </ReactMarkdown>

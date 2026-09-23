@@ -76,6 +76,10 @@ JOURNAL_TEXT_MAX_CHARS = 1000
 JOURNAL_BRIEF_MAX_PER_GROUP = 8
 JOURNAL_BRIEF_MAX_CHARS = 4000
 JOURNAL_BRIEF_HEADER = "=== SESSION JOURNAL BRIEF (durable state rebuilt from .session-history) ==="
+# Dòng thay chỗ cho một nhóm rỗng. `brief_has_items` đọc chính dòng này để phân biệt "khối có gì
+# thật" với "khối chỉ có sáu tiêu đề" — nếu đổi chữ ở đây mà quên chỗ kia thì khối rỗng lại lọt
+# vào system message, nên hai chỗ dùng chung một hằng số.
+BRIEF_EMPTY_LINE = "- (không có bản ghi)"
 
 # Bản `journal.md` là **bản đọc được**, không phải bản đầy đủ: 400 dòng cuối, đọc được bằng
 # `tail`. Bản đầy đủ luôn là `journal.jsonl` (append-only) — không bao giờ mất dòng nào.
@@ -389,6 +393,13 @@ def group_rows(rows) -> dict[str, list[dict]]:
     `C:` (nén) xếp vào **đã xong**: một lần nén đã hoàn tất và chính là dấu vết cho biết
     transcript trước đó đã được cất thành file. Không thêm nhóm thứ bảy — sáu nhóm là trần
     để khối ký ức còn đọc được trong một lần liếc.
+
+    Một ngoại lệ có tên (C4 vòng 22): hàng **vé mơ hồ** (`kind='fact'` mang
+    `data.identityAmbiguityTicket`) xếp vào **đang tắc**. Vé là dấu vết của một lần đăng ký
+    kế hoạch BỊ TỪ CHỐI: việc chỉ chạy tiếp khi model gửi lại nguyên văn, nên nó không phải
+    "đã xong", cũng không phải một mục tiêu mới — nó là một việc đang dừng. Các hàng `fact`
+    khác vẫn **không** vào nhóm nào: một dữ kiện thường không thuộc sáu nhóm, còn vé thì phải
+    tới được model, nếu không hàng `F:` chỉ nằm trong file mà không ai đọc.
     """
     groups: dict[str, list[dict]] = {key: [] for _, key in BRIEF_GROUPS}
     for item in reversed(list(rows or [])):  # JSONL là cũ → mới; khối ký ức muốn mới trước
@@ -409,6 +420,8 @@ def group_rows(rows) -> dict[str, list[dict]]:
             groups["doing"].append(item)
         if kind == "blocker" and status in ("blocked", "failed"):
             groups["blocked"].append(item)
+        if kind == "fact" and str((item.get("data") or {}).get("identityAmbiguityTicket") or "").strip():
+            groups["blocked"].append(item)  # C4 vòng 22 — vé mơ hồ là việc ĐANG TẮC
         if isinstance(item.get("data"), dict) and str(item["data"].get("next") or "").strip():
             groups["next"].append(item)
     return groups
@@ -460,7 +473,7 @@ def brief_text(rows, *, limit_per_group: int = JOURNAL_BRIEF_MAX_PER_GROUP,
                 shown += 1
             lost += len(items) - shown
             if not shown and with_fillers:
-                out.append("- (không có bản ghi)")
+                out.append(BRIEF_EMPTY_LINE)
         return "\n".join(out), lost
 
     def _note(count: int) -> str:
@@ -479,6 +492,22 @@ def brief_text(rows, *, limit_per_group: int = JOURNAL_BRIEF_MAX_PER_GROUP,
 
 # Tên gọi theo kế hoạch (F5) — cùng một hàm, hai đường gọi, không có bản thứ hai để lệch.
 journal_brief = brief_text
+
+
+def brief_has_items(text) -> bool:
+    """Khối ký ức có ít nhất một dòng bản ghi THẬT (không chỉ tiêu đề và dòng chỗ trống)?
+
+    Vì sao cần: nhật ký một phiên có thể chỉ chứa các hàng **không thuộc nhóm nào** — `F:` dữ kiện
+    và `E:` bằng chứng (đợt 3 vòng 22) đều cố ý không có nhóm, vì chúng để tra cứu chứ không phải
+    để nhắc lại mỗi lượt. Khi đó `brief_text` vẫn dựng đủ sáu tiêu đề cùng sáu dòng "(không có bản
+    ghi)", và khối vô nghĩa đó sẽ bị ghép vào system message: prompt của lượt sau khác lượt trước
+    dù phiên không có gì mới để nhớ. Chỗ gọi dùng hàm này để trả `''` thay vì ghép khối rỗng.
+    """
+    for line in str(text or '').splitlines():
+        line = line.strip()
+        if line.startswith('- ') and line != BRIEF_EMPTY_LINE:
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------

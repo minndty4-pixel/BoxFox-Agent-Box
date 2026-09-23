@@ -1,0 +1,50 @@
+{
+  "title": "BoxFox — living proof on the final answer, and a working composer attachment path",
+  "summary": "Two surfaces, both read from the real console shell (left session rail 248 px, centre chat column, dark zinc theme, brand blue #3b82f6, emerald/amber/red state colours, 13 px base, JetBrains-like mono for paths and commands). Surface 1 replaces the unconditional green `done` badge at HarnessStepView.tsx:1534-1537 with a three-state badge (đã kiểm / chưa kiểm / chưa đo được) plus a receipt line and an expandable evidence list whose rows are exactly what the harness already records (tool_end commands with exit codes, changed files with sha256 prefixes, the test run, and before/after captures with timestamps and box paths). Three variations show the same turn under three verdicts: sufficient, insufficient-at-warn (answer still delivered), and partial (turn cut by the step budget, so no verdict could run). Recommended: the verified file, because it is the only state that demonstrates the full evidence list; the other two inherit it and differ only by badge, receipt and row flags. Surface 2 fixes the composer: the `+` popover is drawn as an overlay above the toolbar (portal, anchored to the button) so its items are hit-testable instead of clipped by `flex min-w-0 overflow-hidden` at ChatInputBar.tsx:268, and each uploaded file becomes a chip that carries its real box path (.uploaded_artifacts/<n>.<ext>) and its state (đang tải lên / đã tải lên / tải lên thất bại), with the image case drawn as a labelled thumbnail. Recommended: the popover overlay file, because the invisible menu is the blocking bug; the chip row is the second half of the same fix and is kept as its own file. Both surfaces keep every control as a real focusable button with data-component-id and an accessible label, and stay readable when the window narrows (the shell collapses the right rail, chips wrap under the textarea).",
+  "sections": [
+    {
+      "title": "Final answer carrying living proof (three-state badge + evidence list)",
+      "key": "evidence-badge",
+      "description": "Final-answer block: three-state evidence badge, receipt line, and the evidence list behind it.",
+      "variations": [
+        {
+          "title": "Verified — full evidence list (recommended)",
+          "key": "verified",
+          "html_link": "evidence-badge-verified.html",
+          "is_recommended": true
+        },
+        {
+          "title": "Warn — answer delivered, marked unverified",
+          "key": "warn-unverified",
+          "html_link": "evidence-badge-warn.html",
+          "is_recommended": false
+        },
+        {
+          "title": "Partial — not measurable, turn cut by the step budget",
+          "key": "partial",
+          "html_link": "evidence-badge-partial.html",
+          "is_recommended": false
+        }
+      ]
+    },
+    {
+      "title": "Composer attachments that survive the box",
+      "key": "attachments",
+      "description": "The `+` menu drawn as a hit-testable overlay, and a chip row carrying real box paths and upload state.",
+      "variations": [
+        {
+          "title": "Popover as overlay — menu renders above the toolbar",
+          "key": "popover-overlay",
+          "html_link": "attachments-popover-overlay.html",
+          "is_recommended": true
+        },
+        {
+          "title": "Chip row — real box paths and uploading/uploaded/failed states",
+          "key": "chip-row",
+          "html_link": "attachments-chip-row.html",
+          "is_recommended": false
+        }
+      ]
+    }
+  ]
+}

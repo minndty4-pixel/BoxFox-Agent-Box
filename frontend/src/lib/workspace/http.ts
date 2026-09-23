@@ -15,6 +15,8 @@ import type {
   WorkspaceMoveResult,
   WorkspaceRepository,
   WorkspaceTouchResult,
+  WorkspaceUploadOptions,
+  WorkspaceUploadResult,
 } from './types'
 
 export class WorkspaceRepositoryHttpError extends Error {
@@ -71,19 +73,24 @@ export class SandboxWorkspaceRepository implements WorkspaceRepository {
     targetDir: string,
     filename: string,
     body: Blob,
-    signal?: AbortSignal,
-  ): Promise<{ path: string; sizeBytes: number }> {
-    const response = await fetch(
-      `${this.baseUrl}/__box/file/upload?path=${encodeURIComponent(targetDir)}&name=${encodeURIComponent(filename)}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/octet-stream', 'X-BoxFox-Api-Key': this.apiKey },
-        body,
-        signal,
-      },
-    )
+    options: WorkspaceUploadOptions = {},
+  ): Promise<WorkspaceUploadResult> {
+    // `assign`/`mkdirs` là cờ bật/tắt của hợp đồng: chỉ gửi khi cần, để request của panel
+    // Workspace Files giữ nguyên hình dạng cũ (xem `http.test.ts`).
+    const query = [
+      `path=${encodeURIComponent(targetDir)}`,
+      `name=${encodeURIComponent(filename)}`,
+      ...(options.assignNumber ? ['assign=1'] : []),
+      ...(options.mkdirs ? ['mkdirs=1'] : []),
+    ].join('&')
+    const response = await fetch(`${this.baseUrl}/__box/file/upload?${query}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', 'X-BoxFox-Api-Key': this.apiKey },
+      body,
+      signal: options.signal,
+    })
     await ensureOk(response)
-    return (await response.json()) as { path: string; sizeBytes: number }
+    return (await response.json()) as WorkspaceUploadResult
   }
 
   async unzip(

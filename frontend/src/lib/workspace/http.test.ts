@@ -64,6 +64,43 @@ describe('SandboxWorkspaceRepository', () => {
     expect(out).toEqual({ path: 'up/x.txt', sizeBytes: 3 })
   })
 
+  it('upload KHÔNG gửi assign/mkdirs khi không có tuỳ chọn (panel Workspace Files giữ nguyên)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ path: 'up/x.txt', sizeBytes: 3 }))
+    vi.stubGlobal('fetch', fetchMock)
+    await new SandboxWorkspaceRepository('http://box.test', 'k').upload('up', 'x.txt', new Blob(['abc']), {
+      signal: undefined,
+    })
+    expect(fetchMock).toHaveBeenCalledWith('http://box.test/__box/file/upload?path=up&name=x.txt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', 'X-BoxFox-Api-Key': 'k' },
+      body: expect.any(Blob),
+      signal: undefined,
+    })
+  })
+
+  it('upload gửi assign=1/mkdirs=1 và trả tên do box cấp', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ path: '.uploaded_artifacts/proj/src/7.md', name: '7.md', sizeBytes: 4 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const out = await new SandboxWorkspaceRepository('http://box.test', 'k').upload(
+      '.uploaded_artifacts/proj/src',
+      'ghi chú.md',
+      new Blob(['abcd']),
+      { assignNumber: true, mkdirs: true },
+    )
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://box.test/__box/file/upload?path=.uploaded_artifacts%2Fproj%2Fsrc&name=ghi%20ch%C3%BA.md&assign=1&mkdirs=1',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream', 'X-BoxFox-Api-Key': 'k' },
+        body: expect.any(Blob),
+        signal: undefined,
+      },
+    )
+    expect(out).toEqual({ path: '.uploaded_artifacts/proj/src/7.md', name: '7.md', sizeBytes: 4 })
+  })
+
   it('unzip kèm header X-BoxFox-Api-Key', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ extracted: 2, skipped: 0, warnings: [] }))
     vi.stubGlobal('fetch', fetchMock)

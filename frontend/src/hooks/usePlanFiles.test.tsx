@@ -1,6 +1,7 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { describe, expect, it, vi } from 'vitest'
+import { DEFAULT_PLAN_GATE } from '../lib/plans'
 import { usePlanFiles } from './usePlanFiles'
 import type { PlanFilesState } from './usePlanFiles'
 import type {
@@ -63,8 +64,20 @@ const statusClient: PlanStatusClient = {
       reviewStale: false,
       indexAvailable: true,
       evaluation: null,
+      verification: { state: 'unknown', at: null, criticSessionId: null, issues: [] },
+      ownership: { sessionId: null },
+      // Harness cũ cũng luôn có khoá này; thiếu thì hook lùi về `enforce` — ở đây khai đúng mặc định.
+      gate: DEFAULT_PLAN_GATE,
     }) satisfies PlanStatusReport,
-  submitReview: async () => ({ review: null, forwarded: true }),
+  submitReview: async () => ({
+    review: null,
+    forwarded: true,
+    recorded: true,
+    resumed: null,
+    turnId: null,
+    wake: null,
+    approvalWarning: null,
+  }),
 }
 
 async function mount(repository: PlanRepository) {

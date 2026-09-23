@@ -16,7 +16,7 @@ from aiohttp import ClientSession
 from aiohttp.test_utils import TestServer
 
 from agentbox.agent_core.limits import (DEADLINE_CLAMP_NOTICE_CODE, DEADLINE_MAX_SECONDS,
-                                        DEADLINE_MIN_SECONDS)
+                                        DEADLINE_MIN_SECONDS, MAX_STEPS_MAX, STEPS_CLAMP_NOTICE_CODE)
 from agentbox.agent_core.runtime import HarnessRuntime, _journal_blocker
 from agentbox.api.server import create_app
 from agentbox.memory.session_store import SessionStore
@@ -72,7 +72,9 @@ def test_a_clamped_deadline_is_reported_once(tmp_path):
         async with TestServer(create_app(runtime)) as server:
             async with ClientSession(headers=HEADERS) as http:
                 url = str(server.make_url('/api/agent/sessions'))
-                async with http.post(url, json={'skills': [], 'deadlineSeconds': 900}) as resp:
+                # Vòng 25 (M8) nâng trần lên 1200 s, nên con số "quá trần" phải lớn hơn trần MỚI:
+                # xin 1500 để chắc chắn bị kẹp, thay vì 900 (nay nằm trong khoảng hợp lệ).
+                async with http.post(url, json={'skills': [], 'deadlineSeconds': 1500}) as resp:
                     assert resp.status == 201
                     payload = await resp.json()
                 sid = payload['id']
@@ -83,7 +85,7 @@ def test_a_clamped_deadline_is_reported_once(tmp_path):
                 assert again['config']['deadlineClamped'] is True
             clamped = notices(store, sid, DEADLINE_CLAMP_NOTICE_CODE)
             assert len(clamped) == 1, 'một lần kẹp, một notice'
-            assert clamped[0]['requested'] == 900 and clamped[0]['applied'] == DEADLINE_MAX_SECONDS
+            assert clamped[0]['requested'] == 1500 and clamped[0]['applied'] == DEADLINE_MAX_SECONDS
             assert clamped[0]['message'].startswith(DEADLINE_CLAMP_NOTICE_CODE + ':')
             assert runtime.session_metrics(sid)['deadlineClamped'] is True
 
@@ -125,6 +127,36 @@ def run_step_capped_turn(tmp_path, seed=None):
     return store, session
 
 
+def test_a_clamped_step_budget_is_reported_once(tmp_path):
+    """B7 — `maxSteps` bị kẹp phải NÓI RA, đối xứng với `DEADLINE_CLAMPED` của C1."""
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        runtime = HarnessRuntime(store, FixtureExecutor(), FixtureModel([answer('xong')]))
+        async with TestServer(create_app(runtime)) as server:
+            async with ClientSession(headers=HEADERS) as http:
+                url = str(server.make_url('/api/agent/sessions'))
+                async with http.post(url, json={'skills': [], 'maxSteps': 999}) as resp:
+                    high = await resp.json()
+                assert high['config']['maxSteps'] == MAX_STEPS_MAX
+                assert high['config']['stepsClamped'] is True, 'payload phải nói ra sự thật'
+                clamped = notices(store, high['id'], STEPS_CLAMP_NOTICE_CODE)
+                assert len(clamped) == 1, 'một lần kẹp, một notice'
+                assert clamped[0]['requested'] == 999 and clamped[0]['applied'] == MAX_STEPS_MAX
+                assert clamped[0]['message'].startswith(STEPS_CLAMP_NOTICE_CODE + ':')
+                assert runtime.session_metrics(high['id'])['stepsClamped'] is True
+
+                # Trong khoảng hợp lệ thì không có cờ, không có notice — nếu không, cờ này vô nghĩa.
+                async with http.post(url, json={'skills': [], 'maxSteps': 40}) as resp:
+                    ok = await resp.json()
+                assert ok['config']['maxSteps'] == 40
+                assert 'stepsClamped' not in ok['config']
+                assert notices(store, ok['id'], STEPS_CLAMP_NOTICE_CODE) == []
+                assert runtime.session_metrics(ok['id'])['stepsClamped'] is False
+        store.close()
+
+    asyncio.run(run())
+
+
 def test_step_cap_writes_exactly_one_blocker_record(tmp_path):
     store, session = run_step_capped_turn(tmp_path)
     records = blockers(store, session['id'])
@@ -146,7 +178,7 @@ def test_step_cap_pins_exactly_one_journal_row(tmp_path):
     row = tail[0]
     assert row['seq'] == blockers(store, session['id'])[0]['journalSeq'], \
         'event và nhật ký phải trỏ vào cùng một hàng'
-    assert row['text'].startswith('MAX_STEPS:')
+    assert row['text'].startswith('STEP_BUDGET_EXHAUSTED:')
     record = row['payload']['record']
     assert record['numbers'] == {'step': 1, 'maxSteps': 1}, 'số đo nằm ở `numbers`, không trộn vào chữ'
     assert record['id'] == f"X:{session['id'][:8]}-{row['seq']}", \

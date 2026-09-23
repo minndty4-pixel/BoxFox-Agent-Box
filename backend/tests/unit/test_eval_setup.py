@@ -260,6 +260,29 @@ def test_s8_flags_a_turn_over_eighty_percent_of_its_budget():
     assert signal['flagged'][0]['ratios'] == {'steps': 0.9, 'time': 0.9}
 
 
+def test_s8_reads_the_turn_numbers_directly_when_the_log_has_them():
+    entries = [
+        _entry('turn.start', sessionId='s1', data={'maxSteps': 10, 'deadlineSeconds': 100}),
+        # Vòng 22 (B9): lượt mới ghi thẳng `stepsUsed`/`deadlineUsedMs`/`toolsRun`. `steps` và
+        # `durationMs` ở đây cố tình nhỏ — nếu bài này đọc nhầm đường lùi thì tỉ lệ sẽ là
+        # 0.1/0.01 và phép khẳng định dưới trượt.
+        _entry('turn.end', sessionId='s1', durationMs=1000,
+               data={'status': 'completed', 'steps': 1, 'textChars': 900,
+                     'stepsUsed': 9, 'deadlineUsedMs': 90000, 'toolsRun': 7}),
+        # Lượt cũ: chỉ có khoá cũ, và `toolsRun` phải suy từ số `tool.end` của lượt.
+        _entry('turn.start', sessionId='s2', data={'maxSteps': 10, 'deadlineSeconds': 100}),
+        _entry('tool.end', sessionId='s2', data={'tool': 'file_read', 'isError': False}),
+        _entry('turn.end', sessionId='s2', durationMs=90000,
+               data={'status': 'completed', 'steps': 9, 'textChars': 900}),
+    ]
+    signal = rushed_index.compute(entries)['signals'][7]
+    assert signal['code'] == 'S8' and signal['count'] == 2
+    assert signal['flagged'][0]['ratios'] == {'steps': 0.9, 'time': 0.9}
+    assert signal['flagged'][0]['toolsRun'] == 7
+    assert signal['flagged'][1]['ratios'] == {'steps': 0.9, 'time': 0.9}
+    assert signal['flagged'][1]['toolsRun'] == 1, 'lượt cũ suy từ số tool.end đã ghi'
+
+
 def test_s9_and_s10_count_codes_and_missing_sections():
     entries = [
         _entry('turn.failed', sessionId='s1', level='error', code='UPSTREAM_HTTP_503',
@@ -286,6 +309,43 @@ def test_signals_that_cannot_be_measured_say_so():
     assert set(unmeasured) == {'S1', 'S4', 'S5'}
     assert all(signal['value'] is None for signal in unmeasured.values())
     assert 'nội dung tin nhắn' in unmeasured['S4']['note']
+
+
+def test_s4_measures_the_gate_numbers_when_the_log_has_them():
+    """Đợt 3 vòng 22 (P5.1): cổng bằng chứng ghi số vào `turn.end` ⇒ S4 rời `not_measured`."""
+    entries = [
+        _entry('turn.start', sessionId='s1', data={'maxSteps': 10, 'deadlineSeconds': 100}),
+        _entry('turn.end', sessionId='s1',
+               data={'status': 'completed', 'steps': 2, 'textChars': 900, 'gateMode': 'warn',
+                     'evidenceVerdict': 'sufficient', 'evidenceMissing': 0}),
+        _entry('turn.start', sessionId='s2', data={'maxSteps': 10, 'deadlineSeconds': 100}),
+        _entry('turn.end', sessionId='s2',
+               data={'status': 'completed', 'steps': 2, 'textChars': 900, 'gateMode': 'warn',
+                     'evidenceVerdict': 'insufficient', 'evidenceMissing': 2}),
+    ]
+    report = rushed_index.compute(entries)
+    s4 = next(signal for signal in report['signals'] if signal['code'] == 'S4')
+    assert s4['status'] == 'measured', 'có số của cổng trong log thì không được nói chưa đo'
+    assert s4['value'] == 0.5, 'một nửa số lượt đo được bị gắn cờ'
+    assert 'S4' not in report['unmeasured']
+    assert s4['flagged'][0]['verdict'] == 'insufficient' and s4['flagged'][0]['missing'] == 2
+    assert '20 PHIÊN' in s4['note'], 'ngưỡng nâng `enforce` của §6 phải nằm ngay trong note'
+
+
+def test_s4_says_how_many_turns_it_measured_on_a_half_and_half_log():
+    """Log nửa vời: lượt cũ (không khoá) KHÔNG được tính là sạch — nó không vào mẫu."""
+    entries = [
+        _entry('turn.start', sessionId='s1', data={'maxSteps': 10, 'deadlineSeconds': 100}),
+        _entry('turn.end', sessionId='s1',
+               data={'status': 'completed', 'steps': 2, 'textChars': 900,
+                     'evidenceVerdict': 'insufficient', 'evidenceMissing': 1}),
+        _entry('turn.start', sessionId='s2', data={'maxSteps': 10, 'deadlineSeconds': 100}),
+        _entry('turn.end', sessionId='s2', data={'status': 'completed', 'steps': 2, 'textChars': 900}),
+    ]
+    s4 = next(signal for signal in rushed_index.compute(entries)['signals'] if signal['code'] == 'S4')
+    assert s4['status'] == 'measured' and s4['count'] == 1 and s4['value'] == 1.0
+    assert '1 lượt đã đo' in s4['note'] and '2 lượt' in s4['note'], \
+        'note phải nói rõ đã đo được bao nhiêu trên tổng bao nhiêu lượt trong cửa sổ'
 
 
 def test_index_weights_only_warning_signals_and_is_capped_at_one():

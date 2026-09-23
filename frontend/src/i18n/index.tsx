@@ -7,22 +7,13 @@
  * không biến thành ô trống.
  */
 import { useCallback, useMemo, useState, type ReactNode } from 'react'
-import vi from './vi'
-import en from './en'
-import { I18nContext, interpolate, lookup, type Lang, type TKey, type TVars } from './context'
-
-const DICTS: Record<Lang, unknown> = { vi, en }
+import { DICTS } from './dicts'
+import { I18nContext, labelFrom, type Lang, type TKey, type TVars } from './context'
 
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [lang, setLang] = useState<Lang>('en')
 
-  const t = useCallback(
-    (key: TKey, vars?: TVars) => {
-      const template = lookup(DICTS[lang], key) ?? lookup(vi, key) ?? key
-      return interpolate(template, vars)
-    },
-    [lang],
-  )
+  const t = useCallback((key: TKey, vars?: TVars) => labelFrom(DICTS[lang], key, vars), [lang])
 
   const value = useMemo(() => ({ lang, setLang, t }), [lang, t])
 

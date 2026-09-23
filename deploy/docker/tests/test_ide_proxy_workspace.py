@@ -75,6 +75,16 @@ class IdeProxyWorkspaceTest(unittest.TestCase):
         ide_proxy.BOXFOX_API_KEY = self._previous_key
         self.temporary_directory.cleanup()
 
+    def _seed_upload_root(self) -> Path:
+        """Tạo ``.uploaded_artifacts`` như ``box-entrypoint.sh`` làm lúc box khởi động.
+
+        Client gửi `assign=1` mà không kèm `mkdirs` cho tệp lẻ (A5), nên thư mục này phải có
+        sẵn — đúng như trong box thật, nơi entrypoint tạo nó mode 0750.
+        """
+        directory = self.root / ".uploaded_artifacts"
+        directory.mkdir(mode=0o750, exist_ok=True)
+        return directory
+
     def _request(self, path: str, *, method: str = "GET", headers: dict | None = None,
                  data: bytes | None = None):
         request = urllib.request.Request(
@@ -205,7 +215,11 @@ class IdeProxyWorkspaceTest(unittest.TestCase):
         )
         self.assertEqual(status, 200)
         payload = json.loads(body.decode("utf-8"))
-        self.assertEqual(payload, {"path": "uploaded.bin", "sizeBytes": len(b"payload-bytes")})
+        # `name` luôn có từ đợt 22 (đường cấp số trả tên do BOX cấp).
+        self.assertEqual(
+            payload,
+            {"path": "uploaded.bin", "name": "uploaded.bin", "sizeBytes": len(b"payload-bytes")},
+        )
         path = self.root / "uploaded.bin"
         self.assertTrue(path.exists())
         self.assertEqual(path.read_bytes(), b"payload-bytes")
@@ -213,6 +227,106 @@ class IdeProxyWorkspaceTest(unittest.TestCase):
         if os.geteuid() == 0:
             self.assertEqual(path.stat().st_uid, ide_proxy.workspace_files.AGENT_UID)
             self.assertEqual(path.stat().st_gid, ide_proxy.workspace_files.AGENT_GID)
+
+    def test_upload_assign_writes_box_numbered_file(self) -> None:
+        """A3.4/A3.5: `?assign=1` ⇒ box cấp số RULE-5, tệp thuộc agent, mode `0o640`."""
+        self._seed_upload_root()
+        payload = "# ghi chú\n".encode("utf-8")
+        status, _h, body = self._request(
+            "/__box/file/upload?path=.uploaded_artifacts&name=notes.md&assign=1",
+            method="POST",
+            data=payload,
+            headers={
+                "Content-Type": "application/octet-stream",
+                "X-BoxFox-Api-Key": SECRET_OK,
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            json.loads(body.decode("utf-8")),
+            {"path": ".uploaded_artifacts/1.md", "name": "1.md", "sizeBytes": len(payload)},
+        )
+        written = self.root / ".uploaded_artifacts" / "1.md"
+        self.assertEqual(written.read_bytes(), payload)
+        self.assertEqual(written.stat().st_mode & 0o777, 0o640)
+        if os.geteuid() == 0:
+            self.assertEqual(written.stat().st_uid, ide_proxy.workspace_files.AGENT_UID)
+            self.assertEqual(written.stat().st_gid, ide_proxy.workspace_files.AGENT_GID)
+        # Tệp thứ hai nhận số 2 — không đè tệp thứ nhất.
+        status, _h, body = self._request(
+            "/__box/file/upload?path=.uploaded_artifacts&name=notes.md&assign=true",
+            method="POST",
+            data="# ghi chú 2\n".encode("utf-8"),
+            headers={
+                "Content-Type": "application/octet-stream",
+                "X-BoxFox-Api-Key": SECRET_OK,
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body.decode("utf-8"))["name"], "2.md")
+
+    def test_upload_assign_with_mkdirs_keeps_tree(self) -> None:
+        status, _h, body = self._request(
+            "/__box/file/upload?path=.uploaded_artifacts/proj/src&name=a.ts&assign=1&mkdirs=1",
+            method="POST",
+            data=b"export {}\n",
+            headers={
+                "Content-Type": "application/octet-stream",
+                "X-BoxFox-Api-Key": SECRET_OK,
+            },
+        )
+        self.assertEqual(status, 200)
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(payload["path"], ".uploaded_artifacts/proj/src/1.ts")
+        self.assertEqual(payload["name"], "1.ts")
+        self.assertTrue((self.root / ".uploaded_artifacts" / "proj" / "src" / "1.ts").exists())
+
+    def test_upload_without_mkdirs_still_404_when_subdir_missing(self) -> None:
+        self._seed_upload_root()
+        status, _h, _b = self._request(
+            "/__box/file/upload?path=.uploaded_artifacts/nope&name=a.ts&assign=1",
+            method="POST",
+            data=b"x",
+            headers={
+                "Content-Type": "application/octet-stream",
+                "X-BoxFox-Api-Key": SECRET_OK,
+            },
+        )
+        self.assertEqual(status, 404)
+
+    def test_parallel_assign_uploads_never_share_a_number(self) -> None:
+        """Hai tab gửi cùng lúc: `ThreadingHTTPServer` + `O_EXCL` ⇒ không trùng số."""
+        self._seed_upload_root()
+        names: list[str] = []
+        errors: list[object] = []
+
+        def worker() -> None:
+            try:
+                status, _h, body = self._request(
+                    "/__box/file/upload?path=.uploaded_artifacts&name=p.md&assign=1",
+                    method="POST",
+                    data=b"probe",
+                    headers={
+                        "Content-Type": "application/octet-stream",
+                        "X-BoxFox-Api-Key": SECRET_OK,
+                    },
+                )
+                if status != 200:
+                    errors.append(status)
+                    return
+                names.append(json.loads(body.decode("utf-8"))["name"])
+            except Exception as error:  # pragma: no cover - chỉ để test báo đúng lỗi thật
+                errors.append(error)
+
+        threads = [threading.Thread(target=worker) for _ in range(6)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(names), 6)
+        self.assertEqual(len(set(names)), 6, f"số bị cấp hai lần: {sorted(names)}")
 
     def test_upload_origin_alone_not_enough(self) -> None:
         status, _h, _b = self._request(

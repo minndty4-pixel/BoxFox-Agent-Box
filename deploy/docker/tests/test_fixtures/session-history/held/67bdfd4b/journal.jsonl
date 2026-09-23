@@ -1,0 +1,2 @@
+{"ts":"2026-09-22T08:44:12.100Z","kind":"task","id":"T:67bdfd4b-1","session":"67bdfd4bd6fa4398bd0273e62dd2acc0","sid8":"67bdfd4b","actor":"user","text":"viết một kế hoạch thử rồi xoá","status":"open"}
+{"ts":"2026-09-22T08:44:56.464Z","timestamp":"2026-09-22T08:44:56.464Z","kind":"plan","id":"P:test-plan@v1","session":"67bdfd4bd6fa4398bd0273e62dd2acc0","sid8":"67bdfd4b","actor":"agent","text":"kế hoạch test-plan v1 đã ghi (4643 B)","refs":["T:67bdfd4b-1"],"status":"draft","data":{"identity":"test-plan","version":1,"slug":"test-plan","relativePath":".plans/v1-test-plan.md"}}

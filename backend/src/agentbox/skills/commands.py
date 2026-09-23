@@ -20,6 +20,8 @@ CLI_DEFAULT_ROLES = {'claude-code': 'build', 'claude-design': 'orchestrator'}
 ROLE_SKILLS = {
     'explore': {'codebase-inspection', 'ast-grep'},
     'plan': {'codebase-inspection', 'grill-me'},
+    # Vòng 25 (D-33): người phản biện kế hoạch — vai read-only nên chỉ cần kỹ năng soi mã.
+    'plan-review': {'codebase-inspection'},
     'design': {'design-md', 'claude-design', 'popular-web-designs', 'architecture-diagram'},
     'build': {'codebase-inspection', 'test-driven-development', 'claude-design', 'popular-web-designs', 'design-md'},
     'debug': {'systematic-debugging', 'codebase-inspection', 'test-driven-development'},

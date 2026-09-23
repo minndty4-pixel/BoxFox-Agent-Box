@@ -125,6 +125,9 @@ const vi = {
     // Lệnh điều khiển vẫn gửi được khi agent đang chạy (BUG-21) — nhãn nút Gửi
     // phải nói rõ vì sao nút còn bật dù đang bận.
     sendControlWhileBusy: 'Gửi lệnh điều khiển trong khi agent đang chạy',
+    // Nhãn nút Gửi trong lúc tệp đang được đưa lên box (A5/A6): người dùng phải
+    // biết vì sao lượt gửi chưa bắt đầu.
+    uploadingAttachments: 'Đang tải tệp lên máy ảo…',
   },
   tabs: {
     chat: 'Chat',
@@ -186,6 +189,93 @@ const vi = {
     userLabel: 'Người dùng',
     agentLabel: 'Agent',
     systemLabel: 'Hệ thống',
+    // Đợt 22 / T4 + T15 — bảng Sub-agents theo từng lượt và đường ống peer.
+    subagentTurnHeader: 'Lượt {{turn}} · {{count}} con',
+    subagentTurnChip: 'Lượt {{turn}}',
+    subagentTurnUnknown: 'Lượt ? · {{count}} con',
+    subagentTurnEmpty: 'Lượt này không giao việc cho em nào',
+    subagentTurnEmptyHint: 'Chuyển sang lượt khác hoặc bật “tất cả lượt” để xem các con của lượt trước.',
+    subagentAllTurns: 'tất cả lượt',
+    subagentTurnStep: 'lượt {{turn}} · bước {{step}}',
+    subagentWaitingFor: 'đang chờ {{role}} giao kết quả',
+    subagentSafetyNet: 'lưới an toàn còn {{time}}',
+    subagentReceivedFrom: 'đã nhận từ {{role}}',
+    subagentDeliversTo: 'đã giao cho {{targets}}',
+    // Đợt 22 (sửa sau soát) — con còn chạy thì mũi tên là Ý ĐỊNH, không phải kết quả; biên nhận
+    // chỉ được nói "đã nhận" khi hàng thật sự `injected`.
+    subagentWillDeliverTo: 'sẽ giao cho {{targets}}',
+    subagentDeliversSkipped: 'không giao được cho {{target}} · {{reason}}',
+    subagentReceivingFrom: 'sẽ nhận từ {{role}}',
+    subagentReceiveSkipped: 'không nhận được từ {{role}} · {{reason}}',
+    subagentSkipReason: {
+      no_such_peer: 'không có người nhận',
+      recipient_not_running: 'người nhận đã đóng',
+      unknown: 'không rõ lý do',
+    },
+    // Đợt 3 / P4 — giao diện cổng bằng chứng sống. Nhãn ba trạng thái của huy hiệu lượt, chữ
+    // trong khối `Bằng chứng`, và câu dịch cho từng mã `missing[].reason` của cổng: người đọc
+    // phải hiểu VÌ SAO lượt bị chấm là chưa kiểm chứng, nên mỗi mã có một câu tiếng người.
+    evidenceBadge: {
+      verified: 'đã kiểm chứng',
+      unverified: 'chưa kiểm chứng',
+      not_measurable: 'chưa đo được',
+    },
+    evidenceBadgeTitleVerified: 'Bằng chứng của lượt: cổng đã chấm xong, không khẳng định nào thiếu bằng chứng.',
+    evidenceBadgeTitleMissing: 'Chưa kiểm chứng: {{count}} khẳng định chưa có bằng chứng — {{reasons}}. Câu trả lời không bị sửa; cổng chỉ ghim nhãn.',
+    evidenceBadgeTitleUnscored: 'Lượt này không có khẳng định nào bị ghim, nhưng chưa chấm được: {{reasons}}.',
+    evidenceBadgeTitleNothing: 'Chưa kiểm chứng: lượt này chưa để lại bằng chứng nào để chấm.',
+    evidenceBadgeTitleUnmeasured: 'Cổng bằng chứng không đo được lượt này — lý do ở khối bằng chứng bên dưới.',
+    // Lượt không mang trường `evidence` (phiên cũ, hoặc công tắc đo đang tắt): không mặc định xanh.
+    evidenceBadgeTitleLegacy:
+      'Lượt này không mang trường bằng chứng (phiên cũ trước cổng bằng chứng, hoặc công tắc đo đang tắt) — mặc định là chưa kiểm chứng, không phải đã kiểm chứng.',
+    evidenceLegacyNote: 'lượt này không mang số đo bằng chứng (phiên cũ, hoặc công tắc đo đang tắt)',
+    evidenceGate: 'cổng: BOXFOX_EVIDENCE_GATE = {{mode}}',
+    evidenceHide: 'Ẩn bằng chứng',
+    evidenceShow: 'Hiện bằng chứng',
+    evidenceOpenFile: 'Mở trong Files',
+    evidenceCommandsTitle: 'Lệnh đã chạy',
+    evidenceArtifactsTitle: 'Tệp và ảnh của lượt',
+    evidenceArtifactsEmpty: 'Lượt này không để lại tệp hay ảnh nào mở được.',
+    evidenceMissingTitle: 'Khẳng định chưa có bằng chứng',
+    evidenceUnmeasuredTitle: 'Chưa đo được lượt này',
+    evidenceMissingEmpty: 'Lượt này không có khẳng định nào thiếu bằng chứng — mục vẫn hiện để người đọc biết nó đã được chấm.',
+    evidenceReceiptCount: '{{count}} bằng chứng',
+    evidenceReceiptUnverified: '{{count}} khẳng định chưa kiểm',
+    evidenceJournalDegraded: 'Nhật ký bền trong box chưa ghi được ở phiên này — số liệu lấy từ hàng SQLite của harness.',
+    evidenceReason: {
+      no_change: 'lượt này không đổi gì trên đĩa',
+      no_evidence_for_tools: 'lượt có chạy công cụ nhưng không để lại mảnh bằng chứng nào',
+      change_without_verification: 'tệp đã đổi nhưng không có lệnh nào kiểm lại',
+      claim_path_not_in_turn: 'câu trả lời nhắc tới một tệp mà lượt này không hề đụng tới',
+      claim_path_missing: 'câu trả lời nhắc tới một tệp không có trong workspace',
+      ui_change_without_capture: 'giao diện đã đổi nhưng chưa có ảnh chụp sau thay đổi',
+      answer_references_unknown_command: 'câu trả lời nhắc tới một lệnh không có trong lượt',
+      box_unreachable: 'không kết nối được box để dò bằng chứng',
+      box_probe_failed: 'phép dò bằng chứng trong box bị lỗi',
+      gate_error: 'cổng bằng chứng tự hỏng ở lượt này',
+      answer_too_long: 'câu trả lời dài quá nên cổng không đo được lượt này',
+    },
+    // Vòng 23 / P4.3 + P5.3 — chú thích ảnh trong timeline: `extractToolMedia` trả `captionKind`,
+    // chữ dựng từ đây theo NGÔN NGỮ CÂU TRẢ LỜI (nhãn `args.caption` của model luôn thắng).
+    mediaCaption: {
+      'capture-window': 'Ảnh chụp cửa sổ',
+      'capture-tab': 'Ảnh chụp tab',
+      'capture-screen': 'Ảnh chụp màn hình',
+      record: 'Bản ghi màn hình',
+      browser: 'Ảnh chụp trang web',
+    },
+    // Vòng 23 / P5.3 — dòng biên nhận ở đầu lượt: chữ do app viết, nên đi theo ngôn ngữ câu trả lời.
+    receiptThinking: 'Suy luận',
+    receiptCommandOne: '1 lệnh',
+    receiptCommandMany: '{{count}} lệnh',
+    receiptCaptureOne: '1 ảnh chụp',
+    receiptCaptureMany: '{{count}} ảnh chụp',
+    receiptFailed: '{{count}} lỗi',
+    receiptWithoutResult: '{{count}} chưa có kết quả',
+    // Vòng 23 / P5.3 — hai nhãn mở/gấp phần văn của câu trả lời cuối: cũng là chữ của app quanh lượt,
+    // nên đi theo ngôn ngữ câu trả lời (trước đây là hai hằng số tiếng Anh viết cứng trong mã).
+    finalAnswerExpand: 'Xem chi tiết',
+    finalAnswerCollapse: 'Thu gọn chi tiết',
   },
   contextUsage: {
     title: 'Cửa sổ context',
@@ -675,6 +765,85 @@ const vi = {
         QUALITY: 'bổ sung các mục bắt buộc còn thiếu rồi gọi lại write_plan',
         other: 'sửa theo mã từ chối ở trên rồi gọi lại write_plan',
       },
+    },
+    /**
+     * Mặt phản biện (vòng 25) — đọc từ sổ phản biện của harness, KHÔNG suy từ vị trí trong dropdown.
+     * Chữ ở đây phải nói đúng cái đang biết: `unknown` là "chưa biết", không phải "chưa phản biện".
+     */
+    verify: {
+      chip: {
+        none: 'Chưa phản biện',
+        ok: 'Đã phản biện · {{critic}} · {{stamp}}',
+        revise: 'Cần sửa',
+        noneTitle: 'Bản đang xem chưa có phiên phản biện nào — nguồn: sổ phản biện của harness',
+        okTitle: 'Bản đang xem đã có phiên phản biện độc lập: {{critic}} · {{stamp}}',
+        reviseTitle: 'Phiên phản biện của bản đang xem còn nêu lỗi phải sửa',
+      },
+      cardTitle: 'Phản biện độc lập',
+      cardEmpty:
+        'Phản biện độc lập chưa chạy — chưa có phiên phản biện nào đọc bản {{version}}. Phiên phản biện chạy riêng với vai {{critic}}: nó đọc đúng bản đang xem, so với bản trước rồi trả về danh sách lỗi kèm cách sửa. Bản chưa phản biện thì chưa duyệt được — thẻ này sẽ đầy lên khi phiên đó trả kết quả.',
+      cardEmptyMinimum: 'Yêu cầu tối thiểu: một phiên {{critic}} · đọc {{path}} · ghi kết quả vào sổ phản biện',
+      cardOk: 'Phiên phản biện đã đọc bản {{version}} và không nêu lỗi nào.',
+      cardUnreadable:
+        'Chưa đọc được sổ phản biện nên chưa biết bản này đã qua phản biện hay chưa — ở đây không đoán.',
+      run: 'Chạy phiên phản biện',
+      runPending: 'Đang chạy phiên phản biện…',
+      critic: 'plan-review',
+      count: '{{count}} lỗi',
+      countHigh: '{{n}} cao',
+      countMedium: '{{n}} trung bình',
+      countLow: '{{n}} thấp',
+      severity: {
+        high: 'cao',
+        medium: 'trung bình',
+        low: 'thấp',
+        unknown: 'không rõ mức',
+      },
+      fix: 'Cách sửa:',
+      locked: 'Cần một phiên plan-review phản biện bản {{version}} trước khi duyệt',
+      lockedAria: 'Duyệt kế hoạch — đang khoá',
+      /** Vì sao nút bị khoá khi sổ phản biện của bản vừa đổi còn đang đọc. */
+      reading: 'Đang đọc sổ phản biện của bản {{version}} — chưa đọc xong thì ở đây không nói gì.',
+      /** `revise` + `BOXFOX_PLAN_VERIFY=enforce`: harness từ chối cú bấm này, nói bằng lời của harness. */
+      reviseLocked:
+        'Phiên phản biện đã đọc bản {{version}} và còn nêu lỗi phải sửa (verdict: revise) — harness từ chối duyệt bản này. Sửa hết lỗi rồi chạy lại phiên {{critic}} cho đúng bản này, hoặc gửi yêu cầu sửa.',
+      runError: 'Không chạy được phiên phản biện',
+      /** `BOXFOX_PLAN_VERIFY=warn`: harness vẫn cho qua một bản chưa đạt phản biện — phải nói ra. */
+      warnTitle: 'Harness vẫn cho qua',
+      blockedTitle: 'Harness chặn duyệt',
+    },
+    /** Hai quyết định ở hàng công cụ: duyệt kèm điều kiện và gửi lý do sửa (vòng 25). */
+    decisions: {
+      chevronTitle: 'Tuỳ chọn duyệt kèm điều kiện',
+      conditionsLabel: 'Điều kiện',
+      conditionsHint:
+        'Điều kiện vào sổ duyệt cùng quyết định, rồi đi theo lượt chạy tiếp theo như một yêu cầu kèm theo.',
+      conditionsPlaceholder: 'Ví dụ: M8 chỉ được coi là xong khi chạy trong conda activate ld và in ra số dòng đã đổi.',
+      conditionsSubmit: 'Duyệt kèm điều kiện',
+      cancel: 'Huỷ',
+      changesTitle: 'Lý do sửa — gửi thẳng vào lượt chạy tiếp theo',
+      changesFor: 'bản đang xem: v{{version}}',
+      changesPlaceholder: 'Ví dụ: tách M3 thành hai bước, M8 ghi rõ chạy trong conda activate ld.',
+      changesSubmit: 'Gửi yêu cầu sửa',
+      sent: {
+        approved: 'Đã gửi — agent đang mở lượt chạy tiếp theo',
+        approvedWithNote: 'Đã gửi — điều kiện vào sổ duyệt và đi theo lượt chạy tiếp theo',
+        changes: 'Đã gửi — agent đang mở lượt sửa kế hoạch v{{version}}',
+        notResumed: 'Đã vào sổ duyệt nhưng chưa mở được lượt chạy nào.',
+        unknown: 'Đã vào sổ duyệt. Harness không nói có mở lượt chạy hay không — ở đây không đoán.',
+        turn: 'lượt {{turn}}',
+        session: 'phiên {{session}}',
+        /** Mở đầu cho câu chữ NGUYÊN VĂN của harness về kết cục mở lượt, in ngay cạnh. */
+        wakeTitle: 'Harness nói rõ về việc mở lượt:',
+      },
+    },
+    /** Chủ sở hữu kế hoạch (vòng 25, M9): lượt mới mở ở phiên nào và khung chat đang xem phiên nào. */
+    owner: {
+      hint: 'Kế hoạch này thuộc phiên {{session}} — lượt mới mở ở đó, còn khung chat đang xem phiên khác.',
+      notInList:
+        'Kế hoạch thuộc phiên {{session}}, nhưng phiên đó không có trong danh sách phiên harness đang trả về — không mở được từ đây.',
+      open: 'Mở phiên đó',
+      openTitle: 'Chuyển khung chat sang phiên đang sở hữu kế hoạch',
     },
   },
   audit: {

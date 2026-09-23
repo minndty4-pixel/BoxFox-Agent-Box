@@ -178,6 +178,18 @@ def _slug(value: str) -> str:
     return re.sub(r"[^0-9A-Za-z_.-]", "-", value)[:80]
 
 
+def _key_with_label(key: str, spec: dict) -> str:
+    """Ghép NHÃN của lần chụp (P2.3) vào khoá tên tệp: `tab-3f9a2b1c` -> `tab-3f9a2b1c-rag-test`.
+
+    Nhãn nằm TRONG `key` (không thành một trường mới của tên tệp), nên `_new_path` giữ nguyên luật
+    cũ: `_slug` + bộ đếm chống trùng. Nhãn do HARNESS sinh từ `caption` của model và đã bỏ dấu
+    (`executor.capture_label`); box chỉ làm sạch thêm một lần nữa để không ký tự lạ nào lọt vào tên
+    tệp. Spec không có `label` — mọi đường gọi cũ, kể cả IDE proxy — thì tên tệp y như trước.
+    """
+    label = _slug(str((spec or {}).get("label") or "")).strip("-_.")
+    return f"{key}-{label}" if label else key
+
+
 def _new_path(kind: str, key: str, extension: str, *, session: str = None, step=None) -> Path:
     """Đường dẫn cho file mới — **theo phiên** khi biết phiên, phẳng như cũ khi không.
 
@@ -859,7 +871,7 @@ def resolve_tab(spec: dict) -> dict:
 def _capture_window(spec: dict, fmt: str, *, session: str = None, step=None) -> dict:
     win = resolve_window(spec)
     _check_size(win["w"], win["h"])
-    path = _new_path("window", f"window-{win['id']}", fmt, session=session, step=step)
+    path = _new_path("window", _key_with_label(f"window-{win['id']}", spec), fmt, session=session, step=step)
     with _X11_LOCK:
         if _count_active_records() > 0:
             raise _conflict(
@@ -870,10 +882,10 @@ def _capture_window(spec: dict, fmt: str, *, session: str = None, step=None) -> 
     return _image_result(path, fmt, "window", "x11", win["w"], win["h"])
 
 
-def _capture_screen(fmt: str, *, session: str = None, step=None) -> dict:
+def _capture_screen(fmt: str, *, session: str = None, step=None, label: str = None) -> dict:
     width, height = screen_size()
     _check_size(width, height)
-    path = _new_path("screen", "screen", fmt, session=session, step=step)
+    path = _new_path("screen", _key_with_label("screen", {"label": label}), fmt, session=session, step=step)
     with _X11_LOCK:
         _run_import("-window", "root", str(path), fmt)
     return _image_result(path, fmt, "screen", "x11", width, height)
@@ -883,7 +895,7 @@ def _capture_tab(spec: dict, fmt: str, *, session: str = None, step=None) -> dic
     tab = resolve_tab(spec)
     if not tab.get("webSocketDebuggerUrl"):
         raise CaptureError("Tab không có webSocketDebuggerUrl — CDP bất thường.", status_code=500)
-    path = _new_path("tab", f"tab-{tab['id'][:24]}", fmt, session=session, step=step)
+    path = _new_path("tab", _key_with_label(f"tab-{tab['id'][:24]}", spec), fmt, session=session, step=step)
     args = [
         sys.executable, str(BROWSER_CAPTURE_BIN), "capture_tab",
         "--web-socket-url", tab["webSocketDebuggerUrl"],
@@ -952,8 +964,9 @@ def capture(spec: dict, default_format: str = "png", *, session: str = None, ste
         result = (_capture_tab(spec, fmt, session=session, step=step)
                   if _session_id(session) is not None else _capture_tab(spec, fmt))
     elif kind == "screen":
-        result = (_capture_screen(fmt, session=session, step=step)
-                  if _session_id(session) is not None else _capture_screen(fmt))
+        result = (_capture_screen(fmt, session=session, step=step, label=spec.get("label"))
+                  if _session_id(session) is not None
+                  else _capture_screen(fmt, label=spec.get("label")))
     else:
         raise _invalid("kind phải là window/tab/screen")
     # Theo phiên thì khử trùng lặp + ghi chỉ mục; không theo phiên (đường gọi cũ) thì giữ

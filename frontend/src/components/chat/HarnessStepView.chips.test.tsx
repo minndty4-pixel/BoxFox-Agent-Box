@@ -21,9 +21,19 @@ function ev(type: string, data: Record<string, unknown> = {}, created?: number):
   return { seq, type, data, created: created ?? 1000 + seq }
 }
 
-function render(events: HarnessEvent[], onOpenTab: (tab: TranscriptTabId, target?: Record<string, unknown> | null) => void): HTMLElement {
+function render(
+  events: HarnessEvent[],
+  onOpenTab: (tab: TranscriptTabId, target?: Record<string, unknown> | null) => void,
+  sessionId: string | null = null,
+): HTMLElement {
   const node: ReactNode = (
-    <HarnessStepView events={events} status="idle" error={null} onOpenTab={onOpenTab} />
+    <HarnessStepView
+      events={events}
+      status="idle"
+      error={null}
+      onOpenTab={onOpenTab}
+      sessionId={sessionId}
+    />
   )
   const host = document.createElement('div')
   document.body.append(host)
@@ -183,5 +193,91 @@ describe('HarnessStepView — chip mở tab (đợt 4)', () => {
     })
 
     expect(() => click(host.querySelector('[data-timeline="plan"]'))).not.toThrow()
+  })
+
+  // T15 — chip chuyên gia phải kể đường ống peer, nhưng không được hứa hão: con còn chạy thì
+  // mũi tên là Ý ĐỊNH, con đóng sổ thì đọc biên nhận THẬT trong `deliveries[]`.
+  it('con đang chạy: chip nói `sẽ giao cho …` (ý định, chưa giao)', () => {
+    const host = render(
+      [
+        userTurn,
+        ev('child', {
+          sessionId: 'child-43',
+          role: 'testing',
+          status: 'started',
+          turn: 1,
+          deliverTo: ['main', 'role:review'],
+        }),
+      ],
+      vi.fn(),
+    )
+
+    const chip = host.querySelector('[data-timeline="child"]')
+    expect(chip?.getAttribute('data-child-targets')).toBe('main,review')
+    expect(chip?.textContent ?? '').toContain('Specialist: testing (started)')
+    expect(chip?.textContent ?? '').toContain('sẽ giao cho main, review')
+    expect(chip?.textContent ?? '').not.toContain('đã giao cho')
+  })
+
+  it('con đóng sổ: chip đọc `deliveries[]` thật, đích là sessionId nên hiện vai/main', () => {
+    const host = render(
+      [
+        userTurn,
+        ev('child', {
+          sessionId: 'child-44',
+          role: 'Build',
+          status: 'completed',
+          turn: 1,
+          deliverTo: ['main', 'role:review'],
+          // Đích thật là `sessionId`: `sess-1` = phiên cha (main), `child-99` = em review.
+          deliveries: [
+            { recipient: 'sess-1', state: 'injected', chars: 900, truncated: false },
+            { recipient: 'child-99', state: 'pending', chars: 900, truncated: false },
+          ],
+        }),
+        ev('child', { sessionId: 'child-99', role: 'review', status: 'running', turn: 1 }),
+      ],
+      vi.fn(),
+      'sess-1',
+    )
+
+    const chip = host.querySelector('[data-timeline="child"]')
+    expect(chip?.getAttribute('data-child-targets')).toBe('main,review')
+    expect(chip?.textContent ?? '').toContain('đã giao cho main, review')
+    expect(chip?.textContent ?? '').not.toContain('sẽ giao cho')
+  })
+
+  it('người nhận bị bỏ qua được kể ra kèm lý do, không đội lốt "đã giao"', () => {
+    const host = render(
+      [
+        userTurn,
+        ev('child', {
+          sessionId: 'child-46',
+          role: 'Build',
+          status: 'completed',
+          turn: 1,
+          deliverTo: ['role:review'],
+          deliveries: [
+            { recipient: 'review', state: 'skipped', chars: 0, truncated: false, reason: 'no_such_peer' },
+          ],
+        }),
+      ],
+      vi.fn(),
+    )
+
+    const chip = host.querySelector('[data-timeline="child"]')
+    expect(chip?.textContent ?? '').toContain('không giao được cho review · không có người nhận')
+    expect(chip?.textContent ?? '').not.toContain('đã giao cho')
+  })
+
+  it('bản ghi cũ không có dữ liệu đường ống peer thì chip giữ nguyên như trước', () => {
+    const host = render(
+      [userTurn, ev('child', { sessionId: 'child-45', role: 'Explore', status: 'started' })],
+      vi.fn(),
+    )
+
+    const chip = host.querySelector('[data-timeline="child"]')
+    expect(chip?.textContent ?? '').toBe('Specialist: Explore (started)')
+    expect(chip?.getAttribute('data-child-targets')).toBeNull()
   })
 })

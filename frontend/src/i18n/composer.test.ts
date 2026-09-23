@@ -8,7 +8,7 @@ import { describe, it, expect } from 'vitest'
 import en from './en'
 import vi from './vi'
 
-const COMPOSER_KEYS = ['placeholder', 'placeholderShort', 'quickAsk', 'autopilot', 'autopilotHint'] as const
+const COMPOSER_KEYS = ['placeholder', 'placeholderShort', 'quickAsk', 'autopilot', 'autopilotHint', 'uploadingAttachments'] as const
 
 describe('composer i18n keys', () => {
   it.each(COMPOSER_KEYS)('en.composer.%s tồn tại và không rỗng', (key) => {

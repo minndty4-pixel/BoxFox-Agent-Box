@@ -4,20 +4,30 @@ import json
 import uuid
 from dataclasses import asdict
 from .commands import INFO, ROLE_SKILLS, EXTERNAL
+from ..agent_core.attachments import (attachment_prompt_block, validate_attachments,
+                                     validate_inline_images)
 from ..agent_core.failures import classify_failure, failure_detail
 from ..observability.system_log import system_log
 from ..agent_core.compression import ContextCompressor, context_estimate, estimate_tokens
 
 
 class RuntimeCommands:
-    async def submit(self, sid, prompt, image=None, route=None, invocation_id=None):
+    async def submit(self, sid, prompt, image=None, route=None, invocation_id=None, images=None,
+                     attachments=None):
         session = self.store.get(sid)
         if not isinstance(prompt, str):
             raise ValueError('Prompt is required')
+        # Kiểm tệp/ảnh TRƯỚC khi ghi hàng admission (F8): một danh sách sai phải là 400 chứ
+        # không phải một hàng `command_invocations` mắc kẹt ở `running` — hàng đó còn chặn cả
+        # lần thử lại cùng `invocationId` (`INVOCATION_CONFLICT`) sau khi client sửa tệp.
+        checked_images = validate_inline_images([image, *(images or [])])
+        checked_attachments = validate_attachments(attachments)
         invocation_id = invocation_id or uuid.uuid4().hex
         if not isinstance(invocation_id, str) or len(invocation_id) > 100:
             raise ValueError('Invalid invocation ID')
-        request = json.dumps([prompt, image, route], sort_keys=True)
+        # `images`/`attachments` PHẢI nằm trong khoá idempotency: nếu không, lần thử lại của
+        # cùng `invocationId` với tệp khác sẽ trả kết quả cũ (A7).
+        request = json.dumps([prompt, image, route, images, attachments], sort_keys=True)
         old = self.store.db.execute('SELECT request,result FROM command_invocations WHERE session_id=? AND id=?', (sid, invocation_id)).fetchone()
         if old:
             if old[0] != request:
@@ -35,7 +45,9 @@ class RuntimeCommands:
             self.store.db.execute('INSERT INTO command_invocations VALUES(?,?,?,?)', (sid, invocation_id, request, json.dumps(result)))
         self.store.emit(sid, 'command_resolved', asdict(resolved) | {'invocationId': invocation_id})
         if resolved.kind == 'control':
-            self.store.emit(sid, 'user', {'text': prompt})
+            # `control: True` — hàng `user` của một LỆNH ĐIỀU KHIỂN không phải một lượt: bộ đếm
+            # lượt dựng lại từ bảng (`HarnessRuntime._turn_index`) bỏ qua đúng những hàng này.
+            self.store.emit(sid, 'user', {'text': prompt, 'control': True})
             if resolved.command == 'stop':
                 await self.stop(sid)
                 result['output'] = 'Stopped current turn and its children.'
@@ -119,16 +131,25 @@ class RuntimeCommands:
             # Route của lượt có thể đổi model; tra metadata của CHÍNH model đó (cùng
             # nguồn như lúc tạo phiên) để `start()` vẫn đối chiếu được `thinkingLevel`
             # thay vì bỏ qua kiểm tra (B13).
-            self.start(sid, prompt, image, route, await self.route_metadata(session, route))
+            self.start(sid, prompt, image, route, await self.route_metadata(session, route),
+                       images=images, attachments=attachments)
         else:
             self._next_turn_skills(session, enabled)
             session = self.store.get(sid)
             if route:
                 session['config']['route'] = route
                 self.store.update_config(sid, session['config'])
-            self.store.emit(sid, 'user', {'text': prompt})
-            self.store.save(sid, session['messages'] + [{'role': 'user', 'content': prompt}], 'running')
-            self.tasks[sid] = asyncio.create_task(self._command_task(sid, resolved, image))
+            # Nhánh command/skill: khối tệp đính kèm phải được dựng ở ĐÂY nữa, nếu không
+            # đường skill mất đường dẫn dù người dùng đã đính kèm tệp (A7).
+            block = attachment_prompt_block(checked_attachments)
+            event = {'text': prompt}
+            if checked_attachments:
+                event['attachments'] = checked_attachments
+            self.store.emit(sid, 'user', event)
+            self.store.save(sid, session['messages'] + [{'role': 'user',
+                                                        'content': f'{prompt}\n\n{block}' if block else prompt}], 'running')
+            self.tasks[sid] = asyncio.create_task(
+                self._command_task(sid, resolved, block, checked_images))
         with self.store.db:
             self.store.db.execute('UPDATE command_invocations SET result=? WHERE session_id=? AND id=?', (json.dumps(result), sid, invocation_id))
         return result
@@ -140,8 +161,13 @@ class RuntimeCommands:
         marker = '=== ENABLED SKILLS (Load full content via skill_view before executing complex workflows) ===\n'
         if messages and marker in messages[0].get('content', ''):
             prefix, tail = messages[0]['content'].split(marker, 1)
-            owner = tail[tail.index('\n\n=== OWNER-CONFIGURED DIRECTIVES'): ] if '\n\n=== OWNER-CONFIGURED DIRECTIVES' in tail else ''
-            messages[0]['content'] = prefix + marker + self.catalog.prompt(enabled) + owner
+            # Chỗ này chỉ được thay DANH SÁCH KỸ NĂNG. Bản cũ cắt từ marker tới hết chuỗi nên nuốt
+            # luôn mọi khối phía sau: đo sống 2026-09-21 thấy lượt đầu tiên mất `=== ANSWER LENGTH ===`
+            # trước khi tới tay mô hình (vòng 23 lúc đó còn mất thêm khối khuôn báo cáo). Giữ nguyên
+            # phần đuôi (mọi khối `\n\n=== ` sau danh sách).
+            _, _, body = tail.partition('\n\n=== ')
+            rest = ('\n\n=== ' + body) if body else ''
+            messages[0]['content'] = prefix + marker + self.catalog.prompt(enabled) + rest
         # Preserve historical tool exchange structure, remove obsolete active instruction bodies.
         for m in messages[1:]:
             if m.get('name') == 'skill_view':
@@ -149,7 +175,14 @@ class RuntimeCommands:
         self.skill_loader.reset(session['id'])
         self.store.save(session['id'], messages)
 
-    async def _command_task(self, sid, resolved, image):
+    async def _command_task(self, sid, resolved, block='', images=None):
+        """Chạy lệnh/kỹ năng trong phiên con; khối tệp đính kèm đi CÙNG con (A7).
+
+        `block` là khối đường dẫn mà lượt người dùng đã mang: mô hình làm việc thật ở đây là
+        phiên con, nên nếu chỉ ghép khối vào thân của phiên cha thì tệp vẫn vô hình với nó —
+        đúng triệu chứng BUG-40 mà A7 dựng lên để xoá. `images` là mảng ảnh đã kiểm của lượt
+        (ảnh đơn cũ đã gộp vào đây); chỉ đường `native` dùng tới, đường `claude-code` nhận chữ.
+        """
         try:
             session = self.store.get(sid)
             if resolved.executor == 'claude-code':
@@ -190,8 +223,14 @@ class RuntimeCommands:
                 else:
                     blocks = [self.skill_loader.read(child, skill)['content'] for skill in resolved.skills]
                     payload = resolved.prompt + ('\nPrior phase evidence (data):\n' + context if context else '')
+                    # Khối đứng trước câu người dùng: đường dẫn là thứ `file_read` cần, và nó
+                    # phải nằm trong thân THẬT của con, không chỉ trong thân của phiên cha.
+                    if block:
+                        payload = f'{block}\n\n' + payload
                     payload += '\n\nSkills for this task only (role/tool restrictions take priority):\n' + '\n\n'.join(blocks)
-                    self.start(child['id'], payload, image)
+                    # Ảnh đi qua mảng đã kiểm (không truyền `image` riêng: nó đã là phần tử đầu
+                    # của mảng, truyền cả hai sẽ gửi ảnh hai lần).
+                    self.start(child['id'], payload, None, images=list(images or []) or None)
                 try:
                     answer = await self.tasks[child['id']]
                 except asyncio.CancelledError:

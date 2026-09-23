@@ -3,8 +3,6 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
-  FINAL_ANSWER_COLLAPSE_LABEL,
-  FINAL_ANSWER_EXPAND_LABEL,
   HarnessStepView,
   activityReceipt,
   formatMediaLabel,
@@ -46,19 +44,18 @@ function rerender(host: HTMLElement, node: ReactNode) {
   })
 }
 
-function renderSession(events: HarnessEvent[]): HTMLElement {
-  return render(<HarnessStepView events={events} status="idle" error={null} />)
+// Vòng 24: lượt thật trong app luôn có `onOpenLightbox` (ChatPanel truyền xuống), nên ca về ảnh
+// bằng chứng truyền một hàm rỗng để ảnh được dựng thành tile đúng như lúc chạy thật.
+function renderSession(events: HarnessEvent[], onOpenLightbox?: () => void): HTMLElement {
+  return render(
+    <HarnessStepView events={events} status="idle" error={null} onOpenLightbox={onOpenLightbox} />,
+  )
 }
 
 function click(el: Element) {
   act(() => {
     el.dispatchEvent(new MouseEvent('click', { bubbles: true }))
   })
-}
-
-/** Đúng thứ tự tài liệu: `a` nằm trước `b`? (mockup: nút gấp phải ở SAU lưới ảnh) */
-function fullTextFollows(a: Element, b: Element): boolean {
-  return Boolean(b.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING)
 }
 
 function timelineKinds(host: HTMLElement): string[] {
@@ -282,7 +279,7 @@ describe('HarnessStepView — F3 suy luận trung thực', () => {
 })
 
 describe('HarnessStepView — F6 tóm tắt câu trả lời cuối', () => {
-  it('renders a short summary with an expander and keeps the turn media attached', () => {
+  it('F6 (vòng 23) tóm tắt ngắn + nút mở chi tiết; mặt câu trả lời không có lưới ảnh của app', () => {
     const full = `${'Dòng tóm tắt nội dung trả lời. '.repeat(40)}FINAL-MARKER-END`
     const events = [
       ev('user', { text: 'Chụp màn hình rồi mô tả' }),
@@ -306,10 +303,12 @@ describe('HarnessStepView — F6 tóm tắt câu trả lời cuối', () => {
 
     // R3 (yêu cầu 6): nút nằm NGAY DƯỚI đoạn tóm tắt (trong cùng khung chữ của tóm tắt).
     const expander = summaryBlock!.querySelector('[data-final-expander="true"]')
-    expect(expander?.textContent).toContain(FINAL_ANSWER_EXPAND_LABEL)
+    // P5.3: hai nhãn mở/gấp là chữ quanh lượt, đi theo ngôn ngữ CÂU TRẢ LỜI — lượt này trả lời
+    // tiếng Việt (chuỗi `Dòng tóm tắt nội dung trả lời.` lặp lại), nên nhãn phải là tiếng Việt.
+    expect(expander?.textContent).toContain('Xem chi tiết')
     expect(host.querySelectorAll('[data-final-expander="true"]').length).toBe(1)
 
-    // Lưới ảnh của lượt là "phần bên dưới": KHÔNG có trong trạng thái tóm tắt (R3).
+    // Vòng 23 (D-19): mặt câu trả lời KHÔNG còn lưới ảnh do app vẽ — ở trạng thái gấp cũng vậy.
     expect(host.querySelector('[data-final-answer="true"] [data-final-media="true"]')).toBeNull()
 
     click(expander!)
@@ -318,13 +317,16 @@ describe('HarnessStepView — F6 tóm tắt câu trả lời cuối', () => {
     expect(expandedBlock).toBeTruthy()
     expect(expandedBlock!.textContent).toContain('FINAL-MARKER-END')
 
-    // Mở rồi thì lưới ảnh hiện, và nút gấp nằm SAU lưới ảnh trong thứ tự tài liệu.
-    const finalMedia = host.querySelector('[data-final-answer="true"] [data-final-media="true"]')
-    expect(finalMedia).toBeTruthy()
-    expect(finalMedia!.querySelectorAll('img').length).toBe(1)
+    // Mở chi tiết chỉ mở phần CHỮ; không dựng thêm lưới ảnh nào, và nút gấp nằm ngay dưới khung chữ.
+    expect(host.querySelector('[data-final-media="true"]')).toBeNull()
     const collapse = host.querySelector('[data-final-expander="true"]')
-    expect(collapse?.textContent).toContain(FINAL_ANSWER_COLLAPSE_LABEL)
-    expect(fullTextFollows(collapse!, finalMedia!)).toBe(true)
+    expect(collapse?.textContent).toContain('Thu gọn chi tiết')
+    expect(expandedBlock!.compareDocumentPosition(collapse!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    // Ảnh của lượt không mất: nó vẫn nằm ngay dưới hàng công cụ của lượt, đúng một hàng media.
+    click(host.querySelector('[data-activity-toggle="true"]')!)
+    expect(host.querySelectorAll('[data-media-collapsed="true"]').length).toBe(1)
+    expect(host.querySelector('[data-media-thumb="true"]')).toBeTruthy()
   })
 })
 
@@ -590,6 +592,10 @@ describe('HarnessStepView — R2 một khối hoạt động', () => {
 describe('HarnessStepView — R3 tách tóm tắt / chi tiết', () => {
   const AUTHORED = 'Xong — đã sửa lỗi múi giờ.\n\n## Diễn biến\n| Bước | Việc |\n| --- | --- |\n| 1 | sửa |\n'
 
+  // Đường dẫn ảnh bằng chứng do model tự viết trong câu trả lời (tương đối gốc workspace), dùng cho
+  // hai ca vòng 24: tóm tắt là đoạn mở bài, và ảnh bằng chứng đóng thân câu trả lời.
+  const ANSWER_CAPTURE = '.generated_artifacts/captures/tab/2e4f1a20/2e4f1a20_007_tab-runs-page.png'
+
   it('R3.1 đoạn đầu nguyên văn là tóm tắt, phần còn lại trả về nguyên vẹn', () => {
     expect(splitAuthoredSummary(AUTHORED)).toEqual({
       summary: 'Xong — đã sửa lỗi múi giờ.',
@@ -676,10 +682,29 @@ describe('HarnessStepView — R3 tách tóm tắt / chi tiết', () => {
     const expanded = host.querySelector('[data-final-text="expanded"]')!
     expect(expanded.textContent).toContain('Diễn biến')
     expect(expanded.querySelector('[data-final-expander="true"]')).toBeNull()
-    expect(host.querySelector('[data-final-expander="true"]')!.textContent).toContain(FINAL_ANSWER_COLLAPSE_LABEL)
+    expect(host.querySelector('[data-final-expander="true"]')!.textContent).toContain('Thu gọn chi tiết')
   })
 
-  it('R3.8 lượt chỉ có ảnh, không có phần chữ nào để mở: nút vẫn tồn tại vì có lưới ảnh', () => {
+  it('F6 (vòng 23) hai nhãn mở/gấp đi theo ngôn ngữ câu trả lời, không còn chữ Anh viết cứng', () => {
+    const full = `${'Summary line of the answer body. '.repeat(40)}FINAL-MARKER-END`
+    const host = renderSession([
+      ev('user', { text: 'Explain the change' }),
+      ev('assistant', { text: full, final: true }),
+      ev('finish', { status: 'completed' }),
+    ])
+
+    // Cùng một component, câu trả lời tiếng Anh ⇒ nhãn tiếng Anh; tiếng Việt ⇒ nhãn tiếng Việt
+    // (hai ca tiếng Việt ở F6/R3.7 phía trên). Nhãn KHÔNG còn là hằng số trong mã.
+    const expander = host.querySelector('[data-final-expander="true"]')!
+    expect(expander.textContent).toContain('View details')
+    expect(expander.textContent).not.toContain('Xem chi tiết')
+
+    click(expander)
+
+    expect(host.querySelector('[data-final-expander="true"]')!.textContent).toContain('Hide details')
+  })
+
+  it('R3.8 (vòng 23) lượt chỉ có ảnh, không có phần chữ nào để mở: mặt câu trả lời không dựng nút nào', () => {
     const events = [
       ev('user', { text: 'Chụp màn hình' }),
       ev('tool_start', { id: 'c9', name: 'computer_screen_capture', args: {} }),
@@ -695,12 +720,15 @@ describe('HarnessStepView — R3 tách tóm tắt / chi tiết', () => {
 
     const host = renderSession(events)
     expect(host.querySelector('[data-final-text="summary"]')).toBeTruthy()
-    expect(host.querySelector('[data-final-expander="true"]')).toBeTruthy()
+    // D-19: nút "xem chi tiết" chỉ có nghĩa khi có PHẦN CHỮ bị cắt. Ảnh không còn là "phần bên dưới"
+    // của câu trả lời (D-22 đưa ảnh vào chính mạch chữ của model), nên lượt này không có nút nào.
+    expect(host.querySelector('[data-final-expander="true"]')).toBeNull()
     expect(host.querySelector('[data-final-media="true"]')).toBeNull()
 
-    click(host.querySelector('[data-final-expander="true"]')!)
-
-    expect(host.querySelector('[data-final-media="true"]')).toBeTruthy()
+    // Ảnh không mất: vẫn đúng một hàng media ngay dưới hàng công cụ của lượt.
+    click(host.querySelector('[data-activity-toggle="true"]')!)
+    expect(host.querySelectorAll('[data-media-collapsed="true"]').length).toBe(1)
+    expect(host.querySelector('[data-media-thumb="true"]')).toBeTruthy()
   })
 
   it('R3.9 câu trả lời ngắn, không ảnh, không phần còn lại: nút KHÔNG tồn tại', () => {
@@ -712,5 +740,88 @@ describe('HarnessStepView — R3 tách tóm tắt / chi tiết', () => {
 
     expect(host.querySelector('[data-final-text="summary"]')).toBeTruthy()
     expect(host.querySelector('[data-final-expander="true"]')).toBeNull()
+  })
+
+  it('F6 (vòng 24) lượt có việc: mở bài MỘT đoạn văn xuôi, thân kết bằng ẢNH bằng chứng', () => {
+    // Dạng chủ nhà chốt (D-29/D-30): đoạn văn xuôi đầu là TÓM TẮT hiện trên chat; phần model tự chọn
+    // — kể cả ảnh bằng chứng ĐÓNG THÂN câu trả lời — chỉ hiện khi bấm "Xem chi tiết".
+    const lead = 'Đã gắn xong gói bằng chứng sống vào lượt này.'
+    const body = [
+      '## Đã làm.',
+      '- chạy `pytest -q` trên bộ kiểm của lượt (exit 0)',
+      '- sửa `frontend/src/components/chat/HarnessStepView.tsx`',
+      '',
+      `![Bảng chạy đã đổi nhãn](${ANSWER_CAPTURE})`,
+    ].join('\n')
+    const text = `${lead}\n\n${body}`
+
+    // Hợp đồng tách: đoạn đầu NGUYÊN VĂN là tóm tắt, phần còn lại (kết bằng ảnh) giữ nguyên.
+    expect(splitAuthoredSummary(text)).toEqual({ summary: lead, rest: body })
+
+    const events = [
+      ev('user', { text: 'Làm nốt phần bằng chứng' }),
+      ev('assistant', { text, final: true }),
+      ev('finish', { status: 'completed' }),
+    ]
+    const host = renderSession(events, () => {})
+
+    const summaryBlock = host.querySelector('[data-final-text="summary"]')!
+    // Tóm tắt ĐÚNG đoạn mở bài: không mục, không ảnh, không chữ nào của phần sau.
+    expect(summaryBlock.querySelector('p')?.textContent).toBe(lead)
+    expect(summaryBlock.textContent).not.toContain('Đã làm.')
+    expect(host.querySelector('[data-final-answer="true"] [data-capture-tile="true"]')).toBeNull()
+    expect(summaryBlock.querySelector('[data-final-expander="true"]')).toBeTruthy()
+
+    click(summaryBlock.querySelector('[data-final-expander="true"]')!)
+
+    const expanded = host.querySelector('[data-final-text="expanded"]')!
+    expect(expanded.textContent).toContain('Đã làm.')
+    const tile = expanded.querySelector('[data-capture-tile="true"]')
+    expect(tile).toBeTruthy()
+    // D-30: khối CUỐI của thân câu trả lời là ảnh bằng chứng, không phải chữ.
+    const blocks = [...expanded.querySelectorAll('p, h1, h2, h3, ul, ol, table, pre, blockquote')]
+    expect(blocks[blocks.length - 1]?.contains(tile!)).toBe(true)
+  })
+
+  it('F6 (vòng 24) mở bài bằng TIÊU ĐỀ: không nhận tóm tắt model viết, rơi về lát cắt cũ (ghim nguyên trạng)', () => {
+    // Ghim NGUYÊN TRẠNG hành vi cũ: đoạn đầu không phải văn xuôi ⇒ `splitAuthoredSummary` trả `null`
+    // và `summarizeFinalText` quay về lát cắt 6 dòng/600 ký tự. Vòng 24 cố ý KHÔNG nới luật này
+    // (kế hoạch §7: giảm thiểu bằng luật trong kỹ năng `final-report`), nên đây là bài chống trôi.
+    const headed = [
+      '# Báo cáo lượt',
+      '',
+      'Đoạn thân thứ nhất.',
+      'Đoạn thân thứ hai.',
+      'Dòng ba của thân.',
+      'Dòng bốn của thân.',
+      'Dòng năm của thân.',
+      '',
+      `![Bảng chạy đã đổi nhãn](${ANSWER_CAPTURE})`,
+      'HET-CUOI-CUNG',
+    ].join('\n')
+    const sixLines = headed.split('\n').slice(0, 6).join('\n')
+
+    expect(splitAuthoredSummary(headed)).toBeNull()
+    expect(summarizeFinalText(headed)).toEqual({ summary: `${sixLines}…`, truncated: true })
+
+    const events = [
+      ev('user', { text: 'Báo cáo lượt này' }),
+      ev('assistant', { text: headed, final: true }),
+      ev('finish', { status: 'completed' }),
+    ]
+    const host = renderSession(events, () => {})
+
+    const summaryBlock = host.querySelector('[data-final-text="summary"]')!
+    expect(summaryBlock.textContent).toContain('Dòng bốn của thân.')
+    expect(summaryBlock.textContent).toContain('…')
+    expect(summaryBlock.textContent).not.toContain('Dòng năm của thân.')
+    expect(summaryBlock.textContent).not.toContain('HET-CUOI-CUNG')
+    expect(summaryBlock.querySelector('[data-final-expander="true"]')).toBeTruthy()
+
+    click(summaryBlock.querySelector('[data-final-expander="true"]')!)
+
+    const expanded = host.querySelector('[data-final-text="expanded"]')!
+    expect(expanded.textContent).toContain('HET-CUOI-CUNG')
+    expect(expanded.querySelector('[data-capture-tile="true"]')).toBeTruthy()
   })
 })

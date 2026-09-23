@@ -357,3 +357,31 @@ def test_a_round_that_touches_the_tail_is_the_last_resort():
     assert len(trimmed) == len(messages) - 2, 'cặp gọi/kết quả đi cùng nhau'
     assert 'call_x' not in json.dumps(trimmed, ensure_ascii=False)
     assert trimmed[-7:] == messages[-7:], 'các bước mới nhất vẫn còn'
+
+
+# --------------------------------------------------- trần ẢNH của một LƯỢT (A7)
+
+def test_the_turn_image_caps_are_checked_before_the_request_is_built():
+    """A7 — `client_max_size = 1048576` ở `api/server.py:150`, nên trần phải chặn ở CỬA vào.
+
+    Phép bó ảnh ở trên chỉ chạm thân request của các bước SAU; lượt đầu chưa có gì để bó, nên nếu
+    cửa vào không đếm thì ba ảnh của người dùng đi thẳng vào một request 1 MiB và lượt chết 413.
+    """
+    from agentbox.agent_core.attachments import (INLINE_IMAGE_CHARS_TOTAL, MAX_INLINE_IMAGE_CHARS,
+                                                 MAX_INLINE_MEDIA, validate_inline_images)
+    png = 'data:image/png;base64,' + 'A' * 64
+    assert validate_inline_images([png, png]) == [png, png], 'hai ảnh là mức cho phép'
+    assert validate_inline_images((None, None, png)) == [png], 'chỗ trống bị bỏ qua như trước'
+
+    def refused(images):
+        try:
+            validate_inline_images(images)
+        except ValueError as exc:
+            return str(exc)
+        raise AssertionError(f'phải bị từ chối: {len(images)} ảnh')
+
+    assert refused([png] * (MAX_INLINE_MEDIA + 1)).startswith('IMAGE_LIMIT')
+    half = INLINE_IMAGE_CHARS_TOTAL // 2 + 10
+    big = 'data:image/png;base64,' + 'A' * (half - len('data:image/png;base64,'))
+    assert len(big) <= MAX_INLINE_IMAGE_CHARS, 'từng ảnh vẫn hợp lệ — chỉ TỔNG của lượt bị vượt'
+    assert refused([big, big]).startswith('IMAGE_LIMIT_TOTAL')

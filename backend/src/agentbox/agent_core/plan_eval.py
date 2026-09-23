@@ -511,7 +511,15 @@ def evaluate_plan(markdown, *, identity='', version=None, parent_version=None, s
                     if getattr(parsed, 'parent', None) is not None or status == 'ok':
                         heard.append('Parent: ' + (f'v{getattr(parsed, "parent")}'
                                                    if getattr(parsed, 'parent', None) else 'none'))
-                    declared = ', '.join(heard) or 'khối boxfox-plan sai cú pháp'
+                    # Khối đọc được nhưng sai cú pháp (`status != 'ok'`) KHÔNG phải một con số
+                    # để so: câu từ chối phải nói ra chuyện cú pháp, nếu không model cứ sửa
+                    # version trong khi thứ hỏng là chính khối (đo sống 2026-09-22: khai
+                    # `Parent: <identity>@v1` ⇒ bị kể thành "lệch version" dù version khớp).
+                    if heard and status != 'ok':
+                        declared = f'không đúng cú pháp (đọc được: {", ".join(heard)})'
+                    else:
+                        declared = ', '.join(heard) or 'không đúng cú pháp'
+                    declared = f'khai {declared}' if status == 'ok' else declared
                     parent_hint = f' với Parent: v{parent_version}' if parent_version else ''
                     header_mismatch = f'{declared} (harness sẽ ghi v{version}{parent_hint})'
     if header_source == 'mismatch':
@@ -626,8 +634,10 @@ def evaluate_plan(markdown, *, identity='', version=None, parent_version=None, s
         if dimension == 'P3':
             evaluation = _with_rejection(evaluation, 'QUALITY', dimension, {})
         elif dimension == 'P1':
+            # `declared` là MỆNH ĐỀ cho câu từ chối (`header-mismatch`), không phải con số trần.
             evaluation = _with_rejection(evaluation, 'header-mismatch', dimension,
-                                        {'identity': identity, 'declared': declared or 'khối sai cú pháp',
+                                        {'identity': identity,
+                                         'declared': declared or 'không đúng cú pháp',
                                          'version': version, 'parent_hint': ''})
         elif dimension == 'P2':
             evaluation = _with_rejection(evaluation, 'revision-untraceable', dimension,

@@ -139,7 +139,9 @@ describe('ChatInputBar — lệnh điều khiển khi agent đang chạy (§D-U5
       await new Promise((resolve) => setTimeout(resolve, 0))
     })
 
-    expect(onSend).toHaveBeenCalledWith('/skill', undefined)
+    // Adapter giờ nhận ba tham số (prompt, images, attachments) — đổi có ý thức ở A6:
+    // lượt không có ảnh/tệp thì hai tham số sau là `undefined`.
+    expect(onSend).toHaveBeenCalledWith('/skill', undefined, undefined)
     expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe('/skill')
   })
 })

@@ -53,8 +53,10 @@ BoxFox operates as an orchestrated multi-agent network with clearly defined resp
 - Preserve session context across multi-turn interactions.
 - Avoid duplicate session creation. Track progress transparently via event streams and checkpoints.
 
-### 3.4. User Delivery Standards
-- State clearly: (1) What was changed, (2) Exact test outputs verifying the change, (3) Any operational notes or instructions.
+### 3.4. Final Report
+- The shape of the final answer lives in the `final-report` skill, not in this file: open it with `skill_view` when the turn produced work or something to show. No part list and no order lives here.
+- The runtime appends ONE hard evidence line to the main session's prompt (child sessions do not carry it): a turn that has something to show closes its answer with the finished-state captures, one label per image, never a fabricated image. Treat that line as the rule.
+- The answer itself carries markdown only: the text, the images and the links to the evidence files. No assistant-surface block, strip or badge wraps it, so never tell the owner to open an "Evidence" block.
 
 ### 3.5. Computer Use Agent (CUA) & Autonomous Element Selection
 When operating the sandbox GUI, desktop, or web applications:

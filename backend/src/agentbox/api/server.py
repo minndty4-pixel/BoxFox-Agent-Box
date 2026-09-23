@@ -1,5 +1,6 @@
 """Loopback harness API; UI uses the Vite /api/agent proxy."""
 import asyncio
+import hashlib
 import logging
 import os
 import re
@@ -8,13 +9,29 @@ from pathlib import Path
 from aiohttp import web
 from ..agent_core import plan_registry
 from ..agent_core.plan_header import IDENTITY_PATTERN
+from ..agent_core.peer_watchdog import PeerWatchdog
 from ..agent_core.runtime import HarnessRuntime, DecisionError
 from ..agent_core.failures import (BACKOFF_JITTER, BACKOFF_SECONDS, DEFAULT_MAX_RETRIES,
                                    RATE_LIMIT_MAX_SECONDS, RETRY_BUDGET_SECONDS)
 from ..agent_core.limits import (CHILD_DEADLINE_SECONDS, CHILD_MAX_STEPS, DEADLINE_DEFAULT_SECONDS,
                                  DEADLINE_MAX_SECONDS, INSTRUCTIONS_MAX_CHARS, MAX_STEPS_DEFAULT,
                                  MAX_STEPS_MAX)
+from ..agent_core.limits import parallel_read_tools_enabled, peer_mesh_enabled, peer_wait_max
+from ..agent_core.limits import (EVIDENCE_DEFAULT_MODE, EVIDENCE_MAX_ARTIFACTS, EVIDENCE_MODES,
+                                 EVIDENCE_PROBE_MAX_FILES, EVIDENCE_PROBE_TIMEOUT_SECONDS,
+                                 EVIDENCE_REPAIR_MAX_TOKENS, EVIDENCE_REPAIR_MIN_REMAINING_SECONDS,
+                                 EVIDENCE_REPAIR_TIMEOUT_SECONDS)
+# Vòng 25 (D-33..D-35) — cổng phản biện/cổng nguồn và hạn chót của lượt lập kế hoạch. Route đọc
+# cùng hằng với runtime, nên `runtime_info` và hành vi thật không thể lệch nhau.
+from ..agent_core.limits import (PLAN_APPROVAL_UNVERIFIED_CODE, PLAN_REVIEW_MIN_ANSWER_CHARS,
+                                 PLAN_SOURCES_DEFAULT_MODE, PLAN_SOURCES_MODES,
+                                 PLAN_TURN_EXTENSION_SECONDS, PLAN_VERIFY_DEFAULT_MODE,
+                                 PLAN_VERIFY_MODES, PLAN_VERIFY_REVISE_MAX,
+                                 PLAN_WAKE_FAILED_CODE, PLAN_WAKE_NO_OWNER_CODE)
 from ..agent_core.roles import ORCHESTRATOR_TOOLS, ROLES
+from ..agent_core.limits import (CHILD_WALL_MAX_SECONDS, FANOUT_GLOBAL_CEILING, FANOUT_PER_PARENT_DEFAULT,
+                                 FANOUT_PER_PARENT_MAX, PEER_DELIVER_MAX, PEER_WAIT_MAX_SECONDS,
+                                 PEER_WAIT_SAFETY_SECONDS, WATCHDOG_TICK_SECONDS)
 from ..agent_core.tool_groups import tool_groups
 from ..memory.session_store import SessionStore
 from ..observability.system_log import (DEFAULT_READ_LINES, MAX_READ_LINES, clamp_lines,
@@ -160,6 +177,21 @@ def create_app(runtime):
 
     app.on_startup.append(heal_stored_context_windows)
 
+    async def start_peer_watchdog(_app):
+        """T10 — sổ con phải được quét kể cả khi mọi đường dọn con khác chết theo tiến trình.
+
+        Nhịp quét đầu tiên đóng mọi hàng `started` còn sót từ lần chạy trước bằng lý do `RESTART`:
+        thao tác tool không được chạy lại, nên một con của lần chạy trước không bao giờ có kết quả —
+        để nó `started` thì giao diện hiển thị "đang chạy" cho một phiên đã chết.
+        """
+        watchdog = PeerWatchdog(runtime.store, runtime)
+        runtime.watchdog = watchdog
+        watchdog.start()
+        # Không ghi gì lúc khởi động: file nhật ký phải rỗng cho tới khi có VIỆC xảy ra, và việc
+        # watchdog làm thì chính nó ghi (`watchdog.child_closed` / `watchdog.wait_forced`).
+
+    app.on_startup.append(start_peer_watchdog)
+
     async def health(request):
         return web.json_response({'status': 'ok', 'service': 'boxfox-harness', 'version': HARNESS_VERSION})
 
@@ -169,7 +201,7 @@ def create_app(runtime):
     async def runtime_info(request):
         """Nút vặn của runtime, chỉ đọc và không tham số — cho tab Harness của Settings.
 
-        Bảng này là nguồn duy nhất cho mọi con số giao diện hiển thị (bảy nhóm công cụ,
+        Bảng này là nguồn duy nhất cho mọi con số giao diện hiển thị (tám nhóm công cụ,
         bộ của từng vai trò, chính sách retry, trần bước/thời gian/ký tự): không chỗ nào
         ở phía UI được chép tay lại một con số, nếu không hai bên sẽ lệch nhau và khối
         "Tool access" sẽ hứa điều engine từ chối.
@@ -190,7 +222,45 @@ def create_app(runtime):
                        'deadlineDefaultSeconds': DEADLINE_DEFAULT_SECONDS,
                        'deadlineMaxSeconds': DEADLINE_MAX_SECONDS,
                        'childMaxSteps': CHILD_MAX_STEPS,
-                       'childDeadlineSeconds': CHILD_DEADLINE_SECONDS},
+                       'childDeadlineSeconds': CHILD_DEADLINE_SECONDS,
+                       # T13 — khối `peer`: giao diện đọc trần từ ĐÂY, không chép tay con số. Bốn giá
+                       # trị `*Now` là giá trị ĐANG có hiệu lực (env đọc ở thời điểm gọi), khác với
+                       # hằng số mặc định: một máy đang chạy `BOXFOX_PEER_FANOUT=1` phải thấy 1.
+                       'peer': {'enabled': peer_mesh_enabled(),
+                                'fanoutPerParentDefault': FANOUT_PER_PARENT_DEFAULT,
+                                'fanoutPerParentMax': FANOUT_PER_PARENT_MAX,
+                                'fanoutPerParentNow': runtime.fanout_limit({}),
+                                'fanoutGlobalCeiling': FANOUT_GLOBAL_CEILING,
+                                'deliverMax': PEER_DELIVER_MAX,
+                                'waitSafetySeconds': PEER_WAIT_SAFETY_SECONDS,
+                                'waitMaxSeconds': PEER_WAIT_MAX_SECONDS,
+                                'waitMaxNow': peer_wait_max(),
+                                'parallelReadTools': parallel_read_tools_enabled(),
+                                'watchdogTickSeconds': WATCHDOG_TICK_SECONDS,
+                                'childWallMaxSeconds': CHILD_WALL_MAX_SECONDS},
+                       # Đợt 3 (P3.5) — nhóm `gate`: giao diện và DEV đọc trạng thái THẬT của cổng
+                       # bằng chứng từ đây, không chép tay con số nào.
+                       'gate': {'evidenceMode': runtime.evidence_mode()[0],
+                                'modes': list(EVIDENCE_MODES),
+                                'default': EVIDENCE_DEFAULT_MODE,
+                                'repairMaxTokens': EVIDENCE_REPAIR_MAX_TOKENS,
+                                'repairTimeoutSeconds': EVIDENCE_REPAIR_TIMEOUT_SECONDS,
+                                'repairMinRemainingSeconds': EVIDENCE_REPAIR_MIN_REMAINING_SECONDS,
+                                'probeTimeoutSeconds': EVIDENCE_PROBE_TIMEOUT_SECONDS,
+                                'probeMaxFiles': EVIDENCE_PROBE_MAX_FILES,
+                                'maxArtifacts': EVIDENCE_MAX_ARTIFACTS,
+                                # Vòng 25 (D-33..D-35) — cùng nhóm `gate` nói luôn trạng thái THẬT
+                                # của hai cổng vòng lặp kế hoạch: giao diện không chép tay con số nào,
+                                # và DEV thấy được mức đang áp của cổng phản biện/nguồn.
+                                'planVerifyMode': runtime.plan_verify_mode()[0],
+                                'planVerifyModes': list(PLAN_VERIFY_MODES),
+                                'planVerifyDefault': PLAN_VERIFY_DEFAULT_MODE,
+                                'planSourcesMode': runtime.plan_sources_mode()[0],
+                                'planSourcesModes': list(PLAN_SOURCES_MODES),
+                                'planSourcesDefault': PLAN_SOURCES_DEFAULT_MODE,
+                                'planReviewMinAnswerChars': PLAN_REVIEW_MIN_ANSWER_CHARS,
+                                'planVerifyReviseMax': PLAN_VERIFY_REVISE_MAX,
+                                'planTurnExtensionSeconds': PLAN_TURN_EXTENSION_SECONDS}},
         })
 
     async def skill_settings(request):
@@ -298,7 +368,9 @@ def create_app(runtime):
         # Check before submitting: `runtime.submit` would raise the same KeyError and the user
         # would get `INTERNAL_ERROR` for what is really a stale session id.
         known_session(sid)
-        result = await runtime.submit(sid, body.get('prompt'), body.get('image'), body.get('route'), body.get('invocationId'))
+        result = await runtime.submit(sid, body.get('prompt'), body.get('image'), body.get('route'),
+                                      body.get('invocationId'), images=body.get('images'),
+                                      attachments=body.get('attachments'))
         return web.json_response(result, status=202 if result['status'] == 'running' else 200)
 
     async def stop(request):
@@ -399,6 +471,98 @@ def create_app(runtime):
         except Exception:
             return None
 
+    def plan_wake_prompt(identity, version, relative_path, decision, note):
+        """Prompt của lượt mở từ tab Plan — tiếng Việt, có tiền tố `[Tab Plan]` để transcript tự
+        nói nguồn gốc của lượt (chủ nhà bấm ở tab, không phải gõ trong chat)."""
+        where = relative_path or f'{identity} v{version}'
+        if decision == 'changes_requested':
+            lines = [f'[Tab Plan] chủ nhà yêu cầu sửa kế hoạch {identity}@v{version} ({where}).',
+                     'Sửa ĐÚNG các điểm đã nêu, giữ nguyên phần đã đúng, rồi ghi bản kế tiếp bằng '
+                     '`write_plan` (bản mới phải khai nó sửa bản nào).',
+                     'Sau khi ghi: phản biện lại (`delegate_task role=\'plan-review\'` rồi `plan_verify`).',
+                     f'Tối đa {PLAN_VERIFY_REVISE_MAX} vòng sửa trong lượt này; chạm trần thì báo chủ '
+                     'nhà trung thực kèm danh sách lỗi chưa sửa.',
+                     'KHÔNG mở một kế hoạch mới cho cùng chủ đề.']
+        else:
+            lines = [f'[Tab Plan] chủ nhà đã duyệt kế hoạch {identity}@v{version} ({where}).',
+                     'Bắt đầu thi công theo đúng các milestone trong bản ĐÃ DUYỆT; bám tiêu chí '
+                     'nghiệm thu của bản đó.']
+        if (note or '').strip():
+            lines.append(f'Điều kiện kèm theo của chủ nhà: {note.strip()}')
+        else:
+            lines.append('Không kèm ghi chú.')
+        return '\n'.join(lines)
+
+    async def plan_wake(owner, identity, version, relative_path, decision, note, prompt=None):
+        """Mở MỘT lượt thật trong phiên gốc cho cú bấm ở tab Plan; không bao giờ im lặng.
+
+        `invocationId` suy từ chính nội dung quyết định nên cú bấm trùng (double-click, hoặc
+        người dùng bấm lại sau khi mạng chớp) trả lại kết quả đã lưu thay vì mở lượt thứ hai.
+        Mọi kết cục không-mở-được đều trả về một `wake` có mã và câu giải thích: quyết định của
+        chủ nhà đã vào sổ từ trước đó, nên đánh thức hỏng không được làm mất nó — nhưng cũng
+        không được giả vờ là đã mở lượt.
+        """
+        invocation_id = 'plan-wake-' + hashlib.sha1(
+            f'{identity}@{version}:{decision}:{note}'.encode('utf-8')).hexdigest()[:16]
+        if prompt is None:
+            prompt = plan_wake_prompt(identity, version, relative_path, decision, note)
+        try:
+            await runtime.submit(owner, prompt, invocation_id=invocation_id)
+        except ValueError as exc:
+            message = str(exc)
+            if 'SESSION_BUSY' in message:
+                system_log.write('plan.review.wake_busy', level='warn', code='PLAN_WAKE_BUSY',
+                                 message=f'phiên {owner} đang chạy một lượt — quyết định đã ghi sổ, '
+                                         f'lượt mới chưa mở', session_id=owner, identity=identity,
+                                 version=version, decision=decision)
+                return {'resumed': False, 'wake': {
+                    'state': 'busy', 'code': 'PLAN_WAKE_BUSY',
+                    'message': f'phiên {owner} đang chạy một lượt — quyết định đã ghi sổ, lượt mới '
+                               f'chưa mở'}}
+            if 'INVOCATION_CONFLICT' in message:
+                system_log.write('plan.review.wake_duplicate', level='info', code='PLAN_WAKE_DUPLICATE',
+                                 message='cú bấm trùng với một lượt đã mở trước đó',
+                                 session_id=owner, identity=identity, version=version, decision=decision)
+                return {'resumed': True, 'wake': {'state': 'duplicate', 'code': 'PLAN_WAKE_DUPLICATE',
+                                                 'sessionId': owner}}
+            system_log.write('plan.review.wake_failed', level='error', code=PLAN_WAKE_FAILED_CODE,
+                             message=message, session_id=owner, identity=identity, version=version,
+                             decision=decision)
+            return {'resumed': False, 'wake': {'state': 'failed', 'code': PLAN_WAKE_FAILED_CODE,
+                                               'message': message}}
+        except Exception as exc:  # pragma: no cover - mọi lỗi khác của `submit`
+            message = f'{type(exc).__name__}: {exc}'
+            system_log.write('plan.review.wake_failed', level='error', code=PLAN_WAKE_FAILED_CODE,
+                             message=message, session_id=owner, identity=identity, version=version,
+                             decision=decision)
+            return {'resumed': False, 'wake': {'state': 'failed', 'code': PLAN_WAKE_FAILED_CODE,
+                                               'message': message}}
+        system_log.write('plan.review.wake', level='info',
+                         message=f'đã mở lượt mới trong phiên {owner} từ tab Plan',
+                         session_id=owner, identity=identity, version=version, decision=decision,
+                         invocationId=invocation_id)
+        try:
+            runtime.store.set_plan_review_resumed(identity, version)
+        except Exception:  # pragma: no cover - hàng sổ đã ghi; cột `resumed` chỉ là dấu vết thêm
+            pass
+        turn_count = (runtime.store.get(owner) or {}).get('turn_count') or 0
+        return {'resumed': True, 'turnId': f'{owner}#{turn_count}',
+                'wake': {'state': 'opened', 'sessionId': owner}}
+
+    def plan_wake_missing(identity, version, event, **log_fields):
+        """Kết cục `missing` cho cả hai đường đánh thức: một câu, hai route, không lệch chữ.
+
+        Quyết định của chủ nhà đã vào sổ từ trước đó — đánh thức hỏng không được làm mất nó, nhưng
+        cũng không được giả vờ là đã mở lượt.
+        """
+        message = (f'harness chưa biết phiên nào sở hữu kế hoạch {identity} — hãy mở phiên và '
+                   f'yêu cầu trực tiếp')
+        system_log.write(event, level='warn', code=PLAN_WAKE_NO_OWNER_CODE,
+                         message=f'harness chưa biết phiên nào sở hữu kế hoạch {identity}',
+                         identity=identity, version=version, **log_fields)
+        return {'resumed': False, 'wake': {'state': 'missing', 'code': PLAN_WAKE_NO_OWNER_CODE,
+                                          'message': message}}
+
     async def plan_review(request):
         """`POST /api/agent/plans/review` — người dùng duyệt/yêu cầu sửa một bản plan (§4.1).
 
@@ -433,13 +597,39 @@ def create_app(runtime):
         # có số đo còn hơn bịa một con số để rồi lặng lẽ coi là còn hiệu lực.
         index = await plan_index_or_none()
         entry = None
+        relative_path = None
         if index is not None:
             group = index.group(identity)
             if group is not None:
                 entry = next((item for item in group.versions if item.version == version), None)
+                if entry is not None:
+                    relative_path = entry.relative_path
+        # Vòng 25 (D-34) — CỔNG PHẢN BIỆN, chặn TRƯỚC khi ghi sổ và trước khi chuyển tiếp box: một
+        # cú Duyệt cho bản chưa có phán quyết `ok` không được tạo ra hàng duyệt nào (nếu không, tab
+        # Plan sẽ nói "đã duyệt" cho một bản chưa ai phản biện). Cùng câu từ chối với đường chat.
+        approval_warning = None
+        if decision == 'approved':
+            blocked = runtime.plan_approval_blocked(identity, version)
+            if blocked:
+                mode = runtime.plan_verify_mode()[0]
+                if mode == 'enforce':
+                    return web.json_response({'blocked': True, 'code': PLAN_APPROVAL_UNVERIFIED_CODE,
+                                              'reason': blocked,
+                                              'remedy': f"gọi plan-review rồi plan_verify với verdict=ok "
+                                                        f"cho đúng bản v{version}"},
+                                             status=409)
+                if mode == 'warn':
+                    approval_warning = blocked
+                    system_log.write('plan.approval.unverified', level='warn',
+                                     code=PLAN_APPROVAL_UNVERIFIED_CODE,
+                                     message=f'{blocked} (đã ghi sổ vì cổng đang ở chế độ warn)',
+                                     identity=identity, version=version, mode=mode)
+        # Vòng 25 (D-36): hàng sổ ghi luôn PHIÊN SỞ HỮU nếu harness đã biết — trước đây cột này
+        # toàn `NULL`, nên quyết định không nói được nó thuộc về phiên nào (BUG-2).
+        owned = runtime.plan_ownership_view(identity)['sessionId']
         try:
             row = runtime.store.record_plan_review(
-                identity, version, decision, note=note, source='plan-tab',
+                identity, version, decision, note=note, source='plan-tab', session_id=owned,
                 content_size=None if entry is None else entry.size_bytes,
                 content_modified_at=None if entry is None else entry.modified_at)
         except ValueError as exc:
@@ -456,9 +646,22 @@ def create_app(runtime):
                              message='Đã ghi quyết định duyệt vào sổ của harness nhưng chưa chuyển được '
                                      'sang box; badge trong .reviews sẽ cập nhật ở lần duyệt sau.',
                              reason=f'{type(exc).__name__}: {exc}')
-        return web.json_response({'identity': identity, 'version': version, 'decision': decision,
-                                  'note': note, 'forwarded': forwarded,
-                                  'review': _plan_review_json(row)['review']})
+        # M6 (D-35/Q3/Q4) — quyết định đã vào sổ, giờ mở MỘT LƯỢT THẬT trong phiên gốc. Cú bấm cũ
+        # chỉ ghi sổ rồi im lặng (đo vòng 25: 3/3 lần bấm, 55-60 s không có gì xảy ra).
+        if not owned:
+            wake = plan_wake_missing(identity, version, 'plan.review.wake_failed', decision=decision)
+        else:
+            wake = await plan_wake(owned, identity, version, relative_path, decision, note)
+        payload = {'identity': identity, 'version': version, 'decision': decision, 'note': note,
+                   'forwarded': forwarded, 'recorded': True,
+                   'review': _plan_review_json(row)['review'],
+                   'resumed': bool(wake.get('resumed'))}
+        if wake.get('turnId'):
+            payload['turnId'] = wake['turnId']
+        payload['wake'] = wake['wake']
+        if approval_warning:
+            payload['approvalWarning'] = approval_warning
+        return web.json_response(payload)
 
     async def plan_status(request):
         """`GET /api/agent/plans/status?identity=&version=` — trạng thái duyệt cho tab Plan (§4.2).
@@ -496,6 +699,22 @@ def create_app(runtime):
             payload['stateVersion'] = version
             evaluation = runtime.store.plan_evaluation(identity, version)
         payload['version'] = version if version is not None else state.state_version
+        # Vòng 25 (D-33/D-36): HAI khoá này LUÔN có mặt — giao diện phân biệt được "harness cũ,
+        # thiếu trường" với "harness mới, chưa có phê biện" (`state: 'none'`). Bản được hỏi dùng
+        # ĐÚNG số đã phân giải ở trên, không đọc lại chỉ mục lần thứ hai.
+        asked = payload['version']
+        payload['verification'] = runtime.plan_verification_view(identity, asked or 0)
+        payload['ownership'] = runtime.plan_ownership_view(identity)
+        # Vòng 25 (hậu kiểm soát mã, F1/F5): công tắc của cổng duyệt đi KÈM trạng thái để tab Plan
+        # đọc được cùng một sự thật với harness. Không có khoá này, giao diện chỉ biết "bản này
+        # chưa `ok`" rồi tự đoán là harness sẽ từ chối — mạnh hơn harness ở chế độ `warn`/`off`
+        # (chặn một cú duyệt mà harness cho qua), yếu hơn ở chế độ `enforce` + `revise` (mời một cú
+        # bấm mà harness chắc chắn trả 409). `*Unknown` là giá trị env lạ đã bị hạ về mặc định:
+        # hạ cấp cổng trong im lặng là thứ kế hoạch cấm, nên nó đi ra tới mặt người dùng.
+        verify_mode, verify_unknown = runtime.plan_verify_mode()
+        sources_mode, sources_unknown = runtime.plan_sources_mode()
+        payload['gate'] = {'verifyMode': verify_mode, 'verifyUnknown': verify_unknown,
+                           'sourcesMode': sources_mode, 'sourcesUnknown': sources_unknown}
         payload['evaluation'] = None if evaluation is None else {
             'identity': evaluation.get('identity'), 'version': evaluation.get('version'),
             'total': evaluation.get('total'), 'verdict': evaluation.get('verdict'),
@@ -503,6 +722,43 @@ def create_app(runtime):
         }
         return web.json_response(payload)
 
+
+    async def plan_verify_route(request):
+        """`POST /api/agent/plans/verify` — CHẠY PHIÊN PHẢN BIỆN cho một bản đã ghi (D-33).
+
+        Đường này **không ghi gì**: hàng `plan_verifications` chỉ ra đời từ tool `plan_verify` của
+        orchestrator, sau khi cổng provenance kiểm bằng chứng thật. Ở đây chỉ mở một lượt trong
+        phiên sở hữu và yêu cầu nó chạy phê bình — tab Plan cần nút này vì một bản kế hoạch ghi xong
+        rồi lượt kết thúc thì không còn ai phản biện nó nữa.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            body = None
+        if not isinstance(body, dict):
+            raise ApiError('PLAN_VERIFY_INVALID', 'a JSON body with identity and version is required', 400)
+        identity = plan_identity_arg(body.get('identity'))
+        version = body.get('version')
+        if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+            raise ApiError('PLAN_VERIFY_INVALID', 'version phải là số nguyên dương (bản plan cần phản biện)', 400)
+        owned = runtime.plan_ownership_view(identity)['sessionId']
+        if not owned:
+            return web.json_response({'recorded': False,
+                                      **plan_wake_missing(identity, version,
+                                                          'plan.verify.wake_failed')})
+        prompt = '\n'.join([
+            f'[Tab Plan] kế hoạch {identity}@v{version} chưa có phản biện độc lập đạt.',
+            "Chạy phiên phản biện: `delegate_task` với role='plan-review' trên ĐÚNG bản đó (nêu "
+            "đường dẫn tệp và yêu cầu câu trả lời kết thúc bằng dòng `VERDICT: ok` hoặc "
+            "`VERDICT: revise`).",
+            'Sau đó ghi phán quyết bằng `plan_verify(identity, version, verdict, issues, summary)`.',
+            'Nếu nó trả `revise`: sửa các điểm đã nêu, ghi bản kế tiếp rồi phản biện lại.',
+        ])
+        wake = await plan_wake(owned, identity, version, None, 'verify', '', prompt=prompt)
+        payload = {'recorded': False, 'resumed': bool(wake.get('resumed')), 'wake': wake['wake']}
+        if wake.get('turnId'):
+            payload['turnId'] = wake['turnId']
+        return web.json_response(payload)
 
     async def system_log_view(request):
         """Read-only view of the developer system log (plan §3.1).
@@ -534,6 +790,9 @@ def create_app(runtime):
         })
 
     async def close(app):
+        watchdog = getattr(runtime, 'watchdog', None)
+        if watchdog is not None:
+            await watchdog.stop()
         for sid in list(runtime.tasks):
             await runtime.stop(sid)
         runtime.store.close()
@@ -574,6 +833,7 @@ def create_app(runtime):
     app.router.add_get('/api/agent/journal/tasks', journal_tasks)
     app.router.add_post('/api/agent/plans/review', plan_review)
     app.router.add_get('/api/agent/plans/status', plan_status)
+    app.router.add_post('/api/agent/plans/verify', plan_verify_route)
     # DEV-only surface: the system log is host-only and read-only. There is deliberately
     # no write route and no route of the box that reaches it (plan §3.1 + §3.2).
     app.router.add_get('/api/agent/system-log', system_log_view)

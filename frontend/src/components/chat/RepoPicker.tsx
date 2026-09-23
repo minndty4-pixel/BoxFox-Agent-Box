@@ -5,12 +5,18 @@
  * - Popover mở lên trên với ô tìm kiếm Search + nút X xóa nhanh
  * - Phân nhóm: Configured (Đã cấu hình) & Not set up (Chưa thiết lập)
  * - Tương thích hoàn hảo Light/Dark mode, hỗ trợ phím ESC và click outside.
- * 
+ *
+ * Popover render qua `createPortal` vào `document.body` — cùng hàng công cụ với
+ * `AttachmentPicker`, cùng lỗi tiềm ẩn (BUG-39): hàng công cụ của `ChatInputBar`
+ * có `overflow-hidden`, nên một panel `absolute` có thể bị CẮT và không bấm được.
+ * Mẫu: `HarnessModelPicker.tsx`.
+ *
  * HƯỚNG DẪN KẾT NỐI PRODUCTION:
  * - Thay thế `INITIAL_REPOS` bằng API endpoint: `GET /api/user/repositories` (qua GitHub App / GitLab OAuth).
  * - Khi user thay đổi chọn repo -> Gửi `POST /api/sessions/:id/repositories` để cập nhật ngữ cảnh repo vào session.
  */
 import { useState, useRef, useEffect, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import {
   GitFork,
   Search,
@@ -27,18 +33,27 @@ export interface RepoItem {
 
 const INITIAL_REPOS: RepoItem[] = []
 
+/** Bề rộng panel lớn nhất (`sm:w-96`) — dùng để kẹp mép phải vào viewport. */
+const PANEL_WIDTH = 384
+/** Chiều cao ước lượng (search + danh sách) — dùng để kẹp mép trên. */
+const PANEL_HEIGHT = 320
+
 export function RepoPicker() {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
   const [selectedRepoIds, setSelectedRepoIds] = useState<string[]>([])
-  const popoverRef = useRef<HTMLDivElement>(null)
+  const [panelPosition, setPanelPosition] = useState<{ left: number; bottom: number } | null>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
 
-  // Click outside to close
+  // Ngoài-click kiểm cả trigger lẫn panel: panel nằm ngoài cây DOM của nút khi
+  // render qua portal.
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
-      if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
-        setOpen(false)
-      }
+      const target = e.target as Node
+      if (triggerRef.current?.contains(target)) return
+      if (panelRef.current?.contains(target)) return
+      setOpen(false)
     }
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setOpen(false)
@@ -53,6 +68,30 @@ export function RepoPicker() {
       document.removeEventListener('keydown', handleKeyDown)
     }
   }, [open])
+
+  // Vị trí bám theo nút trigger nhưng không phụ thuộc cây DOM của nó.
+  useEffect(() => {
+    if (!open) return
+
+    const updatePosition = () => {
+      const rect = triggerRef.current?.getBoundingClientRect()
+      if (!rect) return
+      const maxBottom = Math.max(8, window.innerHeight - PANEL_HEIGHT - 8)
+      setPanelPosition({
+        left: Math.max(8, Math.min(rect.left, window.innerWidth - PANEL_WIDTH - 8)),
+        bottom: Math.min(Math.max(8, window.innerHeight - rect.top + 8), maxBottom),
+      })
+    }
+
+    updatePosition()
+    window.addEventListener('resize', updatePosition)
+    window.addEventListener('scroll', updatePosition, true)
+    return () => {
+      window.removeEventListener('resize', updatePosition)
+      window.removeEventListener('scroll', updatePosition, true)
+    }
+  }, [open])
+
 
   const toggleRepo = (id: string) => {
     setSelectedRepoIds((prev) =>
@@ -78,9 +117,10 @@ export function RepoPicker() {
   const selectedCount = selectedRepoIds.length
 
   return (
-    <div className="relative inline-block" ref={popoverRef}>
+    <div className="relative inline-block">
       {/* Trigger Button */}
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen(!open)}
         className={`flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-medium transition cursor-pointer border select-none ${
@@ -96,8 +136,15 @@ export function RepoPicker() {
       </button>
 
       {/* Popover Dropdown (Opens upward) */}
-      {open && (
-        <div className="absolute bottom-full left-0 mb-2 w-80 sm:w-96 rounded-2xl border border-line bg-panel p-3 shadow-2xl z-50 animate-in fade-in zoom-in-95 duration-150 select-none">
+      {open &&
+        panelPosition &&
+        createPortal(
+        <div
+          ref={panelRef}
+          data-testid="repo-menu"
+          className="fixed z-50 w-80 sm:w-96 rounded-2xl border border-line bg-panel p-3 shadow-2xl animate-in fade-in zoom-in-95 duration-150 select-none"
+          style={{ left: panelPosition.left, bottom: panelPosition.bottom }}
+        >
           {/* Header Search Bar */}
           <div className="relative mb-2.5">
             <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted" />
@@ -218,7 +265,8 @@ export function RepoPicker() {
               </div>
             )}
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   )

@@ -1,7 +1,7 @@
 """`GET /api/agent/runtime-info` (số thật cho giao diện) và luật chỉ-được-thu-hẹp.
 
 Hai việc nằm chung một tệp vì chúng trả lời cùng một câu hỏi: giao diện được phép
-hứa gì. Bảy nhóm công cụ ở đây phải hợp đúng bằng bộ của orchestrator, mỗi vai trò
+hứa gì. Tám nhóm công cụ ở đây phải hợp đúng bằng bộ của orchestrator, mỗi vai trò
 đúng bằng `roles.ROLES[...]`, các con số retry/trần đúng bằng hằng trong `failures.py`
 và `limits.py` — và một harness gửi lên bộ công cụ chỉ có thể THU HẸP bộ của vai trò.
 Không đường nào nới ra: nếu nới được thì khối "Tool access" trên giao diện sẽ hứa
@@ -138,18 +138,19 @@ def test_the_turn_offers_the_model_exactly_the_narrowed_set(tmp_path):
     narrowed = asyncio.run(run('narrow.db', {'tools': ['file_read', 'sudo_rm_rf']}))
     assert narrowed == ['file_read']
     full = asyncio.run(run('full.db', {}))
-    assert sorted(full) == sorted(ORCHESTRATOR_TOOLS), 'thiếu trường thì lượt vẫn thấy đủ 22 công cụ'
+    assert sorted(full) == sorted(ORCHESTRATOR_TOOLS), 'thiếu trường thì lượt vẫn thấy đủ 25 công cụ'
 
 
-def test_the_seven_groups_cover_the_orchestrator_exactly():
+def test_the_eight_groups_cover_the_orchestrator_exactly():
     groups = tool_groups_module.TOOL_GROUPS
     assert [g['key'] for g in groups] == ['repositoryReading', 'skills', 'filesTerminal',
                                           'screenBrowser', 'webResearch', 'delegationPlans',
-                                          'questionsApprovals'], 'đúng thứ tự bảng Nút vặn của runtime'
+                                          'peerMesh', 'questionsApprovals'], \
+        'đúng thứ tự bảng Nút vặn của runtime (T8 thêm nhóm thứ tám: mesh agent con)'
     assert all(set(g) == {'key', 'tools', 'alwaysOn'} for g in groups)
     assert all(g['tools'] for g in groups)
     union = [tool for g in groups for tool in g['tools']]
-    assert len(union) == len(set(union)) == 22, 'bảy nhóm không chồng nhau, tổng 22 công cụ'
+    assert len(union) == len(set(union)) == 25, 'tám nhóm không chồng nhau, tổng 25 công cụ'
     assert set(union) == set(ORCHESTRATOR_TOOLS)
 
     assert [g['key'] for g in groups if g['alwaysOn']] == ['questionsApprovals']
@@ -157,11 +158,11 @@ def test_the_seven_groups_cover_the_orchestrator_exactly():
     assert set(questions['tools']) == {'ask_user', 'request_approval'}
 
 
-def test_the_route_answers_the_same_seven_groups(tmp_path):
+def test_the_route_answers_the_same_eight_groups(tmp_path):
     info = runtime_info(tmp_path)
     assert info['toolGroups'] == tool_groups_module.tool_groups()
     assert info['tools'] == sorted(ORCHESTRATOR_TOOLS)
-    assert len(info['tools']) == 22
+    assert len(info['tools']) == 25
 
 
 def test_every_role_row_equals_the_roles_definition(tmp_path):
@@ -187,6 +188,21 @@ def test_the_retry_numbers_are_the_constants_of_the_policy(tmp_path):
     assert info['retry']['maxRetries'] == 3
 
 
+def test_the_evidence_gate_mode_is_the_mode_the_engine_applies(tmp_path, monkeypatch):
+    """P3.5 — `limits.gate.evidenceMode` là mức ĐANG áp, đọc env ở thời điểm gọi.
+
+    Nghiệm thu của plan là một lệnh `curl` trên harness đang chạy; ca này giữ đúng tính chất đó ở
+    mức đơn vị: `BOXFOX_EVIDENCE_GATE=enforce` ⇒ bảng nói `enforce`, và giá trị lạ ⇒ mức MẶC ĐỊNH
+    (giá trị lạ không được biến thành một mức không tồn tại).
+    """
+    monkeypatch.setenv(limits.EVIDENCE_GATE_ENV, 'enforce')
+    assert runtime_info(tmp_path)['limits']['gate']['evidenceMode'] == 'enforce'
+
+    monkeypatch.setenv(limits.EVIDENCE_GATE_ENV, 'chặt-vừa-thôi')
+    info = runtime_info(tmp_path, name='runtime-info-unknown.db')
+    assert info['limits']['gate']['evidenceMode'] == limits.EVIDENCE_DEFAULT_MODE
+
+
 def test_the_limits_are_the_numbers_the_runtime_applies(tmp_path):
     info = runtime_info(tmp_path)
     assert info['limits'] == {
@@ -197,6 +213,47 @@ def test_the_limits_are_the_numbers_the_runtime_applies(tmp_path):
         'deadlineMaxSeconds': limits.DEADLINE_MAX_SECONDS,
         'childMaxSteps': limits.CHILD_MAX_STEPS,
         'childDeadlineSeconds': limits.CHILD_DEADLINE_SECONDS,
+        # T13 — khối peer: cùng luật "số báo cho giao diện là số engine đang áp", đọc từ `limits`
+        # và từ chính runtime (hai giá trị `*Now` đọc env ở thời điểm gọi).
+        'peer': {
+            'enabled': limits.peer_mesh_enabled(),
+            'fanoutPerParentDefault': limits.FANOUT_PER_PARENT_DEFAULT,
+            'fanoutPerParentMax': limits.FANOUT_PER_PARENT_MAX,
+            'fanoutPerParentNow': HarnessRuntime.fanout_limit({}),
+            'fanoutGlobalCeiling': limits.FANOUT_GLOBAL_CEILING,
+            'deliverMax': limits.PEER_DELIVER_MAX,
+            'waitSafetySeconds': limits.PEER_WAIT_SAFETY_SECONDS,
+            'waitMaxSeconds': limits.PEER_WAIT_MAX_SECONDS,
+            'waitMaxNow': limits.peer_wait_max(),
+            'parallelReadTools': limits.parallel_read_tools_enabled(),
+            'watchdogTickSeconds': limits.WATCHDOG_TICK_SECONDS,
+            'childWallMaxSeconds': limits.CHILD_WALL_MAX_SECONDS,
+        },
+        # Đợt 3 (P3.5) — cùng luật cho cổng bằng chứng: `evidenceMode` đọc qua CHÍNH hàm engine
+        # dùng (`HarnessRuntime.evidence_mode`), nên không có con số nào được chép tay ở đây và
+        # giao diện không thể hứa một mức mà engine không áp.
+        'gate': {
+            'evidenceMode': HarnessRuntime.evidence_mode(None)[0],
+            'modes': list(limits.EVIDENCE_MODES),
+            'default': limits.EVIDENCE_DEFAULT_MODE,
+            'repairMaxTokens': limits.EVIDENCE_REPAIR_MAX_TOKENS,
+            'repairTimeoutSeconds': limits.EVIDENCE_REPAIR_TIMEOUT_SECONDS,
+            'repairMinRemainingSeconds': limits.EVIDENCE_REPAIR_MIN_REMAINING_SECONDS,
+            'probeTimeoutSeconds': limits.EVIDENCE_PROBE_TIMEOUT_SECONDS,
+            'probeMaxFiles': limits.EVIDENCE_PROBE_MAX_FILES,
+            'maxArtifacts': limits.EVIDENCE_MAX_ARTIFACTS,
+            # Vòng 25 (D-33/D-34): hai cổng của vòng lặp kế hoạch đi cùng luật — số báo cho giao
+            # diện là số engine đang áp, đọc qua chính hàm engine dùng.
+            'planVerifyMode': HarnessRuntime.plan_verify_mode(None)[0],
+            'planVerifyModes': list(limits.PLAN_VERIFY_MODES),
+            'planVerifyDefault': limits.PLAN_VERIFY_DEFAULT_MODE,
+            'planSourcesMode': HarnessRuntime.plan_sources_mode(None)[0],
+            'planSourcesModes': list(limits.PLAN_SOURCES_MODES),
+            'planSourcesDefault': limits.PLAN_SOURCES_DEFAULT_MODE,
+            'planReviewMinAnswerChars': limits.PLAN_REVIEW_MIN_ANSWER_CHARS,
+            'planVerifyReviseMax': limits.PLAN_VERIFY_REVISE_MAX,
+            'planTurnExtensionSeconds': limits.PLAN_TURN_EXTENSION_SECONDS,
+        },
     }
     assert info['limits']['instructionsChars'] == limits.INSTRUCTIONS_MAX_CHARS
 

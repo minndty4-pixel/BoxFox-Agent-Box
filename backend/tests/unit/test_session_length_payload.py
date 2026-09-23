@@ -15,7 +15,15 @@ from agentbox.agent_core.runtime import HarnessRuntime
 from agentbox.agent_core.tool_contracts import schemas_for
 from agentbox.memory.session_store import SessionStore
 
-METRIC_KEYS = {'messageCount', 'contextEstimate', 'compressionCount', 'deadlineClamped'}
+# B7 (vòng 22) thêm `stepsClamped` — đối xứng với `deadlineClamped` của C1: một `maxSteps`
+# bị kẹp cũng phải nói ra, không im lặng như trước.
+METRIC_KEYS = {'messageCount', 'contextEstimate', 'compressionCount', 'deadlineClamped', 'stepsClamped'}
+# T13 (vòng 22) thêm khối `peers` + cờ `peerMesh` vào CÙNG payload: đó là chỗ duy nhất trả lời
+# được "mesh tốn thêm bao nhiêu" mà không phải mở SQLite bằng tay.
+PEER_METRIC_KEYS = {'peerMesh', 'peers'}
+# Vòng 25 (M8): `lastTurn` là TRẠNG THÁI lượt cuối (tab Plan đọc `status`/`partial` để biết lượt
+# trước có bị đứt không), không phải một con đếm — nên là khoá riêng, có hình dạng riêng.
+TURN_METRIC_KEYS = {'lastTurn'}
 
 
 def answer(text='done', calls=None, finish='stop'):
@@ -64,7 +72,7 @@ def test_session_metrics_match_the_stored_transcript(tmp_path):
     sid = session['id']
     metrics = runtime.session_metrics(sid)
 
-    assert set(metrics) == METRIC_KEYS
+    assert set(metrics) == METRIC_KEYS | PEER_METRIC_KEYS | TURN_METRIC_KEYS
     stored = store.get(sid)
     # Đủ mặt: system + user + assistant(xin tool) + kết quả tool + assistant(câu trả lời).
     assert metrics['messageCount'] == len(stored['messages']) == 5
@@ -101,7 +109,8 @@ def test_deadline_clamp_flag_is_visible_in_the_session_payload(tmp_path):
 
     store2 = SessionStore(tmp_path / 'sessions2.db')
     runtime2 = HarnessRuntime(store2, FixtureExecutor(), FixtureModel([answer('xong')]))
-    clamped = runtime2.create({'skills': [], 'connectionId': 'c1', 'deadlineSeconds': 900})
+    # Vòng 25 (M8) nâng trần lên 1200 s ⇒ con số "quá trần" phải lớn hơn trần MỚI.
+    clamped = runtime2.create({'skills': [], 'connectionId': 'c1', 'deadlineSeconds': 1500})
     assert clamped['config']['deadlineClamped'] is True, 'config đã nằm trong payload GET'
     assert runtime2.session_metrics(clamped['id'])['deadlineClamped'] is True
     store.close()
@@ -150,8 +159,17 @@ def test_the_route_serves_the_metrics_and_never_the_transcript(tmp_path):
                     return await response.json()
 
     payload = asyncio.run(run())
-    assert METRIC_KEYS <= set(payload['sessionMetrics'])
-    assert payload['sessionMetrics'] == {'messageCount': 5, 'contextEstimate': payload['sessionMetrics']['contextEstimate'],
-                                         'compressionCount': 0, 'deadlineClamped': False}
+    assert METRIC_KEYS | TURN_METRIC_KEYS <= set(payload['sessionMetrics'])
+    metrics = dict(payload['sessionMetrics'])
+    last_turn = metrics.pop('lastTurn')          # có `at` là đồng hồ, nên so riêng phần ổn định
+    assert set(last_turn) == {'turn', 'status', 'partial', 'code', 'at'}
+    assert (last_turn['turn'], last_turn['status'], last_turn['partial']) == (1, 'completed', False)
+    assert isinstance(last_turn['at'], (int, float)) and last_turn['at'] > 0
+    assert metrics == {'messageCount': 5, 'contextEstimate': payload['sessionMetrics']['contextEstimate'],
+                                         'compressionCount': 0, 'deadlineClamped': False, 'stepsClamped': False,
+                                         'peerMesh': True,
+                                         'peers': {'spawned': 0, 'running': 0, 'completed': 0, 'partial': 0,
+                                                   'failed': 0, 'childSteps': 0, 'childTokens': 0,
+                                                   'childAnswerChars': 0, 'deliveries': 0, 'waitedMs': 0}}
     assert 'messages' not in payload, 'transcript vẫn không được gửi kèm mỗi lần hỏi'
     assert payload['id'] == sid and payload['events'], 'events vẫn là bản ghi đầy đủ như trước'

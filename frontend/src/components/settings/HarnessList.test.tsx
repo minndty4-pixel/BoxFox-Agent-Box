@@ -24,7 +24,7 @@ import { useUiStore } from '../../store/uiStore'
 const RUNTIME_INFO = {
   toolGroups: [{ key: 'questionsApprovals', tools: ['ask_user', 'request_approval'], alwaysOn: true }],
   tools: ['ask_user', 'browser_use', 'codebase_glob', 'codebase_grep', 'computer_screen_capture', 'computer_screen_record', 'computer_use', 'delegate_task', 'file_edit_block', 'file_read', 'file_write', 'inspect_element', 'request_approval', 'session_search', 'skill_view', 'skills_list', 'terminal_exec', 'web_fetch', 'web_search', 'write_plan'],
-  roles: ['explore', 'plan', 'design', 'build', 'debug', 'review', 'simplify', 'testing', 'research'].map((id) => ({ id, name: id, tools: ['file_read'], skills: [] })),
+  roles: ['explore', 'plan', 'design', 'build', 'debug', 'review', 'plan-review', 'simplify', 'testing', 'research'].map((id) => ({ id, name: id, tools: ['file_read'], skills: [] })),
   retry: { maxRetries: 3, backoffSeconds: [1, 4, 12], rateLimitMaxSeconds: 30, budgetSeconds: 60, jitter: 0.2 },
   limits: {
     instructionsChars: 12000,
@@ -156,7 +156,7 @@ describe('HarnessList — câu tóm tắt theo dữ liệu thật', () => {
     await render()
 
     const summary =
-      'Changes nothing yet: router default model · 9 of 9 specialists on · 0 carry an appended prompt · ' +
+      'Changes nothing yet: router default model · 10 of 10 specialists on · 0 carry an appended prompt · ' +
       '20 of 20 tools · 16 steps (engine default) · 180 s (engine default)'
     const matches = host.textContent!.split(summary).length - 1
     expect(matches).toBeGreaterThanOrEqual(4)
@@ -169,7 +169,7 @@ describe('HarnessList — câu tóm tắt theo dữ liệu thật', () => {
       'Every built-in harness is stored with the same settings right now, so their summary lines read the same'
     )
     expect(host.textContent).toContain('not a copy-paste bug')
-    expect(host.textContent).toContain('20 tools · 9 roles')
+    expect(host.textContent).toContain('20 tools · 10 roles')
   })
 })
 

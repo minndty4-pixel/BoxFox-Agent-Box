@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import pytest
+from agentbox.agent_core import evidence_gate
 from agentbox.agent_core.runtime import HarnessRuntime, RouterClient
 from agentbox.agent_core.roles import ROLES, allowed_tools
 from agentbox.agent_core.compression import ContextCompressor
@@ -37,7 +38,7 @@ class FixtureExecutor:
         self.calls = []
         self.cleaned = []
 
-    async def execute(self, name, args, sid):
+    async def execute(self, name, args, sid, **_identity):
         self.calls.append((name, args, sid))
         return {'content': 'observed fixture result'}
 
@@ -119,9 +120,20 @@ def test_denied_tool_and_malformed_args_never_execute(tmp_path):
         runtime = HarnessRuntime(store, executor, client)
         s = runtime.create({'skills': []}, role='review')
         await runtime.start(s['id'], 'Inspect')
-        # `session_ensure` (A1) là op hạ tầng duy nhất được phép chạm executor ở đây: nó dọn thư mục
-        # phiên lúc bắt đầu lượt, không phải một công cụ. Phép kiểm này nói về CÔNG CỤ.
-        assert [name for name, _, _ in executor.calls if name != 'session_ensure'] == []
+        # `session_ensure` (A1) là op hạ tầng được phép chạm executor ở đây: nó dọn thư mục phiên lúc
+        # bắt đầu lượt, không phải một công cụ. Cổng bằng chứng (P3.2, vòng 22) cũng vậy: nó tự chạy
+        # MỘT phép dò `find` rồi ghi kết quả dò vào thư mục bằng chứng — việc của harness, không phải
+        # công cụ của model. Nhận diện hai lời gọi đó bằng **dấu vết của chính chúng** (lệnh `find`
+        # cố định, thư mục bằng chứng), KHÔNG bằng tên op: lọc theo tên thì chính cú `file_write` mà
+        # model gọi trong lượt này cũng lọt qua phép kiểm.
+        def infra_only(name, args):
+            if name == 'session_ensure':
+                return True
+            if name == 'terminal_exec':
+                return str(args.get('command') or '').startswith('cd /home/agent/workspace && find .')
+            return str(args.get('path') or '').startswith(evidence_gate.EVIDENCE_ROOT_REL)
+
+        assert [name for name, args, _ in executor.calls if not infra_only(name, args)] == []
         results = [m for m in store.get(s['id'])['messages'] if m['role'] == 'tool']
         assert all('error' in m['content'] for m in results)
         store.close()
@@ -136,7 +148,8 @@ def test_disabled_child_and_budget(tmp_path):
         await runtime.start(s['id'], 'Try disabled child')
         assert store.get(s['id'])['status'] == 'failed'
         assert 'disabled' in store.get(s['id'])['messages'][-1]['content']
-        assert 'MAX_STEPS' in store.events(s['id'])[-1]['data']['message']
+        # B2 (vòng 22): mã `MAX_STEPS` chung chung tách thành `STEP_BUDGET_EXHAUSTED`.
+        assert 'STEP_BUDGET_EXHAUSTED' in store.events(s['id'])[-1]['data']['message']
         store.close()
     asyncio.run(run())
 
@@ -145,7 +158,7 @@ def test_stop_busy_and_resume_no_replayed_tool(tmp_path):
     async def run():
         entered = asyncio.Event()
         class Waiting(FixtureExecutor):
-            async def execute(self, name, args, sid):
+            async def execute(self, name, args, sid, **_identity):
                 # A1: `session_ensure` chạy ở đầu lượt và phải trả NGAY — nếu nó cũng treo thì lượt
                 # không bao giờ tới được công cụ đang chờ, và phép kiểm này không còn nói về ca
                 # "công cụ đang chạy thì bị stop".
@@ -200,7 +213,10 @@ def test_compaction_keeps_pairs_goal_and_prefix():
 
 def test_skills_are_full_upstream_and_path_safe():
     catalog = SkillCatalog()
-    assert len(catalog.items) == 208
+    # 208 gói upstream + `final-report` + `planning` — kỹ năng của BoxFox (vòng 23 P1.3, vòng 25
+    # D-33) nằm cùng cây `vendor/hermes` để `DEFAULT_SKILLS` nạp được bằng id. Con số này là chốt
+    # chống cây bị cắt cụt, không phải hợp đồng với upstream: sửa nó khi CÓ CHỦ Ý thêm/bớt gói.
+    assert len(catalog.items) == 210
     for sid, item in catalog.items.items():
         read = catalog.read(sid)
         assert hashlib.sha256(read['content'].encode()).hexdigest() == item['sha256']
@@ -228,7 +244,7 @@ def test_http_router_auth_and_agent_session_api(tmp_path):
                 async with ClientSession(headers={'Host': '127.0.0.1:3102', 'X-BoxFox-Admin': '1'}) as client:
                     url = str(server.make_url('/api/agent'))
                     async with client.get(url + '/catalog') as resp:
-                        assert len((await resp.json())['roles']) == 9
+                        assert len((await resp.json())['roles']) == 10
                     async with client.post(url + '/sessions', json={'skills': []}) as resp:
                         assert resp.status == 201
                         sid = (await resp.json())['id']
@@ -241,3 +257,50 @@ def test_http_router_auth_and_agent_session_api(tmp_path):
                         assert resp.status == 403
                     assert received[0]['messages'][-1]['content'] == 'hello'
     asyncio.run(run())
+
+def test_an_empty_provider_stream_keeps_the_router_verdict_and_stays_retryable():
+    """Lượt sống 1130c2042b6c445db5f1bafc88d8bb94 (2026-09-23) chết vì ĐƯỜNG DỰ PHÒNG tự bắn
+    vào chân mình: nhà cung cấp trả kênh SSE rỗng, `complete()` rơi xuống lời gọi KHÔNG streaming,
+    router trả 502 ở đó, và nhánh dự phòng `await res.read()` — `Response.read()` là hàm ĐỒNG BỘ
+    trên thân đã đọc xong — ném `TypeError: object bytes can't be used in 'await' expression`.
+    Lỗi TypeError đó THAY CHỖ phán quyết của router, nên một lỗi tạm thời có thể thử lại
+    (`UPSTREAM_HTTP_502`) biến thành `TURN_FAILED_TYPEERROR` không thử lại được và lượt chết sau
+    một lời gọi duy nhất. Phép kiểm này ghim cả hai mặt: phán quyết phải SỐNG sót qua đường dự
+    phòng, và nó phải vẫn là lỗi tạm thời.
+    """
+    from aiohttp import web
+    from aiohttp.test_utils import TestServer
+    from agentbox.agent_core.failures import classify_failure, is_transient
+
+    async def run():
+        seen = []
+
+        async def upstream(request):
+            payload = await request.json()
+            seen.append(bool(payload.get('stream')))
+            if payload.get('stream'):
+                return web.Response(body=b'data: {"choices": []}\n\ndata: [DONE]\n\n',
+                                    content_type='text/event-stream')
+            return web.json_response({'error': {'message': 'Provider error (502): overloaded',
+                                                'code': 'UPSTREAM_HTTP_502'}}, status=502)
+
+        router = web.Application()
+        router.router.add_post('/api/router/chat', upstream)
+        async with TestServer(router) as router_server:
+            client = RouterClient(str(router_server.make_url('')).rstrip('/'))
+            try:
+                await client.complete([{'role': 'user', 'content': 'kế hoạch'}], [], {'model': 'x'})
+                raise AssertionError('kênh rỗng + 502 ở đường dự phòng phải ném lỗi từ chối của router')
+            except RuntimeError as refusal:
+                assert refusal.router_status == 502
+                assert refusal.router_code == 'UPSTREAM_HTTP_502'
+                code, message = classify_failure(refusal)
+                assert code == 'UPSTREAM_HTTP_502'
+                assert message.startswith('UPSTREAM_HTTP_502: the model router answered Router HTTP 502')
+                # Mặt thứ hai: lượt sau phải được phép thử lại — nếu TypeError quay lại, phép kiểm
+                # này đỏ ngay tại đây chứ không đợi tới một lượt sống chết im lặng.
+                assert is_transient(refusal) is True
+        # Đúng HAI lời gọi: bản streaming rồi bản không streaming. Không gọi thêm lần nào.
+        assert seen == [True, False]
+    asyncio.run(run())
+

@@ -32,8 +32,10 @@ def test_connection_reset_is_unreachable():
 
 
 def test_timeout_maps_to_deadline():
-    assert classify_failure(TimeoutError())[0] == 'DEADLINE'
-    assert classify_failure(asyncio.TimeoutError())[0] == 'DEADLINE'
+    # Vòng 22 (B2): mã `DEADLINE` chung chung tách thành `DEADLINE_EXCEEDED` — cùng sự việc,
+    # nhưng tên nói được rằng lượt đã chạy tới hạn chót chứ không phải hỏng vì hạ tầng.
+    assert classify_failure(TimeoutError())[0] == 'DEADLINE_EXCEEDED'
+    assert classify_failure(asyncio.TimeoutError())[0] == 'DEADLINE_EXCEEDED'
 
 
 def test_permission_error_maps_to_tool_not_permitted():
@@ -49,7 +51,10 @@ def test_runtime_error_with_http_status_keeps_the_status():
 
 
 def test_known_value_error_prefixes_are_preserved():
-    for prefix in ('CONTEXT_LIMIT', 'THINKING_LEVEL_UNSUPPORTED', 'SETUP_REQUIRED', 'MAX_STEPS'):
+    # `MAX_STEPS`/`DEADLINE` ở lại danh sách để ĐỌC ĐƯỢC bản ghi cũ, nhưng đường mới dùng
+    # `STEP_BUDGET_EXHAUSTED`/`DEADLINE_EXCEEDED` (vòng 22, B2) — cả bốn tên đều phải giữ.
+    for prefix in ('CONTEXT_LIMIT', 'THINKING_LEVEL_UNSUPPORTED', 'SETUP_REQUIRED', 'MAX_STEPS',
+                   'STEP_BUDGET_EXHAUSTED', 'DEADLINE_EXCEEDED'):
         code, message = classify_failure(ValueError(f'{prefix}: chi tiết'))
         assert code == prefix
         assert message.startswith(prefix + ':')

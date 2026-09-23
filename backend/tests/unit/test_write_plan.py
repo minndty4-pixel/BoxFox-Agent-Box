@@ -656,3 +656,211 @@ def test_the_refusal_line_tells_the_model_what_to_change(tmp_path):
         store.close()
 
     asyncio.run(run())
+
+
+# --------------------------------------------------------------------------- #
+# C4 (đợt 22, quyết định D-3) — dải mơ hồ để lại một VÉ dùng đúng một lần
+#
+# Dải `0.5 ≤ j < 0.75` trước đây chặn vĩnh viễn: model gửi lại y nguyên vẫn mơ hồ, nên chủ đề
+# không bao giờ thành kế hoạch. Nay lời từ chối ghim một hàng dữ kiện `F:` mang vé
+# (`data.identityAmbiguityTicket`, khớp theo `(slug, directory)`, và vé chỉ dùng được khi slug
+# CHƯA có nhóm) — gửi lại nguyên văn lần đầu thì nhận là kế hoạch mới, có dấu trên hàng `P:`.
+# --------------------------------------------------------------------------- #
+
+AMBIGUOUS_SLUG = 'patient-record-lookup-history'   # j = 0.6 với nhóm bên dưới
+AMBIGUOUS_OTHER = 'research-record-patient-notes'  # cũng 0.6, slug khác
+MATCHED_IDENTITY = 'research-patient-record-lookup'
+AMBIGUITY_MARK = {'score': 0.6, 'nearestIdentity': MATCHED_IDENTITY}
+
+
+def index_with_the_matched_group():
+    return [index_group(MATCHED_IDENTITY, [index_entry(1, MATCHED_IDENTITY)])]
+
+
+def ticket_rows(store, sid):
+    """Các hàng `F:` mang vé mơ hồ của một phiên, kèm chính hàng đó (đọc từ SQLite)."""
+    found = []
+    for row in store.journal_tail(sid, kinds=['fact']):
+        record = row['payload']['record']
+        ticket = (record.get('data') or {}).get(plan_registry.AMBIGUITY_TICKET_KEY)
+        if ticket:
+            found.append((record, ticket))
+    return found
+
+
+class GrowingIndexExecutor(BoxIndexExecutor):
+    """Chỉ mục biết cập nhật sau mỗi lần ghi: `plan_files.py` làm đúng việc này.
+
+    Không có nó thì lần gửi lại thứ hai không phân biệt được "vé đã tiêu" với "vé dùng lại được":
+    chỉ khi nhóm đã có mặt trong chỉ mục thì `ambiguity_ticket_usable` mới thật sự từ chối đường vé.
+    """
+
+    async def execute(self, name, args, sid):
+        result = await super().execute(name, args, sid)
+        if name == 'write_plan' and not result.get('is_error'):
+            directory = str(args.get('directory') or '').strip('/')
+            identity = f'{directory}/{args["slug"]}' if directory else args['slug']
+            entry = index_entry(result['version'], args['slug'], directory)
+            group = next((item for item in self.plans if item['identity'] == identity), None)
+            if group is None:
+                self.plans.append(index_group(identity, [entry]))
+            elif not [item for item in group['versions'] if item['version'] == result['version']]:
+                group['versions'].append(entry)
+        return result
+
+
+def test_an_ambiguous_refusal_leaves_a_one_shot_ticket(tmp_path):
+    """Lời từ chối vì mơ hồ ghim đúng một hàng `F:` mang vé — không phải hàng `P:`."""
+
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        executor = BoxIndexExecutor(index_with_the_matched_group())
+        runtime = HarnessRuntime(store, executor, FixtureModel([
+            answer(calls=[call('write_plan', {'slug': AMBIGUOUS_SLUG, 'markdown': PLAN_MARKDOWN})]),
+            answer('Chọn nhóm đi')]))
+        sid = runtime.create({'skills': []})['id']
+
+        await runtime.start(sid, 'Ghi plan mơ hồ')
+        failures = [result for result in tool_results(store, sid) if result.get('is_error')]
+        assert failures and 'PLAN_EVAL_REJECTED: (identity-ambiguous)' in failures[0]['error']
+
+        rows = ticket_rows(store, sid)
+        assert len(rows) == 1, 'một lần từ chối = một vé'
+        record, ticket = rows[0]
+        assert record['kind'] == 'fact' and record['status'] == 'info'
+        assert record['text'].startswith('PLAN_IDENTITY_AMBIGUOUS:')
+        assert ticket == {'slug': AMBIGUOUS_SLUG, 'directory': '', 'matchedIdentity': MATCHED_IDENTITY,
+                          'score': 0.6, 'candidates': [{'identity': MATCHED_IDENTITY, 'score': 0.6}]}
+        assert 'relativePath' not in ticket, \
+            'vé không được giữ kế hoạch nào: cổng xoá `--delete-orphan` chỉ đọc hàng `P:`'
+        # Hàng `E:` (cổng bằng chứng, đợt 3 vòng 22) nằm cùng nhật ký và không liên quan tới phép
+        # kiểm này: thứ phải VẮNG là hàng kế hoạch `P:`, nên lọc `E:` ra rồi mới so — nếu một hàng
+        # `P:` lọt vào thì phép khẳng định vẫn đỏ.
+        assert [row['kind'] for row in store.journal_tail(sid) if row['kind'] != 'evidence'] == ['fact'], \
+            'bản bị từ chối không để lại hàng `P:` nào'
+        assert op_calls(executor) == [] and events_of(store, sid, 'plan_written') == []
+        store.close()
+
+    asyncio.run(run())
+
+
+def test_resending_the_same_plan_verbatim_is_accepted_once(tmp_path):
+    """Gửi lại nguyên văn: nhận là kế hoạch MỚI, và hàng `P:` mang dấu dải mơ hồ."""
+
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        executor = GrowingIndexExecutor(index_with_the_matched_group())
+        runtime = HarnessRuntime(store, executor, FixtureModel([
+            answer(calls=[call('write_plan', {'slug': AMBIGUOUS_SLUG, 'markdown': PLAN_MARKDOWN})]),
+            answer('Chọn nhóm đi'),
+            answer(calls=[call('write_plan', {'slug': AMBIGUOUS_SLUG, 'markdown': PLAN_MARKDOWN})]),
+            answer('Đã ghi bản mới'),
+            answer(calls=[call('write_plan', {'slug': AMBIGUOUS_SLUG, 'markdown': PLAN_MARKDOWN_V2})]),
+            answer('Đã ghi bản 2')]))
+        sid = runtime.create({'skills': []})['id']
+
+        await runtime.start(sid, 'Ghi plan mơ hồ')
+        await runtime.start(sid, 'Gửi lại nguyên văn')
+        await runtime.start(sid, 'Sửa lại lần nữa')
+
+        writes = op_calls(executor)
+        assert [args['version'] for name, args in writes] == [1, 2], \
+            'lần gửi lại nhận là nhóm mới ở v1; lần thứ ba đi theo chỉ mục (v2), không mở nhóm thứ ba'
+        assert {args['slug'] for name, args in writes} == {AMBIGUOUS_SLUG}
+        assert {args.get('directory') for name, args in writes} == {''}
+        assert writes[0][1]['markdown'].startswith('<!-- boxfox-plan\nVersion: v1\nIdentity: '
+                                                   f'{AMBIGUOUS_SLUG}\nParent: none\n-->')
+
+        written = events_of(store, sid, 'plan_written')
+        assert [event['data']['version'] for event in written] == [1, 2]
+        first = written[0]['data']
+        assert first['identityMatchedBy'] == plan_registry.AMBIGUITY_MATCHED_BY
+        assert first['identityForcedNew'] is False
+        assert first['identityAmbiguity'] == AMBIGUITY_MARK, 'hàng `P:` phải đọc được vì sao bản này ra đời'
+        assert written[1]['data']['identityMatchedBy'] == 'similarity'
+        assert 'identityAmbiguity' not in written[1]['data'], 'vé đã tiêu: bản sau đi theo chỉ mục'
+
+        pinned = store.journal_tail(sid, kinds=['plan'])
+        assert [row['payload']['record']['data']['version'] for row in pinned] == [1, 2]
+        assert pinned[0]['payload']['record']['data']['identityAmbiguity'] == AMBIGUITY_MARK
+        assert 'identityAmbiguity' not in pinned[1]['payload']['record']['data']
+        store.close()
+
+    asyncio.run(run())
+
+
+def test_the_ticket_does_not_leak_to_another_slug_or_session(tmp_path):
+    """Vé khớp theo `(slug, directory)` VÀ theo phiên: slug khác vẫn bị từ chối, phiên khác cũng vậy."""
+
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        executor = BoxIndexExecutor(index_with_the_matched_group())
+        runtime = HarnessRuntime(store, executor, FixtureModel([
+            answer(calls=[call('write_plan', {'slug': AMBIGUOUS_SLUG, 'markdown': PLAN_MARKDOWN})]),
+            answer('Chọn nhóm đi'),
+            answer(calls=[call('write_plan', {'slug': AMBIGUOUS_OTHER, 'markdown': PLAN_MARKDOWN})]),
+            answer('Slug này cũng mơ hồ'),
+            answer(calls=[call('write_plan', {'slug': AMBIGUOUS_SLUG, 'markdown': PLAN_MARKDOWN})]),
+            answer('Phiên này chưa từng bị từ chối')]))
+        first = runtime.create({'skills': []})['id']
+        second = runtime.create({'skills': []})['id']
+
+        await runtime.start(first, 'Ghi plan mơ hồ')
+        await runtime.start(first, 'Ghi slug khác cũng mơ hồ')
+        await runtime.start(second, 'Gửi lại nguyên văn ở phiên khác')
+
+        rows = ticket_rows(store, first)
+        assert [ticket['slug'] for _record, ticket in rows] == [AMBIGUOUS_SLUG, AMBIGUOUS_OTHER], \
+            'mỗi lần từ chối có vé riêng, khớp theo (slug, directory)'
+        facts = store.journal_tail(first, kinds=['fact'])
+        assert plan_registry.ticket_from_rows(facts, slug=AMBIGUOUS_OTHER)['slug'] == AMBIGUOUS_OTHER
+        assert plan_registry.ticket_from_rows(facts, slug='workspace-plan') is None
+        second_rows = ticket_rows(store, second)
+        assert len(second_rows) == 1 and second_rows[0][1]['slug'] == AMBIGUOUS_SLUG
+        assert events_of(store, second, 'plan_written') == [], 'vé của phiên khác không dùng được'
+        assert events_of(store, first, 'plan_written') == [] and op_calls(executor) == []
+        store.close()
+
+    asyncio.run(run())
+
+
+def test_a_plan_written_by_a_delegated_session_belongs_to_the_root_session(tmp_path):
+    """Vòng 25 (D-36): sổ sở hữu phải trỏ về phiên GỐC, vì chỉ phiên gốc mở được trong khung chat.
+
+    Đo vòng 25: ba cú bấm ở tab Plan đều ghi được hàng duyệt nhưng `plan_reviews.session_id` là
+    `NULL`, nên không có phiên nào để đánh thức. Con `plan` ghi kế hoạch hộ cây là chuyện thường —
+    đường về phải là phiên gốc, không phải phiên con (phiên con không có chat để hiện lượt mới).
+    """
+
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        executor = PlanFixtureExecutor()
+        model = FixtureModel([
+            answer('Viết plan', calls=[call('write_plan', {'slug': 'Workspace Plan',
+                                                           'markdown': PLAN_MARKDOWN})]),
+            answer('Đã ghi plan')])
+        runtime = HarnessRuntime(store, executor, model)
+        root = runtime.create({'skills': []})['id']
+        # Con thật trong cây: cùng cấu hình đã chuẩn hoá của phiên gốc, khác `parent_id`.
+        child = store.create(store.get(root)['config'], role='plan', parent_id=root)['id']
+
+        await runtime.start(child, 'Viết plan hộ phiên gốc')
+
+        owner = store.plan_owner('workspace-plan')
+        assert owner is not None, 'ghi kế hoạch phải để lại hàng sở hữu'
+        assert owner['session_id'] == root, 'phiên sở hữu là phiên GỐC, không phải phiên con'
+        assert owner['first_session_id'] == root
+        assert owner['relative_path'] == '.plans/v1-workspace-plan.md'
+        assert events_of(store, child, 'plan_written'), 'bản ghi vẫn thuộc phiên đã viết nó'
+
+        # Ghi từ chính phiên gốc: vẫn cùng một hàng, không nhân đôi theo người viết.
+        model.responses = iter([answer('Viết tiếp', calls=[call('write_plan', {
+            'slug': 'Workspace Plan', 'markdown': PLAN_MARKDOWN_V2})]), answer('Đã ghi bản 2')])
+        await runtime.start(root, 'Viết bản 2')
+        rows = store.db.execute('SELECT COUNT(*) AS total FROM plan_owners').fetchone()['total']
+        assert rows == 1
+        assert store.plan_owner('workspace-plan')['session_id'] == root
+        assert store.plan_owner('workspace-plan')['first_session_id'] == root
+        store.close()
+
+    asyncio.run(run())

@@ -45,11 +45,23 @@ KNOWN_PREFIXES = (
     'PLAN_SLUG_INVALID',
     'PLAN_WRITE_FAILED',
     'PLAN_WRITE_CONFLICT',     # hai người ghi cùng số version: đọc lại chỉ mục một lần rồi thôi
+    # Vòng 25 (D-33/D-34): bốn mã của vòng lặp kế hoạch được `ValueError('MÃ: câu')` ném ra từ
+    # `plan_verify`/`decision` — thiếu chúng ở đây thì model nhận `TURN_FAILED_VALUEERROR` thay vì
+    # mã nói đúng phần còn thiếu, và chính cổng duyệt (`PLAN_APPROVAL_UNVERIFIED`) cũng mất tên.
+    'PLAN_VERIFY_INVALID',
+    'PLAN_VERIFY_NO_CRITIC',
+    'PLAN_VERIFY_VERDICT_MISSING',
+    'PLAN_VERIFY_VERDICT_MISMATCH',
+    'PLAN_APPROVAL_UNVERIFIED',
     'DECISION_UNAVAILABLE',
     'DECISION_INVALID',
     'DECISION_NOT_FOUND',
     'DECISION_ALREADY_RESOLVED',
-    'MAX_STEPS',
+    'MAX_STEPS',          # lượt cũ trong DB: giữ nguyên nghĩa, KHÔNG dùng cho code mới
+    'DEADLINE',           # như trên — mã cũ, chỉ để đọc lại bản ghi cũ
+    'STEP_BUDGET_EXHAUSTED',  # vòng 22 (D-1): hết ngân sách bước, tách khỏi hết hạn chót
+    'DEADLINE_EXCEEDED',      # vòng 22 (D-1): hết hạn chót của lượt
+    'ANSWER_TOO_LONG',        # vòng 22 (D-4): câu trả lời vượt trần cứng
     'SKILL_TASK_REQUIRED',
     'MISSING_TASK',
     'SESSION_BUSY',
@@ -116,7 +128,9 @@ def classify_failure(exc: BaseException) -> tuple[str, str]:
     name = type(exc).__name__
 
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
-        return 'DEADLINE', 'DEADLINE: the turn ran out of time before an answer was produced'
+        # Vòng 22 (D-1): mã nói rõ là HẠN CHÓT, không lẫn với hết ngân sách bước. Mã cũ
+        # `DEADLINE` vẫn đọc được trong lịch sử nên nó nằm lại trong KNOWN_PREFIXES.
+        return 'DEADLINE_EXCEEDED', 'DEADLINE_EXCEEDED: the turn ran out of time before an answer was produced'
 
     # httpx timeouts: the upstream WAS reachable but too slow. Say that, and keep the code
     # distinct from a hard deadline so the retry decision stays separate from the wording.

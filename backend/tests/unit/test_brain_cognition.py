@@ -33,9 +33,9 @@ def test_system_prompt_contains_all_hermes_guidance_blocks():
 
 
 def test_specialist_roles_deep_prompts():
-    """Verify that all 9 specialist subagents have deep, professional SOPs and role boundaries."""
+    """Verify that all 10 specialist subagents have deep, professional SOPs and role boundaries."""
     expected_roles = [
-        'explore', 'plan', 'design', 'build', 'debug',
+        'explore', 'plan', 'plan-review', 'design', 'build', 'debug',
         'review', 'simplify', 'testing', 'research'
     ]
     for role_id in expected_roles:

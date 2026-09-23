@@ -1,4 +1,4 @@
-"""Bốn op phiên/nhật ký đi qua ĐÚNG cửa vào của worker (`worker.execute`) — việc A1.
+"""Năm op phiên/nhật ký đi qua ĐÚNG cửa vào của worker (`worker.execute`) — việc A1, A7.
 
 Vì sao phải kiểm ở đây chứ không chỉ ở `session_ops`: harness **gửi nội tuyến** `worker.py` qua
 `docker exec`, nên `worker.py` mới là mặt mà lượt thật gọi. Bài này chạy trên máy chủ nhà (không cần
@@ -34,10 +34,12 @@ def _worker(tmp_root, *, with_session_ops: bool):
     return module
 
 
-def test_the_four_ops_are_reachable_through_the_worker_entry_point(tmp_path):
+def test_the_five_ops_are_reachable_through_the_worker_entry_point(tmp_path):
     worker = _worker(tmp_path, with_session_ops=True)
+    # A7 (vòng 22) thêm `uploads_prune` vào `SESSION_OP_NAMES`: op dọn `.uploaded_artifacts`
+    # phải đi qua đúng cửa vào mà lượt thật dùng, không chỉ đứng trong `session_ops`.SIGS.
     assert set(worker.SESSION_OPS) == {'session_ensure', 'journal_append', 'checkpoint_write',
-                                       'captures_prune'}
+                                       'captures_prune', 'uploads_prune'}
     sid = 'a1b2c3d4' * 4
 
     created = worker.execute('session_ensure', {'session': sid, 'root': str(tmp_path)}, sid)

@@ -1,10 +1,15 @@
 /**
  * Đường đi thật của Kế hoạch D: từ một lượt trợ lý trong dòng thời gian tới khung xem phương tiện.
  *
- * Hai ca ở đây cố ý KHÔNG dựng `MediaLightboxModal` bằng tay. Chúng đi đúng đường
+ * Ba ca ở đây cố ý KHÔNG dựng `MediaLightboxModal` bằng tay. Chúng đi đúng đường
  * `HarnessStepView` → `onOpenLightbox(media)` → `MediaLightboxModal`, vì đó là chỗ lỗi
  * cũ nằm: người gọi quên gửi `type`, mà `type` lại có mặc định `'image'`, nên một bản
- * ghi `.mp4` rơi vào nhánh ảnh và hiện `<img alt="Sandbox Screen Recording">`.
+ * ghi `.mp4` rơi vào nhánh ảnh.
+ *
+ * Vòng 23 (P4.3/P5.3, D-24): nhãn đi kèm media KHÔNG còn là chuỗi tiếng Anh cứng trong mã
+ * (`'Sandbox Screen Recording'` đã bị xoá). Nhãn là chữ của MODEL khi model có gửi
+ * (`args.caption`), còn không thì là chữ của từ điển theo NGÔN NGỮ CÂU TRẢ LỜI — hai ca dưới
+ * ghim đúng cả hai đường ấy, đi hết đường thật chứ không dựng modal bằng tay.
  */
 import type { ReactNode } from 'react'
 import { act } from 'react'
@@ -89,10 +94,31 @@ describe('HarnessStepView → MediaLightboxModal — đường đi thật', () =
     expect(modal.querySelector('video')).toBeTruthy()
     expect(modal.querySelector('img')).toBeNull()
     expect(modal.querySelector('input[type="range"]')).toBeTruthy()
-    // Tiêu đề và dòng chú thích phải nói đúng đây là bản ghi màn hình của máy ảo.
+    // Tiêu đề của khung xem lớn là chữ của khung ấy; dòng chú thích bên cạnh là nhãn của lượt.
     const text = (modal.textContent ?? '').replace(/\s+/g, ' ')
     expect(text).toContain('Session Screen Recording')
-    expect(text).toContain('Sandbox Screen Recording')
+    // P5.3: câu trả lời của lượt là tiếng Việt ⇒ nhãn của app cũng tiếng Việt. Chuỗi tiếng Anh cứng
+    // `'Sandbox Screen Recording'` không còn tồn tại trong mã (P4.3) — đây là chỗ ghim điều đó.
+    expect(opened.caption).toBe('Bản ghi màn hình')
+    expect(text).toContain('Bản ghi màn hình')
+    expect(text).not.toContain('Sandbox Screen Recording')
+  })
+
+  it('P5.3 chữ của model thắng từ điển: `args.caption` thành nhãn của khung xem lớn', () => {
+    const MODEL_CAPTION = 'Trang chạy bài test sau khi đổi nhãn'
+    const { opened, modal } = openFromTurn([
+      ev('user', { text: 'Chụp cho tôi xem trang chạy bài test' }),
+      ev('tool_end', {
+        name: 'computer_screen_capture',
+        args: { caption: MODEL_CAPTION },
+        result: { ok: true, path: CAPTURE },
+      }),
+      ev('assistant', { text: 'Đây là ảnh chụp trang chạy bài test sau khi em đổi nhãn cho chủ nhà xem.', final: true }),
+    ])
+
+    expect(opened.type).toBe('image')
+    expect(opened.caption).toBe(MODEL_CAPTION)
+    expect((modal.textContent ?? '')).toContain(MODEL_CAPTION)
   })
 
   it('ảnh chụp .png của lượt mở ra ảnh, không có thanh kéo tiến độ', () => {

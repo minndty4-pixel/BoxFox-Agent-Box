@@ -27,7 +27,7 @@ gốc). Lỗi có dạng `{"error": "<thông báo>"}`.
 | GET | `/__box/file/thumbnail?path=<rel>` | loopback + CORS phản chiếu | JPEG thumbnail (ảnh/video, bỏ `.svg`) |
 | GET | `/__box/file/download?path=<rel>` | loopback + CORS phản chiếu | Tải một file (`Content-Disposition: attachment`) + Range |
 | POST | `/__box/files/zip` | Origin | Nén nhiều path thành zip |
-| POST | `/__box/file/upload?path=<dir>&name=<file>` | secret | Ghi file raw (stream, fchown về agent) |
+| POST | `/__box/file/upload?path=<dir>&name=<file>` | secret | Ghi file raw (stream, fchown về agent); thêm `&assign=1` (box cấp số RULE-5) và `&mkdirs=1` (tạo thư mục cha còn thiếu) — xem § "Tệp đính kèm từ ô soạn tin" |
 | POST | `/__box/file/unzip?path=<zipRel>` | secret | Giải nén vào thư mục cha (chống zip-slip, skip file trùng) |
 | POST | `/__box/files/mkdir` | secret (401) | Tạo thư mục (tạo cả chuỗi cha còn thiếu) |
 | POST | `/__box/files/touch` | secret (401) | Tạo file mới kèm nội dung tuỳ chọn (không ghi đè) |
@@ -151,3 +151,66 @@ ide-proxy để nhánh `413` chạm tới được qua HTTP); `MAX_IDENTITY_LENG
 Thumbnail cache ở `WORKSPACE_ROOT/.generated_artifacts/thumbnails`, key
 `sha256(rel|mtime|size)` để hết hiệu lực khi file đổi; thư mục `.generated_artifacts`
 và `.trash` bị ẩn khỏi listing và zip.
+
+## Sao lưu `.plans` (`.plans-backups`)
+
+> **Cập nhật**: 2026-09-22 (đợt 22, phần C) — `migrate_plans.py` được stage vào image
+> (`/usr/local/bin/migrate_plans.py`) và `--apply` giờ **sao lưu trước khi ghi**.
+
+Luật chạm tới workspace của đợt này:
+
+- `.plans-backups/` nằm **cạnh** `.plans`, không nằm trong nó: bộ đọc `plan_files.py` đi
+  đệ quy trong `.plans` nên bản sao đặt trong đó sẽ thành những kế hoạch thứ hai.
+  Tên thư mục là UTC (`%Y-%m-%dT%H-%M-%SZ`), mỗi lần chạy một thư mục mới, kèm
+  `manifest.json` giữ báo cáo dry-run của chính lần đó + `sha256` từng tệp. `--backup-dir DIR`
+  đổi **chỗ** chứ không đổi **luật**: bản sao vẫn vào `DIR/<UTC>/`, nên hai lần chạy không bao giờ
+  ghi đè bản sao của nhau.
+- `.plans-backups` **không** nằm trong `PROTECTED_PATHS` (`workspace_files.py:85-87`):
+  nó là rác đọc được và xoá tay được. `workspace_files.py` chỉ bảo vệ `.plans`, `.trash`,
+  `.generated_artifacts`, `.session-history`, `.uploaded_artifacts` ở cấp 1.
+- Kiểm tệp đã staged chưa: `docker exec agentbox-box python3 /usr/local/bin/migrate_plans.py
+  --help` phải in ra `--backup-dir` và `--delete-orphan`.
+
+Runbook (4 bước, chi tiết ở `docs/plan/v22-plans-migration-runbook.md`): sao lưu DB harness
+bằng `sqlite3` module (máy không có CLI `sqlite3`) → dry-run trong box → `--apply` (tự sao
+lưu `.plans-backups/…`) → dry-run lại phải ra `nothingToDo: true`.
+
+## Tệp đính kèm từ ô soạn tin (đợt 22, D-6)
+
+> **Cập nhật**: 2026-09-22 (đợt 22, phần A) — ô soạn tin gửi **nội dung tệp thật** lên box trước khi
+> gửi lượt. Trước đây chỉ có tên tệp nằm trong chuỗi `[Attached Files: …]` của prompt, nên box không
+> có byte nào (BUG-40).
+
+Hai cờ mới của route upload (đều là cờ bật/tắt, chỉ gửi khi cần để panel Workspace Files giữ
+nguyên hình dạng request cũ):
+
+| Cờ | Nghĩa | Hệ quả |
+|---|---|---|
+| `assign=1` | **box** cấp số RULE-5 thay vì dùng `name` | Tên thật nằm ở khoá `name` trong response (`{"path","name","sizeBytes"}`); số = `max(số trong thư mục đích) + 1`, không zero-pad, cấp bằng `O_CREAT\|O_EXCL` nên hai upload song song không trùng số (`docs/naming.md` BOX-6) |
+| `mkdirs=1` | Tạo thư mục cha còn thiếu (mode `0750`, chủ `1000:1000`) | Tệp trong thư mục vừa chọn giữ nguyên cây: `proj/src/a.ts` → `.uploaded_artifacts/proj/src/<số>.ts`; thiếu cờ này thì thư mục không có ⇒ `404` |
+
+Giá trị nhận cho hai cờ: `1`, `true`, `yes`, `on` (`_flag_on` trong `ide-proxy.py`).
+
+- **Trần 25 MiB/tệp cho MỌI caller của route** (`workspace_files.UPLOAD_MAX_BYTES`), kể cả panel
+  Workspace Files. Đây là **chốt có ý thức** của D-6, không phải hồi quy của trần 256 MiB cũ.
+- **Đường dọn duy nhất**: `deploy/docker/upload_files.py` — `retention(root, *, dry_run, protect)`
+  giữ 200 tệp / 500 MiB, xoá mtime cũ nhất trước và **không bao giờ** xoá tệp neo số cao nhất của
+  mỗi thư mục (xoá nó là làm bộ đếm tụt và box cấp lại số đã dùng). `unlink` chỉ nằm trong
+  `prune()`, nên `retention(dry_run=True)` không xoá byte nào; `prune()` ghim **một** hàng `X:` cho
+  cả lượt (op `uploads_prune` trong `session_ops.OPS`) và **nói thật khi không xoá được**: tệp bị
+  `OSError` (thường là `PermissionError` vì tệp thuộc `root`) vào `deletionFailures` + `failedFiles`,
+  hàng `X:` thêm vế "không xoá được N tệp", chứ không im lặng trả `removedFiles: 0` như đã dọn sạch
+  (BUG-45). `FileNotFoundError` là ngoại lệ duy nhất — lượt dọn khác đã xoá trước thì vô hại.
+- **Tài liệu Drive**: mục "Google Drive" trong menu `+` **chưa kết nối** nên bị vô hiệu hoá
+  (`disabled`, chữ nói thẳng "Chưa kết nối — không đính kèm được tài liệu Drive"). Bản cũ bịa ra tệp
+  `Architecture_Blueprint_2026.gdoc` và gọi `onAttach`, khiến người dùng tin là đã đính kèm một tài
+  liệu trong khi chỉ có cái tên tồn tại (A9). Nối Drive thật là việc của đợt sau: phải có OAuth, và
+  tệp Drive phải được tải về `.uploaded_artifacts` như mọi tệp khác — không có đường tắt.
+- **`/.uploaded_artifacts` nằm trong `PROTECTED_PATHS`**: không xoá/đổi tên được cả gốc qua panel;
+  dọn theo trần là việc của retention ở trên.
+
+Luồng đầy đủ khi người dùng bấm Gửi: chọn tệp (`AttachmentPicker`, giữ nguyên đối tượng `File` +
+`relativePath`) → `frontend/src/lib/chat/attachmentUpload.ts` tải **tuần tự** lên box (một tệp lỗi
+thì dừng cả lượt, không gửi nửa vời) → lượt gửi đi kèm `attachments: [{path, name, sizeBytes}]` và
+`images: [dataUrl, …]` (tối đa 2 ảnh, tổng ≤ 800 000 ký tự) → harness dựng khối mô tả tệp trong
+prompt, còn transcript hiện chip tệp (tên + dung lượng, `title` = đường dẫn tuyệt đối).

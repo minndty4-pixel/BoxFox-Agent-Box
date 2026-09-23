@@ -125,6 +125,8 @@ const en: SameShape<typeof vi> = {
     elementContextLiveUnsupported:
       'LIVE mode has no consumer for attached elements yet — the backend does not process them, so this content will not reach the agent.',
     sendControlWhileBusy: 'Send a control command while the agent is running',
+    // Send-button label while the attachments are being uploaded (A5/A6).
+    uploadingAttachments: 'Uploading attachments to the sandbox…',
   },
   tabs: {
     chat: 'Chat',
@@ -186,6 +188,104 @@ const en: SameShape<typeof vi> = {
     userLabel: 'You',
     agentLabel: 'Agent',
     systemLabel: 'System',
+    // Đợt 22 / T4 + T15 — nhãn của bảng Sub-agents theo lượt và đường ống peer. Chủ nhà chốt
+    // NGUYÊN VĂN tiếng Việt cho sáu nhãn này (kế hoạch `v1-peer-mesh.md`, T4/T15: tiêu đề
+    // `Lượt N · n con`, nút chờ `đang chờ <role> giao kết quả`, biên nhận `đã nhận từ <role>`,
+    // công tắc `tất cả lượt`, lưới an toàn `lưới an toàn còn <mm:ss>`), nên bản tiếng Anh giữ
+    // đúng chữ đã chốt — cùng cách xử lý với `labelsLeases.*.untrustedBadge` ở trên.
+    subagentTurnHeader: 'Lượt {{turn}} · {{count}} con',
+    subagentTurnChip: 'Lượt {{turn}}',
+    subagentTurnUnknown: 'Lượt ? · {{count}} con',
+    subagentTurnEmpty: 'Lượt này không giao việc cho em nào',
+    subagentTurnEmptyHint: 'Chuyển sang lượt khác hoặc bật “tất cả lượt” để xem các con của lượt trước.',
+    subagentAllTurns: 'tất cả lượt',
+    subagentTurnStep: 'lượt {{turn}} · bước {{step}}',
+    subagentWaitingFor: 'đang chờ {{role}} giao kết quả',
+    subagentSafetyNet: 'lưới an toàn còn {{time}}',
+    subagentReceivedFrom: 'đã nhận từ {{role}}',
+    subagentDeliversTo: 'đã giao cho {{targets}}',
+    // Bốn nhãn mới của đợt 22 (sửa sau soát) giữ nguyên tiếng Việt như bốn nhãn `subagent*`
+    // ngay trên: chúng là một cặp nghĩa với chúng (`sẽ giao` ↔ `sẽ nhận`, `không giao được` ↔
+    // `không nhận được`), tách nửa Việt nửa Anh sẽ đọc ra hai chuyện khác nhau.
+    subagentWillDeliverTo: 'sẽ giao cho {{targets}}',
+    subagentDeliversSkipped: 'không giao được cho {{target}} · {{reason}}',
+    subagentReceivingFrom: 'sẽ nhận từ {{role}}',
+    subagentReceiveSkipped: 'không nhận được từ {{role}} · {{reason}}',
+    subagentSkipReason: {
+      no_such_peer: 'không có người nhận',
+      recipient_not_running: 'người nhận đã đóng',
+      unknown: 'không rõ lý do',
+    },
+    // Đợt 3 / P4 — giao diện cổng bằng chứng sống. Nhãn ba trạng thái của huy hiệu lượt, chữ
+    // trong khối `Bằng chứng`, và câu dịch cho từng mã `missing[].reason` của cổng: người đọc
+    // phải hiểu VÌ SAO lượt bị chấm là chưa kiểm chứng, nên mỗi mã có một câu tiếng người.
+    //
+    // Vòng 23 / P5.2 — TOÀN BỘ 34 giá trị `evidence*` (kể cả `evidenceReason.*`) đã sang tiếng Anh.
+    // Lý do: P5.3 chọn từ điển theo ngôn ngữ của CHÍNH câu trả lời, nên phải có đủ hai bộ nhãn —
+    // trước vòng này `en.ts` chứa tiếng Việt, và một câu trả lời tiếng Anh vẫn đọc ra nhãn tiếng
+    // Việt. Khoá và placeholder (`{{count}}`, `{{reasons}}`, `{{mode}}`) giữ nguyên; `vi.ts` không đổi.
+    evidenceBadge: {
+      verified: 'verified',
+      unverified: 'unverified',
+      not_measurable: 'not measured',
+    },
+    evidenceBadgeTitleVerified: 'Evidence for this turn: the gate finished and no claim is missing evidence.',
+    evidenceBadgeTitleMissing: 'Unverified: {{count}} claims have no evidence — {{reasons}}. The answer was not rewritten; the gate only pinned a label.',
+    evidenceBadgeTitleUnscored: 'No claim in this turn was pinned, but it could not be scored: {{reasons}}.',
+    evidenceBadgeTitleNothing: 'Unverified: this turn left no evidence to score.',
+    evidenceBadgeTitleUnmeasured: 'The evidence gate could not measure this turn — the reason is in the evidence block above.',
+    // Lượt không mang trường `evidence` (phiên cũ, hoặc công tắc đo đang tắt): không mặc định xanh.
+    evidenceBadgeTitleLegacy:
+      'This turn carries no evidence field (a session from before the evidence gate, or the measurement switch is off) — the default is unverified, never verified.',
+    evidenceLegacyNote: 'this turn carries no evidence measurement (an older session, or the measurement switch is off)',
+    evidenceGate: 'gate: BOXFOX_EVIDENCE_GATE = {{mode}}',
+    evidenceHide: 'Hide evidence',
+    evidenceShow: 'Show evidence',
+    evidenceOpenFile: 'Open in Files',
+    evidenceCommandsTitle: 'Commands that ran',
+    evidenceArtifactsTitle: 'Files and images of this turn',
+    evidenceArtifactsEmpty: 'This turn left no file or image that can be opened.',
+    evidenceMissingTitle: 'Claims with no evidence',
+    evidenceUnmeasuredTitle: 'This turn could not be measured',
+    evidenceMissingEmpty: 'No claim in this turn is missing evidence — the section stays visible so the reader knows it was scored.',
+    evidenceReceiptCount: '{{count}} evidence',
+    evidenceReceiptUnverified: '{{count}} unverified claims',
+    evidenceJournalDegraded: 'The durable journal inside the box was not written in this session — the numbers come from the harness SQLite row.',
+    evidenceReason: {
+      no_change: 'this turn changed nothing on disk',
+      no_evidence_for_tools: 'the turn ran tools but left no evidence fragment',
+      change_without_verification: 'files changed but no command re-checked them',
+      claim_path_not_in_turn: 'the answer names a file this turn never touched',
+      claim_path_missing: 'the answer names a file that is not in the workspace',
+      ui_change_without_capture: 'the UI changed but there is no capture from after the change',
+      answer_references_unknown_command: 'the answer names a command that did not run in this turn',
+      box_unreachable: 'could not reach the box to probe for evidence',
+      box_probe_failed: 'the evidence probe inside the box failed',
+      gate_error: 'the evidence gate itself failed on this turn',
+      answer_too_long: 'the answer was too long for the gate to measure this turn',
+    },
+    // Vòng 23 / P4.3 + P5.3 — chú thích ảnh trong timeline. Trước vòng này `extractToolMedia` viết
+    // cứng ba chuỗi tiếng Anh nói SAI bản chất ảnh ("Sandbox Desktop Screen Capture" cho cả ảnh
+    // chụp tab); nay nó trả `captionKind` và chữ ở đây dựng theo NGÔN NGỮ CÂU TRẢ LỜI (P5.3).
+    // Nhãn của model (`args.caption`) luôn thắng từ điển — xem `i18n/answerLabels.ts`.
+    mediaCaption: {
+      'capture-window': 'Window capture',
+      'capture-tab': 'Tab capture',
+      'capture-screen': 'Screen capture',
+      record: 'Screen recording',
+      browser: 'Browser page capture',
+    },
+    // Vòng 23 / P5.3 — dòng biên nhận ở đầu lượt: chữ do app viết, nên đi theo ngôn ngữ câu trả lời.
+    receiptThinking: 'Thinking',
+    receiptCommandOne: '1 command',
+    receiptCommandMany: '{{count}} commands',
+    receiptCaptureOne: '1 capture',
+    receiptCaptureMany: '{{count}} captures',
+    receiptFailed: '{{count}} failed',
+    receiptWithoutResult: '{{count}} without result',
+    // Vòng 23 / P5.3 — mở/gấp phần văn của câu trả lời cuối, chữ theo ngôn ngữ câu trả lời.
+    finalAnswerExpand: 'View details',
+    finalAnswerCollapse: 'Hide details',
   },
   contextUsage: {
     title: 'Context window',
@@ -670,6 +770,85 @@ const en: SameShape<typeof vi> = {
         QUALITY: 'add the missing required sections, then call write_plan again',
         other: 'fix what the rejection code above points at, then call write_plan again',
       },
+    },
+    /**
+     * Independent-review face (round 25) — read from the harness review ledger, never inferred from a
+     * dropdown position. `unknown` reads as "unknown", never as "not reviewed".
+     */
+    verify: {
+      chip: {
+        none: 'Not reviewed',
+        ok: 'Reviewed · {{critic}} · {{stamp}}',
+        revise: 'Needs changes',
+        noneTitle: 'This version has no review session yet — source: the harness review ledger',
+        okTitle: 'This version has an independent review: {{critic}} · {{stamp}}',
+        reviseTitle: 'The review session for this version still lists issues to fix',
+      },
+      cardTitle: 'Independent review',
+      cardEmpty:
+        'The independent review has not run — no review session has read version {{version}} yet. A review runs in its own {{critic}} session: it reads this exact version, compares it with the previous one and returns the issues with fixes. A version without a review cannot be approved — this card fills up when that session returns.',
+      cardEmptyMinimum: 'Minimum requirement: one {{critic}} session · reads {{path}} · writes the result into the review ledger',
+      cardOk: 'The review session read version {{version}} and listed no issues.',
+      cardUnreadable:
+        'The review ledger could not be read, so whether this version has been reviewed is unknown — nothing is claimed here.',
+      run: 'Run review session',
+      runPending: 'Starting the review session…',
+      critic: 'plan-review',
+      count: '{{count}} issue(s)',
+      countHigh: '{{n}} high',
+      countMedium: '{{n}} medium',
+      countLow: '{{n}} low',
+      severity: {
+        high: 'high',
+        medium: 'medium',
+        low: 'low',
+        unknown: 'severity unknown',
+      },
+      fix: 'Fix:',
+      locked: 'A plan-review session must review version {{version}} before you approve',
+      lockedAria: 'Approve plan — locked',
+      /** Why the button is locked while the ledger for a just-switched version is still in flight. */
+      reading: 'Reading the review ledger for version {{version}} — nothing is claimed until it answers.',
+      /** `revise` + `BOXFOX_PLAN_VERIFY=enforce`: the harness refuses this click, in the harness's terms. */
+      reviseLocked:
+        'The review session read version {{version}} and still lists issues to fix (verdict: revise) — the harness refuses to approve it. Fix those issues and run the {{critic}} session again for this version, or send a change request.',
+      runError: 'Could not start the review session',
+      /** `BOXFOX_PLAN_VERIFY=warn`: the harness let a not-yet-passed version through — say so. */
+      warnTitle: 'The harness approved it anyway',
+      blockedTitle: 'Harness blocked the approval',
+    },
+    /** The two decisions in the toolbar row: approve with conditions, and send a change reason. */
+    decisions: {
+      chevronTitle: 'Approve with conditions',
+      conditionsLabel: 'Condition',
+      conditionsHint:
+        'The condition goes into the review ledger with the decision and travels with the next turn as an attached requirement.',
+      conditionsPlaceholder: 'e.g. M8 only counts as done when it runs under conda activate ld and prints the changed row count.',
+      conditionsSubmit: 'Approve with condition',
+      cancel: 'Cancel',
+      changesTitle: 'Reason for changes — sent straight into the next turn',
+      changesFor: 'version under review: v{{version}}',
+      changesPlaceholder: 'e.g. split M3 into two steps, and say in M8 that it runs under conda activate ld.',
+      changesSubmit: 'Send change request',
+      sent: {
+        approved: 'Sent — the agent is opening the next turn',
+        approvedWithNote: 'Sent — the condition goes into the review ledger and travels with the next turn',
+        changes: 'Sent — the agent is opening the plan-fix turn for v{{version}}',
+        notResumed: 'Stored in the review ledger, but no new turn was opened.',
+        unknown: 'Stored in the review ledger. The harness did not say whether a turn was opened — nothing is claimed here.',
+        turn: 'turn {{turn}}',
+        session: 'session {{session}}',
+        /** Leads into the harness's own wording of the wake outcome, printed verbatim next to it. */
+        wakeTitle: 'The harness explained the wake:',
+      },
+    },
+    /** Plan owner (round 25, M9): which session the new turn opens in, and which one chat is showing. */
+    owner: {
+      hint: 'This plan belongs to session {{session}} — the new turn opens there, while the chat column is showing a different session.',
+      notInList:
+        'The plan belongs to session {{session}}, but that session is not in the session list the harness returns — it cannot be opened from here.',
+      open: 'Open that session',
+      openTitle: 'Switch the chat column to the session that owns this plan',
     },
   },
   audit: {

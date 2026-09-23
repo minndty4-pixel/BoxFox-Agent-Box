@@ -24,6 +24,8 @@ import type {
   WorkspaceMoveResult,
   WorkspaceRepository,
   WorkspaceTouchResult,
+  WorkspaceUploadOptions,
+  WorkspaceUploadResult,
 } from './types'
 
 function toEntry(node: FileNode): WorkspaceEntry {
@@ -58,6 +60,8 @@ function synthesizedSample(path: string): string {
 export class MockWorkspaceRepository implements WorkspaceRepository {
   readonly baseUrl = 'mock://workspace'
   private readonly roots: FileNode[]
+  /** Bộ đếm RULE-5 theo thư mục đích — mock không có tệp thật để đếm `max(số) + 1`. */
+  private readonly uploadCounters = new Map<string, number>()
 
   constructor() {
     // Trạng thái "đã sửa parser + đã có plan" — đủ phong phú để demo hai chế độ xem.
@@ -95,8 +99,23 @@ export class MockWorkspaceRepository implements WorkspaceRepository {
     return new Blob([JSON.stringify({ paths }, null, 2)], { type: 'application/json' })
   }
 
-  async upload(targetDir: string, filename: string): Promise<{ path: string; sizeBytes: number }> {
-    return { path: childPath(targetDir, filename), sizeBytes: 0 }
+  async upload(
+    targetDir: string,
+    filename: string,
+    body?: Blob,
+    options: WorkspaceUploadOptions = {},
+  ): Promise<WorkspaceUploadResult> {
+    // Mock không dựng cây cho tệp tải lên (giữ nguyên hành vi cũ), nên bộ đếm RULE-5 nằm trong
+    // bộ nhớ — nhưng vẫn tăng một chiều và không dùng lại số, đúng luật của box.
+    if (options.assignNumber) {
+      const next = (this.uploadCounters.get(targetDir) ?? 0) + 1
+      this.uploadCounters.set(targetDir, next)
+      const ext = extOf(filename)
+      const name = ext ? `${next}.${ext}` : `${next}`
+      return { path: childPath(targetDir, name), name, sizeBytes: body?.size ?? 0 }
+    }
+    // `mkdirs` là việc của box (tạo thư mục cha còn thiếu); mock không có thư mục thật để tạo.
+    return { path: childPath(targetDir, filename), name: filename, sizeBytes: body?.size ?? 0 }
   }
 
   async unzip(path: string): Promise<{ extracted: number; skipped: number; warnings: string[] }> {

@@ -154,6 +154,54 @@ if DX 'test -f /usr/local/bin/session_ops.py && test -f /usr/local/bin/session_f
 else
   bad "$HEAD_NOTE"
 fi
+
+# 10b-bis) Nạp header kế hoạch (D-2, đợt 22): script phải staged (bài này bắt đúng lỗi "quên COPY
+#          vào Dockerfile"), phải có hai cờ mới, và dry-run trên `.plans` sống phải là chỉ-đọc:
+#          exit 0, `"apply": false`, `"wrote": 0` và KHÔNG tạo thư mục `.plans-backups` nào.
+MIGRATE_HEAD="/usr/local/bin/migrate_plans.py"
+if DX "test -f $MIGRATE_HEAD"; then
+  ok "migrate_plans.py đã staged vào /usr/local/bin"
+else
+  bad "thiếu $MIGRATE_HEAD (chưa staged — xem khối COPY lớp 5 của Dockerfile)"
+fi
+UPLOAD_HEAD="/usr/local/bin/upload_files.py"
+# `session_ops.py` staged NHẬP tệp này (`import upload_files`), nên thiếu nó thì worker.py trả
+# SESSION_OPS_UNAVAILABLE cho mọi op phiên — bài này bắt đúng lỗi "quên COPY" của A11.
+if DX "test -f $UPLOAD_HEAD"; then
+  ok "upload_files.py đã staged vào /usr/local/bin"
+else
+  bad "thiếu $UPLOAD_HEAD (session_ops.py staged sẽ chết lúc import)"
+fi
+UPLOAD_IMPORT="$(DX 'cd /usr/local/bin && python3 -c "import upload_files; print(upload_files.UPLOAD_KEEP_MAX_FILES, upload_files.UPLOAD_KEEP_MAX_BYTES)"' 2>&1 || true)"
+case "$UPLOAD_IMPORT" in
+  "200 524288000") ok "upload_files.py nhập được: trần lưu trữ 200 tệp / 500 MiB" ;;
+  *) bad "không nhập được upload_files.py (chờ '200 524288000'): ${UPLOAD_IMPORT:-không có phản hồi}" ;;
+esac
+MIGRATE_HELP="$(DX "python3 $MIGRATE_HEAD --help 2>&1" || true)"
+case "$MIGRATE_HELP" in
+  *--backup-dir*) ok "migrate_plans.py --help có --backup-dir" ;;
+  *) bad "migrate_plans.py --help không có --backup-dir: $(echo "$MIGRATE_HELP" | head -2)" ;;
+esac
+case "$MIGRATE_HELP" in
+  *--delete-orphan*) ok "migrate_plans.py --help có --delete-orphan" ;;
+  *) bad "migrate_plans.py --help không có --delete-orphan: $(echo "$MIGRATE_HELP" | head -2)" ;;
+esac
+BACKUPS_BEFORE="$(DX 'ls -1 /home/agent/workspace/.plans-backups 2>/dev/null | wc -l')"
+MIGRATE_DRY="$(DX "python3 $MIGRATE_HEAD 2>/dev/null" || true)"
+case "$MIGRATE_DRY" in
+  *'"apply": false'*) ok "migrate_plans.py dry-run trên .plans sống: apply=false" ;;
+  *) bad "migrate_plans.py dry-run lạ: $(echo "$MIGRATE_DRY" | head -3)" ;;
+esac
+case "$MIGRATE_DRY" in
+  *'"wrote": 0'*) ok "migrate_plans.py dry-run không ghi byte nào (wrote=0)" ;;
+  *) bad "migrate_plans.py dry-run báo wrote khác 0" ;;
+esac
+BACKUPS_AFTER="$(DX 'ls -1 /home/agent/workspace/.plans-backups 2>/dev/null | wc -l')"
+if [ "$BACKUPS_BEFORE" = "$BACKUPS_AFTER" ]; then
+  ok "dry-run KHÔNG tạo thư mục .plans-backups nào"
+else
+  bad "dry-run đã tạo thư mục .plans-backups (phải là chỉ-đọc)"
+fi
 ENSURE="$(printf '{"name":"session_ensure","args":{"session":"%s"}}' "$SMOKE_SID" | SMOKE_JOURNAL)"
 case "$ENSURE" in
   *'"ok": true'*) ok "session_ensure tạo thư mục .session-history/$SMOKE_SID" ;;

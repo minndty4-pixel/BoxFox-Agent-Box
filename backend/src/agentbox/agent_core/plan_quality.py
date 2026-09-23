@@ -25,7 +25,7 @@ import re
 
 __all__ = ['REQUIRED_SECTIONS', 'PLAN_QUALITY_PREFIX', 'plan_quality_issues', 'plan_quality_message',
            'check_plan_quality', 'sections', 'has_concrete_check', 'has_expected_result',
-           'claims_external_facts']
+           'claims_external_facts', 'source_lines', 'cited_hosts', 'sources_issues', 'sources_message']
 
 PLAN_QUALITY_PREFIX = 'PLAN_QUALITY_REJECTED'
 
@@ -77,6 +77,14 @@ REMEDIES = {
     'sources-section': ('this plan relies on external facts: add a "Sources / Citations" section with '
                         'the URL, doc path or quoted source for each one, and mark anything you could '
                         'not verify as UNVERIFIED'),
+    # Vòng 25 (D-34) — lớp BẰNG CHỨNG của mục `sources`: nguồn phải đến từ một lời gọi thật của
+    # phiên này, không phải từ ký ức của model.
+    'sources-unproven': ("delegate role='research' (or 'explore' for repo facts) in this turn and cite "
+                         "what it returned"),
+    'sources-vague': ('every line of Sources / Citations must name a URL, a `path:line` or an exact '
+                      'command'),
+    'sources-unbacked': ('this host appears in no tool result of this session — cite a host a real '
+                         'tool call returned, or mark it UNVERIFIED'),
 }
 
 # A line that opens a section: ATX heading (`## Verification`), a bold label (`**Risks**`) or a short
@@ -180,6 +188,24 @@ def _find(sections, keys):
     return None
 
 
+def _find_with_body(sections, keys):
+    """Như `_find`, nhưng bỏ qua một tiêu đề TRỐNG đứng trước.
+
+    Đo vòng 25: `_find` khớp tiêu đề đầu tiên, nên một H1 như "Plan backed by one source" che mất mục
+    `## Sources / Citations` thật ở dưới — cổng cấu trúc nói "thiếu mục nguồn" trong khi mục đó có,
+    và model sửa mãi không qua được. Ở đây tiêu đề khớp đầu tiên vẫn là phương án dự phòng, chỉ khi
+    không có tiêu đề khớp nào có thân bài.
+    """
+    first = None
+    for heading, body in sections:
+        if any(key in heading for key in keys):
+            if first is None:
+                first = (heading, body)
+            if str(body or '').strip():
+                return heading, body
+    return first
+
+
 def has_concrete_check(body: str) -> bool:
     """True when the section names a real command or check rather than a description of one."""
     return bool(_INLINE_CODE_RE.search(body) or _COMMAND_TOKEN_RE.search(body)
@@ -216,7 +242,7 @@ def plan_quality_issues(markdown: str) -> list:
     for spec in REQUIRED_SECTIONS:
         if spec['trigger'] == 'external_facts' and not claims_external_facts(text):
             continue
-        found = _find(found_sections, spec['heading_keys'])
+        found = _find_with_body(found_sections, spec['heading_keys'])
         if not found:
             issues.append(spec['missing'][0])
             continue
@@ -244,3 +270,113 @@ def check_plan_quality(markdown: str) -> None:
     issues = plan_quality_issues(markdown)
     if issues:
         raise ValueError(plan_quality_message(issues))
+
+
+# --------------------------------------------------------------------------------------------
+# Vòng 25 (D-34) — cổng NGUỒN: lớp bằng chứng của mục `Sources / Citations`
+# --------------------------------------------------------------------------------------------
+# Ba mã lỗi, ba cách hụt khác nhau của cùng một câu hỏi "nguồn này ở đâu ra":
+#   * `sources-unproven` — chưa có con research/explore nào chạy trong lượt: chưa ai đi tra;
+#   * `sources-vague`    — có dòng nguồn nhưng không có URL/`path:line`/lệnh cụ thể;
+#   * `sources-unbacked` — host/ký hiệu được viện dẫn nhưng không xuất hiện trong kết quả công cụ
+#                          nào của phiên: nguồn không kiểm được bằng chính lượt này.
+# Hàm ở đây THUẦN: không đọc đĩa, không gọi mạng, không biết gì về runtime. Bằng chứng do runtime
+# thu (`plan_sources_evidence`) rồi truyền vào — nhờ vậy luật đọc được trong test mà không cần box.
+_HOST_RE = re.compile(r'https?://([^\s/)\'"<>\]]+)', re.IGNORECASE)
+_PATHY_RE = re.compile(r'(?:[\w.~-]+/)+[\w.~-]+|\b[\w.~-]+\.(?:py|ts|tsx|js|json|md|sh|sql|yaml|yml|toml|cfg|ini)\b')
+_COMMANDY_RE = re.compile(r'`[^`\n]+`|\b(?:npm|npx|pnpm|yarn|python3?|pytest|bash|sh|curl|docker|git|'
+                          r'make|rg|grep|sqlite3|psql|jq|node)\s+[-\w./~$]')
+_UNVERIFIED_RE = re.compile(r'\bunverified\b', re.IGNORECASE)
+# Ranh giới một dòng nguồn: dòng có gạch đầu dòng, hoặc dòng có địa chỉ/đường dẫn/lệnh.
+_SOURCE_MARKER_RE = re.compile(r'https?://|\bwww\.', re.IGNORECASE)
+
+
+def source_lines(markdown: str) -> list:
+    """Các dòng của mục `Sources / Citations` (bỏ dòng trống) — phần văn bản phải tự chứng minh."""
+    found = _find_with_body(sections(str(markdown or '')),
+                            ('source', 'citation', 'reference', 'bibliography',
+                             'nguồn', 'trích dẫn', 'tham chiếu'))
+    if not found:
+        return []
+    return [line.strip() for line in found[1].splitlines() if line.strip()]
+
+
+def strip_www(host: str) -> str:
+    """`www.example.com` -> `example.com`; viết thường, bỏ dấu chấm cuối. Giữ nguyên phần còn lại.
+
+    `str.lstrip('www.')` là một BẪY: nó cắt theo TẬP ký tự chứ không theo tiền tố, nên `web.dev`
+    thành `eb.dev` và `w3.org` thành `3.org`. Hậu kiểm vòng 25 đo được đúng lỗi đó ở `sources_issues`
+    (`known_hosts`): một kế hoạch viện dẫn `web.dev` — đúng host mà lời gọi công cụ vừa trả về — vẫn
+    bị `sources-unbacked` chặn, tức cổng nguồn từ chối một kế hoạch CÓ bằng chứng thật. Ba chỗ chuẩn
+    hoá host (`cited_hosts`, `sources_issues`, `runtime.plan_sources_evidence`) nay dùng chung hàm này
+    để chúng không trôi khỏi nhau lần nữa.
+    """
+    text = str(host or '').strip().lower().rstrip('.')
+    return text[4:] if text.startswith('www.') else text
+
+
+def normalize_path(path: str) -> str:
+    """Đường dẫn tương đối hoá: bỏ tiền tố `./` (lặp được) và các dấu `/` ở đầu.
+
+    Cùng một họ lỗi với `strip_www`: `lstrip('./')` cắt theo tập ký tự, nên `.github/workflows/ci.yml`
+    mất luôn dấu chấm đầu tiên. Hai chỗ dùng nó (`sources_issues.known_paths`, `plan_sources_evidence`)
+    nay đi qua đây.
+    """
+    text = str(path or '').strip()
+    while text.startswith('./'):
+        text = text[2:]
+    return text.lstrip('/')
+
+
+def cited_hosts(markdown: str) -> list:
+    """Host được viện dẫn trong cả tài liệu (đã bỏ `www.`, viết thường), theo thứ tự xuất hiện."""
+    hosts = []
+    for match in _HOST_RE.finditer(str(markdown or '')):
+        host = strip_www(match.group(1))
+        if host and host not in hosts:
+            hosts.append(host)
+    return hosts
+
+
+def sources_issues(markdown: str, *, children=(), hosts=(), paths=()) -> list:
+    """Mã lỗi của lớp bằng chứng nguồn; `[]` = đạt.
+
+    Chỉ chạy khi `claims_external_facts(markdown)` đúng — CÙNG trigger với mục `sources` của
+    `REQUIRED_SECTIONS`, nên không mở rộng ngữ nghĩa của luật cũ, chỉ thêm lớp bằng chứng.
+
+    `children` là sổ con của phiên (`{'role','status','answer_chars'}`), `hosts` là host mà kết quả
+    công cụ THẬT của phiên đã trả về, `paths` là đường dẫn tệp tương tự. Ba nguồn này do runtime
+    thu; hàm này không tự đi tìm.
+    """
+    text = str(markdown or '')
+    if not claims_external_facts(text):
+        return []
+    lines = source_lines(text)
+    if not lines:
+        return ['sources-section']
+    issues = []
+    if not any(str(row.get('role') or '') in ('research', 'explore') for row in (children or ())):
+        issues.append('sources-unproven')
+    concrete = [line for line in lines
+                if _SOURCE_MARKER_RE.search(line) or _COMMANDY_RE.search(line)
+                or (_PATHY_RE.search(line) and not _UNVERIFIED_RE.search(line))]
+    if not concrete:
+        issues.append('sources-vague')
+    known_hosts = {strip_www(host) for host in (hosts or ()) if str(host).strip()}
+    known_paths = {normalize_path(path) for path in (paths or ()) if str(path).strip()}
+    for host in cited_hosts(text):
+        if host in known_hosts:
+            continue
+        if any(host in path or path in host for path in known_paths):
+            continue
+        issues.append('sources-unbacked')
+        break
+    return issues
+
+
+def sources_message(issues) -> str:
+    """Một dòng `PLAN_QUALITY_REJECTED` + câu khắc phục cho từng mã lỗi của cổng nguồn."""
+    listed = '; '.join(f'({issue}) {REMEDIES[issue]}' for issue in issues)
+    return (f'{PLAN_QUALITY_PREFIX}: the plan leans on facts from outside this workspace and the '
+            f'sources gate refused it: {listed}. Rewrite the Sources / Citations section from what a '
+            f'real tool call returned and call write_plan again; nothing was written.')

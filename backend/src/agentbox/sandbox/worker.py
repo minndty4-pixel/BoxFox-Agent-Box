@@ -3,7 +3,9 @@
 The host sends this module through docker exec; no host workspace/tool fallback.
 """
 import base64
+import difflib
 import glob
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -84,6 +86,51 @@ def path(value):
     if not resolved.is_relative_to(ROOT):
         raise ValueError('Path Traversal Denied: outside sandbox workspace')
     return resolved
+
+
+# A8 (đợt 22): `file_read` từng gọi thẳng `read_text` nên một tệp nhị phân người dùng vừa tải
+# lên (`.png`, `.pdf`) làm lượt chết `UnicodeDecodeError` — mô hình không đọc được gì và người
+# dùng không biết vì sao. Đuôi dưới đây là danh sách nhị phân, cộng phép dò byte `\x00` trong
+# 8 KiB đầu (bắt cả tệp không có đuôi quen thuộc).
+BINARY_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.tif', '.tiff', '.pdf',
+                     '.zip', '.gz', '.tgz', '.bz2', '.xz', '.7z', '.rar', '.docx', '.xlsx', '.pptx',
+                     '.whl', '.so', '.bin', '.exe', '.dll', '.mp4', '.mov', '.avi', '.mp3', '.wav',
+                     '.woff', '.woff2', '.ttf', '.otf', '.sqlite', '.db')
+BINARY_SNIFF_BYTES = 8192
+BINARY_READ_CHARS = 30000
+
+
+def read_file_payload(target):
+    """Nội dung một tệp cho `file_read`: văn bản như cũ, nhị phân thì base64 (A8).
+
+    Tệp nhị phân trả `encoding: 'base64'` để mô hình biết nó đang cầm một mẩu đã mã hoá chứ
+    không phải văn bản, kèm `bytesRead`/`sizeBytes` để nó tự đối chiếu còn thiếu bao nhiêu.
+    `truncated` nói SỰ THẬT của phép đọc (đủ hay thiếu byte), không phải "đây là tệp nhị phân":
+    một tệp 1 KiB nằm trọn trong `content` mà bị gắn `truncated: True` sẽ khiến mô hình kết luận
+    sai là nó chưa thấy hết tệp.
+
+    Nhánh văn bản giữ nguyên hành vi cũ (30 000 ký tự đầu); chỉ thêm một đường lui: tệp có đuôi
+    văn bản nhưng không giải mã được UTF-8 (ảnh chụp lưu sai tên, tệp nén đổi đuôi) đi tiếp
+    bằng đường base64 thay vì làm lượt chết `UnicodeDecodeError`.
+    """
+    binary = target.suffix.lower() in BINARY_EXTENSIONS
+    if not binary:
+        with open(target, 'rb') as handle:
+            binary = b'\x00' in handle.read(BINARY_SNIFF_BYTES)
+    if not binary:
+        try:
+            return {'content': target.read_text(encoding='utf-8')[:BINARY_READ_CHARS]}
+        except UnicodeDecodeError:
+            # Tệp đuôi chữ nhưng không giải mã được UTF-8 (ảnh lưu sai tên, tệp nén đổi đuôi): rơi
+            # xuống đường base64 ngay dưới đây thay vì làm lượt chết `UnicodeDecodeError`.
+            pass
+    # 30 000 ký tự base64 ≈ 22 500 byte thật; đọc đúng ngần ấy rồi mã hoá.
+    size = target.stat().st_size
+    with open(target, 'rb') as handle:
+        raw = handle.read(BINARY_READ_CHARS * 3 // 4)
+    return {'content': base64.b64encode(raw).decode('ascii')[:BINARY_READ_CHARS],
+            'encoding': 'base64', 'truncated': len(raw) < size, 'bytesRead': len(raw),
+            'sizeBytes': size}
 
 
 def process_marker(session):
@@ -214,14 +261,180 @@ def browser(args, session):
         return {'url': page.url, 'title': page.title(), 'content': page.locator('body').inner_text()[:12000], 'elements': elements}
 
 
-def write_text(target, content, exclusive=False):
+# P1.4 (đợt 23) — BẰNG CHỨNG TẠI GỐC: mỗi lần ghi tệp để lại một mảnh kiểm chứng được, sinh
+# ngay tại chỗ ghi (diff + sha256 trước/sau + số dòng) chứ không suy lại từ sau. Chỗ rẻ nhất và
+# thật nhất để sinh bằng chứng là CHÍNH công cụ đã sửa tệp — worker được harness gửi nội tuyến vào
+# box ở mỗi lần gọi, nên sửa ở đây không cần dựng lại image. Mảnh bằng chứng nằm trong gốc captures
+# nên `retention()` của box quét và dọn nó như mọi ảnh chụp khác.
+EVIDENCE_ROOT = '.generated_artifacts/captures/evidence'
+# Trần an toàn: tệp cũ dài hơn mức này thì KHÔNG diff — diff một tệp lớn vừa tốn RAM trong box vừa
+# làm ngữ cảnh của model phình ra mà không ai đọc. Nội dung cũ vẫn được hash nên mảnh còn giá trị.
+EVIDENCE_MAX_BYTES = 256 * 1024
+# Trần `diff` trả về harness: bằng chứng phải ĐỌC ĐƯỢC, không phải để chở cả tệp.
+EVIDENCE_DIFF_MAX_CHARS = 8000
+EVIDENCE_SLUG_MAX_CHARS = 60
+# Khuôn BOX-3 (`deploy/docker/capture.py:180`) giữ chữ thường và chỉ bốn nhóm ký tự này.
+EVIDENCE_SLUG_CHARS = re.compile(r'[^a-z0-9._-]')
+
+
+def sha256_of(raw):
+    """sha256 hex của một khối byte — cùng đơn vị với `sha256sum` trong box."""
+    return hashlib.sha256(raw).hexdigest()
+
+
+def file_digest(target):
+    """sha256 của tệp trên đĩa đọc theo khối: tệp lớn không bị nạp hết vào RAM."""
+    digest = hashlib.sha256()
+    with open(target, 'rb') as handle:
+        for chunk in iter(lambda: handle.read(65536), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def before_write(target):
+    """Trạng thái CŨ của tệp ngay trước khi ghi: `(sha256, nội dung văn bản, lý do bỏ diff)`.
+
+    `(None, None, None)` = tệp chưa tồn tại; mảnh bằng chứng nói thật `sha256Before: None`.
+    Tệp quá trần ⇒ `(sha256, None, 'too_large')`. Tệp không giải mã được UTF-8 (ảnh, tệp nén)
+    ⇒ `(sha256, None, 'binary')`: vẫn nói thật là tệp ĐÃ có và nội dung cũ hash ra sao, nhưng
+    không bịa một diff từ dữ liệu không phải văn bản — và không bao giờ làm hỏng việc ghi.
+    """
+    if not target.is_file():
+        return None, None, None
+    if target.stat().st_size > EVIDENCE_MAX_BYTES:
+        return file_digest(target), None, 'too_large'
+    raw = target.read_bytes()
+    try:
+        return sha256_of(raw), raw.decode('utf-8'), None
+    except UnicodeDecodeError:
+        return sha256_of(raw), None, 'binary'
+
+
+def step_number(value):
+    """Số bước harness gửi kèm payload; không gửi (hoặc gửi giá trị lạ) thì `0`."""
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def evidence_step(value):
+    """Bước thành token ba chữ số (`002`) — cùng khuôn `_step_token` của ảnh chụp trong box."""
+    return f'{step_number(value):03d}'
+
+
+def evidence_slug(target):
+    """Tên tệp thành `slug` của khuôn BOX-3: chỉ `[a-z0-9._-]`, tối đa 60 ký tự.
+
+    Bỏ dấu `.`/`-` ở ĐẦU: `<slug>` đứng ngay sau `_`, để nguyên dấu chấm thì tệp bằng chứng
+    của một tệp ẩn (`.env`) cũng thành tệp ẩn — người mở thư mục bằng `ls` sẽ không thấy nó.
+    """
+    slug = EVIDENCE_SLUG_CHARS.sub('-', target.name.lower())[:EVIDENCE_SLUG_MAX_CHARS].lstrip('.-')
+    return slug or 'file'
+
+
+def session_key(session):
+    """`<sid8>` = 8 ký tự đầu của session id; `''` khi không có định danh để đặt tên tệp."""
+    return re.sub(r'[^0-9a-z]', '', str(session or '').strip().lower())[:8]
+
+
+def evidence_entry(target, content, before, capture):
+    """Mảnh bằng chứng của MỘT lần ghi: `(payload, diff)`.
+
+    `payload` là khối `key: value` ghi vào tệp bằng chứng — thứ tự khoá là thứ tự ĐỌC: đường dẫn,
+    hai hash, số dòng thêm/bớt, số dòng và số byte SAU khi ghi, rồi định danh lượt. `diff` rỗng
+    khi không có gì để so (tệp cũ bằng tệp mới, hoặc `before_write` đã nói lý do bỏ diff).
+    """
+    relative = target.relative_to(ROOT).as_posix()
+    sha_before, text_before, skipped = before
+    encoded = content.encode('utf-8')
+    payload = {
+        'path': relative,
+        'sha256Before': sha_before,
+        'sha256After': sha256_of(encoded),
+        'added': 0,
+        'removed': 0,
+        'lines': len(content.splitlines()),
+        'bytes': len(encoded),
+        'session': str(capture.get('session') or ''),
+        'step': step_number(capture.get('step')),
+        'tool': str(capture.get('tool') or ''),
+        'at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+    }
+    diff = ''
+    if skipped is not None:
+        payload['diffSkipped'] = skipped
+    else:
+        old_lines = [] if text_before is None else text_before.splitlines()
+        lines = list(difflib.unified_diff(old_lines, content.splitlines(), fromfile='a/' + relative,
+                                          tofile='b/' + relative, lineterm=''))
+        # Bỏ ĐÚNG hai dòng đầu `---`/`+++` khi đếm: một dòng nội dung cũng có thể bắt đầu bằng
+        # `+`/`-` (`+++x` là một dòng THÊM), nên lọc theo tiền tố sẽ đếm sai.
+        body = lines[2:] if len(lines) >= 2 and lines[0].startswith('---') and lines[1].startswith('+++') else lines
+        payload['added'] = sum(1 for line in body if line.startswith('+'))
+        payload['removed'] = sum(1 for line in body if line.startswith('-'))
+        diff = '\n'.join(lines)
+    if len(diff) > EVIDENCE_DIFF_MAX_CHARS:
+        diff = diff[:EVIDENCE_DIFF_MAX_CHARS]
+        payload['diffTruncated'] = True
+    return payload, diff
+
+
+def evidence_document(payload, diff):
+    """Nội dung tệp bằng chứng: diff (nếu có) rồi tới khối `key: value` của lần ghi đó."""
+    block = '\n'.join(f'{key}: {value}' for key, value in payload.items())
+    return (diff + '\n\n' + block + '\n') if diff else (block + '\n')
+
+
+def write_evidence(target, payload, diff, capture):
+    """Ghi tệp bằng chứng theo khuôn BOX-3 và trả đường dẫn TƯƠNG ĐỐI của nó.
+
+    `.generated_artifacts/captures/evidence/<sid8>/<sid8>_<step>_<slug>.<ext>`, `<ext>` là `diff`
+    khi có diff, ngược lại `txt`. Không có `session` ⇒ trả `None`: lượt gọi ngoài phiên vẫn nhận
+    `diff`/`numbers` nhưng KHÔNG được đổ rác vào workspace (P1.4 mục 5). Tệp đã tồn tại thì thêm
+    hậu tố đếm — bằng chứng cũ đã phát tán trong event stream nên không bao giờ bị ghi đè.
+    """
+    sid8 = session_key(capture.get('session'))
+    if not sid8:
+        return None
+    directory = path(EVIDENCE_ROOT + '/' + sid8)
+    directory.mkdir(parents=True, exist_ok=True)
+    extension = 'diff' if diff else 'txt'
+    stem = f'{sid8}_{evidence_step(capture.get("step"))}_{evidence_slug(target)}'
+    candidate = directory / f'{stem}.{extension}'
+    index = 2
+    while candidate.exists() and index < 1000:
+        candidate = directory / f'{stem}-{index}.{extension}'
+        index += 1
+    if candidate.exists():
+        candidate = directory / f'{stem}-{time.time_ns()}.{extension}'
+    candidate.write_text(evidence_document(payload, diff), encoding='utf-8')
+    return candidate.relative_to(ROOT).as_posix()
+
+
+def write_text(target, content, exclusive=False, capture=None):
+    """Ghi tệp; khi chỗ gọi yêu cầu thì dựng LUÔN mảnh bằng chứng của lần ghi đó (P1.4).
+
+    Đọc nội dung CŨ trước khi ghi (không đoán lại sau khi tệp đã đổi), rồi tính `sha256` trước/
+    sau, `difflib.unified_diff` (nhãn `a/<rel>` → `b/<rel>`) và số dòng. Trả `(target, evidence)`:
+    `evidence` là `None` khi không ai yêu cầu, ngược lại là khối `{'diff', 'numbers', 'artifact'}`
+    mà op ghi trả thẳng cho harness.
+
+    `capture` do `execute()` dựng từ payload của HARNESS (`session`/`step`/`tool`) — không bao giờ
+    lấy từ `args` của model, vì `args` là văn của model.
+    """
+    before = before_write(target) if capture is not None else None
     target.parent.mkdir(parents=True, exist_ok=True)
     if exclusive:
         with open(target, 'x', encoding='utf-8') as handle:
             handle.write(content)
     else:
         target.write_text(content, encoding='utf-8')
-    return target
+    if capture is None:
+        return target, None
+    payload, diff = evidence_entry(target, content, before, capture)
+    return target, {'diff': diff, 'artifact': write_evidence(target, payload, diff, capture),
+                    'numbers': {key: value for key, value in payload.items() if key != 'path'}}
 
 
 def plan_directory(args):
@@ -304,7 +517,8 @@ try:  # pragma: no cover - đường dẫn chỉ tồn tại khi worker chạy T
 except ImportError:  # box chưa re-stage hai tệp nhật ký: xem `SESSION_OPS_UNAVAILABLE` bên dưới
     _session_ops = None
 
-SESSION_OP_NAMES = ('session_ensure', 'journal_append', 'checkpoint_write', 'captures_prune')
+SESSION_OP_NAMES = ('session_ensure', 'journal_append', 'checkpoint_write', 'captures_prune',
+                    'uploads_prune')
 # Gán mặc định TRƯỚC nhánh có điều kiện: `importlib.reload` chạy lại thân mô-đun trong chính
 # namespace cũ, nên một biến chỉ được gán trong nhánh `if` sẽ giữ giá trị cũ khi nhánh đó không chạy.
 SESSION_OPS = ()
@@ -313,7 +527,15 @@ if _session_ops is not None:
     SESSION_OPS = tuple(_session_ops.OPS)
 
 
-def execute(name, args, session):
+def execute(name, args, session, turn=None, step=None, tool_call_id=None):
+    """Cửa vào DUY NHẤT của worker: một op, một payload JSON vào, một kết quả JSON ra.
+
+    `turn`/`step`/`tool_call_id` do **harness** đặt trong payload (P1.4) — KHÔNG bao giờ
+    lấy từ `args` của model. `step` đi vào mảnh bằng chứng của op ghi tệp (số bước trong
+    `numbers` và trong tên tệp); `turn`/`tool_call_id` đi cùng payload để worker và hai
+    route capture/ghi hình dùng chung một hợp đồng định danh (`deploy/docker/ide-proxy.py`).
+    """
+    capture = {'session': session, 'step': step, 'tool': name}
     if name == '__skill_readiness':
         package = Path(args['basePath']).resolve()
         base = Path('/opt/boxfox-skills').resolve()
@@ -341,11 +563,11 @@ def execute(name, args, session):
             marker.unlink(missing_ok=True)
         return {'content': 'Session subprocess cleanup complete'}
     if name == 'file_read':
-        return {'content': path(args['path']).read_text(encoding='utf-8')[:30000]}
+        return read_file_payload(path(args['path']))
     if name == 'file_write':
         target = path(args['path'])
-        write_text(target, args['content'])
-        return {'content': 'Written ' + str(target.relative_to(ROOT))}
+        target, evidence = write_text(target, args['content'], capture=capture)
+        return {'content': 'Written ' + str(target.relative_to(ROOT)), **evidence}
     if name == 'write_plan':
         return write_plan(args)
     if name == 'file_edit_block':
@@ -353,8 +575,9 @@ def execute(name, args, session):
         content = target.read_text(encoding='utf-8')
         if not args['old_text'] or content.count(args['old_text']) != 1:
             raise ValueError('old_text must match exactly once; read file first')
-        target.write_text(content.replace(args['old_text'], args['new_text'], 1), encoding='utf-8')
-        return {'content': 'Updated ' + str(target.relative_to(ROOT))}
+        target, evidence = write_text(target, content.replace(args['old_text'], args['new_text'], 1),
+                                      capture=capture)
+        return {'content': 'Updated ' + str(target.relative_to(ROOT)), **evidence}
     if name == 'codebase_glob':
         pattern = args.get('pattern', '**/*')
         path(pattern)
@@ -440,6 +663,8 @@ def execute(name, args, session):
 if __name__ == '__main__':
     try:
         request = json.load(sys.stdin)
-        print(json.dumps(execute(request['name'], request['args'], request['session']), ensure_ascii=False))
+        print(json.dumps(execute(request['name'], request['args'], request['session'],
+                                 turn=request.get('turn'), step=request.get('step'),
+                                 tool_call_id=request.get('toolCallId')), ensure_ascii=False))
     except Exception as exc:
         print(json.dumps({'is_error': True, 'error': str(exc)}))

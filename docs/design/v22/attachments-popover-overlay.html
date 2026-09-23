@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BoxFox — composer “+” menu drawn as an overlay (no clipping)</title>
+<meta name="description" content="Composer with the attachment popover rendered as an overlay above the toolbar: four hit-testable items (image, file, folder, Drive) with the Drive item marked unsupported, plus a sent turn showing the real box path.">
+<style>
+*,*::before,*::after{box-sizing:border-box}
+html,body{margin:0}
+body{background:#0a0a0a;color:#f5f5f5;font:13px/1.45 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;letter-spacing:-.012em;-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;text-align:left;cursor:pointer}
+ul,ol,li,p,figure{margin:0;padding:0;list-style:none}
+.ic{width:14px;height:14px;flex:none;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px}
+.muted{color:#8c8c8c}
+.app{display:flex;min-height:100vh}
+.side{width:248px;flex:none;background:#0d0d0d;border-right:1px solid #1c1c1c;padding:10px;display:flex;flex-direction:column;gap:8px}
+.brand{display:flex;align-items:center;gap:8px;padding:4px 6px;color:#e4e4e7}
+.brand b{font-size:14px;letter-spacing:-.02em}
+.acct{margin-top:6px;border:1px solid #262626;border-radius:8px;padding:6px 8px;display:flex;align-items:center;gap:8px;font-size:11px;color:#a1a1aa}
+.newbtn{margin-top:6px;border:1px solid #262626;border-radius:8px;padding:7px 8px;display:flex;align-items:center;justify-content:center;gap:6px;font-size:12px}
+.tabs{display:flex;gap:6px;margin-top:8px;font-size:11px;color:#a1a1aa}
+.tab{padding:2px 8px;border-radius:6px}
+.tab.on{background:#1c1c1c;color:#f5f5f5;font-weight:600}
+.sess{border-radius:7px;padding:5px 7px;font-size:11.5px;color:#d4d4d8}
+.sess.on{background:#181818;box-shadow:inset 0 0 0 1px #262626}
+.sess span{color:#71717a}
+.srow{margin-top:2px;display:flex;align-items:center;gap:5px;font-size:10px;color:#71717a}
+.d{width:5px;height:5px;border-radius:50%;background:#34d399}
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
+.topbar{height:40px;flex:none;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid #1c1c1c}
+.pill{border:1px solid #2a2a2a;border-radius:6px;padding:1px 6px;font-size:10px;color:#a1a1aa;text-transform:uppercase;letter-spacing:.04em}
+.ctx{flex:none;padding:8px 12px;border-bottom:1px solid #161616;display:flex;align-items:center;gap:10px;font-size:11px;color:#8c8c8c}
+.bar{flex:1;height:4px;border-radius:999px;background:#1c1c1c;overflow:hidden;max-width:420px}
+.bar i{display:block;height:100%;width:12%;background:#3b82f6}
+.chat{flex:1;min-height:0;padding:14px 16px;overflow:auto;display:flex;flex-direction:column;gap:10px}
+.u{max-width:660px}
+.uhead{display:flex;align-items:center;gap:7px;font-size:11px;color:#8c8c8c;margin-bottom:4px}
+.bubble{background:#141414;border:1px solid #222;border-radius:12px;padding:8px 10px;font-size:12.5px}
+.ub{display:flex;align-items:flex-start;gap:8px;padding:6px 9px;border-top:1px solid #171717;font-size:11.5px;color:#a1a1aa;background:#0f0f0f;border-radius:0 0 9px 9px}
+.turn{border-left:1px solid #1f1f1f;padding-left:12px}
+.step{display:flex;align-items:center;gap:7px;font-size:11.5px;color:#a1a1aa;margin-top:4px}
+.step .mono{color:#d4d4d8}
+.tag{border-radius:5px;padding:.5px 5px;font-size:10px;font-weight:600}
+.b-ok{border:1px solid #34d39933;background:#34d3991a;color:#34d399}
+.final{margin-top:8px;border:1px solid #232323;border-radius:12px;background:#101010;padding:9px 11px;max-width:720px}
+.fhead{display:flex;align-items:center;gap:7px;font-size:11px;color:#8c8c8c}
+.fhead b{color:#f5f5f5;font-size:11px}
+.ebadge{display:inline-flex;align-items:center;gap:5px;border-radius:999px;padding:1.5px 8px;font-size:11px;font-weight:600;border:1px solid #34d39955;background:#34d3991f;color:#34d399}
+.ans{margin-top:7px;font-size:12.5px;line-height:1.6;color:#ededed}
+.ans code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;background:#1a1a1a;border:1px solid #262626;border-radius:4px;padding:0 4px}
+
+/* Composer — the toolbar row keeps overflow visible so the popover is not clipped */
+.comp{flex:none;border-top:1px solid #1c1c1c;padding:10px 12px 14px;position:relative}
+.cbox{border:1px solid #262626;border-radius:12px;background:#101010;padding:8px 10px}
+.tb{display:flex;align-items:center;gap:8px;margin-top:8px;padding-top:7px;border-top:1px solid #1f1f1f;font-size:11px;color:#a1a1aa;position:static;overflow:visible}
+.tleft{display:flex;align-items:center;gap:6px;min-width:0;overflow:visible}
+.tright{display:flex;align-items:center;gap:8px;margin-left:auto;flex:none}
+.ph{color:#71717a;font-size:12px;padding:1px 0}
+.plus{width:26px;height:26px;border:1px solid #3b82f666;background:#3b82f61f;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#60a5fa}
+.tbtn{display:flex;align-items:center;gap:5px;border-radius:6px;padding:3px 7px;color:#a1a1aa}
+.tbtn:hover{background:#1a1a1a;color:#f5f5f5}
+.tbtn .mono{color:#d4d4d8}
+.pillbtn{border:1px solid #262626;border-radius:6px;padding:3px 8px;font-size:11px;color:#f5f5f5;display:flex;align-items:center;gap:6px}
+.send{width:28px;height:28px;border-radius:8px;background:#2563eb;display:flex;align-items:center;justify-content:center;color:#fff}
+.mic{width:24px;height:24px;display:flex;align-items:center;justify-content:center;color:#a1a1aa}
+
+/* Overlay popover: anchored to the [+] button, drawn above the toolbar boundary */
+.pop{position:absolute;left:18px;bottom:74px;width:268px;z-index:60;border:1px solid #2a2a2a;border-radius:14px;background:#121212;box-shadow:0 24px 48px rgba(0,0,0,.62);padding:6px}
+.pophead{padding:5px 8px 4px;font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#8c8c8c}
+.mi{display:flex;width:100%;align-items:center;gap:10px;border-radius:10px;padding:6px 8px;font-size:12px;color:#f5f5f5}
+.mi:hover,.mi:focus-visible{background:#1d1d1d}
+.mi .box{width:26px;height:26px;border-radius:8px;display:flex;align-items:center;justify-content:center;flex:none}
+.em{background:#34d3991f;color:#34d399}
+.bl{background:#3b82f61f;color:#60a5fa}
+.am{background:#fbbf241f;color:#fbbf24}
+.zn{background:#3f3f4680;color:#a1a1aa}
+.mi .t{font-weight:500;line-height:1.25}
+.mi .s{font-size:10px;color:#8c8c8c;line-height:1.3}
+.msep{height:1px;background:#1e1e1e;margin:5px 6px}
+.soon{margin-left:auto;border:1px solid #3f3f46;background:#27272a66;color:#a1a1aa;border-radius:5px;padding:.5px 5px;font-size:9.5px;font-weight:600;text-transform:uppercase;letter-spacing:.03em}
+.hint{padding:5px 8px 3px;font-size:10px;color:#71717a;border-top:1px solid #1e1e1e;margin-top:5px}
+@media (max-width:860px){.side{display:none}}
+</style>
+</head>
+<body data-screen="composer-popover-overlay">
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-img" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="1.6"/><path d="m4 17 4.5-4.5 4 4L16 13l4 4"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h3.6l2 2.4H19a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 16v-4M10 14l2-2 2 2"/></symbol>
+  <symbol id="i-drive" viewBox="0 0 24 24"><path d="M12 15V4M9 7l3-3 3 3"/><path d="M6.5 19A4.5 4.5 0 0 1 6 10.2 6 6 0 0 1 17.5 8.5 4 4 0 0 1 18 19z"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></symbol>
+  <symbol id="i-zap" viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6z"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-clip" viewBox="0 0 24 24"><path d="M20 11.5 12.3 19a4.6 4.6 0 0 1-6.5-6.5l7.7-7.7a3 3 0 0 1 4.3 4.3l-7.6 7.7a1.5 1.5 0 0 1-2.1-2.1l7-7"/></symbol>
+  <symbol id="i-open" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-8 8M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></symbol>
+  <symbol id="i-side" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8.4 12.4 2.5 2.5 4.7-5.2"/></symbol>
+</svg>
+
+<div class="app">
+  <aside class="side">
+    <div class="brand"><svg class="ic" style="color:#60a5fa"><use href="#i-zap"/></svg><b>boxfox</b>
+      <svg class="ic muted" style="margin-left:auto"><use href="#i-search"/></svg>
+      <svg class="ic muted"><use href="#i-side"/></svg>
+    </div>
+    <div class="acct"><span class="mono">kv</span><span>No email set</span><svg class="ic muted" style="margin-left:auto"><use href="#i-chev"/></svg></div>
+    <button class="newbtn" type="button" data-component-id="new-session" aria-label="New session"><svg class="ic"><use href="#i-plus"/></svg>New session</button>
+    <div class="tabs"><span class="tab on">Recent</span><span class="tab">Groups</span></div>
+    <nav>
+      <div class="sess on">Session e5a3fc95<span style="float:right" class="mono">SQLite</span>
+        <div class="srow"><span class="d"></span>DONE<span class="pill">Plan</span>6 steps</div>
+      </div>
+      <div class="sess">Session daae82cf<span style="float:right" class="mono">SQLite</span>
+        <div class="srow"><span class="d" style="background:#71717a"></span>IDLE<span class="pill">Plan</span>1 steps</div>
+      </div>
+    </nav>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <span class="muted">←</span><span class="d"></span><span style="font-size:12px">New Session</span>
+      <span class="pill">Plan</span><span class="muted mono">epoch #1 · 6.2k tokens · $0.02</span>
+      <span class="muted" style="margin-left:auto;border:1px solid #262626;border-radius:6px;padding:2px 8px;font-size:11px">Open Workspace ⌄</span>
+    </div>
+    <div class="ctx"><span>Context window</span><span class="bar"><i></i></span><span class="mono">6.2k / 200k (3%)</span></div>
+
+    <div class="chat">
+      <div class="u">
+        <div class="uhead">You · 16:31:08</div>
+        <div class="bubble">Đọc tệp tôi vừa đính kèm rồi tóm tắt trong 3 gạch đầu dòng.</div>
+        <div class="ub"><svg class="ic" style="margin-top:2px"><use href="#i-clip"/></svg>
+          <span>Tệp đính kèm đã lưu trong box: <span class="mono" style="color:#e4e4e7">.uploaded_artifacts/3101.txt</span> · 1.2 KB
+            <button class="link" style="color:#60a5fa;font-size:11px;font-weight:600;display:inline-flex;align-items:center;gap:4px;margin-left:6px" type="button" data-component-id="sent-attachment-open" aria-label="Mở tệp đính kèm trong Files"><svg class="ic"><use href="#i-open"/></svg>Mở trong Files</button></span>
+        </div>
+      </div>
+
+      <div class="turn">
+        <div class="uhead">Turn 1<span class="tag b-ok" style="margin-left:6px">completed</span><span class="mono">3.4 s · 4 steps</span></div>
+        <div class="step"><svg class="ic"><use href="#i-file"/></svg><span class="mono">file_read .uploaded_artifacts/3101.txt</span> · 1 step</div>
+        <div class="step"><svg class="ic"><use href="#i-file"/></svg><span class="mono">file_read deploy/docker/ide-proxy.py</span> · 1 step</div>
+        <div class="final">
+          <div class="fhead"><b>claude-sonnet-4.5</b><span>·</span><span class="mono">16:31:12</span>
+            <span class="ebadge"><svg class="ic"><use href="#i-check"/></svg>đã kiểm</span>
+            <span class="mono" style="margin-left:auto">↑ 5.9k ↓ 0.3k</span></div>
+          <p class="ans">Tệp là nhật ký upload của vòng 21. Nội dung đã đọc được đủ: 42 dòng, có mã lỗi <code>HTTP 413</code> ở dòng 18.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="comp">
+      <div class="cbox">
+        <div class="ph">Type your message…</div>
+        <div class="tb">
+          <div class="tleft">
+            <button class="plus" type="button" data-component-id="composer-attach" aria-label="Thêm đính kèm / Tệp tin / Hình ảnh"
+                    aria-expanded="true" aria-haspopup="menu" aria-controls="attach-menu" aria-describedby="attach-menu">
+              <svg class="ic"><use href="#i-plus"/></svg>
+            </button>
+            <button class="tbtn" type="button" data-component-id="repo-picker" aria-label="Chọn repo"><span class="mono">0v</span><svg class="ic"><use href="#i-chev"/></svg></button>
+            <button class="tbtn" type="button" data-component-id="shortcuts-popover" aria-label="Phím tắt"><span class="mono">⌨</span></button>
+            <button class="tbtn" type="button" data-component-id="harness-model-picker" aria-label="Chọn model harness"><span class="mono">9v</span><svg class="ic"><use href="#i-chev"/></svg></button>
+            <button class="tbtn" type="button" data-component-id="quick-ask" aria-label="Quick ask"><svg class="ic" style="color:#fbbf24"><use href="#i-zap"/></svg>Quick ask</button>
+            <button class="pillbtn" type="button" data-component-id="autopilot" aria-pressed="false" aria-label="Autopilot"><span>Autopilot</span><span class="d" style="background:#3b82f6"></span></button>
+          </div>
+          <div class="tright">
+            <button class="mic" type="button" data-component-id="composer-mic" aria-label="Nhập bằng giọng nói"><svg class="ic"><use href="#i-mic"/></svg></button>
+            <button class="send" type="button" data-component-id="composer-send" aria-label="Gửi"><svg class="ic"><use href="#i-up"/></svg></button>
+          </div>
+        </div>
+      </div>
+
+      <div class="pop" id="attach-menu" role="menu" aria-label="Đính kèm ngữ cảnh" data-component-id="attach-menu">
+        <div class="pophead">Đính kèm ngữ cảnh</div>
+        <button class="mi" type="button" role="menuitem" data-component-id="attach-menu-image" aria-label="Tải lên hình ảnh, PNG JPG WebP cho phân tích VLM">
+          <span class="box em"><svg class="ic"><use href="#i-img"/></svg></span>
+          <span><span class="t">Tải lên hình ảnh</span><br><span class="s">PNG, JPG, WebP cho phân tích VLM</span></span>
+        </button>
+        <button class="mi" type="button" role="menuitem" data-component-id="attach-menu-file" aria-label="Tải lên tệp tin, mã nguồn văn bản cấu hình">
+          <span class="box bl"><svg class="ic"><use href="#i-file"/></svg></span>
+          <span><span class="t">Tải lên tệp tin</span><br><span class="s">Mã nguồn, văn bản, cấu hình — lưu vào <span class="mono">.uploaded_artifacts</span></span></span>
+        </button>
+        <button class="mi" type="button" role="menuitem" data-component-id="attach-menu-folder" aria-label="Tải lên thư mục, giữ cây theo đường dẫn tương đối">
+          <span class="box am"><svg class="ic"><use href="#i-folder"/></svg></span>
+          <span><span class="t">Tải lên thư mục</span><br><span class="s">Giữ cây theo đường dẫn tương đối</span></span>
+        </button>
+        <div class="msep"></div>
+        <button class="mi" type="button" role="menuitem" data-component-id="attach-menu-drive" aria-disabled="true" aria-label="Google Drive, chưa hỗ trợ">
+          <span class="box zn"><svg class="ic"><use href="#i-drive"/></svg></span>
+          <span><span class="t">Google Drive</span><br><span class="s">Chọn tài liệu trên Drive</span></span>
+          <span class="soon">chưa hỗ trợ</span>
+        </button>
+        <div class="hint">Esc để đóng · tệp chỉ được gửi sau khi lên tới box (<span class="mono">/__box/file/upload</span>).</div>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

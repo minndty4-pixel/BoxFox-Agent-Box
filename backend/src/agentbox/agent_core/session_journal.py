@@ -15,9 +15,11 @@ file, không có bản người đọc được. Tầng này ghi thêm hai bản
 """
 from __future__ import annotations
 
+import asyncio
 import json
 
 from . import journal
+from .limits import EVIDENCE_PRUNE_CODE, EVIDENCE_PRUNE_TIMEOUT_SECONDS
 
 CHECKPOINT_FAILED_CODE = 'CHECKPOINT_FILE_FAILED'
 JOURNAL_FAILED_CODE = 'JOURNAL_DEGRADED'
@@ -60,7 +62,7 @@ async def ensure_session(executor, store, sid, *, role=None, parent=None, goal=N
 
 
 def insert_row(store, sid, kind, text, *, data=None, numbers=None, plan=None, refs=None,
-               status=None, evidence=None, record_id=None):
+               status=None, evidence=None, record_id=None, turn=None, step=None):
     """Hàng SQLite của một bản ghi (nguồn để `brief()` dựng khối ký ức) — **không** đụng box.
 
     Tách khỏi `append()` vì có hai đường ghi hợp lệ: đường thường ghi hàng rồi gọi op
@@ -73,7 +75,7 @@ def insert_row(store, sid, kind, text, *, data=None, numbers=None, plan=None, re
     thật là hàng không vào, chứ không được lấy hàng cũ ra thay.
     """
     item = journal.record(kind, text, sid=sid, data=data, numbers=numbers, plan=plan, refs=refs,
-                          status=status, evidence=evidence)
+                          status=status, evidence=evidence, turn=turn, step=step)
     seq = None
     try:
         seq = store.journal_add(sid, kind, item.get('text', text), {'record': item})
@@ -88,7 +90,7 @@ def insert_row(store, sid, kind, text, *, data=None, numbers=None, plan=None, re
 
 
 async def append(executor, store, sid, kind, text, *, data=None, numbers=None, plan=None,
-                 refs=None, status=None, evidence=None) -> dict | None:
+                 refs=None, status=None, evidence=None, turn=None, step=None) -> dict | None:
     """Một bản ghi nhật ký: hàng SQLite trước (nguồn của khối ký ức), file trong box sau (bản đọc).
 
     `kind` theo đúng tám mã của `journal.KIND_MARKER` (`task`, `plan`, `step`, `decision`,
@@ -98,7 +100,7 @@ async def append(executor, store, sid, kind, text, *, data=None, numbers=None, p
     thuộc kết quả của tầng file.
     """
     item, stored = insert_row(store, sid, kind, text, data=data, numbers=numbers, plan=plan,
-                              refs=refs, status=status, evidence=evidence)
+                              refs=refs, status=status, evidence=evidence, turn=turn, step=step)
     answer = await _safe(executor, 'journal_append', {'session': sid, 'record': item},
                          store, sid, JOURNAL_FAILED_CODE, 'bản ghi nhật ký')
     if answer is not None:
@@ -137,6 +139,34 @@ async def write_checkpoint_file(executor, store, sid, messages, *, numbers=None,
                        store, sid, CHECKPOINT_FAILED_CODE, 'bản transcript trước nén')
 
 
+async def prune_captures(executor, store, sid) -> dict | None:
+    """P1.5 — một lượt dọn thư mục ảnh/bằng chứng trong box, qua đúng khuôn `_safe`.
+
+    Vì sao harness gọi: tệp bằng chứng của P1.4 sinh ở **mỗi** lần ghi tệp, còn `retention()` trong
+    box chỉ chạy khi có người gọi (route của người vận hành, hoặc tiến trình chụp ảnh tự gọi mỗi 20
+    lần chụp) — một phiên sửa 300 tệp mà không chụp ảnh nào sẽ không bao giờ được dọn. Gọi ở đây
+    đúng nhịp `EVIDENCE_PRUNE_EVERY` lượt của phiên.
+
+    Bốn trần của `retention()` áp theo `(kind, sid8)` và **không lọc phần mở rộng**, nên thư mục
+    `evidence/` nằm gọn dưới cùng trần với ảnh chụp — không cần dựng lại image.
+
+    Box thiếu `session_ops.py` ⇒ op trả `SESSION_OPS_UNAVAILABLE`; `_safe` biến nó thành notice và
+    lượt đi tiếp. Trần thời gian riêng vì đây là việc phụ trong lượt: quá hạn thì bỏ, không kéo
+    theo lượt.
+    """
+    args = {'session': sid, 'sid8': str(sid or '')[:8]}
+    try:
+        return await asyncio.wait_for(
+            _safe(executor, 'captures_prune', args, store, sid, EVIDENCE_PRUNE_CODE,
+                  'dọn thư mục bằng chứng'),
+            EVIDENCE_PRUNE_TIMEOUT_SECONDS)
+    except Exception as exc:  # timeout cũng vào đây: việc phụ không được làm hỏng lượt
+        _notice(store, sid, EVIDENCE_PRUNE_CODE,
+                f'{EVIDENCE_PRUNE_CODE}: dọn thư mục bằng chứng bỏ dở ({type(exc).__name__}: {exc})',
+                op='captures_prune')
+        return None
+
+
 def note_gap(store, sid, code, message, op=None):
     """Ghim lời nói thật khi op trong box trả về nhưng **một phần** việc không xong.
 
@@ -149,12 +179,20 @@ def note_gap(store, sid, code, message, op=None):
 
 
 def brief(store, sid, *, limit=60) -> str:
-    """Khối "ký ức" của phiên (A5) — rỗng khi chưa có bản ghi nào (lượt đầu không có gì để nhớ)."""
+    """Khối "ký ức" của phiên (A5) — rỗng khi chưa có bản ghi nào **thuộc sáu nhóm** (lượt đầu
+    không có gì để nhớ, và một phiên chỉ có hàng tra cứu — `F:`/`E:` — cũng vậy)."""
     try:
         rows = store.journal_tail(sid, limit=limit)
     except Exception:  # pragma: no cover - phiên chưa có nhật ký / DB cũ
         return ''
-    return journal.brief_text([record_view(row) for row in rows]) if rows else ''
+    if not rows:
+        return ''
+    block = journal.brief_text([record_view(row) for row in rows])
+    # Đợt 3 vòng 22: hàng `E:` (bằng chứng của lượt) cố ý KHÔNG có nhóm trong khối ký ức, nên một
+    # phiên chỉ có hàng `E:`/`F:` sẽ dựng ra sáu nhóm rỗng. Ghép khối đó vào system message là đổi
+    # prompt giữa hai lượt mà không mang thêm thông tin nào — trả `''` thì `inject_brief` bỏ khối
+    # cũ và prompt giữ nguyên tiền tố (đúng thứ prompt cache cần).
+    return block if journal.brief_has_items(block) else ''
 
 
 def record_view(row):
@@ -185,6 +223,13 @@ def record_view(row):
         'status': record.get('status') or payload.get('status') or journal.DEFAULT_STATUS.get(kind),
         'data': data,
         'numbers': record.get('numbers'),
+        # P1.2 — lượt/bước của bản ghi (đường ghim đi qua `insert_row`/`append`). Hàng ghi trước
+        # vòng này, và hàng của đường C1 (lưu số trần, không có khối `record`), KHÔNG có hai khoá
+        # này ⇒ trả `None`: người đọc phải phân biệt được "không có" với "bằng 0".
+        'turn': record.get('turn') if isinstance(record.get('turn'), int)
+                and not isinstance(record.get('turn'), bool) else None,
+        'step': record.get('step') if isinstance(record.get('step'), int)
+                and not isinstance(record.get('step'), bool) else None,
         'ts': record.get('ts') or payload.get('ts'),
         # Hai trường này có thật trong bản ghi nhưng bản 0.1 không trả ra, nên route
         # `GET /api/agent/journal/tasks` luôn báo `refs`/`evidence` là `null` cho mọi việc —

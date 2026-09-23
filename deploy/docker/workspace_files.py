@@ -45,6 +45,13 @@ MAX_DEPTH = 16
 MAX_ENTRIES = 2_000
 MAX_FILE_SIZE = 1 * 1024 * 1024
 MAX_UPLOAD_SIZE = 256 * 1024 * 1024
+# Trần cho đường TẢI LÊN của ô soạn tin (kế hoạch v1 Phần A, A3.3 — quyết định D-6):
+# 25 MiB/tệp. Panel Workspace Files đi CÙNG route `/__box/file/upload` nên nhận cùng
+# trần này — đây là chủ ý, không phải hồi quy (xem docs/architecture/workspace-files.md).
+UPLOAD_MAX_BYTES = 25 * 1024 * 1024
+# Số lần thử cấp số RULE-5 khi hai luồng upload chạy song song (`ThreadingHTTPServer`).
+UPLOAD_ASSIGN_MAX_TRIES = 200
+# Số byte của mỗi lần đọc thư mục khi tìm số lớn nhất — không cần, `os.listdir(fd)` đủ.
 MAX_ZIP_TOTAL_BYTES = 256 * 1024 * 1024
 MAX_UNZIP_TOTAL_BYTES = 256 * 1024 * 1024
 MAX_ZIP_PATHS = 200
@@ -56,6 +63,9 @@ THUMBNAIL_DIR = WORKSPACE_ROOT / ".generated_artifacts" / "thumbnails"
 # chúng và không nên thấy nhiễu). `.trash` là thùng rác mềm của API delete.
 GENERATED_DIR_NAME = ".generated_artifacts"
 TRASH_DIR_NAME = ".trash"
+# Thư mục nhận tệp người dùng tải lên từ ô soạn tin (RULE-5: `<số>.<ext>`, không
+# zero-pad, số do BOX cấp — xem `write_upload(assign_number=True)`).
+UPLOAD_DIR_NAME = ".uploaded_artifacts"
 HIDDEN_DIR_NAMES = frozenset({GENERATED_DIR_NAME, TRASH_DIR_NAME})
 
 try:  # nằm cùng thư mục khi staged vào `/usr/local/bin`; chuỗi dự phòng phải khớp y hệt
@@ -69,7 +79,12 @@ except ImportError:  # pragma: no cover - chỉ xảy ra khi tệp bị chép l�
 # bất biến của mục đó (`.trash` biến mất khỏi vùng ẩn, `.plans` bị làm rỗng).
 # `.session-history` (đợt 20) vào danh sách này vì API file của người dùng không được
 # xoá nhật ký phiên: nó là bản ghi chỉ-ghi-thêm, mất là mất bằng chứng của chính lượt đó.
-PROTECTED_PATHS = frozenset({".plans", TRASH_DIR_NAME, GENERATED_DIR_NAME, SESSION_HISTORY_DIRNAME})
+# `.uploaded_artifacts` (đợt 22) vào danh sách này vì đó là GỐC của mọi tệp người dùng
+# tải lên: xoá nó là xoá cả đường dẫn mà `attachment_prompt_block` (harness) đã ghi vào
+# lượt trước — tệp là bằng chứng của chính lượt đó, giống `.session-history`.
+PROTECTED_PATHS = frozenset(
+    {".plans", TRASH_DIR_NAME, GENERATED_DIR_NAME, SESSION_HISTORY_DIRNAME, UPLOAD_DIR_NAME}
+)
 
 # `touch` tạo file nhỏ (rỗng hoặc nội dung ngắn) chứ không phải đường upload thứ hai.
 # Giữ trần bằng MAX_FILE_SIZE để mọi file do `touch` tạo ra vẫn đọc được qua
@@ -695,24 +710,35 @@ def _write_full(fd: int, chunk: bytes) -> None:
         offset += written
 
 
-def write_as_agent(dir_rel: object, name: object, data_or_iter, *, max_bytes: int = MAX_UPLOAD_SIZE) -> int:
-    """Mở file qua dir_fd, ghi, fchown(1000,1000), fchmod(0o640). Trả số byte đã ghi."""
+def _open_write_fd(dir_fd: int, name: str, *, exclusive: bool = False) -> int:
+    """Mở file để ghi trong ``dir_fd`` (từ chối symlink). Ánh xạ lỗi OSError như trước.
 
-    safe_name = _validate_filename(name)
-    safe_dir = validate_rel_path(dir_rel)
-    dir_fd = _open_dir_fd(safe_dir)
+    ``exclusive=True`` dùng ``O_CREAT|O_EXCL`` để GIỮ CHỖ một cái tên (bộ cấp số RULE-5);
+    ``FileExistsError`` được NÉM NGUYÊN cho chỗ gọi xử lý (thử số kế tiếp), không dịch thành
+    ``WorkspaceConflict``.
+    """
+
+    flags = os.O_WRONLY | os.O_CREAT | _O_NOFOLLOW
+    flags |= os.O_EXCL if exclusive else os.O_TRUNC
     try:
-        try:
-            fd = os.open(safe_name, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _O_NOFOLLOW, dir_fd=dir_fd)
-        except OSError as error:
-            if error.errno == errno.ELOOP:
-                raise WorkspaceConflict("Đích là liên kết tượng trưng — không ghi đè.") from error
-            if error.errno in (errno.EACCES, errno.EISDIR):
-                raise WorkspaceConflict("Không ghi được vào đích.") from error
-            print(f"workspace_files: không mở được {safe_name!r} để ghi: {error}", file=sys.stderr)
-            raise WorkspaceFileError("Không mở được file để ghi.") from error
-    finally:
-        os.close(dir_fd)
+        return os.open(name, flags, 0o640, dir_fd=dir_fd)
+    except FileExistsError:
+        raise
+    except OSError as error:
+        if error.errno == errno.ELOOP:
+            raise WorkspaceConflict("Đích là liên kết tượng trưng — không ghi đè.") from error
+        if error.errno in (errno.EACCES, errno.EISDIR):
+            raise WorkspaceConflict("Không ghi được vào đích.") from error
+        print(f"workspace_files: không mở được {name!r} để ghi: {error}", file=sys.stderr)
+        raise WorkspaceFileError("Không mở được file để ghi.") from error
+
+
+def _write_fd(fd: int, data_or_iter, max_bytes: int) -> int:
+    """Thân ghi dùng chung: ghi hết chunk, ``fchown(1000,1000)``, ``fchmod(0o640)``, trần byte.
+
+    Nhận fd ĐÃ mở (đường thường: ``O_TRUNC`` theo tên; đường cấp số: ``O_EXCL`` giữ chỗ) nên
+    hai đường không bao giờ lệch nhau về quyền/trần. **Luôn đóng fd.**
+    """
 
     written = 0
     try:
@@ -740,16 +766,103 @@ def write_as_agent(dir_rel: object, name: object, data_or_iter, *, max_bytes: in
     return written
 
 
-def write_upload(target_dir_rel: object, filename: object, body_iter, size_hint: int) -> dict:
-    """Stream ghi file tải lên vào ``target_dir_rel``; trả {path, sizeBytes}."""
+def write_as_agent(dir_rel: object, name: object, data_or_iter, *, max_bytes: int = MAX_UPLOAD_SIZE) -> int:
+    """Mở file qua dir_fd, ghi, fchown(1000,1000), fchmod(0o640). Trả số byte đã ghi."""
+
+    safe_name = _validate_filename(name)
+    safe_dir = validate_rel_path(dir_rel)
+    dir_fd = _open_dir_fd(safe_dir)
+    try:
+        fd = _open_write_fd(dir_fd, safe_name)
+    finally:
+        os.close(dir_fd)
+    return _write_fd(fd, data_or_iter, max_bytes)
+
+
+def highest_upload_number(dir_fd: int) -> int:
+    """Số lớn nhất đang có trong ``dir_fd`` (0 nếu chưa có tệp `<số>.<ext>` nào).
+
+    Bộ đếm RULE-5 **không** có tệp trạng thái: nó là ``max(số đang có) + 1``. Tệp khác trong
+    thư mục (``probe.md``, ``notes.txt``) bị bỏ qua, chúng không phải một phần của dãy số.
+    """
+
+    try:
+        names = os.listdir(dir_fd)
+    except OSError as error:
+        print(f"workspace_files: không đọc được thư mục đích: {error}", file=sys.stderr)
+        raise WorkspaceFileError("Không đọc được thư mục đích.") from error
+    highest = 0
+    # RULE-5 bắt đầu từ 1 (`1.md`, `2.md`, …): không có "số 0", nên `max + 1` khi rỗng là 1.
+    for entry in names:
+        stem = entry.rsplit(".", 1)[0] if "." in entry else entry
+        if stem.isdigit():
+            highest = max(highest, int(stem))
+    return highest
+
+
+def write_upload(
+    target_dir_rel: object,
+    filename: object,
+    body_iter,
+    size_hint: int,
+    *,
+    assign_number: bool = False,
+    mkdirs: bool = False,
+    max_bytes: int = UPLOAD_MAX_BYTES,
+) -> dict:
+    """Stream ghi file tải lên vào ``target_dir_rel``; trả {path, name, sizeBytes}.
+
+    Hai cờ mới của đợt 22 (kế hoạch v1 Phần A, A3):
+
+    - ``assign_number=True`` — **box** cấp số RULE-5 (``<max số trong thư mục đích> + 1``, không
+      zero-pad), giữ chỗ bằng ``O_CREAT|O_EXCL`` nên hai lời gọi SONG SONG
+      (``ThreadingHTTPServer``) không bao giờ ghi vào cùng một tên; ``FileExistsError`` ⇒ tăng số
+      và thử lại, tối đa ``UPLOAD_ASSIGN_MAX_TRIES`` lần.
+    - ``mkdirs=True`` — tạo chuỗi thư mục cha còn thiếu (giữ cây thư mục khi người dùng tải cả
+      thư mục lên).
+
+    ``name`` LUÔN có trong kết quả (đường không cấp số trả về đúng tên người dùng gửi).
+    """
 
     name = _validate_filename(filename)
     target_dir = validate_rel_path(target_dir_rel)
-    if size_hint and size_hint > MAX_UPLOAD_SIZE:
-        raise WorkspaceTooLarge(f"Dung lượng vượt giới hạn {MAX_UPLOAD_SIZE} byte.")
-    written = write_as_agent(target_dir, name, body_iter, max_bytes=MAX_UPLOAD_SIZE)
-    joined = f"{target_dir}/{name}" if target_dir else name
-    return {"path": joined, "sizeBytes": written}
+    if size_hint and size_hint > max_bytes:
+        raise WorkspaceTooLarge(f"Dung lượng vượt giới hạn {max_bytes} byte.")
+    if mkdirs:
+        _ensure_dirs("", split_segments(target_dir))
+
+    if not assign_number:
+        written = write_as_agent(target_dir, name, body_iter, max_bytes=max_bytes)
+        joined = f"{target_dir}/{name}" if target_dir else name
+        return {"path": joined, "name": name, "sizeBytes": written}
+
+    ext = ext_of(name)
+    suffix = f".{ext}" if ext else ""
+    dir_fd = _open_dir_fd(target_dir)
+    try:
+        # Số nền tính một lần rồi tăng dần: mỗi vòng thử lại ĐÃ giữ chỗ được một cái tên, nên
+        # không cần (và không nên) đọc lại thư mục để tránh nhảy số khi có luồng khác xen vào.
+        # `base` = số lớn nhất đang có; ứng viên kế tiếp là `base + 1` (RULE-5 không có số 0).
+        # Vòng lặp `+ attempt` là phần chịu tải khi nhiều upload chạy song song: kẻ thua
+        # `O_EXCL` nhảy sang số kế, nên không ai dùng lại số của người khác.
+        base = highest_upload_number(dir_fd)
+        fd = None
+        number = base
+        for attempt in range(UPLOAD_ASSIGN_MAX_TRIES):
+            number = base + 1 + attempt
+            try:
+                fd = _open_write_fd(dir_fd, f"{number}{suffix}", exclusive=True)
+                break
+            except FileExistsError:
+                continue
+        if fd is None:
+            raise WorkspaceConflict("Không cấp được số tệp mới trong thư mục đích.")
+        written = _write_fd(fd, body_iter, max_bytes)
+    finally:
+        os.close(dir_fd)
+    assigned = f"{number}{suffix}"
+    joined = f"{target_dir}/{assigned}" if target_dir else assigned
+    return {"path": joined, "name": assigned, "sizeBytes": written}
 
 
 # ---------------------------------------------------------------------------

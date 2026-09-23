@@ -1,7 +1,7 @@
-"""Bảy nhóm công cụ của runtime — bảng "Nút vặn của runtime" nói với giao diện.
+"""Tám nhóm công cụ của runtime — bảng "Nút vặn của runtime" nói với giao diện.
 
-Bảng này là nguồn duy nhất cho khối "Tool access" ở tab Harness: hợp của bảy nhóm
-phải bằng ĐÚNG bộ công cụ của orchestrator (`roles.ORCHESTRATOR_TOOLS`, 22 công cụ),
+Bảng này là nguồn duy nhất cho khối "Tool access" ở tab Harness: hợp của tám nhóm
+phải bằng ĐÚNG bộ công cụ của orchestrator (`roles.ORCHESTRATOR_TOOLS`, 24 công cụ),
 và mỗi nhóm giữ trật tự như bảng trong kế hoạch. `alwaysOn` đánh dấu nhóm không thể
 tắt: hỏi người dùng và xin phép là hai công cụ quyết định (`roles.DECISION`), mọi
 vai trò đều có, nên một harness tắt chúng là một harness không còn hỏi được ai.
@@ -28,7 +28,10 @@ TOOL_GROUPS = [
      'tools': ['web_search', 'web_fetch'],
      'alwaysOn': False},
     {'key': 'delegationPlans',
-     'tools': ['delegate_task', 'session_search', 'write_plan', 'journal_write', 'journal_brief'],
+     'tools': ['delegate_task', 'session_search', 'write_plan', 'plan_verify', 'journal_write', 'journal_brief'],
+     'alwaysOn': False},
+    {'key': 'peerMesh',
+     'tools': ['peer_read', 'await_children'],
      'alwaysOn': False},
     {'key': 'questionsApprovals',
      'tools': ['ask_user', 'request_approval'],

@@ -99,8 +99,13 @@ thời gian render nên tính lại được từ dữ liệu thô; `--verify` s
 - Lớp 2 (gọi giám khảo LLM) và lớp 3 (chấm tay): có prompt, **chưa gọi lần nào**.
 - Lớp 1 mới có chỉ số vội; phần oracle kiểm từng fixture còn thiếu, và mỗi fixture đều có mục
   `open_questions` ghi rõ chỗ chưa có dữ liệu (repo mẫu, phiên 30 lượt, giả lập lỗi upstream rỗng…).
-- Ba tín hiệu S1/S4/S5 **không đo được** từ nhật ký hệ thống hiện tại (S1 cần thêm một khoá vào
-  `turn.end`/`tool.end`; S4 cần nội dung câu trả lời, mà nhật ký cố ý không lưu nội dung; S5 cần
-  danh sách tệp trong workspace). S3/S6/S7 chỉ đo được bằng **proxy** vì nhật ký có tên tool và
+- Ba tín hiệu S1/S4/S5: **S4 đã đo được** từ vòng 22 — cổng bằng chứng ghi
+  `data.evidenceVerdict`/`data.evidenceMissing` vào `turn.end`, nên `rushed_index.py` đọc thẳng con số
+  thay vì đọc câu chữ; `value` = tỉ lệ lượt bị gắn cờ trên số lượt **đã đo**, `threshold` vẫn `> 20 %`,
+  `flagged` kèm `verdict` từng lượt, và `note` in mốc nâng mặc định lên `enforce` (≥ 20 phiên có số
+  VÀ tỉ lệ báo động sai < 10 % — D-8, kế hoạch đợt 3 §6). Cửa sổ log **không có khoá nào** của cổng
+  (log cũ) thì S4 vẫn `not_measured` như trước, kèm lý do `not-evidence-gate-keys`.
+  **S1/S5 vẫn không đo được** từ nhật ký hiện tại (S1 cần thêm một khoá vào `turn.end`/`tool.end`;
+  S5 cần danh sách tệp trong workspace). S3/S6/S7 chỉ đo được bằng **proxy** vì nhật ký có tên tool và
   `isError` nhưng **không có tham số tool** — mọi proxy đều ghi rõ trong mã.
 - Chưa chạy lượt nào ⇒ mọi chỉ số chất lượng vẫn là **chưa đo**.

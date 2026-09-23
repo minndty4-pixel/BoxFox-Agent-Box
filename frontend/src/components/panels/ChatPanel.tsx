@@ -40,6 +40,7 @@ import { useProviderStore } from '../../store/providerStore'
 import { useT } from '../../i18n/context'
 import { LabelDot } from '../LabelDot'
 import { ChatInputBar, type RouterComposerAdapter } from './ChatInputBar'
+import type { OutgoingAttachment } from '../../lib/chat/attachmentUpload'
 import { ContextUsageBar } from './ContextUsageBar'
 import { MediaLightboxModal, type LightboxMediaProps } from '../chat/MediaLightboxModal'
 import { Video, Play, BrainCircuit } from 'lucide-react'
@@ -375,7 +376,7 @@ export function ChatPanel() {
         harnessClearError(chatId)
         setDismissedWarning(null)
       },
-      onSend: (prompt: string, image?: string | null) => {
+      onSend: (prompt: string, images?: string[] | null, attachments?: OutgoingAttachment[]) => {
         harnessClearError(chatId)
         if (connectionWarning) setDismissedWarning(connectionWarning)
         const thinkingLevel = useHarnessStore.getState().thinkingLevel
@@ -403,12 +404,22 @@ export function ChatPanel() {
           // trong ô nhập, không bị xoá im lặng (BUG-17/F1).
           // Mức thinking của model đang chọn đi kèm để store kéo mức toàn cục về
           // mức model thật sự công bố trước khi gửi lượt.
-          return harnessSend(chatId, prompt, selection, image, modelLabel, activeOption?.thinkingLevels).then(() => {
+          return harnessSend(
+            chatId,
+            prompt,
+            selection,
+            images?.[0],
+            modelLabel,
+            activeOption?.thinkingLevels,
+            images,
+            attachments,
+          ).then(() => {
             captureRunError()
             return !useHarnessChatStore.getState().sessions[chatId]?.error
           })
         }
-        if (selected) void routerSend(prompt, undefined, image)
+        // Router chat chưa có hợp đồng nhiều ảnh: giữ nguyên một ảnh như trước.
+        if (selected) void routerSend(prompt, undefined, images?.[0])
         return undefined
       },
       onStop: handleStopAll,
@@ -589,6 +600,8 @@ export function ChatPanel() {
             events={harnessRun.events}
             status={harnessRun.status}
             error={harnessRun.error}
+            // T15 — `deliveries[].recipient` là `sessionId`; `main` chính là phiên đang chạy.
+            sessionId={harnessRun.id}
             connectionWarning={connectionWarning}
             onDismissWarning={() => setDismissedWarning(connectionWarning)}
             onOpenLightbox={setLightboxMedia}
@@ -597,6 +610,9 @@ export function ChatPanel() {
             // Chip kế hoạch / sub-agent / quyết định trong transcript đều mở tab
             // tại chỗ — người dùng đọc chat không bị mất vị trí (giữ nguyên khung cuộn).
             onOpenTab={(tab, target) => showTab(tab, target ?? null)}
+            // P4.1/P4.3 — nhật ký bền của phiên (`GET /sessions/{sid}` trả về, store gộp theo `seq`):
+            // hàng `E:` trong đó là bằng chứng cổng đã ghim cho từng lượt.
+            journal={harnessRun.journal ?? null}
           />
         )}
         {/* Sub-agent Status Capsule — Theo dõi tiến độ sub-agent và mở SubagentInspectorPanel */}

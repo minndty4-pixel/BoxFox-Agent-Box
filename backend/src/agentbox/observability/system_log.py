@@ -13,7 +13,11 @@ Shape of one line (JSON object, one per line):
       "source": "harness" | "router" | "box",
       "event": "turn.start" | "turn.end" | "tool.end" | "failure" | ...,
       "sessionId": "…",          # when the entry belongs to one session
-      "turnId": 12,              # optional counter inside the session
+      "turnId": 12,              # optional STEP counter inside the session (turns of the
+                                 # agent loop; kept as-is so older log lines still read)
+      "turn": 3,                 # optional TURN number of the session (one user turn may
+                                 # contain many turnId steps -- the two never mean the same
+                                 # thing, see `session_store.begin_turn`)
       "code": "UPSTREAM_UNREACHABLE",   # machine token when the entry is a failure
       "message": "…",            # human, one line
       "durationMs": 1523,
@@ -289,7 +293,7 @@ class SystemLog:
     # ------------------------------------------------------------------ write
     def write(self, event: str, *, level: str = 'info', message: str | None = None,
               code: str | None = None, session_id: str | None = None, turn_id: int | None = None,
-              duration_ms: float | None = None, **data) -> None:
+              turn: int | None = None, duration_ms: float | None = None, **data) -> None:
         if not self.enabled:
             return
         if duration_ms is None:
@@ -308,6 +312,10 @@ class SystemLog:
             entry['sessionId'] = session_id
         if turn_id is not None:
             entry['turnId'] = turn_id
+        # T2 — số LƯỢT của phiên, KHÁC `turnId` (số bước trong lượt). Hai trường cùng có mặt
+        # vì bản ghi cũ không được đổi nghĩa: chỉ thêm.
+        if turn is not None:
+            entry['turn'] = turn
         if code:
             entry['code'] = code
         if message:
