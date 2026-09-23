@@ -173,6 +173,37 @@ trôi cho D-26** (kỹ năng không được chứa câu bắt dùng đủ năm 
 (c) `frontend/vite.config.ts` vẫn bind `127.0.0.1`, preview phải đi qua `frontend/.tmp/vite.preview.config.mjs`;
 (d) "agent verify" (vai đi hậu kiểm thật) vẫn là việc của vòng sau, như đã ghi ở §4.1.
 
+### 4.3 Vòng 25 — vòng lặp kế hoạch: phản biện độc lập bắt buộc, cổng chặn cứng có công tắc, cú bấm ở tab Plan mở lượt thật (2026-09-23) — D-33…D-38
+
+Ba việc chủ nhà giao cùng ngày (nguyên văn ở `bug-register.md` §6.33 và `/code/.plans/v25-evidence-brief.md` §0) dựng thành **bảy
+lỗi đo được**; năm câu hỏi phỏng vấn (`/code/.plans/v25-interview.json`) đã chốt năm phương án (`User Decision #5927…#5931`,
+chép nguyên văn ở `/code/.plans/v25-owner-answers.md`). Sổ ghi sáu hàng: **năm hàng đầu là chọn của chủ nhà**, hai hàng còn lại
+(D-35, D-37) là **cách hiểu đã thi công** của hai điểm kỹ thuật mà chủ nhà không được hỏi — ghi rõ như vậy để sổ không gán cho
+chủ nhà điều họ chưa nói.
+
+| Mã | Quyết định | Chốt | Lý do đo được | Việc bị ảnh hưởng | Trạng thái |
+|---|---|---|---|---|---|
+| D-33 | Người phản biện kế hoạch là **vai MỚI `plan-review` chỉ-đọc** (không tái dùng `review`, không để con `plan` tự chấm chính mình) + **sổ phản biện** `plan_verifications` | Có (#5927: *"này hãy research và cho tôi khả năng tốt nhất"*) | Đo vòng 25: 6 lượt lập kế hoạch, **0 child `review`**, 0 `plan_verify`; `plan_eval` P1–P8 chấm **trước** khi ghi nên không sinh phản biện ngữ nghĩa | `roles.py` (9 → **10 vai**), `tool_contracts.py` (enum `delegate_task`), `tool_groups.py`, `session_store.py` (bảng `plan_verifications`), kỹ năng mới `planning`, SOP | Đã xong (vòng 25) |
+| D-34 | **Chặn cứng, có công tắc hạ xuống** cho CẢ HAI cổng: chưa có phán quyết `ok` cho đúng bản ⇒ không duyệt được (chat lẫn tab Plan); bản dựa vào dữ kiện ngoài mà nguồn không đến từ phiên con `research`/`explore` của chính phiên đó ⇒ không ghi được | Có (#5928 *"chặn_cứng,_có_công_tắc_hạ_xuống"*, #5931 *"bắt_buộc_khi_kế_hoạch_dựa_vào_dữ_kiện_ngoài"*) | Đo vòng 25: sau `plan_written` lượt **dừng ngay**, không ai chấm bản vừa ghi; bản kế hoạch đo được có mục Sources nhưng không nguồn nào chứng minh đã tra | `limits.py` (`BOXFOX_PLAN_VERIFY`, `BOXFOX_PLAN_SOURCES_GATE`, `PLAN_APPROVAL_UNVERIFIED`, `PLAN_SOURCES_REJECTED`), `runtime.py` (`decision()`, `write_plan`), `api/server.py` (409), `plan_quality.py` | Đã xong (vòng 25) |
+| D-35 | **Hạn chót của lượt lập kế hoạch**: mặc định 180 → **600 s**, trần 600 → **1200 s**, con 300 → 420 s, và lượt nào đã ghi được kế hoạch thì **nới một lần +420 s**; lượt dở phải nói được là dở | **Không hỏi** — thi công theo khuyến nghị; ghi nhận là cách hiểu của người thi công | Đo vòng 25: B1 chết ở 210 s **trước cả `write_plan`** (`DEADLINE_EXCEEDED`); B1b ở 622 s vẫn `partial` nhưng phiên hiện `completed` — chủ nhà đọc là "đã xong" | `limits.py` (`DEADLINE_*`, `PLAN_TURN_EXTENSION_SECONDS`), `runtime.py` (`extend_turn_budget`, `lastTurn`), `runtime_info` | Đã xong (vòng 25) |
+| D-36 | Cú bấm ở tab Plan **mở MỘT LƯỢT THẬT** cho phiên sở hữu (Yêu cầu sửa → lượt sửa; Duyệt → lượt thi công), và **sổ ghi luôn phiên sở hữu** (trước đây cột `session_id` toàn `NULL`) | Có (#5929 *"mở_một_lượt_mới_cho_model_ngay"*, #5930 *"mở_lượt_thi_công_ngay"*) | Đo vòng 25: 3/3 cú bấm — API 200, có hàng sổ, badge đổi, rồi **im lặng 55–60 s**, `turn_count` không đổi, 0 event (`runtime.py` chỉ ghi sổ, không `resume`) | `session_store.py` (bảng `plan_owners`, cột `resumed`), `api/server.py` (`plan_wake`), `plan_registry.py`, tab Plan | Đã xong (vòng 25) |
+| D-37 | **Ngữ nghĩa kết cục đo được**: hết hạn/huỷ một lượt xin duyệt **KHÔNG** được sinh hàng `changes_requested` giả; và `ask_user` **khai được** cặp khoá plan để quyết định qua chat cũng vào sổ | **Không hỏi** — thi công theo khuyến nghị; ghi nhận là cách hiểu của người thi công | Đo vòng 25: lượt 3 xin duyệt, hết hạn ⇒ sổ có hàng `changes_requested` **dù không ai bấm**; và lượt chủ nhà duyệt qua `ask_user` (đã thi hành thật) **không** vào sổ ⇒ tab Plan hiện "Changes requested" cho bản vừa được duyệt (ảnh `r25_08`) | `runtime.py` (`settle()`, `decision()`), `tool_contracts.py` (`ask_user` + `planIdentity`/`planVersion`), `plan_registry.py` | Đã xong (vòng 25) |
+| D-38 | **Duyệt kèm điều kiện**: *"k ở dạng nút, chỉ có 1 mũi tên nhỏ ở nút approve, ấn vào thì có popup hiện ra để user nhập, k nhập hay gõ thì vẫn là approve bình thường"* — điều kiện đi vào sổ và vào lượt thi công | Có (chủ nhà tự thêm trong #5930, không có trong phương án nào) | Chủ nhà nêu khi chốt câu 4; tab Plan trước đó **không có ô ghi chú nào** (3/3 hàng `note: ""`, `PlanPanel.tsx` không truyền note) | `PlanReviewCard.tsx` (mũi tên + popup), `usePlanFiles.ts`, `api/server.py` (`note` đi vào `plan_wake_prompt`), ghim ở `PlanReviewCard.test.tsx` | Đã xong (phạm vi B) |
+
+**Hậu kiểm sau khi sáu hàng lên mã.** Đo sống trên harness scratch (`/var/tmp/v25c`, port 3116; harness 3117/3118 cho hai chế độ công tắc)
+ở `test-rounds.md` § *Vòng 25*: lượt lập kế hoạch thật chạy đúng chuỗi `write_plan → plan-review → plan_verify → revise → v2 →
+plan-review → plan_verify`, có dòng `TURN_EXTENDED +420 s` sau `plan_written`, và hàng `plan_verifications` chỉ được ghi khi có phiên
+con phản biện thật (`critic_session_id` + `critic_answer_chars`). Cổng chặn cứng đo được ở cả hai mặt: tab Plan duyệt bản chưa phán
+quyết `ok` ⇒ **409** `PLAN_APPROVAL_UNVERIFIED` và **không** hàng sổ nào; công tắc `warn` ⇒ 200 kèm `approvalWarning` + dòng
+`plan.approval.unverified`; `off` ⇒ không kiểm gì.
+
+**Điều còn treo (ghi để không trôi):** (a) lượt đo **chưa** đạt verdict `ok` (cả hai bản bị `revise` vì phản biện bắt được lỗi thật của
+bản kế hoạch mẫu), nên mặt "duyệt một bản đã `ok` rồi mở lượt thi công" chỉ đo được ở đường công tắc — nếu lượt đo sau vẫn vậy thì
+câu hỏi mở cho chủ nhà là **siết đề bài mẫu**, không phải nới cổng; (b) con `plan-review` **không có** `terminal_exec` nên phê bình chỉ
+kiểm *hình dạng* lệnh nghiệm thu, việc chạy thật vẫn thuộc vai `testing`; (c) không rebuild box ⇒ nhãn `v1 (approved)` do box gán theo
+vị trí (`deploy/docker/plan_files.py:841-844`) vẫn còn trong API của box — tab Plan đã ngừng in `draft/approved` của box và đọc sổ
+harness, nhưng API thô thì chưa.
+
 ## 5. Ràng buộc kỹ thuật phải giữ khi thi công
 
 1. **Không thêm giá trị `status` mới** cho phiên: luồng đang lọc `running` / `awaiting_decision`
@@ -195,3 +226,4 @@ trôi cho D-26** (kỹ năng không được chứa câu bắt dùng đủ năm 
 | 2026-09-22 | Đợt 3 vòng 22 (bằng chứng sống) thi công xong: D-8 chuyển `Đã xong` kèm số đo sống; D-14 ghi **nguyên văn** vào D-8 kèm ngày chốt và đồng hồ đếm (`sessions=` / `S4=` / `flagged=`); cổng vẫn mặc định `warn` cho tới mốc 20 phiên | Nam Nam |
 | 2026-09-23 | Vòng 23: chủ nhà gửi ảnh chụp và yêu cầu kế hoạch mới cho phần bằng chứng sống; chốt D-16…D-25 (11 câu qua ba đợt hỏi) — mặt câu trả lời cuối chỉ còn markdown, cổng rời giao diện, nhãn theo ngôn ngữ câu trả lời, kho lưu giữ nguyên | Nam Nam |
 | 2026-09-23 | Vòng 24: chủ nhà bác khuôn năm phần (bốn điểm nguyên văn) rồi tinh chỉnh "form vào 1 chút, ảnh bằng chứng ở dưới là quan trọng nhất"; chốt D-26…D-32 (ba lựa chọn phỏng vấn) — dạng câu trả lời dời vào kỹ năng `final-report`, prompt còn **một dòng bằng chứng cứng** cho phiên chính + **một con trỏ** ở bước tổng kết của lượt có việc; thi công xong ở `37926e0` | Nam Nam |
+| 2026-09-23 | Vòng 25: chủ nhà giao ba việc về khả năng lên kế hoạch; đo được **bảy lỗi** rồi chốt năm phương án (#5927…#5931) — vai `plan-review` độc lập, cổng chặn cứng có công tắc, cú bấm ở tab Plan mở lượt thật, duyệt kèm điều kiện (chủ nhà tự thêm). Ghi D-33…D-38, trong đó D-35/D-37 là cách hiểu đã thi công của hai điểm chủ nhà không được hỏi | Nam Nam |

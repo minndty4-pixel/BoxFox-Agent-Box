@@ -1479,3 +1479,64 @@ như kế hoạch ghi, để sổ đọc được theo vòng.
 có, `ChatPanel.tsx:707-715` chưa truyền); dòng meta tile (`PNG · kích thước · bytes`) chưa dựng; `frontend/vite.config.ts` còn bind
 `127.0.0.1` nên preview phải qua `frontend/.tmp/vite.preview.config.mjs`; nợ cũ BUG-66/BUG-68/BUG-69, câu bị ghim > 200 ký tự bị
 cắt giữa từ, và bốn khoá `subagent*` trong `en.ts` vẫn nguyên.
+
+### 6.33 Vòng 25 — khả năng lên kế hoạch (chủ nhà giao ba việc): đo được **bảy lỗi**, thi công vai phản biện ĐỘC LẬP + hai cổng chặn cứng có công tắc + cú bấm ở tab Plan mở LƯỢT THẬT — ĐÃ SỬA (vòng 25)
+
+**Nguyên văn chủ nhà (2026-09-23 08:31 UTC, ba việc).** ① *"kiểm thử khả năng lên kế hoạch của agent … việc lên kế hoạch đơn giản nó
+chỉ điều qua agent plan, chứ k điều động, review lại kế hoạch 1 lần nào, plan xong là dừng (không đúng hành vi). bản kế hoạch phải
+được verify-review, research để tìm kiếm thông tin lẫn các thao tác khác."*; ② *"khi user muốn thêm yêu cầu, plan có lên ver2? có
+cập nhập đúng k? có gọi mỗi sub agent plan không? (sai hành vi), cùng với khả năng request change của user"*; ③ *"sau khi lên kế hoạch
+kiểm thử hợp lý, nói vẫn đề và giúp tôi lên plan nếu có lỗi. có thể inter view thật kỹ, plan thật kỹ"*.
+
+**Số đo TRƯỚC khi sửa (`/code/.plans/v25-evidence-brief.md`; sáu lượt lập kế hoạch thật + ba cú bấm ở tab Plan, 2026-09-23 sáng).**
+Sáu lượt lập kế hoạch: sau `plan_written` lượt **dừng ngay** — **0** phiên con vai `review`, **0** `await_children`, **0**
+`request_approval`; không lượt nào bản kế hoạch được ai chấm. Ba cú bấm ở tab Plan (2 × Request changes, 1 × Approve):
+**3/3** trả API 200, có hàng trong sổ, badge đổi — rồi **im lặng 55–60 s**, `turn_count` **không** đổi, **0** event mới, cột
+`plan_reviews.session_id` toàn `NULL`; và 3/3 hàng `note: ""` vì tab không có ô ghi chú.
+
+| Mã | Lỗi | Đo được | Căn (file: dòng, đo ở `0266ca8`) | Cách sửa (vòng 25) |
+|---|---|---|---|---|
+| **BUG-72** | Sau `plan_written` lượt dừng; phản biện chỉ được **khuyên**, không bắt buộc | 6/6 lượt: 0 con `review`, 0 `plan_verify` | `runtime.py` `ORCHESTRATOR_SOP_GUIDANCE` chỉ *khuyên*; `plan_eval.py` chấm P1–P8 **trước** khi ghi nên không sinh phản biện ngữ nghĩa; không có vai nào chỉ-đọc chuyên chấm kế hoạch | Vai MỚI `plan-review` (10 vai) + SOP 10 chuyên gia có bước `plan-review`/`plan_verify`; sổ `plan_verifications`; kỹ năng `planning` (mặc định) |
+| **BUG-73** | Cú bấm ở tab Plan không mở lượt nào | 3/3 cú bấm: 200 + im lặng 55–60 s, `turn_count` không đổi, 0 event, `session_id: NULL` | `api/server.py:454-513` chỉ `record_plan_review` rồi chuyển tiếp box; không đụng runtime | `plan_wake()`: mở MỘT lượt thật với `invocation_id` suy từ nội dung quyết định (chống bấm trùng), mọi kết cục không-mở-được trả `wake.state` (`busy`/`duplicate`/`failed`/`no-owner`) kèm mã; ghi luôn `session_id` sở hữu vào hàng sổ |
+| **BUG-74** | Tab Plan không có ô ghi chú cho Request changes | 3/3 hàng `note: ""` | `PlanPanel.tsx:199-202` không truyền note; `usePlanFiles.ts:294` mặc định `''` | Mũi tên nhỏ ở nút Approve mở popup nhập điều kiện (D-38) + ô ghi chú ở Request changes; điều kiện đi vào `plan_wake_prompt` và vào sổ |
+| **BUG-75** | Hạn chót lượt lập kế hoạch quá ngắn | B1 chết ở **210 s** (`DEADLINE_EXCEEDED`) trước cả `write_plan`; B1b ở 622 s vẫn `partial` nhưng phiên hiện `completed` | `limits.py:22-25` `DEADLINE_DEFAULT_SECONDS = 180`, `DEADLINE_MAX_SECONDS = 600`, `CHILD_DEADLINE_SECONDS = 300` | `600`/`1200`/`420` + `extend_turn_budget()` nới **+420 s** một lần khi đã ghi được kế hoạch (`PLAN_TURN_EXTENSION_SECONDS`), kèm `notice TURN_EXTENDED`; `session_metrics()` thêm `lastTurn` để lượt dở nói được là dở |
+| **BUG-76** | Nhãn phiên bản do box gán theo **vị trí**, không theo sổ duyệt | Tab Plan in `v1 (approved)` cho bản chưa ai duyệt | `deploy/docker/plan_files.py:841-844` (`draft` nếu `len(versions) > 1 and index == 0`, còn lại `approved`) | Tab Plan thôi đọc nhãn đó: mặt trạng thái đọc sổ harness (`plan_reviews` + `plan_verifications`); API thô của box chưa đổi (không rebuild box) |
+| **BUG-77** | Hết hạn một lượt xin duyệt tự sinh hàng `changes_requested` | Lượt 3 xin duyệt, hết hạn ⇒ sổ có `changes_requested` **dù không ai bấm** | `runtime.py:3772` `defaultChoice: 'reject'`; `runtime.py:3833-3850` ghi sổ cho *mọi* kết cục quyết định | `settle()` chỉ ghi sổ khi có quyết định THẬT; bật luật R3 (`plan_registry.py:865-881`) đúng chỗ; hàng `changes_requested` cần người bấm |
+| **BUG-78** | Duyệt qua `ask_user` không vào sổ | Lượt chủ nhà duyệt qua `ask_user` (đã thi hành thật) **không** có hàng nào ⇒ tab Plan hiện *Changes requested* cho bản vừa duyệt (ảnh `r25_08`) | `runtime.py:3833-3850` chỉ ghi khi có đủ `planIdentity` + `planVersion`; `ask_user` không khai được hai khoá đó | `tool_contracts.py`: `ask_user` nhận `planIdentity`/`planVersion`; `decision()` ghi sổ trước `decision_resolved` (`record_plan_decision`) |
+| **BUG-79** | **(hạ tầng, mới)** kênh SSE rỗng ⇒ mất đường thử lại của lượt | Lượt sống `1130c2042b6c445db5f1bafc88d8bb94` (`nemotron-3-ultra-free`) chết sau **582 s / 15 bước** với `TURN_FAILED_TYPEERROR: object bytes can't be used in 'await' expression`; 2 notice `UPSTREAM_RETRY` trước đó | `runtime.py` nhánh dự phòng của `RouterClient.complete()`: `raise router_refusal(res.status_code, await res.read())` — `httpx.Response.read()` là hàm ĐỒNG BỘ trên thân đã đọc xong, nên TypeError **THAY CHỖ** phán quyết `UPSTREAM_HTTP_502` của router; `classify_failure` trả `TURN_FAILED_TYPEERROR` và `_retry_reason` không nhận ra ⇒ không thử lại | Bỏ `await` (`res.read()`); ghim bằng ca mới `test_an_empty_provider_stream_keeps_the_router_verdict_and_stays_retryable` — chứng minh **đỏ trước / xanh sau** |
+
+**Chuỗi nguyên nhân BUG-79 (tái hiện độc lập, không suy đoán).** Nhà cung cấp trả kênh SSE **rỗng** ⇒ `complete()` ném
+`ValueError('Upstream did not return any SSE completion content')` ⇒ khối `except` rơi xuống đường **KHÔNG streaming** (`stream: False`)
+⇒ router trả **502** ⇒ nhánh dự phòng `await res.read()` ném TypeError. Lỗi **có sẵn từ `HEAD`** (`git show HEAD:…runtime.py` cũng
+`await res.read()`), không phải hồi quy của vòng 25; nhưng nó ăn đúng vào vòng này vì lượt lập kế hoạch là lượt dài, hay gặp
+`503/502` của nhà cung cấp. Ghi ở đây vì số đo sống của vòng 25 **không đọc được nếu không sửa nó trước**.
+
+**Số đo sống SAU khi sửa (harness scratch 3116 + router thật 3101, 2026-09-23 11:40-12:05 UTC).**
+
+| Việc | Đo được |
+|---|---|
+| Lượt lập kế hoạch thật (`c75876dd1f034ae6a937147b6bb9c43a`, `muse-spark-1.3-contributor-free`, `maxSteps 40`, `deadlineSeconds 600`) | `status=completed` ở **540 s**, **18 bước**, **8 phiên con** (1 `research` + 3 `plan-review`), `plan_written` ×2, `plan_evaluated` ×2, `plan_verified` ×2 |
+| Chuỗi công cụ của lượt (18 bước) | `delegate_task → write_plan → delegate_task → peer_read ×6 → delegate_task → plan_verify → write_plan → skill_view → write_plan → delegate_task → plan_verify → skill_view` ⇒ **đúng SOP mới**: nghiên cứu → ghi v1 → phản biện → `plan_verify` → sửa → v2 → phản biện → `plan_verify` |
+| Sổ phản biện `plan_verifications` | **2 hàng**, cả hai đúng cặp `(identity, version)`: `retry-model-calls@v1 verdict='revise'` (critic `7f59b91314db4464b0a82d41b5fac737`, 1422 chữ, 5 điểm) và `@v2 verdict='revise'` (critic `b748e42af1e847bfbc548e99e48d4c18`, 1648 chữ, 5 điểm) |
+| Sổ sở hữu `plan_owners` | 2 hàng, `session_id = c75876dd…` (trước đây không có sổ này) |
+| Nới hạn chót | `notice TURN_EXTENDED` ngay sau `plan_written`: *"+420 s cho lượt này (plan_written)"*, `extensions: 1` — lượt 540 s > trần cũ 600 s **không** hụt |
+| Cổng chặn cứng, mặt TỪ CHỐI | `POST /api/agent/plans/review {identity: retry-model-calls, version: 1, decision: approved}` ⇒ **409** `{"blocked": true, "code": "PLAN_APPROVAL_UNVERIFIED", …}` và **0** hàng `plan_reviews` mới |
+| Cổng chặn cứng, công tắc `BOXFOX_PLAN_VERIFY=warn` (harness 3117) | **200** kèm `"approvalWarning": "PLAN_APPROVAL_UNVERIFIED: …"`, `resumed: true`, `turnId: "c75876dd…#2"`, `wake.state = "opened"`, **1** dòng `plan.approval.unverified` |
+| Cổng chặn cứng, công tắc `off` (harness 3118) | **200**, **không** `approvalWarning`, **0** dòng `plan.approval.unverified` |
+| Cổng nguồn (`BOXFOX_PLAN_SOURCES_GATE=enforce`) | Không chặn lượt đo: bản v2 khai 4 dữ kiện ngoài và **cả 4** đến từ phiên con `research` (`externalFacts 4 / externalFactsSourced 4` trong `plan_evaluated`) |
+| Phán quyết của chính mô hình | *"Kế hoạch retry đã qua 2 vòng phản biện độc lập và cả hai đều kết luận cần sửa, nên tôi chưa thể xin duyệt."* + *"Đã hết 2 vòng revise theo quy định nên tôi dừng và báo thật thay vì sửa vòng 3."* ⇒ **đúng thiết kế**: hết trần 2 vòng `revise` thì báo chủ nhà, KHÔNG xin duyệt |
+
+**Cố ý lệch/ghi nhận.** (a) Lượt đo sống **chưa** đạt hàng `verdict='ok'`: cả hai bản phản biện đều `revise`, và chúng bắt **lỗi thật**
+của bản kế hoạch mẫu (đề bài mẫu cài tiền đề sai: đòi retry cho lời gọi model bằng Python/aiohttp trong khi lời gọi thật nằm ở
+`boxfox/router/src/providers/openai.mjs:77`) — nên **không nới cổng cho xanh**; ghi lại là hạn chế của *đề bài mẫu*. (b) Vai
+`plan-review` chỉ-đọc, **không có** `terminal_exec` ⇒ phê bình kiểm được *hình dạng* lệnh nghiệm thu chứ không chạy được chúng
+(`roles.py`): việc chạy thật vẫn thuộc vai `testing`, ghi ở `test-rounds.md` § *Vòng 25*. (c) Hai sổ plan (`plan_owners`,
+`plan_verifications`) **cố ý không** nằm trong cascade `delete()` của `session_store.py`: chúng gắn với *kế hoạch*, không gắn với
+phiên nào. (d) `owner-decisions.md` §4 nay có §4.1…§4.3 theo vòng; D-35 và D-37 là **cách hiểu đã thi công** của hai điểm chủ nhà
+không được hỏi, sổ ghi rõ như vậy.
+
+**Còn lại sau vòng này (ghi để không trôi).** (1) Mặt "duyệt một bản ĐÃ có `ok` ⇒ mở lượt thi công" chỉ đo được ở đường công tắc
+`warn` (vì đề bài mẫu không đạt `ok`); lượt đo sau vẫn vậy thì câu hỏi mở cho chủ nhà là **siết đề bài mẫu**, không phải nới cổng.
+(2) Nhãn `v1 (approved)` do box gán theo vị trí (BUG-76) vẫn còn trong API thô của box vì không rebuild box. (3) Con `plan-review`
+không có `terminal_exec`. (4) Nợ cũ BUG-66/BUG-68/BUG-69 và bốn khoá `subagent*` trong `en.ts` vẫn nguyên.
+

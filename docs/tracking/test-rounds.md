@@ -1985,3 +1985,96 @@ chốt D-26…D-32. Ba đợt của kế hoạch: P1 prompt/kỹ năng, P2 ghim 
 - **Đánh đổi đã nhận (D-31)**: model không mở kỹ năng ⇒ lượt vẫn có **ảnh bằng chứng** (nhờ dòng cứng) nhưng **thiếu menu**. Lượt provider
   thật đã mở kỹ năng, nên rủi ro này chỉ còn trên giấy — nhưng chưa đo tỉ lệ.
 - **Sổ đổi số mục**: `owner-decisions.md` §4 nay có §4.1 (vòng 23) / §4.2 (vòng 24) thay vì một §4.1 như kế hoạch ghi, để sổ đọc được theo vòng.
+
+## Vòng 25 — vòng lặp kế hoạch: phản biện độc lập BẮT BUỘC trước khi duyệt, hai cổng chặn cứng có công tắc, cú bấm ở tab Plan mở LƯỢT THẬT (2026-09-23, chiều)
+
+Chủ nhà giao ba việc về khả năng lên kế hoạch (nguyên văn ở `bug-register.md` §6.33). Đo trước khi sửa: sáu lượt lập kế hoạch, sau
+`plan_written` lượt **dừng ngay**; ba cú bấm ở tab Plan để lại dấu vết rồi **im lặng 55-60 s**; bảy lỗi ghi thành BUG-72…BUG-78
+(`/code/.plans/v25-evidence-brief.md`). Kế hoạch vòng 25 (`/code/.plans/v1-plan-loop.md`, duyệt cùng ngày) chia **mười milestone
+harness** (M1–M10) + **một phạm vi giao diện B**, chốt **D-33…D-38** (`owner-decisions.md` §4.3). Nguồn sự thật thi công:
+`/code/.plans/subplans/v25-harness-plan.md` và `/code/.plans/subplans/v25-ui-plan.md`.
+
+### Phần 1 — M1–M4: vai phản biện, hai sổ, cổng chặn cứng ở HAI đường
+
+- **M1 — vai `plan-review` (vai thứ 10)**: `roles.py` thêm `Role('plan-review', 'Plan review', …, READ, ('codebase-inspection',))` +
+  `PLAN_REVIEW_INSTRUCTIONS`; `ORCHESTRATOR_TOOLS` 24 → **25** (`plan_verify`); SOP có bước phản biện; kỹ năng mới `planning` (LF) vào
+  `DEFAULT_SKILLS`, trong đó có nguyên văn *"without a critique you cannot request approval"*. Ghim: `test_plan_review_role.py` **11 ca**
+  (vai chỉ-đọc, không có `terminal_exec`/`file_edit_block`, enum `delegate_task` đủ 10 vai, kỹ năng nằm trong bộ mặc định, SOP trỏ đúng bước).
+- **M2 — hai sổ mới**: `session_store.py` thêm bảng `plan_owners` (`identity, session_id, first_session_id, slug, relative_path,
+  version, created, updated`) và `plan_verifications` (`identity, version, verdict, issues, summary, critic_session_id,
+  critic_answer_chars, critic_verdict, created`), thêm cột `plan_reviews.resumed`, và các hàm đọc/ghi tương ứng. **Cố ý** không đưa hai
+  sổ này vào cascade `delete()`: chúng gắn với *kế hoạch*, không gắn với phiên. Ghim: `test_plan_verify_store.py` **8 ca**.
+- **M3 — công cụ `plan_verify` + cổng nguồn gốc phán quyết**: `tool_contracts.py` có schema (verdict `ok|revise`, danh sách `issues` có
+  `severity`/`text`/`fix`); `runtime.dispatch()` chỉ ghi sổ khi bài phản biện đến từ **phiên con thật** (`critic_session_id` +
+  `critic_answer_chars`), trần `PLAN_VERIFY_MAX_ISSUES = 30`, trần **2 vòng `revise`** (`PLAN_VERIFY_REVISE_MAX`). Ghim: `test_plan_verify.py`
+  **21 ca**, gồm ca `PLAN_VERIFY_VERDICT_MISSING` (bài phản biện không có dòng `VERDICT:` ⇒ **không** ghi sổ).
+- **M4 — cổng duyệt hai đường**: `runtime.plan_approval_blocked()` + `decision()` (đường chat) và route `POST /api/agent/plans/review`
+  (đường tab Plan) dùng **cùng một câu từ chối**; công tắc `BOXFOX_PLAN_VERIFY` ba nấc `enforce|warn|off`; mã mới
+  `PLAN_APPROVAL_UNVERIFIED` + `PLAN_SOURCES_REJECTED`. Ghim: `test_plan_verify_gate.py` **16 ca** + `test_plan_sources_gate.py` **10 ca**.
+
+### Phần 2 — M5–M9: API, cú bấm mở lượt thật, ngữ nghĩa sổ, hạn chót, cổng nguồn
+
+- **M5 — trạng thái đọc được**: `GET /api/agent/plans/status` thêm `verification` (`state: none|ok|revise|unknown`, `at`, `criticSessionId`,
+  `issues`) và `ownership` (`sessionId`); `session_metrics()` thêm `lastTurn` để lượt dở nói được là dở.
+- **M6 — cú bấm ở tab Plan MỞ LƯỢT THẬT** (BUG-73): `plan_wake()` gọi `runtime.submit()` với `invocation_id` suy từ chính nội dung quyết
+  định (`sha1(identity@version:decision:note)`) nên bấm trùng trả `PLAN_WAKE_DUPLICATE` thay vì mở lượt hai; `SESSION_BUSY` ⇒ `busy`;
+  không biết chủ ⇒ `PLAN_WAKE_NO_OWNER` + `wake.state='missing'`; mọi nhánh đều có mã + câu giải thích, **không bao giờ im lặng**.
+  Route ghi luôn **phiên sở hữu** vào hàng sổ (`session_id=owned`, trước đây toàn `NULL`). Ghim: `test_plan_routes.py` **21 ca** (6 ca
+  đỏ đã sửa trong milestone này).
+- **M7 — ngữ nghĩa sổ duyệt** (BUG-77, BUG-78): `settle()` gọi `record_plan_decision` **trước** `decision_resolved`; hết hạn/huỷ **không**
+  sinh hàng `changes_requested` giả; `ask_user` khai được `planIdentity`/`planVersion`. Ghim: `test_plan_approval_ledger.py` **11 ca**.
+- **M8 — hạn chót** (BUG-75): `DEADLINE_DEFAULT_SECONDS 180 → 600`, `DEADLINE_MAX_SECONDS 600 → 1200`, `CHILD_DEADLINE_SECONDS 300 → 420`,
+  `PLAN_TURN_EXTENSION_SECONDS = 420` + `extend_turn_budget()` nới **một lần** khi lượt đã ghi được kế hoạch, kèm `notice TURN_EXTENDED`.
+  Ghim: `test_plan_deadline.py` **9 ca**.
+- **M9 — cổng nguồn** (`BOXFOX_PLAN_SOURCES_GATE`, D-34/D-…): `plan_quality.py` có `_find_with_body`/`source_lines`/`cited_hosts`/
+  `sources_issues`/`sources_message`; bản kế hoạch dựa vào dữ kiện ngoài mà nguồn không đến từ phiên con `research`/`explore` **của chính
+  phiên đó** thì `write_plan` trả `PLAN_SOURCES_REJECTED`. Ghim: `test_plan_sources_gate.py` **10 ca** + `test_write_plan.py` **20 ca**.
+
+### Phần 3 — Phạm vi B (giao diện): mặt tab Plan đọc SỔ THẬT thay vì nhãn box
+
+Subagent `build-ui` (task `build-ui`, success) giao: `PlanPanel.tsx` (chip trạng thái duyệt + phản biện, dải vàng cảnh báo, dải chủ sở hữu
++ nút **Open that session**, nút **Approve** bị khoá khi chưa phản biện), `PlanReviewCard.tsx` **mới** (+ `.test.tsx`) — mũi tên nhỏ
+`aria-label="Approve with conditions"` mở popup nhập điều kiện (D-38), `usePlanFiles.ts` (+2 tệp test) truyền `note` và đọc
+`verification`/`ownership`, `lib/plans/planState.ts` (+test) nói đúng mặt `none|ok|revise|unknown`, `lib/agentApi.ts` (+test),
+`SubagentInspectorPanel.tsx` (10 vai), `CommandsView.tsx`, `lib/harnessRoles.ts` (+test), `i18n/en.ts` + `i18n/vi.ts`.
+Ghim: `PlanReviewCard.test.tsx` giữ điều kiện của D-38 (không nhập gì ⇒ vẫn là Approve thường). Ảnh mặt mới: `r25_11`…`r25_14`.
+**BUG-76 cố ý để lại một nửa**: API thô của box vẫn gán nhãn version theo **vị trí** (`deploy/docker/plan_files.py:841-844`) vì vòng này
+**không rebuild box**; tab Plan đã thôi in nhãn đó.
+
+### Phần 4 — Đo sống của vòng (harness scratch 3116 + router thật 3101, 2026-09-23 11:40–12:10 UTC)
+
+| Việc | Cách đo | Kết quả |
+|---|---|---|
+| **V-LIVE-1** SOP lập kế hoạch có phản biện | lượt thật `c75876dd1f034ae6a937147b6bb9c43a` (`muse-spark-1.3-contributor-free`, `maxSteps 40`, `deadlineSeconds 600`) | **ĐẠT phần chuỗi**: `completed` ở **540 s / 18 bước / 8 phiên con** (1 `research` + 3 `plan-review`), chuỗi công cụ `delegate_task → write_plan → peer_read ×6 → delegate_task → plan_verify → write_plan → skill_view → write_plan → delegate_task → plan_verify → skill_view`; `plan_verifications` **2 hàng** (`v1 revise` critic `7f59b913…` 1422 chữ; `v2 revise` critic `b748e42a…` 1648 chữ); `notice TURN_EXTENDED +420 s`; mô hình tự dừng ở trần 2 vòng và báo thật (*"…cả hai đều kết luận cần sửa, nên tôi chưa thể xin duyệt"*). **KHÔNG đạt tiêu chí `verdict='ok'`** — lý do là **đề bài mẫu** cài tiền đề sai (đòi retry Python/aiohttp cho lời gọi model thật nằm ở Node), phản biện bắt đúng; **cố ý không nới cổng cho xanh**. |
+| **V-LIVE-1b** lượt thứ hai, đề bài khác | lượt thật `9d61a079ca734b84a2770a061db6f789` (đề bài trong-repo, nhỏ) | `completed` ở **660 s / 24 bước**; `plan_written` v1 + `plan_evaluated` 14/16 + `TURN_EXTENDED`; phiên con `plan-review` chạy **16 bước**, tự grep mã, bắt **8 lỗi thật** của bản mẫu; mô hình tự chạy thêm một phiên `plan-review` ngắn để có dòng `VERDICT:` rồi **báo thật, không xin duyệt**; lời gọi `plan_verify` của lượt này bị từ chối đúng thiết kế (`PLAN_VERIFY_VERDICT_MISSING` — bài phản biện bị **cắt cụt dòng verdict**) nên lượt đó **không có hàng sổ**. |
+| **V-LIVE-2** cú bấm "Request changes" mở lượt thật | `POST /plans/review {retry-model-calls, v2, changes_requested, note="Đổi mục Risks: bỏ retry POST/PATCH…"}` | **200** + `recorded: true` + `resumed: true` + `turnId: c75876dd…#2` + `wake.state: opened`; **~4 s sau** phiên sở hữu có event `user` `[Tab Plan] chủ nhà yêu cầu sửa kế hoạch retry-model-calls@v2 …`; hàng sổ mới có `note` nguyên văn + `resumed: 1` + `session_id` = phiên sở hữu; lượt mới **8 bước**, ghi v2→**v3**→**v4**, có 2 phiên con `plan-review`, hàng `plan_verifications@v4 revise`, và bản v3/v4 **thực hiện đúng điều kiện chủ nhà gõ ở tab** |
+| **V-LIVE-3** cổng ở CẢ HAI mặt | (a) duyệt bản `revise` ⇒ **409** `PLAN_APPROVAL_UNVERIFIED` + **0 hàng** sổ mới, đo **cả trên UI** (`r25_13`: *Harness blocked the approval (PLAN_APPROVAL_UNVERIFIED)*); (b) duyệt bản có `ok` ⇒ **200** + hàng `approved` (`source: plan-tab`, `contentSize`/`contentModifiedAt` từ chỉ mục box) — hàng `ok` này là **hàng gieo có nhãn** vì lượt đo thật chưa đạt `ok`; (c) `warn` ⇒ 200 + `approvalWarning` + 1 dòng `plan.approval.unverified`; (d) `off` ⇒ 200, 0 dòng | Đủ bốn mặt |
+| **V-LIVE-4** `plans/status` | `GET /plans/status?identity=retry-model-calls&version=2` | `verification.state = "revise"`, `at = "2026-09-23T11:49:04.408Z"`, `criticSessionId = b748e42af1e847bfbc548e99e48d4c18` (phiên con **thật**), `issues` 5 phần tử; `ownership.sessionId = c75876dd1f034ae6a937147b6bb9c43a` |
+| **V-LIVE-5** công tắc cổng | hai harness scratch copy DB rồi `DELETE FROM plan_verifications` (3117 `warn`, 3118 `off`) | như bảng V-LIVE-3 (c)/(d); cả hai lần đều `resumed: true` + `turnId …#2` + `wake.state: opened` |
+| **Lỗi hạ tầng BUG-79** | lượt sống `1130c2042b6c445db5f1bafc88d8bb94` chết sau 582 s / 15 bước | `TURN_FAILED_TYPEERROR`; tái hiện độc lập bằng router giả (`/var/tmp/v25b/repro_empty_stream.py`); vá một dòng (`await res.read()` → `res.read()`) + ca ghim mới; **đỏ trước / xanh sau** |
+
+### Phần 5 — Số đo kiểm thử của vòng
+
+- **Toàn bộ backend** (`./.venv/bin/python -m pytest backend/tests/unit -q -p no:randomly --deselect …test_terminal_exec_echo`, chạy từ
+  gốc repo, 2026-09-23 12:14 UTC): **1210 passed, 1 deselected in 215.29 s** (mốc vòng 24: 1113; vòng 25 thêm 97 ca). Lệnh này phải chạy
+  từ **gốc repo** — chạy từ `backend/` làm `test_eval_setup.py` đỏ vì nó tính `REPO = Path(__file__).resolve().parents[3]`.
+- **Nhóm plan** (13 tệp): **274 ca đạt**, trong đó `test_plan_routes` 21, `test_plan_verify` 21, `test_write_plan` 20,
+  `test_plan_verify_gate` 16, `test_plan_review_role` 11, `test_plan_approval_ledger` 11, `test_plan_sources_gate` 10,
+  `test_plan_deadline` 9, `test_plan_verify_store` 8, còn lại `test_plan_quality`, `test_plan_registry`, `test_runtime_info`, `test_plan_eval`.
+- **`test_harness_runtime.py`** (tệp của BUG-79): **19 ca đạt** (`6.55 s`), trong đó ca mới chứng minh phán quyết router `502` **không** bị
+  thay bằng TypeError và lượt **còn đường thử lại** (`seen == [True, False]`: đúng hai lời gọi).
+- **Frontend** (subagent `build-ui`): **126 tệp / 1086 ca đạt**, `tsc -b --noEmit` **exit 0**.
+- **Số đo sống**: bảng ở Phần 4 (chạy trên harness scratch 3116 + Vite scratch 3141; **không** đụng 3100/3101/3102/3112/3120/3199 hay container box).
+
+### Phần 6 — Khẳng định cố ý đổi ở vòng này
+
+- **Cổng mới là lớp BỔ SUNG, không thay cổng cũ**: P1–P8 + `HARD_GATES` của `plan_eval.py` vẫn chấm **trước** khi ghi, đúng thứ tự cũ;
+  cổng phản biện/nguồn chỉ là lớp thứ hai. `plan_evaluated` của lượt đo sống vẫn `verdict: pass, 14/16`.
+- **Hai sổ plan CỐ Ý không nằm trong cascade `delete()`** (`session_store.py`): xoá phiên không được xoá ký ức về kế hoạch.
+- **Ghi sổ hỏng thì lượt vẫn đi tiếp**: mọi chỗ ghi sổ trong route/công cụ đều bọc `try/except` + nhật ký, không ném ra ngoài làm hỏng
+  lượt của mô hình (`set_plan_review_resumed` là ví dụ).
+- **Quyết định của chủ nhà vào sổ TRƯỚC khi đánh thức phiên** (thứ tự trong route: ghi sổ → chuyển tiếp box → wake): chuyển tiếp hỏng
+  thì quyết định **vẫn** còn (`forwarded: false` + nhật ký), và wake hỏng thì trả mã chứ không im lặng.
+- **Không nới cổng cho xanh**: ba bản kế hoạch của lượt đo đều `revise` và **không** có hàng `ok` nào được ghi; mặt "duyệt bản đã `ok`"
+  đo bằng hàng gieo có nhãn, ghi rõ trong sổ — chủ nhà đọc được đâu là **số đo thật**, đâu là **đồ giả để đo đường đi của cổng**.
+- **BUG-76 chỉ sửa một nửa (cố ý)**: nhãn version theo vị trí còn trong API thô của box vì vòng này không rebuild box.
