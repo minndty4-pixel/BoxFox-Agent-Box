@@ -1102,7 +1102,7 @@ RECAP_MAX_LINES = 20
 RECAP_MAX_ITEMS = 6
 RECAP_REQUEST_CHARS = 240
 RECAP_COMMAND_CHARS = 160
-RECAP_HEADER = ('TURN RECAP (machine list of this turn - raw material for your final report, '
+RECAP_HEADER = ('TURN RECAP (machine list of this turn - raw material if it helps, '
                 'NOT text to send to the owner)')
 RECAP_CLOSER = ("This is not the answer and must not be pasted into it. The `final-report` skill holds "
                 "an optional menu of ideas for the answer (`skill_view`) - read it if that helps, then "

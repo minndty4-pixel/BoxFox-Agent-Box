@@ -53,6 +53,11 @@ if a heading genuinely reads better for this turn, use one.
 - Evidence near the end of the answer is easier to scan than evidence at the top — that is a
   preference, not a requirement.
 - One capture per finished item; label each in the markdown alt text **and** in `caption`.
+- What is worth showing depends on the work, and some turns want nothing at all: a GUI change
+  reads best as a picture of the screen; a backend, CLI or RAG change usually reads best as text -
+  the command and what it printed; a turn that changed nothing observable needs no evidence.
+- A check that wrote a result file is worth a markdown link to
+  `.generated_artifacts/captures/evidence/<sid8>/<sid8>_<check>.<ext>` (the path the check returned).
 
 ## How to capture, when you do
 

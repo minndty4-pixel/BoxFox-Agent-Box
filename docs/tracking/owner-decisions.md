@@ -264,6 +264,10 @@ và dòng bằng chứng trong prompt ("A turn with something observable **close
 |---|---|---|---|---|
 | **D-44** | Dạng câu trả lời cuối **chỉ còn là gợi ý**: kỹ năng `final-report` là *menu* để tham khảo, prompt chỉ còn **một dòng nhắc mềm**; agent trả lời **tự nhiên và ngắn** như ChatGPT/Claude | Nguyên văn của chủ nhà (2026-09-24, tin nhắn trong phiên) | `runtime.py`: `ANSWER_EVIDENCE_LINE` đổi thành câu điều kiện mở bằng *"If this turn really has something to show, **you may** close the answer with…"*; `RECAP_CLOSER` nói kỹ năng là *"an optional menu of ideas … read it **if that helps**"* và **bỏ** vế ra lệnh chụp lại ảnh; kỹ năng `final-report` **3.0.0** (*"ideas, not a form"*, *"Nothing here is compulsory"*, luật ảnh ở cuối thành *sở thích*, luật mở bài thành *mẹo đọc trên chat panel*); `AGENT.md` §3.4: *"Answer naturally… No part list, no order and no template is required"*; ca `test_runtime_prompt.py` ghim chiều ngược lại (`D-44: kỹ năng còn ra lệnh`, `D-44: dòng nhắc không được ra lệnh`) | **Đã xong** (vòng 28) |
 
+**D-44 thay thế chữ nào của vòng 24:** hàng **D-32** nói "một dòng bằng chứng **cứng**" — nay là câu
+điều kiện ("you may"); hàng **D-31** giữ kỹ năng `final-report` nhưng giọng mệnh lệnh trong kỹ năng đã bỏ.
+Hai hàng ấy là **bản ghi lịch sử**, không sửa lại.
+
 **Điều KHÔNG đổi:** luật trung thực (không bịa ảnh, không dùng ảnh cũ làm ảnh trạng thái mới, nói rõ
 việc chưa chạy được) và D-18 (cổng bằng chứng không chấm khuôn câu trả lời); tóm tắt do model viết +
 `View details` giữ nguyên — nay chỉ là **mẹo đọc**, không phải luật.
