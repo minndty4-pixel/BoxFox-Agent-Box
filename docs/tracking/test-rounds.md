@@ -2680,3 +2680,30 @@ thay bằng `{}` mà model chỉ nhận một câu *"Invalid tool arguments"* �
   cho nhánh con) còn treo vì phải kiểm bằng một lượt thật.
 - Tài liệu handoff của phần này: `docs/handoff/research-verification.md` (giao thức chạy sống `R1 → R6 → R7 →
   R3`, luật chuyển khoá, bước migrate một lần trên máy chủ nhà, và bảng "chưa làm được").
+### Hậu kỳ vòng 29 — bảy lỗ soát mã đã vá và lượt kiểm thử sống chạy lại (2026-09-24, chiều)
+
+- **Hai lượt soát mã độc lập trên `deda6e8..7d1c913`** — nửa router **3/10 Low**, nửa harness + giao diện
+  **4/10 Medium**; cả hai kết luận *ship with mitigations*. Lượt router kiểm riêng bằng sha256 rằng
+  `router/src/store.mjs` không đổi một byte, rằng vòng lặp khoá kết thúc được, và rằng 429 sau khi stream đã
+  bắt đầu thì không đổi khoá giữa dòng.
+- **Bảy lỗ đã vá:** router — làm mới token antigravity ghi nhầm khoá đầu của ring (F1), một dòng credential
+  không giải mã được làm đổ cả mặt Settings và chặn DELETE (F2), `PATCH {projectId}` trên ring rỗng hồi sinh
+  "khoá ma" (F3), `PATCH {apiKey}` không xoá cửa sổ nghỉ (F4), reset số token theo target thay vì theo lượt thử
+  (F5, nit); giao diện — tab Router mất đường nhập khoá cũ khi snapshot thiếu `keys` (P1, *phải sửa*), danh sách
+  model biến mất với connection `degraded` có model gõ tay (P2), luật dùng được của picker lệch luật router theo
+  **cả hai chiều** (P3). Mỗi lỗ một ca ghim; riêng P2/P3 có ca chứng minh đỏ ở cả hai chiều rồi khôi phục.
+- **Số đo trên cây đã commit (`261cd93`):** router `242 pass / 0 fail` (6,5 giây; trước vòng 217); frontend
+  `129 tệp / 1197 ca` + `tsc -b --noEmit` sạch; nhóm settings `14 tệp / 97 ca`; nửa backend không đổi sau
+  `41cbaf8` nên giữ mốc `1665 passed, 1 deselected` (275 giây).
+- **Lượt kiểm thử sống (provider GIẢ, chỉ loopback):** router scratch `3161` + stub `127.0.0.1:3171`,
+  `16/18` kịch bản xanh — xoay khoá trong MỘT request, `Retry-After` nâng rồi bị chặn ở 120 giây,
+  `cooling`/`exhausted` theo lời nhà cung cấp, 400/401/500 và 429 giữa dòng đều KHÔNG xoay, không secret thô
+  nào rời router, `409 KEYS_PRESENT`, trần 10 khoá, đủ năm route khoá. Hai ca đỏ là rác trạng thái của chính
+  bộ kịch bản (một lượt gọi toả ra hai connection cùng endpoint/model), không phải lỗi mã; chạy lại sạch trên
+  router mới `3163` (`/var/tmp/v29/post/check_park2.py`) cho **5/5 bất biến xanh**, gồm "cả ring nghỉ ⇒ lượt sau
+  tốn **0** lượt gọi".
+- **Bất thường mới ghi nhận, chưa sửa (ngoài phạm vi duyệt):** khi một lượt `provider + model` toả ra nhiều
+  connection, lỗi retryable (5xx) của connection đầu có thể bị thay bằng lỗi **cũ** của ring đang nghỉ ở
+  connection sau. Ghi ở `docs/handoff/v29-keyring-handoff.md` §8 kèm cách sửa gợi ý.
+- **Vẫn KHÔNG có lượt research thật nào** ghi `.research/**`; `manifest.json` còn `measured: false`; **C-7** và
+  **F19** giữ nguyên hiệu lực.

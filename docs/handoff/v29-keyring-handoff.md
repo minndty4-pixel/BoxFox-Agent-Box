@@ -109,10 +109,28 @@ Cập nhật ở từng mốc. Trạng thái: **XONG** / **ĐANG** / **CHƯA**.
 | D-2 probe provider giả | XONG | `backend/tests/unit/test_router_keyring_probe.py` — 2 ca, chạy offline, 0.46 giây |
 | D-3 (a)(b)(d) + (c) | XONG | **(c)**: `agent_core/tool_arg_errors.py` + 7 ca. **(a)(b)**: `research_quality.py`. **(d)**: `tool_contracts.py` mô tả `ceilingSeconds`. Nhóm research: 291 ca xanh (mốc cũ 286) |
 | D-4 handoff kiểm nghiệm research | XONG | `docs/handoff/research-verification.md`, 291 dòng |
-| E chạy runbook trên máy chủ nhà | CHƯA | chờ chủ nhà đồng ý |
-| F-1…F-4 sổ sách, PR, tài liệu | CHƯA | |
+| E chạy runbook trên máy chủ nhà | CHƯA | chờ chủ nhà đồng ý — xem §8 |
+| F-1…F-4 sổ sách, PR, tài liệu | XONG | PR #6 (nhánh `vorflux/v27-research-rework`); sổ `docs/tracking/`; handoff2 chính là tài liệu này |
+| H-1 lượt soát mã nửa router | XONG | 3/10 Low — bốn lỗi F1–F5 đã vá ở `bf842a9` |
+| H-2 lượt soát mã nửa harness + giao diện | XONG | 4/10 Medium — P1/P2/P3 đã vá ở `97c5cd6` + `261cd93` |
+| H-3 lượt tinh gọn (simplify) | XONG | `providerStore.run()` dùng chung, bỏ `ProviderModelList.modelIds` — trong `261cd93` |
+| H-4 kiểm thử sống trên router scratch | XONG | 16/18 kịch bản `probe.py` trên `deda6e8..7d1c913`; hai ca đỏ là rác trạng thái, đã chạy lại sạch ở §4b |
 
-**Mốc đo gần nhất (trước vòng 29):** bộ đơn vị backend `1640 passed, 1 deselected` (264 giây) tại `343458e`; router `npm test` chưa chạy lại trong vòng này.
+**Mốc đo gần nhất (hậu kỳ vòng 29, cây đã commit):** router `242 pass / 0 fail` (6,5 giây); bộ đơn vị backend từ GỐC repo `1665 passed, 1 deselected` (275 giây) tại `41cbaf8` (nửa backend không đổi sau đó); frontend `129 tệp / 1197 ca` + `tsc -b --noEmit` sạch. Mốc cũ trước vòng 29: backend `1640 passed` tại `343458e`.
+
+---
+
+## 4b. Kiểm thử sống trên router scratch (hậu kỳ)
+
+Không đụng tiến trình chủ nhà: router scratch cổng **3161** (pid ghi ở `/var/tmp/v29/router-3161.pid`, dữ liệu `/var/tmp/v29/router-demo`) và provider giả **127.0.0.1:3171** (`/var/tmp/v29/stub-provider.mjs`, chỉ loopback). Kịch bản: `/var/tmp/v29/probe.py`; bằng chứng JSON ở `/var/tmp/v29/evidence/` (lượt đầu) và `/var/tmp/v29/evidence2/` (lượt chạy lại trên mã hậu kỳ).
+
+**16/18 kịch bản xanh** trên mã hậu kỳ: xoay khoá trong MỘT request (khoá 1 ăn đúng một 429 rồi khoá 2 trả 200), `Retry-After: 45` **nâng** cửa sổ 30 giây, `Retry-After: 600` bị **chặn ở 120 giây**, 429 không nói "quota" ⇒ `cooling` còn nói "quota" ⇒ `exhausted`, 400/401/500 **không** xoay khoá, 429 giữa dòng đã phát nội dung **không** xoay, không secret thô nào rời router, xoá connection còn khoá ⇒ 409 `KEYS_PRESENT`, import khác endpoint ⇒ 400, trần 10 khoá, `try`/`PATCH`/`DELETE`/`import` đủ năm route.
+
+Hai ca đỏ của lượt chạy lại **không** phải lỗi mã — chúng là rác của chính bộ kịch bản:
+1. *S2 "cả ring nghỉ thì lượt sau tốn 0 lời gọi"*: kịch bản chạy trên thư mục dữ liệu đã dùng, nên `providerId+modelId` của lượt gọi **toả ra hai connection** cùng endpoint/model; 5 lượt gọi = 3 khoá của connection A + 1 khoá của B, rồi lượt sau vẫn **0 lượt gọi thêm** (bất biến giữ nguyên).
+2. *S5 `d500`*: connection thứ hai (do kịch bản S10 tạo ở lượt trước) có ring đang nghỉ nên lỗi cũ của nó thay chỗ cho 500 thật — xem bất thường đã ghi ở §8.
+
+**Chạy lại sạch** (`/var/tmp/v29/post/check_park2.py`, router mới cổng **3163**, dữ liệu mới `/var/tmp/v29/router-demo3`, gọi theo `connectionId` nên không toả): **5/5 bất biến xanh** — xoay khoá (2 lượt gọi), cả ring nghỉ tốn **0 lượt gọi** (3 lượt gọi rồi giữ nguyên 3), 500 không xoay, 400 không xoay, AUTH không xoay.
 
 ---
 
@@ -165,12 +183,16 @@ cd /code/minndty3-design/BoxFox-Agent-Box/frontend && npx vitest run
 
 ## 8. Việc còn treo và rủi ro
 
-- **Không lượt research thật nào ghi được hồ sơ `.research/**`** ⇒ bộ `R1–R12` chưa chạy trên dữ liệu thật; nghiệm thu **C-7** còn mở; **F19** cấm nói "đã có benchmark research".
-- Phát hiện (e) chưa sửa: nhánh con `research` nhận `RESEARCH_GATE_NOTE` với tiêu chí của **hồ sơ** mà nhánh con không có `dossier_write` để thoả — chỉ lượt thật mới kiểm được.
-- Nghỉ khoá là **in-memory**: restart router là mọi khoá về vòng ngay (ghi vào tài liệu, không sửa vòng này).
-- Một số adapter ném 429 dưới mã `PROVIDER_ERROR` (ví dụ `openrouter`) nên chưa xoay khoá được — ghi nhận, không mở rộng vòng này.
-- Bẫy hạn mức lượt: xin `ceilingSeconds` **bằng đúng** hạn mức phiên thì không được nới; lượt thật thứ năm đã chết đúng 600 giây vì việc này. Hợp đồng công cụ nay đã mô tả tham số (D-3d).
-- M6 (trần USD) vẫn mở: router chưa trả trường `cost`.
+**Việc tiếp theo, theo thứ tự (đọc §4 và §4b trước khi làm):**
+
+1. **Nhóm E — chỉ khi chủ nhà đồng ý:** chạy `docs/plan/v29-keyring-merge-runbook.md` trên máy chủ nhà (gộp bốn connection `opencode` vào survivor `f8a5f4e8-0986-45f9-bf5b-555e8b96a95c`, chuyển khoá 2 `a43ff124…` + khoá 3 `3d27b0b0…`, tắt rồi xoá connection trùng `7c59f6b5…`, trỏ lại `defaultRoute` / `BOXFOX_LIVE_CONNECTION_ID`, rồi nạp lại router để mã vòng 29 có hiệu lực). **Trước khi gộp:** sao lưu cả `~/.local/share/boxfox/router/` **và** `master.key`, và kiểm mọi hàng `credentials` còn giải mã được (`GET /api/router/state` phải trả 200) — bước xoá connection nay cần **rút khoá trước** vì `409 KEYS_PRESENT`.
+2. **Lượt research thật** trên app thật để đóng `C-7`: chạy `R1 → R6 → R7 → R3` theo `docs/handoff/research-verification.md`, rồi ghi hồ sơ `.research/**` và cập nhật `manifest.json` (hiện `measured: false`). **F19** cấm nói "đã có benchmark research" cho tới lúc đó.
+3. **Phát hiện (e)** vẫn treo: nhánh con `research` nhận `RESEARCH_GATE_NOTE` với tiêu chí của **hồ sơ** mà nhánh con không có `dossier_write` để thoả — chỉ lượt thật mới kiểm được.
+4. **Bất thường mới ghi nhận ở lượt kiểm thử sống (chưa sửa, ngoài phạm vi duyệt):** khi một lượt chọn `provider + model` toả ra **nhiều connection** và connection đầu lỗi retryable (5xx) còn connection sau có **ring đang nghỉ**, câu trả lời cuối là lỗi **cũ** của ring đó (`RATE_LIMIT` + thông điệp của lượt trước) thay vì lỗi 5xx thật của lượt này. Chỉ xảy ra khi có ≥ 2 connection cùng provider + model. Cách sửa gợi ý: trong nhánh "cả ring đang nghỉ", chỉ mượn `keyRing.lastError(connection)` khi **lượt này chưa có lỗi nào** (`lastError` đang rỗng).
+5. **Nợ nhỏ đã ghi, chưa làm:** danh sách từ khoá trong `scripts/eval/research_checks.py:403-405` có thể lệch âm thầm với `research_quality.py`; `service.mjs` lặp đuôi key-state ở bốn chỗ (`:756`, `:782`, `:801`, `:831`); `final` của `_extract` và `import READ_STORE_MAX_ENTRIES` thừa ở `runtime.py:49`; `readTier: 'html'` cho thân bài JSON/plain; nợ BUG-66/68/69 + bốn khoá `subagent*` trong `en.ts`.
+6. **M6 (trần USD) vẫn mở:** router chưa trả trường `cost`.
+7. **Một số adapter** ném 429 dưới mã `PROVIDER_ERROR` (ví dụ `openrouter`) nên chưa xoay khoá được — ghi nhận, không mở rộng vòng này.
+8. **Nghỉ khoá là in-memory:** restart router là mọi khoá về vòng ngay (đúng ý đồ với 30 giây–2 phút).
 
 ---
 
