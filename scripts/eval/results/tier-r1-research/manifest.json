@@ -122,7 +122,7 @@
     "Vì chưa có lượt thật nên provider/model/seed/temperature để null — đây là \"không có lượt gọi model\", không phải \"quên đo\".",
     "Số ca: 12 ca (11 offline, R2 online) chấm bằng 27 hàm oracle thuần trong scripts/eval/research_checks.py; không ca nào cần giám khảo LLM.",
     "Runner thật vẫn dừng ở EXIT_NOT_IMPLEMENTED (mã 5): chưa có gì tự sinh phòng hồ sơ .research/ cho một ca R.",
-    "Ca kiểm của oracle nằm ở backend/tests/unit/test_research_checks.py; một ca của milestone_ceiling_declared đang xfail vì lỗi so nhãn trong research_checks.py:1280 (xem scripts/eval/benchmarks/tier-r1.md §6)."
+    "Ca kiểm của oracle nằm ở backend/tests/unit/test_research_checks.py; ca milestone_ceiling_declared đã hết xfail (lỗi so nhãn đã vá), và hai chỗ lệch còn lại của bộ đo — khối chi phí đường Q trong kế hoạch tầng R, bảng --list không lọc theo --fixture — cũng đã vá (xem scripts/eval/benchmarks/tier-r1.md §6)."
   ],
   "measured": false,
   "kind": "research-oracle",

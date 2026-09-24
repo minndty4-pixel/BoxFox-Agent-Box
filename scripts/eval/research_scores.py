@@ -34,6 +34,7 @@ import sys
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import fixtureset  # noqa: E402
 import research_checks  # noqa: E402
 import rubric  # noqa: E402
 
@@ -116,7 +117,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--case', required=True,
                         help=f'ca research, ví dụ R1; đang có: {", ".join(RESEARCH_CASES)}')
     parser.add_argument('--level', type=int, default=None, choices=(1, 2, 3),
-                        help='mức 1/2/3 của việc; bỏ trống thì đọc `Level:` trong header hồ sơ')
+                        help='mức 1/2/3 của việc; bỏ trống thì đọc `Level:` trong header hồ sơ, '
+                             'rồi tới mức ghi trong tệp fixture của ca')
     parser.add_argument('--checks', action='store_true',
                         help='chạy thêm oracle máy của ca này và ghi kết quả vào dòng điểm')
     parser.add_argument('--out', default=str(DEFAULT_OUT),
@@ -166,10 +168,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.level is not None:
         level, level_source = int(args.level), 'cờ --level'
     else:
-        level = research_checks.room_level(workspace)
         has_header_level = any(header['level'] for _, header in research_checks.headers_of(workspace))
-        level_source = 'header hồ sơ' if has_header_level else \
-            f'mức mặc định {research_checks.LEVEL_DEFAULT} (hồ sơ không ghi `Level:`)'
+        if has_header_level:
+            level, level_source = research_checks.room_level(workspace), 'header hồ sơ'
+        else:
+            # Hồ sơ không ghi `Level:` ⇒ lấy mức của CHÍNH CA (tệp fixture). Mức ấy là mức ca
+            # muốn đo; rơi thẳng về mặc định 2 là đo nhầm trần cho các ca mức 3 (R9–R12).
+            fixture_level = fixtureset.fixture_level(case)
+            if fixture_level:
+                level = fixture_level
+                level_source = f'mức của ca (fixtures/{case}.json ghi `level`)'
+            else:
+                level = research_checks.LEVEL_DEFAULT
+                level_source = f'mức mặc định {research_checks.LEVEL_DEFAULT} (hồ sơ không ghi `Level:`)'
 
     numbers = research_checks.quality_numbers(room=workspace, records=records, level=level)
     checks = None

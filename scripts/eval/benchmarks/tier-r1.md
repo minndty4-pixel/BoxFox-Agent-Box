@@ -105,38 +105,42 @@ python3 scripts/eval/research_scores.py \
 `2` sai cách dùng (thiếu `--workspace`/`--case`, không thấy `.research/`, `--out` đã tồn tại mà
 không `--append`). Sổ điểm là **sổ chỉ ghi thêm**: ghi đè phải xin `--append`.
 
-## 6. Chỗ lệch đã biết (nói thẳng, chưa sửa trong vòng này)
+## 6. Ba chỗ lệch đã đo và ĐÃ VÁ (vòng 27, lượt hậu kỳ 2026-09-24)
 
-1. **`milestone_ceiling_declared` không thể đạt do một lỗi so nhãn.** Dòng
-   `research_checks.py:1280` so `'trần'` (còn dấu) với từng dòng đã bỏ dấu (`_fold`) nên phép so
-   không bao giờ khớp: khai trần ở thẻ mốc vẫn bị kết luận "hồ sơ không nhắc lại trần nào". Ca
-   đúng của oracle này vì thế đang là `xfail(strict=True)` trong tệp ca kiểm, kèm lý do. Sửa một
-   dòng — đổi `if 'trần' in _fold(line)` thành `if _fold('trần') in _fold(line)` — là ca đúng
-   chuyển xanh và phải bỏ dấu `xfail`. **Chưa sửa ở đây** vì `research_checks.py` không thuộc
-   phạm vi tệp của vòng này; đây là việc của lượt sau (hoặc một dòng sửa ngay).
-2. **`run_eval.py --plan --fixtures R1 --tier tier-r1` in thừa khối chi phí.** Lệnh này trả mã
-   thoát 0 và có R1 trong kế hoạch (đúng nghiệm thu C-7), nhưng vì có `--fixtures`, `build_plan`
-   bật luôn khối "bộ 12 fixture chất lượng" cho **R1**: nó in `Tổng lượt gọi model nếu chạy thật:
-   9` và `0.54-1.97 USD`. Đó là số của đường Q (1 fixture × 3 cấu hình + 2 lượt chấm/đầu ra),
-   **không phải của tầng R** — tầng R có 0 lượt gọi model. Cách sửa gọn: chỉ tính khối chất lượng
-   khi fixture đã chọn thuộc họ Q (`fixtureset.family_of(code) == 'Q'`).
-3. **`--list` không lọc theo `--fixture`** và vẫn in tiêu đề "Fixture chất lượng (…)"; khi nạp họ
-   R thì bảng có thêm các dòng R. Muốn xem R1 trong kế hoạch thì dùng lệnh ở §5, không dựa vào
-   `--list`.
-4. **Dòng trỏ từ sổ theo dõi sang tệp điểm (flow §7.5) chưa thêm**: `docs/tracking/` không thuộc
-   phạm vi tệp của vòng này, nên nhịp còn lại là của lượt sau.
+Ba chỗ dưới đây lộ ra khi soát bộ đo này; cả ba đã sửa trong `scripts/eval/**` và có ca ghim, nên
+"chỗ lệch đã biết" của vòng này nay là **chỗ đã vá** — ghi lại đây để người đọc tệp không phải tin
+lời: mỗi mục kèm cách kiểm lại.
+
+1. **`milestone_ceiling_declared` không thể đạt do lỗi so nhãn — đã vá.** Dòng cũ trong
+   `research_checks.py` so `'trần'` (còn dấu) với từng dòng **đã bỏ dấu** (`_fold`) nên phép so không
+   bao giờ khớp. Nay hàm lấy `label = _fold('trần')` rồi `re.search(rf'\b{re.escape(label)}\b', _fold(line))`,
+   và dấu `xfail(strict=True)` trên ca `test_milestone_ceiling_declared_dat` đã **bỏ**.
+   Kiểm lại: `./.venv/bin/python -m pytest backend/tests/unit/test_research_checks.py -q`.
+2. **Kế hoạch tầng R in thừa khối chi phí đường Q — đã vá.** `build_plan` nay tách hai họ theo
+   `fixtureset.family_of(code)`: `quality_codes` (Q) và `research_codes` (R), khối "bộ N fixture chất
+   lượng" chỉ tính trên họ Q, và họ R có khối riêng ghi rõ "0 lượt model — hạng mục `research-scores`
+   đang chặn". Kiểm lại: `--plan --fixtures R1 --tier tier-r1 --json` ⇒ `qualityTrackIncluded false`,
+   `modelCalls 0`, `costUsd [0, 0]`; `--plan --fixtures Q1 --fixtures R1` ⇒ "1 fixture chất lượng ×
+   3 cấu hình × 1 lần lặp — 9 lượt model".
+3. **`--list` không lọc theo `--fixture` — đã vá.** `render_list` nay in bảng của **họ đang chọn**
+   (Q *hoặc* R) và tách họ còn lại thành khối riêng; tiêu đề nói rõ họ nào. Kiểm lại:
+   `--list --fixtures R1` ⇒ tiêu đề "Fixture research (tầng R, kế hoạch vòng 27 §8) — 1 ca tĩnh:";
+   `--list --fixtures Q1 --fixtures R1` ⇒ mỗi mã hiện **đúng một lần**, dưới tiêu đề của họ nó.
+4. **Dòng trỏ từ sổ theo dõi sang tệp điểm (flow §7.5) — đã thêm**:
+   `docs/tracking/eval-tier0-regression.md` có mục bộ ca research và dòng trỏ `tier-r1-research`.
 5. **`scores.jsonl` hiện có ĐÚNG MỘT dòng, và dòng đó là ví dụ dựng tay** trên
    `results/tier-r1-research/fixture-workspace/` (tên miền `.example`, con số chỉ minh hoạ hình
    dạng hồ sơ). Nghiệm thu C-7 còn đòi "chạy R1+R3+R6+R7 trên 3 lượt thật và ghi số lần đầu" —
-   **chưa làm được trong vòng này** vì chưa có lượt research thật nào (runner thật vẫn dừng ở
+   **chưa làm được** vì chưa có lượt research thật nào (runner thật vẫn dừng ở
    `EXIT_NOT_IMPLEMENTED` = 5). Cho tới lúc đó, mọi báo cáo phải nói đúng câu: *bộ ca R + oracle
    máy đã có, benchmark research thì chưa chạy* (F19).
 
 ## 7. Checklist "xong khi"
 
-- [ ] Sửa lỗi so nhãn ở §6.1 và bỏ dấu `xfail` của ca `milestone_ceiling_declared`.
-- [ ] Bỏ khối chi phí đường Q khỏi kế hoạch tầng R (§6.2) — hoặc ghi rõ số đó là của đường Q.
+- [x] Sửa lỗi so nhãn ở §6.1 và bỏ dấu `xfail` của ca `milestone_ceiling_declared`.
+- [x] Bỏ khối chi phí đường Q khỏi kế hoạch tầng R (§6.2) — họ R nay có khối riêng, 0 lượt model.
+- [x] `--list` lọc theo `--fixture` và nói rõ họ đang chọn (§6.3).
+- [x] Thêm dòng trỏ từ `docs/tracking/eval-tier0-regression.md` sang tệp điểm mới (flow §7.5).
 - [ ] Có một lượt research thật (máy có model + box) sinh `.research/**` cho R1, R3, R6, R7.
 - [ ] Chạy `research_scores.py --checks --append` trên phòng hồ sơ của ba lượt đó, ghi số thật.
-- [ ] Thêm dòng trỏ từ `docs/tracking/eval-tier0-regression.md` sang tệp điểm mới (flow §7.5).
 - [ ] Chỉ khi nào R1/R3/R6/R7 có dòng điểm thật thì mới được gọi là "đã chạy benchmark research".

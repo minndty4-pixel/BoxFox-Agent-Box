@@ -92,6 +92,9 @@ def issues_for(fixture: dict, *, stem: str | None = None) -> list[str]:
     environment = fixture.get('environment') or {}
     if environment.get('network') not in NETWORK_VALUES:
         issues.append(f"environment.network phải là {NETWORK_VALUES}")
+    level = fixture.get('level')
+    if level is not None and level not in LEVEL_VALUES:
+        issues.append(f'level phải là một trong {LEVEL_VALUES}')
     budget = fixture.get('budget') or {}
     for key in ('max_steps', 'deadline_seconds'):
         if not isinstance(budget.get(key), int) or budget.get(key, 0) <= 0:
@@ -124,6 +127,22 @@ def load_fixtures(directory: str | Path | None = None, *, family: str | None = Q
             raise ValueError(f"fixture trùng id: {fixture['id']}")
         fixtures[fixture['id']] = fixture
     return fixtures
+
+
+LEVEL_VALUES = (1, 2, 3)
+
+
+def fixture_level(code: str, directory: str | Path | None = None) -> int | None:
+    """Mức một ca research khai trong tệp fixture của nó (`level`), `None` khi ca không khai.
+
+    `research_scores.py` dùng số này khi hồ sơ của lượt không ghi `Level:` — thiếu nó thì mọi ca
+    mức 3 bị đo bằng trần của mức 2 (vòng 27, đợt 8).
+    """
+    path = Path(directory or FIXTURE_DIR) / f'{str(code).strip().upper()}.json'
+    if not path.is_file():
+        return None
+    value = json.loads(path.read_text(encoding='utf-8')).get('level')
+    return int(value) if value in LEVEL_VALUES else None
 
 
 def load_research_fixtures(directory: str | Path | None = None) -> dict[str, dict]:

@@ -1,6 +1,7 @@
 {
   "id": "R6",
   "case": "phiên mơ hồ: KHÔNG nói mức",
+  "level": 2,
   "request": "Tìm hiểu giúp tôi về chủ đề này.",
   "request_source": "nguyên văn bảng ca của kế hoạch (docs/plan/v27/subplans/flow.md §7.1)",
   "oracle_pass": [

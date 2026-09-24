@@ -1,6 +1,7 @@
 {
   "id": "R12",
   "case": "Soi ý kiến chủ nhà: review.md đủ ba nhãn ủng hộ / phản bác / chưa chắc",
+  "level": 3,
   "request": "Tôi nghĩ hướng này đúng; soi lại ý kiến của tôi bằng nguồn.",
   "request_source": "nguyên văn bảng ca của kế hoạch (docs/plan/v27/research-rework.md §5)",
   "oracle_pass": [

@@ -1,6 +1,7 @@
 {
   "id": "R4",
   "case": "mức 3: đuổi trích dẫn lùi + tiến + bão hoà",
+  "level": 3,
   "request": "Dựng bức tranh tài liệu về chủ đề này: bài nào dựa trên bài nào, ai trích dẫn ai, và khi nào thì dừng.",
   "request_source": "nguyên văn bảng ca của kế hoạch (docs/plan/v27/subplans/flow.md §7.1)",
   "oracle_pass": [

@@ -1,6 +1,7 @@
 {
   "id": "R10",
   "case": "Sóng nhánh: 3–5 nhánh mỗi sóng, sóng sau khi sóng trước xong",
+  "level": 3,
   "request": "Chia việc này thành nhiều nhánh nhưng đừng mở hết cùng lúc.",
   "request_source": "nguyên văn bảng ca của kế hoạch (docs/plan/v27/research-rework.md §5)",
   "oracle_pass": [

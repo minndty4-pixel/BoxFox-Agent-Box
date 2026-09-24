@@ -1,6 +1,7 @@
 {
   "id": "R8",
   "case": "Bảng biểu: bản HTML/JATS so với PDF",
+  "level": 2,
   "request": "Lấy bảng số liệu trong bài báo này ra: ưu tiên bản HTML/JATS, chỉ có PDF thì dựng lại và ghi rõ.",
   "request_source": "nguyên văn bảng ca của kế hoạch (docs/plan/v27/research-rework.md §5)",
   "oracle_pass": [

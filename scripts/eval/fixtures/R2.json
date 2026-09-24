@@ -1,6 +1,7 @@
 {
   "id": "R2",
   "case": "mức 2: khảo sát một chủ đề, 3 nhánh",
+  "level": 2,
   "request": "Khảo sát ba hướng tiếp cận khác nhau cho bài toán chuyển tuyến ở tuyến cơ sở.",
   "request_source": "nguyên văn bảng ca của kế hoạch (docs/plan/v27/subplans/flow.md §7.1)",
   "oracle_pass": [

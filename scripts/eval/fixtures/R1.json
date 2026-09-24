@@ -1,6 +1,7 @@
 {
   "id": "R1",
   "case": "mức 1: một dữ kiện, nguồn chính thống",
+  "level": 1,
   "request": "Năm 2024, mức đóng bảo hiểm y tế hộ gia đình là bao nhiêu?",
   "request_source": "nguyên văn bảng ca của kế hoạch (docs/plan/v27/subplans/flow.md §7.1)",
   "oracle_pass": [

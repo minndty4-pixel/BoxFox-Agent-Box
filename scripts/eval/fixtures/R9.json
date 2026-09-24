@@ -1,6 +1,7 @@
 {
   "id": "R9",
   "case": "Gap hai tầng số: đủ sàn thì \"đã kiểm\", chưa đủ thì \"tín hiệu, chưa kiểm\" + lý do",
+  "level": 3,
   "request": "Chủ đề này đã kiểm đủ chưa hay mới là tín hiệu?",
   "request_source": "nguyên văn bảng ca của kế hoạch (docs/plan/v27/research-rework.md §5)",
   "oracle_pass": [

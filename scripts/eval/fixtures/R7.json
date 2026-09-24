@@ -1,6 +1,7 @@
 {
   "id": "R7",
   "case": "mức 2 nhưng main bị chặn nguồn (trang lỗi 403)",
+  "level": 2,
   "request": "Văn bản này quy định gì? (trang gốc trả 403 cho mọi lần mở)",
   "request_source": "nguyên văn bảng ca của kế hoạch (docs/plan/v27/subplans/flow.md §7.1)",
   "oracle_pass": [

@@ -1,6 +1,7 @@
 {
   "id": "R3",
   "case": "mức 2: tài liệu dài (trang fixture 200 KB)",
+  "level": 2,
   "request": "Đọc trọn trang tài liệu dài trong box (200 KB) và trả lời câu hỏi ở giữa trang.",
   "request_source": "nguyên văn bảng ca của kế hoạch (docs/plan/v27/subplans/flow.md §7.1)",
   "oracle_pass": [

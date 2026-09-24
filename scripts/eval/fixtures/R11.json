@@ -1,6 +1,7 @@
 {
   "id": "R11",
   "case": "Trần mềm + trần cứng: khai trần ở thẻ mốc, chạm trần cứng thì báo + hỏi chủ nhà",
+  "level": 3,
   "request": "Việc này ước tính bao lâu, và nếu vượt trần thì làm gì?",
   "request_source": "nguyên văn bảng ca của kế hoạch (docs/plan/v27/research-rework.md §5)",
   "oracle_pass": [

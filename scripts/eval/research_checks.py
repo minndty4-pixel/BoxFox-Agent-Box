@@ -931,6 +931,9 @@ def branch_count_at_most(room=None, records=None, *, limit=None, level=None, **o
         return _result(name, len(sessions) <= ceiling,
                        f'{len(sessions)} nhánh research trong nhật ký (trần {ceiling})')
     slugs = research_ids(room)
+    if not slugs:
+        return _result(name, False, 'chưa mở nhánh nào: nhật ký không có event `child` và thư mục '
+                                    f'hồ sơ rỗng (ca này phải mở ít nhất 1 nhánh, trần {ceiling})')
     return _result(name, len(slugs) <= ceiling,
                    f'nhật ký không có event `child`; đếm theo thư mục hồ sơ: {len(slugs)} việc '
                    f'(trần {ceiling})')
@@ -1245,6 +1248,12 @@ def wave_branch_ceiling_respected(room=None, records=None, *, level=None, wave_s
     allowed_waves = int(waves) if waves is not None else LEVEL_WAVES.get(tier, 1)
     if not child_events(records):
         slugs = research_ids(room)
+        if not slugs:
+            # Phòng rỗng KHÔNG phải là "đạt": R10 lấy đúng oracle này làm thước đo duy nhất, nên
+            # một lượt không mở nhánh nào từng được chấm `ok` — sai hẳn ý ca ("3–5 nhánh mỗi sóng").
+            return _result(name, False, 'chưa mở nhánh nào: nhật ký không có event `child` và phòng '
+                                        f'hồ sơ không có việc nào (ca này phải mở ít nhất 1 nhánh, '
+                                        f'trần {size} × {allowed_waves} sóng)')
         return _result(name, len(slugs) <= size * allowed_waves,
                        f'nhật ký không có event `child`; đếm theo phòng: {len(slugs)} việc, trần '
                        f'{size} × {allowed_waves} sóng')

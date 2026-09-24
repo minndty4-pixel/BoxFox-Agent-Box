@@ -1,6 +1,7 @@
 {
   "id": "R5",
   "case": "mức 3: hai nguồn mâu thuẫn về cùng con số",
+  "level": 3,
   "request": "Tỉ lệ này là bao nhiêu? Có hai tài liệu seed nói hai con số khác nhau.",
   "request_source": "nguyên văn bảng ca của kế hoạch (docs/plan/v27/subplans/flow.md §7.1)",
   "oracle_pass": [
