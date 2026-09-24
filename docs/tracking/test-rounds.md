@@ -2397,7 +2397,7 @@ giao diện; danh sách lỗi đầy đủ ở `bug-register.md` §6.34 — BUG-
   lồ (đo được một hàng 31 298 ký tự) vẫn có thể đẩy payload qua trần runtime 24 000. Trần cho một hàng
   chưa có luật riêng — việc của đợt sau.
 - **Cây đóng băng của lượt nghiệm thu là `f12de93`; hai SHA:** `f12de93` là bản lượt kiểm chạy trên đó
-  (một ca A-6 đỏ), còn **`<SHA bản sửa>`** là bản sửa sau nghiệm thu đã commit — theo luật
+  (một ca A-6 đỏ), còn **`0015d35`** là bản sửa sau nghiệm thu đã commit — theo luật
   `/memory/knowledge/vorflux/when-you-edit-the-tree-after-dispatching-testing-agents.md`.
 - **Bộ đơn vị trên cây có bản sửa**: **1344 passed, 1 deselected in 216,63 s**
   (`/var/tmp/v27/unit_run_10.log`); `f12de93` (chưa có bản sửa): **1339 passed, 1 deselected**.
