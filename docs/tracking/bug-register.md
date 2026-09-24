@@ -1650,3 +1650,24 @@ vì `'mục Câu hỏi'`); (6) ca `dossier_write` đếm cả lời gọi `journ
 `test_busy_controls_never_start_second_model_call` còn kỳ vọng `SESSION_BUSY` sau khi D-43 đổi kết cục
 thành `{'status': 'steered'}`; (8) `test_research_profiles.py` gọi `Profile.hard_fields()` như **hàm**
 (đó là property); (9) một `@pytest.mark.parametrize` dán nhầm lên hàm không có tham số `level`.
+
+### 6.37 Vòng 28 — khuôn trả lời cuối còn bị ÉP ở tầng kỹ năng và prompt (chủ nhà phát hiện): hạ hết xuống gợi ý (2026-09-24)
+
+Vòng 24 đã bỏ **khuôn năm phần**, nhưng ba chỗ vẫn **ra lệnh** thay vì gợi ý, nên lượt thật vẫn đọc ra
+như một cái form. Chủ nhà nói thẳng (nguyên văn, giữ cả lỗi gõ): *"tôi vẫn thấy hiện tượng format đã làm,
+còn lại,... chúng ta cx cần chỉnh lại cái đó, chỉ là skill gợi ý agent trả lời, k nên khóa cứng nhue vậy.
+Agent vẫn trả lời tự nhiên như chatgpt, claude và trả lời ngắn, các phần đã làm linh tỉnh chủ là gợi ý
+thôi, k phép ép agent trả lời theo form đó, võe hết tính tự nhiên"*. Quyết định ghi ở
+`owner-decisions.md` **D-44**.
+
+| Mã | Mức | Triệu chứng | Bằng chứng | Nguyên nhân | Vá |
+|---|---|---|---|---|---|
+| **BUG-114** | vừa (trải nghiệm; không hỏng dữ liệu) | Ba chỗ ở tầng prompt/kỹ năng vẫn **ra lệnh** về dạng câu trả lời cuối: (1) kỹ năng `final-report` 2.0.0 — *"The evidence part **closes** the answer, and it is **the most important part**"*, *"**Never** print an empty part"*, *"The evidence goes at the END… **never** in the middle, never at the top"*, *"**Not optional** when the turn produced something observable"*; (2) `RECAP_CLOSER` — *"**read** the `final-report` skill… If the owner handed over work… **re-capture every item** that is now finished"*; (3) `ANSWER_EVIDENCE_LINE` — *"A turn with something observable **closes** the answer with…"* | Lượt thật của chủ nhà đọc ra như khuôn; ba câu ra lệnh nằm nguyên trong `runtime.py`, kỹ năng và `AGENT.md` §3.4 ở mã `cbe1d5f` (đọc bằng `grep`; ghim cũ trong `test_runtime_prompt.py` còn **khẳng định** câu `closes the answer`) | Vòng 24 dồn dạng câu trả lời vào kỹ năng (D-31) và **giữ một dòng cứng** trong prompt (D-32) — đúng chữ "cứng"; kỹ năng viết ở giọng mệnh lệnh vì lúc ấy còn sợ model bỏ mục | `ANSWER_EVIDENCE_LINE` thành câu điều kiện mở bằng *"If this turn really has something to show, **you may** close the answer with…"*; `RECAP_CLOSER` nói kỹ năng là *"an optional menu of ideas … read it **if that helps**"* và bỏ vế chụp lại ảnh; kỹ năng **3.0.0** (*"ideas, not a form"*, *"Nothing here is compulsory"*, luật ảnh ở cuối = *sở thích*, luật mở bài = *mẹo đọc trên chat panel*); `AGENT.md` §3.4 nói rõ *"No part list, no order and no template is required"*; ca mới `test_ky_nang_va_con_tro_deu_la_goi_y_khong_ep_khuon` + bốn ghim đổi chiều (`D-44: kỹ năng còn ra lệnh`, `D-44: dòng nhắc không được ra lệnh`) |
+
+Số đếm sổ lỗi sản phẩm của vòng 27–28 nay là **hai mươi lăm** hàng (`BUG-90`…`BUG-113` đếm ở §6.36,
+thêm `BUG-114` ở đây).
+
+**Điều KHÔNG đổi (cố ý):** luật **trung thực** — không bịa ảnh, không lấy ảnh cũ làm ảnh trạng thái mới,
+nói rõ việc chưa chạy được; **D-18** (cổng bằng chứng không chấm khuôn câu trả lời); tóm tắt do model
+viết + `View details` — nay chỉ còn là **mẹo đọc**, không phải luật.
+

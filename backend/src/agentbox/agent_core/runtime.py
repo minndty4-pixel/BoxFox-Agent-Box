@@ -783,14 +783,14 @@ def diagnosis_prompt(reason, steps_left=None, out_of_time=False):
     return f'{head} {DIAGNOSIS_PROMPT} This turn is stopping because: {reason}.'
 
 
-# --- Vòng 24 (D-31/D-32): dạng câu trả lời KHÔNG còn nằm ở prompt --------------------------------
+# --- Vòng 24 (D-31/D-32), Vòng 28 (D-44): dạng câu trả lời KHÔNG còn nằm ở prompt ----------------
 # Cổng bằng chứng vẫn không được thêm tiêu chí nào về cấu trúc hay ngôn ngữ của câu trả lời
-# (D-18/D-20/D-24 nguyên hiệu lực). Vòng 24 dồn cả dạng câu trả lời vào kỹ năng `final-report`
-# (nơi duy nhất giữ menu phần, luật mở đầu bằng một đoạn văn xuôi, luật ảnh khép câu trả lời);
-# model tự mở kỹ năng khi bước tổng kết nhắc. Prompt chỉ còn MỘT dòng bằng chứng cứng, và chỉ
-# phiên chính nhận dòng đó.
-ANSWER_EVIDENCE_LINE = ('A turn with something observable closes the answer with the finished-state '
-                        'captures, one label per image - never a fabricated image.')
+# (D-18/D-20/D-24 nguyên hiệu lực). Vòng 24 dồn cả dạng câu trả lời vào kỹ năng `final-report`;
+# vòng 28 hạ nốt chỗ ấy xuống thành **gợi ý** — chủ nhà chốt 2026-09-24: "chỉ là skill gợi ý agent
+# trả lời, không nên khoá cứng như vậy… agent vẫn trả lời tự nhiên như ChatGPT/Claude và trả lời
+# ngắn" (D-44). Prompt chỉ còn MỘT dòng nhắc MỀM về ảnh bằng chứng, và chỉ phiên chính nhận dòng đó.
+ANSWER_EVIDENCE_LINE = ('If this turn really has something to show, you may close the answer with the '
+                        'finished-state captures, one label per image - never a fabricated image.')
 
 
 EMPTY_ANSWER_INSTRUCTION = ('You produced no answer and no tool call. Answer in plain text now, '
@@ -1104,11 +1104,11 @@ RECAP_REQUEST_CHARS = 240
 RECAP_COMMAND_CHARS = 160
 RECAP_HEADER = ('TURN RECAP (machine list of this turn - raw material for your final report, '
                 'NOT text to send to the owner)')
-RECAP_CLOSER = ("This is not the answer and must not be pasted into it. Before you write the answer, "
-                "read the `final-report` skill with `skill_view` - it holds the answer shape and the "
-                "evidence rules; skip it only when this turn needs neither. If the owner handed over "
-                "work, go through the owner's request above and re-capture every item that is now "
-                "finished, one labelled image per item.")
+RECAP_CLOSER = ("This is not the answer and must not be pasted into it. The `final-report` skill holds "
+                "an optional menu of ideas for the answer (`skill_view`) - read it if that helps, then "
+                "write the answer your own way: natural and short, the way you would say it to the "
+                "owner in chat. If the turn finished work worth showing, the finished-state captures "
+                "with one label per image are welcome; never fabricate an image.")
 
 
 def turn_recap(calls, owner_prompt=None):

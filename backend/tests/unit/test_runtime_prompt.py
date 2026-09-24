@@ -1,18 +1,21 @@
-"""Vòng 24 — dạng câu trả lời DỜI khỏi prompt: kỹ năng `final-report` giữ nó, prompt chỉ còn MỘT
-dòng bằng chứng (phiên chính) và MỘT con trỏ ở bước tổng kết của lượt có việc (P1/P2 vòng 24).
+"""Vòng 24 (D-31/D-32) → Vòng 28 (D-44) — dạng câu trả lời DỜI khỏi prompt rồi hạ xuống GỢI Ý:
+kỹ năng `final-report` chỉ mách nước, prompt chỉ còn MỘT dòng nhắc mềm (phiên chính).
 
 Chủ nhà chốt (D-26…D-32, `owner-decisions.md` §4.2): form năm phần bị bỏ; model tự chọn phần hợp
 lượt, không in phần rỗng; lượt chỉ hỏi thì trả lời như thường, không báo cáo; tóm tắt do model viết
-+ "View details" phải chạy lại; ảnh bằng chứng đóng thân câu trả lời.
++ "View details" phải chạy lại. Ngày 2026-09-24 chủ nhà chốt tiếp (D-44): kể cả phần còn lại cũng
+**chỉ là gợi ý** — kỹ năng không được ép model trả lời theo khuôn nào; agent trả lời tự nhiên và
+ngắn như ChatGPT/Claude.
 
 Ba thứ dưới đây sống ở tầng PROMPT/KỸ NĂNG và phải kiểm được mà KHÔNG cần model thật:
 
 - **Hợp đồng mới** — `runtime.py` không còn `FINAL_REPORT_PARTS`/`FINAL_REPORT_GUIDANCE` và không còn
   khối `=== FINAL REPORT ===`; đúng MỘT hằng `ANSWER_EVIDENCE_LINE` được chèn ngay sau
-  `=== ANSWER LENGTH ===`, và CHỈ ở phiên chính (D-18/D-31/D-32).
+  `=== ANSWER LENGTH ===`, và CHỈ ở phiên chính (D-18/D-31/D-32). Dòng ấy nay là **nhắc mềm**
+  ("you may"), không phải mệnh lệnh (D-44).
 - **Kỹ năng là nơi chứa** — `final-report` ở lại `DEFAULT_SKILLS`, tên nó có trong khối
-  `=== ENABLED SKILLS`, và nội dung kỹ năng (đọc qua `SkillCatalog`) giữ đủ menu, luật mở bài bằng
-  một đoạn văn xuôi và luật ảnh bằng chứng đóng thân câu trả lời.
+  `=== ENABLED SKILLS`, và nội dung kỹ năng (đọc qua `SkillCatalog`) giữ đủ menu như **danh sách
+  gợi ý**: không câu nào bắt model dùng đủ phần, đúng thứ tự, hay luôn khép bằng ảnh.
 - **Con trỏ ở bước tổng kết** — bản nhắc việc của LƯỢT trỏ tới kỹ năng, nên nó chỉ xuất hiện ở lượt có
   việc: lượt chỉ hỏi không bao giờ thấy nó (recap rỗng, xem các ca P1.5 giữ nguyên ở dưới).
 
@@ -158,13 +161,17 @@ def test_cau_chi_dan_sop_chi_con_mot_dong_trung_thuc():
         'khuôn chỉ được định nghĩa ở MỘT chỗ: kỹ năng'
 
 
-# ------------------------------------- P2(b) một dòng bằng chứng cứng, chỉ phiên chính (D-18/D-32)
+# ------------------------------ P2(b) một dòng NHẮC MỀM về ảnh, chỉ phiên chính (D-18/D-32/D-44)
 
 def test_dong_bang_chung_dung_mot_lan_va_nam_sau_answer_length(tmp_path):
-    """P2(b) — dòng bằng chứng: đúng một lần, ngay sau `=== ANSWER LENGTH ===`, ASCII, ngắn."""
+    """P2(b) — dòng nhắc mềm: đúng một lần, ngay sau `=== ANSWER LENGTH ===`, ASCII, ngắn, KHÔNG ra lệnh."""
     line = runtime_module.ANSWER_EVIDENCE_LINE
-    assert line.isascii(), 'prompt là tiếng Anh: dòng bằng chứng phải thuần ASCII'
+    assert line.isascii(), 'prompt là tiếng Anh: dòng nhắc phải thuần ASCII'
     assert len(line) <= 200, 'một dòng, không phải một khối'
+    assert 'you may' in line, 'D-44: đây là gợi ý (you may), không phải mệnh lệnh'
+    for order in ('closes the answer with the', 'must ', 'Always '):
+        assert order not in line, f'D-44: dòng nhắc không được ra lệnh ({order!r})'
+    assert 'never a fabricated image' in line, 'luật trung thực thì vẫn giữ'
 
     store, runtime, session = run_turn(tmp_path, Model([answer('xong')]), 'việc gì đó')
     prompt = system_prompt(runtime, session)
@@ -197,14 +204,16 @@ def test_moi_vai_nhan_chu_dan_do_dai_nhung_chi_phien_chinh_nhan_dong_bang_chung(
 
 # ------------------------------------------------ P2(c) kỹ năng `final-report` giữ cả dạng câu trả lời
 
-def test_ky_nang_final_report_giu_menu_va_luat_mo_bai():
-    """P2(c) — nội dung kỹ năng (đọc qua `SkillCatalog`) giữ menu, luật mở bài và luật ảnh ở cuối."""
+def test_ky_nang_final_report_giu_menu_duoi_dang_goi_y():
+    """P2(c) — kỹ năng (đọc qua `SkillCatalog`) giữ đủ menu như GỢI Ý, kèm mẹo đọc trên chat panel."""
     content = SkillCatalog().read(SKILL_ID)['content']
 
     for bullet in MENU_BULLETS:
         assert bullet in content, f'menu thiếu mục {bullet!r}'
-    for phrase in ('ONE short paragraph of plain prose', 'View details', 'closes the answer'):
-        assert phrase in content, f'kỹ năng thiếu luật {phrase!r}'
+    for phrase in ('not a form', 'Nothing here is compulsory', 'View details', 'you may'):
+        assert phrase in content, f'kỹ năng thiếu câu gợi ý {phrase!r}'
+    for order in ('closes the answer', 'never in the middle', 'Not optional', 'must open with'):
+        assert order.lower() not in content.lower(), f'D-44: kỹ năng còn ra lệnh ({order!r})'
     # Chữ trong kỹ năng viết hoa "Never print an empty part" — luật là luật, không phụ thuộc viết hoa.
     assert 'never print an empty part' in content.lower(), 'D-27: hết việc thì không in mục rỗng'
     # D-26: menu KHÔNG được trôi ngược thành khuôn — cấm câu bắt dùng đủ năm phần. Các câu dưới đây
@@ -213,6 +222,25 @@ def test_ky_nang_final_report_giu_menu_va_luat_mo_bai():
         assert phrase not in content.lower(), f'D-26: menu đã thành khuôn cứng ({phrase!r})'
     assert 'pick by content, not habit' in content.lower(), 'D-26: luật tự chọn phần phải còn'
     assert SKILL_ID in DEFAULT_SKILLS, 'D-31: kỹ năng Ở LẠI DEFAULT_SKILLS'
+
+
+def test_ky_nang_va_con_tro_deu_la_goi_y_khong_ep_khuon(tmp_path):
+    """D-44 — không chỗ nào ở tầng prompt/kỹ năng còn ÉP model theo khuôn trả lời.
+
+    Chủ nhà 2026-09-24: *"chỉ là skill gợi ý agent trả lời, không nên khoá cứng như vậy… agent vẫn
+    trả lời tự nhiên như ChatGPT/Claude và trả lời ngắn"*. Ca này ghim đúng chỗ ấy: con trỏ ở bước
+    tổng kết nói "đọc nếu thấy giúp" (không bắt đọc), và nó không ra lệnh chụp lại ảnh.
+    """
+    closer = runtime_module.RECAP_CLOSER
+    assert 'optional menu of ideas' in closer, 'D-44: kỹ năng được mời, không bị bắt đọc'
+    assert 'you would say it to the owner in chat' in closer, 'D-44: văn tự nhiên là chuẩn'
+    for order in ('Before you write the answer', 're-capture every item', 'it holds the answer shape'):
+        assert order not in closer, f'D-44: con trỏ còn ra lệnh ({order!r})'
+
+    store, runtime, session = run_turn(tmp_path, Model([answer('xong')]), 'việc gì đó')
+    prompt = system_prompt(runtime, session)
+    assert 'Treat that line as the rule' not in prompt, 'D-44: không còn câu "coi đó là luật"'
+    store.close()
 
 
 def test_ten_ky_nang_co_trong_khoi_enabled_skills_cua_prompt(tmp_path):

@@ -2572,3 +2572,29 @@ eval, 18 tệp), **`79df0a9`** (tài liệu, 4 tệp). Nguồn: lượt soát l�
 - Sáu ca mới (`test_research_brief.py` **17**, `test_dossier_write_tool.py` **20**); mỗi ca hành vi chứng minh
   **đỏ trước / xanh sau** (đo: chạy lại trên đúng mã `4843563` thì ca F-J đỏ; trên `79df0a9` thì năm ca kia đỏ).
 - Bộ đơn vị đầy đủ sau lớp vá cuối: **1639 passed, 1 deselected** (`/var/tmp/v27/unit_after_fj.log`).
+
+### Vòng 28 — khuôn trả lời cuối hạ hết xuống GỢI Ý (D-44, ngoài plan vòng 27)
+
+- **Nguồn yêu cầu:** tin nhắn chủ nhà (2026-09-24, 06:47 UTC) — "chỉ là skill gợi ý agent trả lời, k nên
+  khóa cứng"; agent phải trả lời **tự nhiên như chat/code assistant** và **ngắn**, các phần đã làm chỉ là
+  gợi ý, **không được ép** agent theo khuôn. Lượt 24 (D-31/D-32) mới gỡ khuôn cứng ở tầng *văn bản người
+  dùng nhận*; lượt này gỡ nốt ba chỗ còn **RA LỆNH** ở tầng kỹ năng và prompt (**BUG-114**).
+- **Ba chỗ bị gỡ:** (1) kỹ năng `final-report` — "the evidence part **closes** the answer, and it is **the
+  most important part**", "**Never** print an empty part", "**Not optional**"; (2) `RECAP_CLOSER` — "**read**
+  the `final-report` skill… **re-capture every item**"; (3) `ANSWER_EVIDENCE_LINE` — "A turn with something
+  observable **closes** the answer with…". Ghim cũ trong `test_runtime_prompt.py` còn **khẳng định** hai câu
+  ra lệnh ấy, nên phép đo cũ *bảo vệ* chính chỗ sai.
+- **Đã sửa:** kỹ năng viết lại thành `3.0.0` ("ideas, not a form" — menu gợi ý, không thứ tự, không mục bắt
+  buộc); `RECAP_CLOSER` nói rõ "this is not the answer… write the answer your own way: natural and short";
+  `ANSWER_EVIDENCE_LINE` thành câu điều kiện ("you may close the answer with…"); `AGENT.md` §3.4 nói thẳng
+  "no part list, no order and no template is required". Đổi luôn **chiều ghim**: ca cũ khẳng định hai câu ra
+  lệnh, nay khẳng định chúng **vắng** và khẳng định câu gợi ý **có**.
+- **Số quyết định:** dùng **D-44** (không dùng D-33 — số ấy vòng 25 đã dùng cho quyết định khác; xem
+  `owner-decisions.md` §4.3). Mọi chỗ mới đã ghi D-44.
+- **Đo:** `test_runtime_prompt.py` **18 ca** xanh; nhóm ba tệp prompt (`test_runtime_prompt`,
+  `test_skill_commands`, `test_harness_runtime`) **232 passed**; bộ đơn vị đầy đủ **1640 passed, 1 deselected
+  in 264.47s, EXIT=0** (`/var/tmp/v28/unit_v28.log` — hơn lượt trước đúng **một ca**, chính là ca ghim chiều
+  ngược mới).
+- **Điều KHÔNG đổi (cố ý):** luật trung thực của kỹ năng — **không bịa ảnh**, **không dùng ảnh cũ**, nói rõ
+  việc chưa chạy — và dòng bằng chứng vẫn chỉ có ở **phiên chính**, vẫn chỉ **một** lần, vẫn nằm sau
+  `=== ANSWER LENGTH ===`.

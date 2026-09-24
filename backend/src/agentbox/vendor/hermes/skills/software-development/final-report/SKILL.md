@@ -1,8 +1,8 @@
 ---
 name: final-report
-description: "Final answer: a light menu of parts, a plain-prose opening, and the finished-state image evidence that closes the answer."
-version: 2.0.0
-author: BoxFox Agent (vòng 24, D-31)
+description: "Final answer ideas (suggestions only): a light menu of parts you may borrow, and finished-state image evidence you may close with. Answer naturally and briefly."
+version: 3.0.0
+author: BoxFox Agent (vòng 24, D-31 - hạ xuống gợi ý ở vòng 28, D-44)
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
@@ -11,73 +11,54 @@ metadata:
     related_skills: [systematic-debugging, requesting-code-review]
 ---
 
-# Final Report — the answer guide
+# Final Report — ideas, not a form
 
 ## Overview
 
-The final answer is a normal answer to the owner, not a form. Its shape is a **light menu**: pick the
-parts that fit this turn, in the order that reads best. **The evidence part closes the answer, and it
-is the most important part of the answer.** No mandatory order, no fixed number of parts.
+The final answer is a normal message to the owner — the kind a good colleague sends in chat. This
+skill is a **menu of ideas**: borrow the parts that fit this turn, skip the rest, and say it in your
+own words. Nothing here is compulsory, no order is fixed, and a short answer is a good answer. The
+owner asked for exactly this: answer naturally, the way ChatGPT or Claude would, not in a form.
 
-## When to open it
+The only things that do not bend are the **honesty** rules at the end of this page.
 
-- Main session, when the turn produced work or something to show: the prompt carries one hard evidence
-  line for that turn, and the turn recap points here. Skip it when the turn is a plain question — a
-  question gets a normal answer, not a report.
-- Not for a child session: a child returns the parent's result contract.
+## When it may help
 
-## The menu, not a template
+- The turn produced something to show — work, files, a result: the ideas below often read well.
+- The turn was a plain question: skip this page and answer the question.
 
-- **What you did** — the finished work, with the real commands you ran and the real files you changed;
-  if you did not run a check, do not imply you did.
+## Ideas you can borrow
+
+- **What you did** — the finished work, with the real commands you ran and the real files you
+  changed; if you did not run a check, do not imply you did.
 - **What is left** — only when something really is unfinished, skipped or not run.
 - **What the owner must decide** — only when a decision is really needed.
 - **What is unclear** — open questions and assumptions, only when there are any.
-- **Evidence** — the finished-state captures that prove each item, one label per image, plus links to
-  the evidence files. Not optional when the turn produced something observable.
+- **Evidence** — the finished-state captures that prove what you claim, one label per image, plus
+  links to the evidence files. Use it when the turn produced something observable.
 
-Pick by content, not habit: a turn that changed one file and ran one test opens with the outcome,
-shows `What you did`, and closes with the evidence. **Never print an empty part** — drop it instead.
-Never invent a command or a file.
+Pick by content, not habit: a turn that changed one file and ran one test may open with the outcome,
+say what you did, and stop there. An empty part adds nothing, so never print an empty part — drop it
+instead. If none of the ideas fits, write the answer without them.
 
-## The opening paragraph
+## Reading well in the chat panel
 
-Start with ONE short paragraph of plain prose (one or two sentences) that states the outcome, then the
-parts you picked — no markdown heading and no bullet list in that first paragraph.
+The chat panel uses your first paragraph as the collapsed summary of the turn and holds the rest
+behind **"View details"**. So a short opening paragraph of plain prose usually reads best: a heading
+or a list in the very first lines can make that split land badly. This is a reading tip, not a rule —
+if a heading genuinely reads better for this turn, use one.
 
-Why: the chat shows that first paragraph as the collapsed summary of the turn and holds the rest
-behind **"View details"**. An answer that opens with a heading or a list breaks that split, and the
-owner sees a raw cut of the text instead of a summary.
+## Evidence, if you show any
 
-## The evidence part closes the answer
+- Evidence near the end of the answer is easier to scan than evidence at the top — that is a
+  preference, not a requirement.
+- One capture per finished item; label each in the markdown alt text **and** in `caption`.
 
-- The evidence goes at the END, after the other parts — never in the middle, never at the top. It is
-  the part that proves the turn: the owner reads the words, then sees the finished state.
-
-## Evidence by kind of work
-
-| Work | What proves it |
-| --- | --- |
-| GUI / frontend / web | The tab that renders the change: `computer_screen_capture(target={'kind': 'tab', 'url': '<url>'}, caption='<feature>')`. |
-| Backend / RAG / CLI | The real test run, then a capture of the returned result **and** the result file under `.generated_artifacts/captures/evidence/<sid8>/<sid8>_<step>_<slug>.txt`. |
-| Desktop app in the sandbox | A window capture after the change: `target={'kind': 'window', 'windowId': '<id>'}`. |
-| A change with nothing observable | No image; say so in the evidence part. |
-
-## Embedding the evidence in the answer
-
-- Image: `![<feature it proves>](.generated_artifacts/captures/<kind>/<sid8>/<sid8>_<step>_<slug>.<ext>)` —
-  relative to the workspace root, the path the capture returned.
-- Result file: a markdown link, one per check you ran. The owner should not have to open another panel.
-- Quote the exact command and its real observed result in the text; the image supports the words, it
-  does not replace them.
-
-## How to capture
+## How to capture, when you do
 
 `computer_screen_capture(target={...}, caption='...')`
 
-- Capture at the report step, when the work is done — never a work-in-progress shot.
-- One capture = one finished item. Items with several faces get several shots; label each with the
-  feature it proves, in the markdown alt text **and** in `caption`.
+- Capture the finished state; a work-in-progress shot proves nothing.
 - `target.kind` is `tab`, `window` or `screen`; a target you do not pass means `screen`, and anything
   the box does not understand is dropped.
 - Tab: `{'kind': 'tab', 'url': '127.0.0.1:5173'}` or `{'kind': 'tab', 'title': 'Runs'}` — name enough
@@ -87,18 +68,23 @@ owner sees a raw cut of the text instead of a summary.
   have can be read from a screen capture. Stop a running recording first
   (`computer_screen_record(action='stop')`).
 - Never a bare desktop shot, never a window showing only wallpaper, never a picture of your editor.
+- Image markdown, when you do show one:
+  `![<feature it proves>](.generated_artifacts/captures/<kind>/<sid8>/<sid8>_<step>_<slug>.<ext>)` —
+  relative to the workspace root, the path the capture returned.
+- Result file: a markdown link, one per check you ran. Quote the exact command and its real observed
+  result in the text; an image supports the words, it does not replace them.
 
 ## Worked example — the owner's own accepted turn (9481bf87)
 
 He called this one right: "được model quyết định theo công việc chứ không theo 1 form gốc". Shape
 only; the words are yours: one natural opening line ("Đã gắn xong gói bằng chứng sống vào lượt này…"),
 then the ONE part that turn needed (**Đã làm.** — two bullets with real commands and real files), a
-short prose paragraph recalling the system, then the evidence block **at the end** — each image
+short prose paragraph recalling the system, then the evidence block near the end — each image
 labelled with the feature it proves, then the result-file link, then the PR link and one question
 waiting for his decision.
 
 ## Honesty
 
-- A turn that produced nothing observable says so in the evidence part. Never fabricate an image,
-  never reuse an older capture as if it were the finished state.
+- A turn that produced nothing observable says so; it does not need an image.
+- Never fabricate an image, never present an older capture as the finished state of this turn.
 - If a check could not run, say which one and why. An honest gap beats a fabricated success.

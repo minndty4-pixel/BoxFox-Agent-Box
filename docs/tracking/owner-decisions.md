@@ -248,6 +248,26 @@ thiếu brief thì hành vi cũ **không đổi**.
   nêu trần bằng **giây + token**. Cần router trả thêm một trường rồi mới hiện USD.
 - **MỞ-H** (chỗ cắm khoá tìm kiếm): giữ **mặc định tắt**, chỉ bật khi chủ nhà cắm khoá — theo D-42.
 
+### 4.6 Vòng 28 — dạng câu trả lời cuối chỉ còn là GỢI Ý (2026-09-24) — D-44
+
+Chủ nhà gửi tiếp trong cùng ngày (nguyên văn, giữ cả lỗi gõ): *"tôi vẫn thấy hiện tượng format đã làm,
+còn lại,... chúng ta cx cần chỉnh lại cái đó, chỉ là skill gợi ý agent trả lời, k nên khóa cứng nhue
+vậy. Agent vẫn trả lời tự nhiên như chatgpt, claude và trả lời ngắn, các phần đã làm linh tỉnh chủ là
+gợi ý thôi, k phép ép agent trả lời theo form đó, võe hết tính tự nhiên"*.
+
+Đọc lại vòng 24: khuôn năm phần đã bị bỏ, nhưng ba chỗ còn **ra lệnh** thay vì gợi ý — kỹ năng
+`final-report` 2.0.0 ("the evidence part **closes** the answer", "**Never** print an empty part"), con
+trỏ ở bước tổng kết ("**read** the `final-report` skill … re-capture every item that is now finished")
+và dòng bằng chứng trong prompt ("A turn with something observable **closes** the answer with…").
+
+| ID | Quyết định | Nguồn | Cách cài trong mã (đo được) | Trạng thái |
+|---|---|---|---|---|
+| **D-44** | Dạng câu trả lời cuối **chỉ còn là gợi ý**: kỹ năng `final-report` là *menu* để tham khảo, prompt chỉ còn **một dòng nhắc mềm**; agent trả lời **tự nhiên và ngắn** như ChatGPT/Claude | Nguyên văn của chủ nhà (2026-09-24, tin nhắn trong phiên) | `runtime.py`: `ANSWER_EVIDENCE_LINE` đổi thành câu điều kiện mở bằng *"If this turn really has something to show, **you may** close the answer with…"*; `RECAP_CLOSER` nói kỹ năng là *"an optional menu of ideas … read it **if that helps**"* và **bỏ** vế ra lệnh chụp lại ảnh; kỹ năng `final-report` **3.0.0** (*"ideas, not a form"*, *"Nothing here is compulsory"*, luật ảnh ở cuối thành *sở thích*, luật mở bài thành *mẹo đọc trên chat panel*); `AGENT.md` §3.4: *"Answer naturally… No part list, no order and no template is required"*; ca `test_runtime_prompt.py` ghim chiều ngược lại (`D-44: kỹ năng còn ra lệnh`, `D-44: dòng nhắc không được ra lệnh`) | **Đã xong** (vòng 28) |
+
+**Điều KHÔNG đổi:** luật trung thực (không bịa ảnh, không dùng ảnh cũ làm ảnh trạng thái mới, nói rõ
+việc chưa chạy được) và D-18 (cổng bằng chứng không chấm khuôn câu trả lời); tóm tắt do model viết +
+`View details` giữ nguyên — nay chỉ là **mẹo đọc**, không phải luật.
+
 ## 5. Ràng buộc kỹ thuật phải giữ khi thi công
 
 1. **Không thêm giá trị `status` mới** cho phiên: luồng đang lọc `running` / `awaiting_decision`
@@ -273,4 +293,5 @@ thiếu brief thì hành vi cũ **không đổi**.
 | 2026-09-23 | Vòng 25: chủ nhà giao ba việc về khả năng lên kế hoạch; đo được **bảy lỗi** rồi chốt năm phương án (#5927…#5931) — vai `plan-review` độc lập, cổng chặn cứng có công tắc, cú bấm ở tab Plan mở lượt thật, duyệt kèm điều kiện (chủ nhà tự thêm). Ghi D-33…D-38, trong đó D-35/D-37 là cách hiểu đã thi công của hai điểm chủ nhà không được hỏi | Nam Nam |
 | 2026-09-23 | Vòng 25 hậu kiểm: hai vòng soát mã độc lập (harness 4/10 Medium, giao diện 4/10 Low) tìm ra **tám lỗi** và cả tám đã sửa ở `9f2fb95` + `f7a8e9e`, vòng kiểm thử độc lập tìm thêm **một lỗ** (BUG-88, cổng nguồn đọc cả tham số) và nó đã sửa ở `a93ebd6`; vòng soát dọn ở `ef4517d`; ghi thêm **D-39** (khoá nút Duyệt đúng bằng harness) | Nam Nam (chỉ D-33…D-38) |
 | 2026-09-24 | Vòng 27 (thi công đợt 1–8): D-40…D-42 **đã xong** kèm số đo, ghi thêm **D-43** (chỉ thị giữa lượt của chủ nhà theo #5969) và đóng sáu mục `[MỞ]` M1–M6 (chỉ **M6 — trần USD** còn mở, chờ router trả trường `cost`) | Nam Nam (D-43 theo #5969) |
+| 2026-09-24 | Vòng 28: chủ nhà nói thẳng form vẫn còn bị ép — *"chỉ là skill gợi ý agent trả lời, k nên khóa cứng"*; ghi **D-44**: kỹ năng `final-report` hạ xuống gợi ý (3.0.0), prompt chỉ còn một dòng nhắc mềm, `AGENT.md` §3.4 nói rõ không cần khuôn nào; agent trả lời tự nhiên và ngắn | Nam Nam |
 | 2026-09-23 | Vòng 27 (kế hoạch, chưa thi công): **13 vòng phỏng vấn** (#5955–#6025) chốt hết thị trường, học thuật/kỹ thuật và phương pháp cho kế hoạch "research agent đọc nguồn thật"; ghi thêm **D-40** (trần research mềm theo việc + trần cứng 30/120 phút, lượt mức 3 = 3 600 s), **D-41** (sóng nhánh 3–5: mức 2 một sóng, mức 3 ≤ 3 sóng), **D-42** (tự dựng công cụ tìm kiếm/tải, không mua khoá) | Nam Nam (D-42 theo uỷ quyền #6023) |
