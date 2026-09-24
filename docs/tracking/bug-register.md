@@ -1602,10 +1602,10 @@ trong `tool_contracts.SCHEMAS`.
 **Phạm vi chưa làm, ghi nhận có chủ đích.** Chín tên `browser_*` trong `skills/software-development/dogfood/SKILL.md` nằm trong `SERVED_EXCEPTIONS`
 kèm lý do (nợ của vai kiểm thử, ngoài đợt 8). `HERMES_HOME` chỉ có hiệu lực **sau khi box được dựng/khởi động lại** — đợt này chỉ sửa tệp, chưa khởi động lại box.
 
-### 6.36 Vòng 27 (đợt 3–8) — mười tám lỗi lộ ra trong lúc thi công sổ nguồn, hồ sơ, phản biện và nhịp tiến độ (2026-09-24)
+### 6.36 Vòng 27 (đợt 3–8) — mười chín lỗi lộ ra trong lúc thi công sổ nguồn, hồ sơ, phản biện và nhịp tiến độ (2026-09-24)
 
 **Phát hiện.** Không lỗi nào do người dùng báo: mỗi lỗi lộ ra khi chạy ca test mới hoặc khi đo sống một
-đường vừa viết. Chín lỗi thuộc **mã sản phẩm** (bảng dưới), chín lỗi còn lại thuộc **chính ca test**
+đường vừa viết. Mười lỗi thuộc **mã sản phẩm** (bảng dưới, `BUG-90`…`BUG-108`), chín lỗi còn lại thuộc **chính ca test**
 (ghi ở cuối mục, không tính là lỗi sản phẩm). Mọi sửa đều giữ bất biến: việc mới có công tắc tắt
 (`BOXFOX_RESEARCH_*`, `BOXFOX_STEER`), và thiếu brief thì hành vi cũ không đổi.
 
@@ -1628,8 +1628,8 @@ kèm lý do (nợ của vai kiểm thử, ngoài đợt 8). `HERMES_HOME` chỉ 
 | **BUG-104** | vừa | Cổng chất lượng **thiếu luật** cho trường hồ sơ bắt buộc (#5989): hồ sơ luật thiếu `docNumber`/`effectiveDate`/`validity` vẫn qua | Ca `test_research_quality.py` | Luật `validity_fields` chỉ sống trong `research_profiles` | `ledger_payload(rows)` + `hard_missing(profile, rows)` trong `research_quality.py`, một lỗi kể **một lần**, bỏ trường đã có luật riêng |
 | **BUG-105** | vừa (sai hợp đồng) | `dossier_write` cho **nhánh con** — trái `ledger.md:194` (*con research không có `file_write`/`research_write`; hồ sơ do main ghi*) | Ca vai: con gọi được và ghi được tệp | Nới cổng cho tiện lúc thi công | Hoàn nguyên về `orchestrator`-only kèm câu từ chối có chữ |
 | **BUG-106** | vừa (báo động sai) | Luật `research-critique-missing` chạy **cả ở mức 2**, nơi hồ sơ **không có** mục Phản biện ⇒ mọi hồ sơ mức 2 bị từ chối oan | `assess(mode='enforce')` mức 2 ⇒ `['research-critique-missing']` | `assess` không hỏi mức trước khi bắt mục Phản biện | `critique_required(level)` đọc chính `DOSSIER_SECTIONS`; nhánh critique nay `selected_mode == 'enforce' and not critique_ok and critique_required(level)` |
-| **BUG-108** | **nặng (im lặng)** | `annotate_branch_answer` tìm **chủ sổ** từ **phiên CHA** rồi `source_rows_for(owner, [childId])` ⇒ khi cha chưa giữ brief, nó đọc sổ rỗng của chính con và **mọi** nhánh đều bị chú thích là `research-lineage-missing` (dù nhánh có để lại dòng) | Ca end-to-end mới: nhánh gọi `source_add` rồi trả lời ⇒ `gate['rows'] == 0` trong khi `store.source_count(cha) == 1` | `_ledger_owner(rt, session, child_id)` với `session` là phiên **đang gọi** `delegate_task`, mà hàm này leo lên theo `parent_id` của chính tham số đó | Hỏi từ **phiên con**: `child_session = rt.store.get(str(child_id)) or session` rồi `_ledger_owner(rt, child_session, str(child_id))`; ca `test_a_research_child_that_did_leave_a_row_keeps_its_row_out_of_the_notes` chứng minh **đỏ trước / xanh sau** |
 | **BUG-107** | nhẹ | Bốn mục `TIER1_SUFFIXES` (`'docs.'`, `'developer.'`, `'developers.'`) **không bao giờ khớp** vì `_suffix_in` chỉ so `host.endswith(suffix)` ⇒ `developers.google.com`, `developer.mozilla.org` rơi xuống tầng 3 | Ca `test_source_tiers.py` chỉ ra tầng 3 | So hậu tố mà mục thật ra là **tiền tố** (`docs.`) | `_prefix_in(host, prefixes)`: chỉ xét mục `endswith('.')` và đòi `len(host) > len(prefix)` |
+| **BUG-108** | **nặng (im lặng)** | `annotate_branch_answer` tìm **chủ sổ** từ **phiên CHA** rồi `source_rows_for(owner, [childId])` ⇒ khi cha chưa giữ brief, nó đọc sổ rỗng của chính con và **mọi** nhánh đều bị chú thích là `research-lineage-missing` (dù nhánh có để lại dòng) | Ca end-to-end mới: nhánh gọi `source_add` rồi trả lời ⇒ `gate['rows'] == 0` trong khi `store.source_count(cha) == 1` | `_ledger_owner(rt, session, child_id)` với `session` là phiên **đang gọi** `delegate_task`, mà hàm này leo lên theo `parent_id` của chính tham số đó | Hỏi từ **phiên con**: `child_session = rt.store.get(str(child_id)) or session` rồi `_ledger_owner(rt, child_session, str(child_id))`; ca `test_a_research_child_that_did_leave_a_row_keeps_its_row_out_of_the_notes` chứng minh **đỏ trước / xanh sau** |
 
 **Chín lỗi thuộc chính ca test (không phải lỗi sản phẩm, ghi để khỏi lặp):** (1) ba ca
 `test_steer_queue.py` đọc cột `status`/`claimed`/`step` **không có** trong bảng `session_steers` — cột thật

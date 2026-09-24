@@ -164,8 +164,10 @@ không cổng chất lượng, không pha phản biện (xem `docs/architecture/
 
 Chưa có trong mã (hiện chỉ là **luật model trong skill**):
 
-- Nút duyệt việc lớn: không có mã nào đọc hay ghi `research-budget` (`grep -rn "research-budget" backend/src
-  frontend/src` không ra kết quả). Luật nằm ở `vendor/hermes/skills/research/research-team/SKILL.md`
+- Nút duyệt việc lớn: **không có mã nào** đọc hay ghi `research-budget`. `grep -rn "research-budget"
+  backend/src frontend/src` chỉ ra **hai dòng, cả hai nằm trong chính skill**
+  (`vendor/hermes/skills/research/research-team/SKILL.md:137` và `:199`), không dòng nào trong mã
+  Python hay TypeScript — harness chưa đọc chuỗi ấy. Luật nằm trong skill ấy
   §"Ngân sách và nút duyệt (#5964)": gọi
   `request_approval(action='research-budget: <mức>, <trần> phút, <n> nhánh, <lý do>')`, và in một dòng
   `Ngân sách: mức <n> · đã dùng <mm:ss> / trần <mm:ss> · <n> nhánh · <token> token`.

@@ -2448,8 +2448,9 @@ Ba commit: **`d0edca1`** (mã đợt 3–7 + test + giao diện + `deploy/`), **
 - Test: `test_research_quality.py` **25**, `test_research_gate_runtime.py` **12** (chạy thật đường
   `submit` → `delegate_task` → con chạy → cha chốt), `test_dossier_write_tool.py` **16**,
   `test_worker_dossier.py` **37**.
-- Giao diện (đợt 4/7): hàng đợi bước, nút dừng nhánh, thẻ mốc tiến độ, hai mặt duyệt ngân sách —
-  126 tệp / 1130 ca test giao diện.
+- Giao diện (đợt 4/7): hàng đợi bước, nút dừng nhánh, thẻ mốc tiến độ (ba mặt này **đã giao**);
+  "hai mặt duyệt ngân sách" là **spec**, xem mục "Chỗ chưa đo được" ở cuối. Cả đợt: 126 tệp / 1130 ca
+  test giao diện.
 
 ### Đợt 5 — ba mức, `research_brief`, skill `research-team`, SOP bốn pha
 
@@ -2523,6 +2524,8 @@ Nặng nhất:
 
 - **Chưa có benchmark research nào chạy** (F19): bộ ca `R1–R12` và 27 oracle đã có trong mã, nhưng
   điểm của một lượt thật vẫn `blocked` — cần máy có model và box sinh `.research/**`.
-- **Nút duyệt ngân sách chỉ là spec**: không có chuỗi `research-budget` nào trong `backend/src` hay
-  `frontend/src`; trang `docs/architecture/research-agent.md` §5 ghi rõ phần nào đã có trong mã.
+- **Nút duyệt ngân sách chỉ là spec**: không có mã nào đọc hay ghi `research-budget` — `grep` thấy
+  **hai dòng, cả hai là luật trong chính skill** (`vendor/hermes/skills/research/research-team/SKILL.md:137`,
+  `:199`), không dòng nào trong mã Python/TypeScript; trang `docs/architecture/research-agent.md` §5
+  ghi rõ phần nào đã có trong mã.
 - Mặt `unknown` của `researchTiers` trong `runtime-info` chưa có (bản hiện tại trả `overrides` + `tiers`).

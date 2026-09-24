@@ -204,7 +204,8 @@ Ba hệ quả:
 
 Đường research không kể chuyện vào chat rồi quên: kết quả đọng lại thành **hồ sơ** trong workspace, và mỗi
 câu trong hồ sơ trỏ về **một dòng sổ nguồn** do harness cấp số. Tên phòng, tên tệp và mã dòng là hợp đồng
-đóng băng ở `/var/tmp/v27/iface.md` §4 — frontend và backend đọc đúng những khuôn dưới đây.
+đóng băng ở `docs/plan/v27/subplans/flow.md` và ở trang `docs/architecture/research-agent.md` §2 — frontend
+và backend đọc đúng những khuôn dưới đây.
 
 | Mã | Khuôn | Ai ép | Ghi chú |
 |---|---|---|---|
