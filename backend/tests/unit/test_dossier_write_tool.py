@@ -387,3 +387,50 @@ def test_a_room_that_does_not_belong_to_the_job_is_refused_not_a_nameerror(harne
         write(runtime, session)
     assert limits.DOSSIER_DIR_MISMATCH_CODE in str(exc.value)
     assert not dossier_calls(executor), 'không có lệnh nào chạm tệp hồ sơ'
+
+
+def test_a_version_that_the_room_already_has_is_skipped_not_a_dead_end(harness):
+    """Bản `v1` đã có trong PHÒNG mà chỉ mục chưa biết ⇒ ghi `v2`, không chết ở `DOSSIER_VERSION_TAKEN`.
+
+    Op của box từ chối ghi đè một bản đã có (bản cũ là bằng chứng), mà số bản lại tính từ chỉ mục:
+    một tệp do lượt trước để lại (ghi hỏng giữa chừng) làm câu lệnh hỏng lặp lại y hệt ở mọi lần thử,
+    trong khi cách sửa câu lỗi mách ("ghi bản kế") không thi hành được — lượt kiểm thử `v27d` (F-A).
+    """
+    store, runtime, sid, session, executor = harness
+    seed_row(runtime, session)
+
+    class TakenOnceExecutor(FixtureExecutor):
+        async def execute(self, name, args, sid):
+            self.calls.append((name, args, sid))
+            if args['path'].rsplit('/', 1)[-1].startswith('v1-'):
+                raise RuntimeError('DOSSIER_VERSION_TAKEN: %s already exists; write the next version'
+                                   % args['path'])
+            relative = args['path']
+            return {'relativePath': relative, 'version': 2, 'bytes': len(args['markdown'].encode('utf-8')),
+                    'sha1': 'abc123', 'files': [relative]}
+
+    runtime.executor = TakenOnceExecutor()
+    answer = write(runtime, session)
+    assert answer['version'] == 2 and answer['relativePath'].endswith('v2-chuyen-tuyen-2026.md')
+    assert store.dossier_versions('chuyen-tuyen-2026') == [2]
+    assert research_header.parse_research_header(runtime.executor.calls[-1][1]['markdown']).version == 2, \
+        'header phải mang số bản THẬT SỰ được ghi'
+    assert [call[1]['path'].rsplit('/', 1)[-1] for call in runtime.executor.calls][-2:] == \
+        ['v1-chuyen-tuyen-2026.md', 'v2-chuyen-tuyen-2026.md'], 'thử bản 1 rồi bản 2, không nhảy số'
+
+
+def test_a_version_loop_that_never_lands_gives_up_and_says_which_code(harness):
+    """Hết ngân sách thử ⇒ ném NGUYÊN VĂN lỗi của box, không nuốt và không thử vô hạn."""
+    store, runtime, sid, session, executor = harness
+    seed_row(runtime, session)
+
+    class AlwaysTakenExecutor(FixtureExecutor):
+        async def execute(self, name, args, sid):
+            self.calls.append((name, args, sid))
+            raise RuntimeError('DOSSIER_VERSION_TAKEN: %s already exists' % args['path'])
+
+    runtime.executor = AlwaysTakenExecutor()
+    with pytest.raises(RuntimeError, match='DOSSIER_VERSION_TAKEN'):
+        write(runtime, session)
+    assert len(runtime.executor.calls) == limits.DOSSIER_VERSION_ATTEMPTS_MAX
+    assert store.dossier_versions('chuyen-tuyen-2026') == [], 'không có bản nào được đăng ký'

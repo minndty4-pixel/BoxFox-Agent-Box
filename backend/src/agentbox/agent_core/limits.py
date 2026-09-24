@@ -468,6 +468,10 @@ OWNER_STEER_EVENT_CODE = 'OWNER_STEER'
 DOSSIER_ROOM = '.research'
 RESEARCH_SLUG_RE = r'^[a-z0-9]+(-[a-z0-9]+)*$'
 DOSSIER_MAX_BYTES = 262_144
+# Số lần thử ghi một bản hồ sơ: số bản tính từ CHỈ MỤC, mà tệp `v<N>` trong phòng có thể nhiều
+# hơn chỉ mục (ghi hỏng giữa chừng, phòng dựng bằng tay) — op của box từ chối bản đã có, nên
+# phải thử bản kế tiếp trong ngân sách này thay vì chết ở bản đã chiếm.
+DOSSIER_VERSION_ATTEMPTS_MAX = 10
 RESEARCH_FILENAME_RE = r'^v([1-9][0-9]{0,9})-([a-z0-9]+(-[a-z0-9]+)*)\.md$'
 
 # Sổ nguồn (`research_ledger`).

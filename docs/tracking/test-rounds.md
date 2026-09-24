@@ -2529,3 +2529,42 @@ Nặng nhất:
   `:199`), không dòng nào trong mã Python/TypeScript; trang `docs/architecture/research-agent.md` §5
   ghi rõ phần nào đã có trong mã.
 - Mặt `unknown` của `researchTiers` trong `runtime-info` chưa có (bản hiện tại trả `overrides` + `tiers`).
+
+## Vòng 27 — hậu kỳ chất lượng: soát mã, soát eval, đơn giản hoá — rồi lượt kiểm thử độc lập `v27d` (2026-09-24, sáng)
+
+Ba commit hậu kỳ trên **`a037bea`**: **`2bcc02b`** (lõi research + đơn giản hoá, 16 tệp), **`1c9f624`** (bộ đo
+eval, 18 tệp), **`79df0a9`** (tài liệu, 4 tệp). Nguồn: lượt soát lõi (`v27d-review-core`, điểm rủi ro
+**5/10 — Medium**), lượt soát eval/giao diện/tài liệu (`v27d-review-eval`, **3/10 — Low**), lượt đơn giản hoá
+(`v27d-simplify`) — **mười hai lỗi thật** đã vá trong cùng ngày (bảng ở `docs/tracking/bug-register.md` §6.36).
+
+### Lượt kiểm thử độc lập `v27d`
+
+- Đóng băng `a037bea` để so; đo trên cây ĐÃ commit. Bộ đơn vị: **1602** (`a037bea`) → **1633** (hậu kỳ) →
+  **1638 passed, 1 deselected in 259,31 s** (sau bản vá dưới đây). Giao diện (**không** đổi trong bản vá):
+  126 tệp / 1130 ca qua, `tsc -b --noEmit` thoát 0.
+- Sáu việc ưu tiên của bản vá hậu kỳ đều đạt trên cây mới: lượt sau **nâng được mức** (bản cũ khoá phiên
+  vĩnh viễn); URL dính dấu `.` ở đuôi **đi qua cổng**; hai nhánh mở cùng nguồn ⇒ **một hàng**, cả hai nhánh
+  đọc được (`rows=1`, không còn `research-lineage-missing`); `BOXFOX_RESEARCH_GATE=warn` **không** còn notice
+  "giá trị lạ"; phòng sai ⇒ `DOSSIER_DIR_MISMATCH` (không `NameError`), `researchId` lạ ⇒ `RESEARCH_BRIEF_TAKEN`;
+  `--plan`/`--list` tách đúng họ Q/R (tầng R nói **0 lượt model**).
+- Đường **chỉ thị giữa lượt** chạy thật trên giao diện (harness scratch + Vite scratch, cổng chủ nhà không
+  bị chạm): lúc lượt đang chạy có dải "áp ở bước sau" và nút gửi "gửi cho lượt đang chạy"; gửi thì hộp "đã
+  xếp" hiện ra và hàng `session_steers` là `state=pending`; sang bước sau hàng thành `injected` và yêu cầu
+  tới model mang `[Chỉ thị giữa lượt của chủ nhà]`; lượt xong thì hộp và dải tự mất.
+- **Hai lỗi còn mở ở `79df0a9`** (lượt ấy chỉ đọc, không sửa): **F-A** `DOSSIER_VERSION_TAKEN` lặp lại y hệt
+  khi phòng đã có tệp `v1` mà chỉ mục chưa biết — nay **BUG-109**; **F-G** guard trần lượt trong cùng lượt so
+  **ngược** (nâng đi qua, hạ bị từ chối) — nay **BUG-110**, do chính bản vá `2bcc02b` gây ra. Hai mục nhẹ:
+  **F-H** thẻ mốc thiếu trần đang chạy (**BUG-111**) và **F-I** chú thích nói phòng ở lại còn mã mở phòng mới
+  (**BUG-112**).
+
+### Bản vá sau lượt `v27d` (cùng ngày)
+
+- `limits.DOSSIER_VERSION_ATTEMPTS_MAX = 10` + vòng lặp thử bản kế khi box báo `DOSSIER_VERSION_TAKEN`
+  (bản cũ vẫn **không** bị ghi đè); hết ngân sách thì ném nguyên văn lỗi của box.
+- Guard trần lượt cùng lượt: `if stored and ceiling > stored: raise …` — **nâng bị từ chối, hạ được nhận**.
+- Thẻ mốc mang `ceilingSeconds` (trần **đang chạy**), tách khỏi `turnSeconds`/`softCeilingSeconds` (hạn mức
+  danh nghĩa của mức).
+- **Một việc = một phòng**: giữ `dossierDir` khi nó khớp khuôn `.research/<slug>-<yyyymmdd-hhmm>`, thay khi
+  không khớp (bản ghi cũ) — ca cũ chỉ xanh nhờ hai lời gọi rơi vào cùng một phút, nay ghìm đồng hồ.
+- Năm ca mới (`test_research_brief.py` **16**, `test_dossier_write_tool.py` **20**); mỗi ca hành vi chứng minh
+  **đỏ trước / xanh sau** (đo: chạy lại trên đúng mã `79df0a9` thì cả năm ca đỏ).

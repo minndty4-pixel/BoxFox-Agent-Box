@@ -20,6 +20,7 @@ from . import journal, research_header, research_ledger, research_profiles, rese
 from . import session_journal, source_tiers
 from .limits import (
     CHILD_DEADLINE_SECONDS, CHILD_MAX_STEPS, DOSSIER_DIR_MISMATCH_CODE, DOSSIER_MAX_BYTES, DOSSIER_ROOM,
+    DOSSIER_VERSION_ATTEMPTS_MAX,
     FANOUT_PER_PARENT_MAX, OWNER_STEER_PREFIX, RESEARCH_BRIEF_DEFAULT_MODE, RESEARCH_BRIEF_ENV,
     RESEARCH_BRIEF_MISSING_CODE, RESEARCH_BRIEF_MODES, RESEARCH_BRIEF_MODE_UNKNOWN_CODE,
     RESEARCH_BRIEF_TAKEN_CODE, RESEARCH_CRITIQUE_LABEL, RESEARCH_CRITIQUE_MISSING_CODE,
@@ -495,14 +496,21 @@ async def research_brief(rt, session, args):
             raise ValueError(f'{RESEARCH_BRIEF_RAISE_REFUSED_CODE}: mức {existing.get("tier")} đã chốt cho '
                              f'việc {existing.get("researchId")!r}; nâng lên mức {tier} phải xin chủ nhà ở '
                              f'lượt sau — tiếp tục trong mức {existing.get("tier")} và gộp bớt nhánh')
-        if float(existing.get('ceilingSeconds') or 0) > ceiling:
+        # Trần lượt: luật của MỘT LƯỢT là **chỉ được HẠ** — nâng trần phải xin chủ nhà ở lượt sau, còn
+        # hạ thì main tự quyết. Bản trước so NGƯỢC (`stored > ceiling` ⇒ từ chối), nên trong cùng lượt
+        # một lời gọi NÂNG trần (900 → 1800) đi qua im lặng còn lời gọi HẠ trần (900 → 600) bị từ chối
+        # kèm câu "cần dài hơn thì xin chủ nhà ở lượt sau" — đúng ngược với luật (lượt kiểm thử v27d).
+        stored = float(existing.get('ceilingSeconds') or 0)
+        if stored and ceiling > stored:
             raise ValueError(f'{RESEARCH_BRIEF_RAISE_REFUSED_CODE}: trần lượt đã chốt '
                              f'{existing.get("ceilingSeconds")}s; cần dài hơn thì xin chủ nhà ở lượt sau')
     slug = slug_from_question(question, args.get('researchId'))
-    # Lượt mới cùng câu hỏi vẫn dùng lại phòng hồ sơ cũ (bản ghi nối tiếp, không mở phòng thứ hai);
-    # câu hỏi mới ⇒ phòng mới, vì phòng được đặt tên theo câu hỏi.
-    dossier_dir = str(existing.get('dossierDir') or '').strip() if same_turn else ''
-    if not dossier_dir or (existing and existing.get('researchId') != slug):
+    # Một việc = MỘT phòng: hỏi tiếp cùng việc ở lượt sau thì ghi tiếp vào chính phòng ấy (bản `v2`,
+    # `v3`… nối tiếp, đúng thứ mà `dossier_versions` đếm), câu hỏi mới ⇒ phòng mới vì phòng đặt tên
+    # theo câu hỏi. Phòng cũ chỉ bị thay khi nó KHÔNG khớp khuôn `.research/<slug>-<yyyymmdd-hhmm>`
+    # (bản ghi cũ, phòng do tay dựng) — nếu không thì một phòng hỏng sẽ theo phiên ấy mãi.
+    dossier_dir = str(existing.get('dossierDir') or '').strip()
+    if not re.fullmatch(rf'{re.escape(DOSSIER_ROOM)}/{re.escape(slug)}-\d{{8}}-\d{{4}}', dossier_dir):
         dossier_dir = dossier_dir_for(slug)
     # `ceilingSeconds` bỏ trống ở lượt mới: GIỮ trần đã chốt (kẹp theo trần của mức mới) thay vì
     # âm thầm kéo lên trần mặc định của mức — đó là cách một lời gọi "cập nhật" từng bị từ chối oan.
@@ -589,6 +597,11 @@ async def research_brief(rt, session, args):
               'branchCeiling': branch_ceiling, 'waves': limits['waves'], 'waveSize': limits['waveSize'],
               'childSteps': limits['childSteps'], 'childSeconds': limits['childSeconds'],
               'turnSeconds': limits['turnSeconds'], 'softCeilingSeconds': limits['softCeilingSeconds'],
+              # `ceilingSeconds` là trần ĐANG có hiệu lực (có thể là con số giữ lại từ lượt trước), còn
+              # `turnSeconds`/`softCeilingSeconds`/`hardCeilingSeconds` là hạn mức DANH NGHĨA của mức:
+              # lượt sau nâng mức mà bỏ trống trần thì hạn mức mức mới to hơn trần đang chạy, nên thiếu
+              # khoá này thì thẻ mốc báo một con số không ai thi hành (lượt kiểm thử v27d, F-H).
+              'ceilingSeconds': ceiling,
               'hardCeilingSeconds': limits['hardCeilingSeconds'], 'critique': limits['critique'],
               'ownerViews': owner_views, 'updated': updated, 'extendedTurn': bool(extended),
               'next': f'delegate_task(role="research", …) mở đầu context bằng '
@@ -811,18 +824,35 @@ async def dossier_write(rt, session, args):
     if not re.fullmatch(rf'{re.escape(DOSSIER_ROOM)}/{re.escape(research_id)}-\d{{8}}-\d{{4}}', dossier_dir):
         raise ValueError(f'{DOSSIER_DIR_MISMATCH_CODE}: phòng hồ sơ phải có dạng '
                          f'{DOSSIER_ROOM}/{research_id}-<yyyymmdd-hhmm> (nhận được: {dossier_dir!r})')
-    path = f'{dossier_dir}/v{version}-{research_id}.md'
     gate_label = _gate_label(verdict, level, critique_arg)
-    header = research_header.build_research_header(
-        version, research_id, profile.key, level, critique=critique_arg, gate=gate_label,
-        rows=len(rows))
-    full = header + markdown
     tables = _dossier_tables(args.get('tables'))
     review = str(args.get('review') or '')
     title = str(args.get('title') or '').strip() or research_id.replace('-', ' ')
-    write_args = _dossier_op_args(path, full, rows, args, tables, review, title)
+    # Số bản phải tính theo CẢ HAI nguồn: chỉ mục trong store VÀ tệp `v<N>` đang có trong phòng.
+    # Chỉ đọc store là chưa đủ — một tệp do lượt trước để lại (ghi hỏng giữa chừng, hoặc phòng dựng
+    # bằng tay) mà chỉ mục chưa biết sẽ làm `DOSSIER_VERSION_TAKEN` lặp lại y hệt ở mọi lần thử, trong
+    # khi cách sửa mà câu lỗi mách ("ghi bản kế") lại không thi hành được vì số bản vẫn tính ra 1
+    # (lượt kiểm thử v27d, F-A). Vòng lặp dưới đây giữ nguyên luật bất biến: bản cũ KHÔNG bị ghi đè,
+    # chỉ có số bản được đẩy lên bản kế trống.
     async with rt.writer_lock:
-        written = await rt.executor.execute('dossier_write', write_args, sid)
+        for attempt in range(DOSSIER_VERSION_ATTEMPTS_MAX):
+            path = f'{dossier_dir}/v{version}-{research_id}.md'
+            header = research_header.build_research_header(
+                version, research_id, profile.key, level, critique=critique_arg, gate=gate_label,
+                rows=len(rows))
+            full = header + markdown
+            write_args = _dossier_op_args(path, full, rows, args, tables, review, title)
+            try:
+                written = await rt.executor.execute('dossier_write', write_args, sid)
+                break
+            except Exception as error:
+                if ('DOSSIER_VERSION_TAKEN' not in str(error)
+                        or attempt + 1 >= DOSSIER_VERSION_ATTEMPTS_MAX):
+                    raise
+                version += 1
+                system_log.write('research.dossier.version_taken', level='warn', session_id=sid,
+                                 code='DOSSIER_VERSION_TAKEN', researchId=research_id,
+                                 taken=path, version=version)
     written = dict(written or {})
     returned = str(written.get('relativePath') or '')
     if not returned.endswith(f'v{version}-{research_id}.md'):

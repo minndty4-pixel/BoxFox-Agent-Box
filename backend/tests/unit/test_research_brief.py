@@ -223,6 +223,7 @@ def test_a_later_turn_may_raise_the_level_the_earlier_turn_had_to_refuse(harness
     runtime.active_turn[sid] = 2
     later = brief(runtime, store.get(sid), tier=3)
     assert later['tier'] == 3 and later['critique'] is True
+    assert later['ceilingSeconds'] == 900, 'thẻ mốc phải báo trần ĐANG chạy, không phải hạn mức mức mới'
     config = research_runtime.research_config(store.get(sid))
     assert config['tier'] == 3 and config['turn'] == 2
     assert config['ceilingSeconds'] == 900, 'bỏ trống ceilingSeconds thì GIỮ trần đã chốt'
@@ -238,3 +239,62 @@ def test_a_new_question_in_a_later_turn_opens_its_own_room(harness):
     second = brief(runtime, store.get(sid), question='Giá vàng SJC ngày 24/09/2026?')
     assert second['dossierDir'] != first['dossierDir']
     assert second['researchId'] != first['researchId']
+
+
+def test_one_turn_may_lower_the_turn_ceiling_but_never_raise_it(harness):
+    """Trần lượt: hạ thì được, nâng thì phải xin chủ nhà ở lượt SAU.
+
+    Bản trước so ngược (`stored > ceiling` ⇒ từ chối): trong cùng một lượt, một lời gọi NÂNG trần
+    (900 → 1800) đi qua im lặng còn lời gọi HẠ trần (900 → 600) bị từ chối kèm câu "cần dài hơn thì
+    xin chủ nhà ở lượt sau" — đúng ngược với luật (lượt kiểm thử `v27d` tìm ra, F-G).
+    """
+    store, runtime, sid, session = harness
+    runtime.active_turn[sid] = 1
+    first = brief(runtime, session, tier=2, ceilingSeconds=900)
+    assert first['ceilingSeconds'] == 900
+    with pytest.raises(ValueError) as caught:
+        brief(runtime, session, tier=2, ceilingSeconds=1800)
+    assert limits.RESEARCH_BRIEF_RAISE_REFUSED_CODE in str(caught.value)
+    assert research_runtime.research_config(store.get(sid))['ceilingSeconds'] == 900, \
+        'lời gọi bị từ chối không được đổi trần đang chạy'
+    lowered = brief(runtime, session, tier=2, ceilingSeconds=600)
+    assert lowered['ceilingSeconds'] == 600, 'cùng lượt hạ trần ⇒ nhận, không phải từ chối'
+    assert research_runtime.research_config(store.get(sid))['ceilingSeconds'] == 600
+
+
+def test_a_later_turn_keeps_the_room_even_when_the_clock_moves(harness, monkeypatch):
+    """Một việc = MỘT phòng: phòng không được đổi theo phút, nếu không bản `v2` rơi sang phòng khác.
+
+    Ca này ghìm đồng hồ bằng cách cho `dossier_dir_for` trả một phòng KHÁC ở mỗi lần gọi: nếu luật
+    "cùng việc ⇒ cùng phòng" chỉ đúng nhờ hai lời gọi rơi vào cùng một phút thì ca này đỏ.
+    """
+    store, runtime, sid, session = harness
+    seen = []
+
+    def fake_dir(slug):
+        seen.append(slug)
+        return f'.research/{slug}-2026010{len(seen)}-0000'
+
+    monkeypatch.setattr(research_runtime, 'dossier_dir_for', fake_dir)
+    runtime.active_turn[sid] = 1
+    first = brief(runtime, session, question='Mức hưởng chuyển tuyến 2026?')
+    runtime.active_turn[sid] = 2
+    second = brief(runtime, store.get(sid), question='Mức hưởng chuyển tuyến 2026?')
+    assert second['dossierDir'] == first['dossierDir'], 'cùng việc ⇒ ghi nối vào phòng cũ'
+    assert len(seen) == 1, 'lượt sau không được mở phòng thứ hai cho cùng một việc'
+    third = brief(runtime, store.get(sid), question='Giá vàng SJC ngày 24/09/2026?')
+    assert third['dossierDir'] != first['dossierDir'] and len(seen) == 2, 'câu hỏi mới ⇒ phòng mới'
+
+
+def test_a_stored_room_that_does_not_match_the_shape_is_replaced(harness):
+    """Bản ghi cũ (phòng không có dấu phút, phòng dựng tay) bị THAY ở lượt sau, không theo phiên mãi."""
+    store, runtime, sid, session = harness
+    runtime.active_turn[sid] = 1
+    brief(runtime, session)
+    config = dict(store.get(sid)['config'])
+    config['research'] = dict(config['research'], dossierDir='.research/phong-cu-khong-dau-phut')
+    store.update_config(sid, config)
+    runtime.active_turn[sid] = 2
+    answer = brief(runtime, store.get(sid))
+    assert answer['dossierDir'] != '.research/phong-cu-khong-dau-phut'
+    assert research_runtime.research_config(store.get(sid))['dossierDir'] == answer['dossierDir']
