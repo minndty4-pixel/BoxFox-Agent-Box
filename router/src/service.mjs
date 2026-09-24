@@ -222,7 +222,13 @@ export class ProviderService {
       if (c.activeKeyId && !c.keys.some(key => key.id === c.activeKeyId)) { delete c.activeKeyId; this.store.put('connection', c); }
       return c;
     }
-    const blob = this.store.credentials(c.id);
+    // Đọc blob có thể NÉM (auth tag hỏng, dòng bị cắt, master key đổi) — và đây là
+    // đường ĐỌC của mọi connection (`/state`, `GET /connections`, chi tiết provider,
+    // PATCH, DELETE), nên một dòng hỏng không được phép hạ cả trang Settings: không
+    // dựng được ring thì trả về đúng nhánh legacy (giao diện vẫn vẽ được, và vẫn xoá
+    // được connection đó).
+    let blob;
+    try { blob = this.store.credentials(c.id); } catch { return c; }
     if (!blob) return c;
     c.keys = [{ id: c.id, label: c.name || 'Key 1', prefix: headOf(blob.apiKey || blob.accessToken), createdAt: Date.now(), lastUsedAt: null }];
     this.store.put('connection', c);
@@ -453,17 +459,25 @@ export class ProviderService {
         // Nhánh legacy giữ nguyên hành vi hôm nay, chỉ đổi ĐÍCH ghi sang khoá đầu
         // của ring: một khoá đã bị chuyển sang connection khác thì không được ghi
         // vào dòng cũ của nó nữa.
-        this.saveCredential(c, {
+        const rowId = this.saveCredential(c, {
           apiKey: secret(val),
           accessToken: secret(val),
           ...(values.refreshToken ? { refreshToken: secret(values.refreshToken) } : {}),
         });
+        // Cùng luật với `replaceKey`: khoá vừa đổi secret là khoá MỚI với vòng xoay —
+        // để nguyên `cooling`/`exhausted` cũ là bỏ qua một khoá vừa gõ lại tới 120 giây.
+        this.keyRing.clear(rowId);
         c.credentialPresent = true; c.authState = 'ready';
       }
     }
     if (values.projectId !== undefined) {
-      const credential = this.store.credentials(credentialRowId(c));
-      if (credential) this.saveCredential(c, { ...credential, projectId: c.projectId });
+      // `credentialRowId` rơi về `c.id` khi ring RỖNG, mà dòng cũ đó có thể đã được
+      // chuyển sang connection khác (`importKeys` không xoá dòng nguồn): đọc nó rồi
+      // ghi lại là hồi sinh một khoá MA và connection không xoá được nữa. Ring rỗng ⇒
+      // không có gì để ghi; không có `keys` (legacy) ⇒ vẫn là dòng của chính nó.
+      const rowId = Array.isArray(c.keys) ? (c.keys[0]?.id ?? null) : c.id;
+      const credential = rowId ? this.store.credentials(rowId) : null;
+      if (credential) this.saveCredential(c, { ...credential, projectId: c.projectId }, rowId);
     }
     if (invalidates) {
       const fallback = this.providers[c.providerId]?.fallbackModels || [];
@@ -514,13 +528,20 @@ export class ProviderService {
     let credentials = this.store.credentials(chosen.id);
     assert(credentials, 'Connect an account or configure an API key first.', 'AUTH', 401);
     if (c.providerId === 'antigravity' && Number(credentials.expiresAt) <= Date.now() + 300000) {
-      if (!this.refreshes.has(id)) {
+      // Bản làm mới thuộc về ĐÚNG dòng credential đang phục vụ lượt này, nên khoá của
+      // map là id DÒNG chứ không phải id connection: một connection giữ hai tài khoản
+      // Google phải làm mới hai grant riêng, và bản làm mới của tài khoản này không
+      // bao giờ được trả cho tài khoản kia.
+      const servingId = chosen.id;
+      if (!this.refreshes.has(servingId)) {
         const revision = c.revision;
         const promise = this.providers.antigravity.refresh({ credentials, signal: AbortSignal.timeout(20000) }).then(refreshed => {
           const current = this.store.get('connection', id);
           assert(current && current.revision === revision, 'Credential configuration changed during refresh.', 'STALE_RESULT', 409);
           const merged = { ...credentials, ...refreshed, refreshToken: refreshed.refreshToken || credentials.refreshToken, oauthClient: credentials.oauthClient };
-          this.saveCredential(current, merged); current.authState = 'ready'; this.store.put('connection', current); return merged;
+          // Ghi vào dòng đã phục vụ (`chosen.id`), không phải khoá đầu của ring: ghi
+          // nhầm là xoá grant của tài khoản kia một cách im lặng.
+          this.saveCredential(current, merged, servingId); current.authState = 'ready'; this.store.put('connection', current); return merged;
         }).catch(error => {
           const current = this.store.get('connection', id);
           if (current && current.revision === revision) {
@@ -529,10 +550,10 @@ export class ProviderService {
             current.error = safe.message; this.store.put('connection', current);
           }
           throw error;
-        }).finally(() => this.refreshes.delete(id));
-        this.refreshes.set(id, promise);
+        }).finally(() => this.refreshes.delete(servingId));
+        this.refreshes.set(servingId, promise);
       }
-      credentials = await this.refreshes.get(id);
+      credentials = await this.refreshes.get(servingId);
       signal?.throwIfAborted();
     }
     return { ...credentials, id: chosen.id, ...(c.projectId ? { projectId: c.projectId } : {}) };
@@ -592,7 +613,7 @@ export class ProviderService {
       current.models.push(...previous.values().filter(model => model.source === 'custom' && model.id && !current.models.some(row => row.id === model.id)));
       // `credentials` đã đi qua ring nên mang theo `id` tiêm lúc đọc; blob ghi xuống
       // đĩa KHÔNG bao giờ mang trường đó (nó là id DÒNG, không phải dữ liệu).
-      if (found.credentials) { const { id: _keyId, ...blob } = credentials; this.saveCredential(current, { ...blob, ...found.credentials }); }
+      if (found.credentials) { const { id: keyId, ...blob } = credentials; this.saveCredential(current, { ...blob, ...found.credentials }, keyId); }
       if (found.email) { current.email = found.email; current.accountLabel = found.email; }
       if (found.projectId) { current.projectId = found.projectId; this.saveCredential(current, { ...(this.store.credentials(credentialRowId(current)) || {}), projectId: found.projectId }); }
       current.authState = 'ready'; current.discoveryState = 'ready'; current.lastModelSyncAt = new Date().toISOString(); current.nextModelSyncAt = new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString(); current.error = null;
@@ -711,20 +732,22 @@ export class ProviderService {
    * dòng của chính connection khi chưa có ring. Ring RỖNG (mọi khoá đã được chuyển
    * đi) thì credential mới là một dòng MỚI và thành khoá đầu tiên — không bao giờ
    * ghi đè id cũ, vì dòng đó có thể đang là khoá của connection khác.
+   * `rowId` (tuỳ chọn) chỉ thẳng một dòng trong ring — dùng ở đường đã cầm sẵn một
+   * dòng cụ thể (bản làm mới OAuth của đúng khoá đang phục vụ).
    */
-  saveCredential(c, blob) {
-    if (Array.isArray(c.keys) && !c.keys.length) {
+  saveCredential(c, blob, rowId = null) {
+    if (!rowId && Array.isArray(c.keys) && !c.keys.length) {
       const rowId = randomUUID();
       this.store.saveCredentials(rowId, blob);
       c.keys.push({ id: rowId, label: c.name || 'Key 1', prefix: headOf(blob.apiKey || blob.accessToken), createdAt: Date.now(), lastUsedAt: null });
       this.store.put('connection', c);
       return rowId;
     }
-    const rowId = credentialRowId(c);
-    this.store.saveCredentials(rowId, blob);
-    const key = Array.isArray(c.keys) ? c.keys.find(entry => entry.id === rowId) : null;
+    const target = rowId ?? credentialRowId(c);
+    this.store.saveCredentials(target, blob);
+    const key = Array.isArray(c.keys) ? c.keys.find(entry => entry.id === target) : null;
     if (key) { key.prefix = headOf(blob.apiKey || blob.accessToken); this.store.put('connection', c); }
-    return rowId;
+    return target;
   }
   /** Còn khoá nào gọi được không — dùng cho phép lọc target đang nghỉ của alias `round_robin`. */
   hasCallableKeys(id, now = Date.now()) {

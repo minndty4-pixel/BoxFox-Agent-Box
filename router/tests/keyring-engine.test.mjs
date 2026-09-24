@@ -8,13 +8,14 @@
 // gọi provider nào vì phép kiểm nghỉ nằm trước lời gọi adapter.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RouterStore } from '../src/store.mjs';
 import { ProviderService } from '../src/service.mjs';
 import { RouterEngine } from '../src/engine.mjs';
 import { RouterError } from '../src/errors.mjs';
+import { logPath } from '../src/system-log.mjs';
 
 const model = { id: 'model-1', name: 'Model', capabilities: { streaming: 'reported', tools: 'reported', vision: 'unsupported' } };
 const request = id => ({ connectionId: id, modelId: model.id, messages: [{ role: 'user', content: 'hello' }], stream: true });
@@ -206,4 +207,50 @@ test('a round-robin alias leaves out a connection whose whole ring is parked', a
   assert.deepEqual(order(), [other.id], 'a fully parked ring is not admitted into the rotation');
   for (const keyId of f.keys) f.service.keyRing.clear(keyId);
   assert.ok(order().includes(f.c.id), 'and it is admitted again once its keys are clear');
+});
+
+// ── Vòng sửa lỗi sau phản biện (F5 + dấu vết xoay khoá) ───────────────────────
+
+test('token and cost numbers belong to the attempt, not to the target: a failed key’s partial usage never lands on the key that answered', async t => {
+  const f = await fixture(t);
+  let attempt = 0;
+  f.adapter.generate = async function* ({ credentials }) {
+    f.calls.push(credentials.id);
+    attempt += 1;
+    if (attempt === 1) {
+      yield { type: 'usage', usage: { prompt_tokens: 111, completion_tokens: 7, total_tokens: 118 } };
+      throw new RouterError('RATE_LIMIT', 'Provider rate limit or quota reached for this session.', 429, true);
+    }
+    yield { type: 'delta', delta: { content: 'answered' } };
+    yield { type: 'finish', finishReason: 'stop' };
+  };
+
+  await collect(f.engine, request(f.c.id));
+  assert.deepEqual(f.calls, [f.keys[0], f.keys[1]], 'khoá 429 nhường lượt cho khoá kế tiếp');
+  const usage = f.store.list('usage')[0];
+  assert.equal(usage.status, 'passed');
+  assert.equal(usage.keyId, f.keys[1], 'dòng usage ghi tên khoá đã trả lời');
+  assert.equal(usage.inputTokens, null, 'số dở dang của khoá 1 không thành số của khoá 2');
+  assert.equal(usage.cachedTokens, null);
+  assert.equal(usage.outputTokens, null);
+  assert.equal(usage.totalTokens, null);
+  assert.equal(usage.cost, null);
+});
+
+test('a mid-request rotation leaves one line in the developer log, and it carries no secret', async t => {
+  const f = await fixture(t);
+  f.adapter.generate = answersOnly(f, f.keys[1]);
+  await collect(f.engine, request(f.c.id));
+
+  const row = f.store.list('usage')[0];
+  const entries = (existsSync(logPath) ? readFileSync(logPath, 'utf8') : '').split('\n').filter(Boolean).map(line => JSON.parse(line)).filter(entry => entry.event === 'router.key_parked');
+  const mine = entries.filter(entry => entry.requestId === row.requestId);
+  assert.equal(mine.length, 1, 'một khoá bị nghỉ ⇒ đúng một dòng, gắn được vào lượt này');
+  assert.equal(mine[0].level, 'info');
+  assert.equal(mine[0].code, 'RATE_LIMIT');
+  assert.equal(mine[0].provider, 'custom');
+  assert.equal(mine[0].model, model.id);
+  assert.equal(mine[0].data.keyId, f.keys[0], 'dòng log ghi tên khoá vừa bị nghỉ');
+  assert.equal(mine[0].data.keyLabel, f.ring().keys[0].label);
+  assert.equal(JSON.stringify(entries).includes('FIRST-SECRET'), false, 'không dòng log nào mang theo secret');
 });

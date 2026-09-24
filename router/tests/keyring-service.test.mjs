@@ -220,3 +220,133 @@ test('a probe pinned to one key goes out with that key’s identity, and a 429 p
   assert.deepEqual(seen, [keyId, keyId], 'pinning a key is what makes the second probe use it again');
   assert.equal(f.store.credentials(f.c.id).apiKey, 'SECRET-SIMULATOR', 'neither probe touched the other key’s row');
 });
+
+// ── Vòng sửa lỗi sau phản biện (F1–F4) ────────────────────────────────────────
+// Bốn lỗi của bản đầu đều nằm quanh chỗ GHI credential và chỗ ĐỌC để dựng ring:
+// bản làm mới OAuth ghi nhầm dòng, một dòng không giải mã được hạ cả trang
+// Settings, nhánh `PATCH {projectId}` hồi sinh dòng đã chuyển đi, và nhánh
+// `PATCH {apiKey}` không xoá trạng thái nghỉ của khoá vừa gõ lại.
+
+test('an OAuth refresh writes the row of the key that served the turn — never the top key of the ring', async t => {
+  const refreshed = [];
+  const f = await fixture(t, {
+    async refresh({ credentials }) {
+      refreshed.push(credentials.refreshToken);
+      return { accessToken: `${credentials.refreshToken}-ACCESS-NEW`, refreshToken: `${credentials.refreshToken}-REFRESH-NEW`, expiresAt: Date.now() + 3_600_000 };
+    },
+  });
+  // Hai tài khoản Google trên MỘT connection: chỉ tới được bằng đường chuyển khoá,
+  // vì `addKey` từ chối antigravity.
+  const first = f.service.create({ providerId: 'antigravity', name: 'Google 1', accessToken: 'AAA-ACCESS-1', refreshToken: 'AAA-REFRESH-1' });
+  const second = f.service.create({ providerId: 'antigravity', name: 'Google 2', accessToken: 'BBB-ACCESS-2', refreshToken: 'BBB-REFRESH-2' });
+  f.service.importKeys(first.id, second.id);
+  const [rowOne, rowTwo] = f.service.connection(first.id).keys.map(key => key.id);
+  const stale = Date.now() - 60_000;
+  f.store.saveCredentials(rowOne, { accessToken: 'AAA-ACCESS-1', refreshToken: 'AAA-REFRESH-1', expiresAt: Date.now() + 3_600_000 });
+  f.store.saveCredentials(rowTwo, { accessToken: 'BBB-ACCESS-2', refreshToken: 'BBB-REFRESH-2', expiresAt: stale });
+  const untouched = cipherOf(f.store, rowOne);
+
+  const served = await f.service.credentials(first.id, null, rowTwo);
+  assert.equal(served.accessToken, 'BBB-REFRESH-2-ACCESS-NEW');
+  assert.equal(served.id, rowTwo, 'câu trả lời thuộc về đúng khoá được hỏi');
+  assert.deepEqual(refreshed, ['BBB-REFRESH-2'], 'lần làm mới đi ra bằng refresh token của CHÍNH tài khoản đang phục vụ');
+  assert.equal(cipherOf(f.store, rowOne), untouched, 'dòng của khoá 1 không bị ghi lại một byte nào');
+  assert.equal(f.store.credentials(rowOne).accessToken, 'AAA-ACCESS-1', 'tài khoản 1 vẫn giữ grant của nó');
+  assert.equal(f.store.credentials(rowOne).refreshToken, 'AAA-REFRESH-1');
+  const ring = ringOf(f.service, first.id);
+  assert.equal(ring[1].prefix, 'BBB-RE…', 'nhãn của khoá vừa làm mới đi theo secret mới');
+  assert.equal(ring[0].prefix, 'AAA-AC…', 'nhãn của khoá kia không bị chạm tới');
+
+  // Cả hai khoá cùng hết hạn: mỗi khoá làm mới grant của CHÍNH nó, không dùng chung kết quả.
+  f.store.saveCredentials(rowOne, { accessToken: 'AAA-ACCESS-1', refreshToken: 'AAA-REFRESH-1', expiresAt: stale });
+  f.store.saveCredentials(rowTwo, { accessToken: 'BBB-ACCESS-2', refreshToken: 'BBB-REFRESH-2', expiresAt: stale });
+  refreshed.length = 0;
+  const [one, two] = await Promise.all([
+    f.service.credentials(first.id, null, rowOne),
+    f.service.credentials(first.id, null, rowTwo),
+  ]);
+  assert.equal(one.accessToken, 'AAA-REFRESH-1-ACCESS-NEW');
+  assert.equal(two.accessToken, 'BBB-REFRESH-2-ACCESS-NEW', 'tài khoản thứ hai không bao giờ nhận token của tài khoản thứ nhất');
+  assert.deepEqual([...refreshed].sort(), ['AAA-REFRESH-1', 'BBB-REFRESH-2']);
+});
+
+test('one credential row that no longer decrypts cannot take the Settings surface — or the delete — down with it', async t => {
+  const f = await fixture(t);
+  const healthy = f.service.create({ providerId: 'custom', name: 'Healthy account', endpoint: 'http://127.0.0.1:9997/v1', apiKey: 'HEALTHY-SECRET' });
+  const broken = f.service.create({ providerId: 'custom', name: 'Broken account', endpoint: 'http://127.0.0.1:9997/v1', apiKey: 'BROKEN-SECRET' });
+  // Dòng hỏng thật: lật một byte của bản mã ⇒ auth tag của AES-GCM không còn khớp.
+  const damaged = Buffer.from(cipherOf(f.store, broken.id), 'base64');
+  damaged[damaged.length - 1] ^= 0xff;
+  f.store.db.prepare('UPDATE credentials SET encrypted=? WHERE id=?').run(damaged.toString('base64'), broken.id);
+  // Bản ghi không có `keys`: đúng hình dạng một DB được khôi phục mà thiếu master key
+  // (hoặc bản ghi của lượt trước vòng 29) — ring chưa từng được dựng trên đĩa.
+  const record = f.store.get('connection', broken.id);
+  delete record.keys;
+  f.store.put('connection', record);
+  await assert.rejects(async () => f.store.credentials(broken.id), undefined, 'điều kiện đầu: dòng này thật sự không đọc được');
+
+  const listed = f.service.connections();
+  const view = listed.find(connection => connection.id === broken.id);
+  assert.ok(view, 'connection hỏng vẫn nằm trong danh sách');
+  assert.equal('keys' in view, false, 'không dựng được ring ⇒ trả về nhánh legacy, không phải một trang lỗi');
+  assert.equal(listed.find(connection => connection.id === healthy.id).keys.length, 1, 'phần còn lại của danh sách vẫn dựng được ring');
+  assert.ok(f.service.snapshot().connections.some(connection => connection.id === broken.id), '/state vẫn trả lời');
+  await assert.rejects(async () => f.service.credentials(broken.id), error => error.code === 'AUTH' && error.status === 401, 'connection chỉ đơn giản là không có credential dùng được');
+
+  f.service.remove(broken.id);
+  await assert.rejects(async () => f.service.connection(broken.id), error => error.code === 'NOT_FOUND' && error.status === 404, 'nút Delete mà giao diện đưa ra chạy được thật');
+  assert.equal(f.service.connection(healthy.id).keys.length, 1);
+  assert.equal(f.store.credentials(healthy.id).apiKey, 'HEALTHY-SECRET', 'và nó không lấy đi gì của connection khác');
+  assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM credentials WHERE id=?').get(broken.id).n, 1, 'dòng không đọc được được để yên có chủ đích: sau một lần gộp khoá nó có thể thuộc connection khác');
+
+  // Cùng dòng hỏng nhưng bản ghi ĐÃ có ring (một lần đọc trước đó đã dựng lên): giao
+  // diện vẫn thấy khoá, và đường xoá vẫn đi hết được qua "bỏ khoá rồi xoá".
+  const ringed = f.service.create({ providerId: 'custom', name: 'Ringed account', endpoint: 'http://127.0.0.1:9997/v1', apiKey: 'RINGED-SECRET' });
+  const wrecked = Buffer.from(cipherOf(f.store, ringed.id), 'base64');
+  wrecked[wrecked.length - 1] ^= 0xff;
+  f.store.db.prepare('UPDATE credentials SET encrypted=? WHERE id=?').run(wrecked.toString('base64'), ringed.id);
+  assert.equal(f.service.connection(ringed.id).keys.length, 1, 'ring đã dựng thì vẫn hiện nguyên');
+  await assert.rejects(async () => f.service.credentials(ringed.id), undefined, 'credential thì không đọc được nữa');
+  await assert.rejects(async () => f.service.remove(ringed.id), error => error.code === 'KEYS_PRESENT' && error.status === 409, 'còn khoá thì lệnh xoá vẫn bị chặn như luật cũ');
+  f.service.removeKey(ringed.id, ringed.id);
+  f.service.remove(ringed.id);
+  await assert.rejects(async () => f.service.connection(ringed.id), error => error.code === 'NOT_FOUND' && error.status === 404);
+});
+
+test('a legacy projectId patch on an emptied ring never revives the moved row as a phantom key', async t => {
+  const f = await fixture(t);
+  const target = f.service.create({ providerId: 'custom', name: 'Target', endpoint: f.c.endpoint, apiKey: 'target-secret' });
+  const source = f.service.create({ providerId: 'custom', name: 'Source', endpoint: f.c.endpoint, apiKey: 'source-secret' });
+  f.service.importKeys(target.id, source.id);
+  const rows = () => f.store.db.prepare('SELECT COUNT(*) AS n FROM credentials').get().n;
+  const before = { rows: rows(), row: cipherOf(f.store, source.id) };
+
+  const patched = f.service.patch(source.id, { projectId: 'boxfox-project-1' });
+  assert.deepEqual(patched.keys, [], 'ring rỗng vẫn rỗng');
+  assert.equal(patched.credentialPresent, false);
+  assert.equal(patched.authState, 'required');
+  assert.equal(rows(), before.rows, 'không có dòng credential mới nào được tạo');
+  assert.equal(cipherOf(f.store, source.id), before.row, 'dòng đã chuyển đi không bị chạm tới');
+  assert.equal(f.store.credentials(source.id).apiKey, 'source-secret', 'và nó vẫn mở được cho chủ mới của nó');
+  assert.equal(f.service.connection(target.id).keys.length, 2);
+  f.service.remove(source.id);
+  await assert.rejects(async () => f.service.connection(source.id), error => error.code === 'NOT_FOUND' && error.status === 404, 'không có khoá ma nào chặn được lệnh xoá');
+});
+
+test('the legacy patch that rewrites a key’s secret clears that key’s park, exactly like replacing one does', async t => {
+  const f = await fixture(t);
+  f.service.keyRing.park(f.c.id, { retryAfterMs: 600_000, error: { code: 'RATE_LIMIT', message: 'Free usage limit reached for this session.' }, modelId: model.id });
+  assert.equal(ringOf(f.service, f.c.id)[0].state, 'exhausted');
+  assert.equal(f.service.keyRing.pick(f.service.connection(f.c.id)), null, 'khoá đang nghỉ thì không được phát ra');
+
+  const patched = f.service.patch(f.c.id, { apiKey: 'ROTATED-SECRET' });
+  assert.equal(patched.keys.length, 1, 'nhánh legacy ghi vào ring, nó không thêm khoá');
+  const key = ringOf(f.service, f.c.id)[0];
+  assert.equal(key.state, 'ready', 'khoá vừa có secret mới bắt đầu lại từ đầu');
+  assert.equal(key.cooldownUntil, null);
+  assert.equal(key.lastErrorCode, null);
+  assert.equal(key.lastErrorMessage, null);
+  assert.equal(key.prefix, 'ROTATE…');
+  assert.equal(f.store.credentials(f.c.id).apiKey, 'ROTATED-SECRET');
+  assert.equal(f.service.keyRing.pick(f.service.connection(f.c.id)).id, f.c.id, 'và vòng xoay dùng lại được nó ngay');
+});

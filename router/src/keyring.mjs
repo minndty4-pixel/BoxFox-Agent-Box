@@ -78,12 +78,20 @@ export function cooldownFor(retryAfterMs) {
  *   `error`     — lần gọi gần nhất hỏng vì một lý do KHÁC 429 (400/5xx/AUTH);
  *   `ready`     — còn dùng được.
  *
+ * Chữ quyết định `cooling` hay `exhausted` là chữ của **nhà cung cấp**
+ * (`lastError.providerMessage`), không phải câu bao của router — câu bao luôn có
+ * chữ "quota", nên đọc cả câu sẽ không bao giờ ra `cooling`.
+ *
  * Hết cửa sổ nghỉ thì khoá về vòng xoay ngay: một lần 429 đã hết hạn không còn
  * là bản án nào (truyền `now` để kiểm điều đó).
  */
 export function classifyState(entry = {}, now = Date.now()) {
   const code = entry?.lastError?.code ?? entry?.lastErrorCode ?? null;
-  const message = entry?.lastError?.message ?? entry?.lastErrorMessage ?? '';
+  // Câu chuẩn của router (`providers/common.mjs`) LUÔN chứa chữ "quota"; khi adapter
+  // còn giữ được lời của chính nhà cung cấp (`providerMessage`) thì lời đó mới là
+  // thứ phân loại. Không có trường đó (adapter tự đặt câu, hoặc lỗi cũ trong bộ nhớ)
+  // thì đọc cả câu như trước.
+  const message = entry?.lastError?.providerMessage ?? entry?.lastError?.message ?? entry?.lastErrorMessage ?? '';
   if (Number(entry?.cooldownUntil) > now) return QUOTA_RE.test(String(message)) ? 'exhausted' : 'cooling';
   return code && code !== 'RATE_LIMIT' ? 'error' : 'ready';
 }

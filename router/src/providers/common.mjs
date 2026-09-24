@@ -38,6 +38,12 @@ export function providerError(status, retryable = status === 429 || status >= 50
   else if (status === 429) error = new RouterError('RATE_LIMIT', `Provider rate limit or quota reached${msgSuffix}. Try again later.`, status, true);
   else error = new RouterError('UNAVAILABLE', detail ? `Provider error (${status}): ${detail.slice(0, 300)}` : 'Provider is unavailable or returned an invalid response.', status || 502, retryable);
   if (Number.isFinite(retryAfterMs)) error.retryAfterMs = retryAfterMs;
+  // Lời của chính nhà cung cấp, giữ BÊN CẠNH câu chuẩn của router. Vòng khoá đọc
+  // trường này (`keyring.mjs` → `classifyState`): câu chuẩn luôn chứa chữ "quota"
+  // ("Provider rate limit or quota reached…"), nên phân loại trên cả câu sẽ biến mọi
+  // 429 thành `exhausted` và trạng thái `cooling` (cùng số đếm ngược) không bao giờ
+  // hiện ra với họ adapter này.
+  if (typeof detail === 'string' && detail) error.providerMessage = detail.slice(0, 300);
   return error;
 }
 

@@ -3,6 +3,7 @@ import { RouterError, assert, requestScopedClientError, safeError } from './erro
 import { normalizeUsage, reportedCost } from './usage.mjs';
 import { costFromUsage } from './pricing.mjs';
 import { RING_EXHAUSTED_MESSAGE } from './keyring.mjs';
+import { logEvent } from './system-log.mjs';
 
 export class RouterEngine {
   constructor({ service, deadlineMs = 90000 }) { this.service = service; this.store = service.store; this.rotation = new Map(); this.keyRing = service.keyRing; this.deadlineMs = deadlineMs; }
@@ -75,7 +76,6 @@ export class RouterEngine {
         const model = connection.models.find(m => m.id === target.modelId);
         if (body.tools?.length && model.capabilities.tools === 'unsupported') { lastError = new RouterError('CAPABILITY', 'Selected model does not support tools.'); continue; }
         record.connectionId = connection.id; record.modelId = model.id;
-        record.inputTokens = null; record.cachedTokens = null; record.cacheCreationTokens = null; record.reasoningTokens = null; record.outputTokens = null; record.totalTokens = null; record.cost = null; record.costBasis = null; record.estimated = false;
         this.service.active.set(requestId, { connectionId: connection.id, controller });
         // Vòng khoá (vòng 29) lồng trong vòng target: mỗi lượt thử là MỘT khoá của
         // connection, theo thứ tự ring — khoá trên cùng chưa nghỉ được dùng trước.
@@ -92,6 +92,10 @@ export class RouterEngine {
           }
           const keyId = picked?.id ?? null;
           record.keyId = keyId; record.keyLabel = picked?.label ?? null;
+          // Số token/chi phí là của LƯỢT THỬ này, không phải của target: một khoá có
+          // thể kịp báo `usage` dở dang rồi mới 429, và lượt sau (khoá kế tiếp) không
+          // được thừa hưởng số của nó.
+          record.inputTokens = null; record.cachedTokens = null; record.cacheCreationTokens = null; record.reasoningTokens = null; record.outputTokens = null; record.totalTokens = null; record.cost = null; record.costBasis = null; record.estimated = false;
           try {
             const credentials = await this.service.credentials(connection.id, combined, keyId);
             const outgoing = { ...body, model: model.id, stream: body.stream !== false };
@@ -180,7 +184,13 @@ export class RouterEngine {
             // client. Mọi lỗi khác (400 request-scoped, 5xx, AUTH) chỉ ghi lại "lần
             // thử gần nhất" của khoá và đi tiếp như hôm nay — không đổi khoá.
             if (safe.code === 'RATE_LIMIT') {
-              if (keyId && !combined.aborted) this.keyRing.park(keyId, { retryAfterMs: safe.retryAfterMs, error: safe, modelId: model.id });
+              if (keyId && !combined.aborted) {
+                this.keyRing.park(keyId, { retryAfterMs: safe.retryAfterMs, error: safe, modelId: model.id });
+                // Lượt xoay khoá không để lại dấu vết nào ngoài dòng usage: một dòng
+                // log (không bao giờ có secret) để hỗ trợ đọc được "vì sao lượt này đổi
+                // khoá, khoá nào bị bỏ qua". Ghi log là best-effort, không bao giờ ném.
+                logEvent('router.key_parked', { requestId: record.requestId, provider: connection.providerId, model: model.id, code: safe.code, message: safe.message, keyId, keyLabel: record.keyLabel, retryAfterMs: safe.retryAfterMs ?? null });
+              }
               try { await this.service.quota(connection.id, AbortSignal.timeout(5000)); } catch { /* inference error remains primary */ }
               if (keyId && !combined.aborted && !emitted && this.keyRing.pick(connection)) continue;
             } else if (keyId && !combined.aborted) this.keyRing.note(keyId, safe);

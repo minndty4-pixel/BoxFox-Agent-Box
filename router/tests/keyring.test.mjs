@@ -56,6 +56,23 @@ test('a cooling key that mentions quota is exhausted; any other failure is an er
   assert.equal(classifyState(undefined, now), 'ready');
 });
 
+test('the router’s own wrapper sentence never decides cooling vs exhausted — the provider’s words do', () => {
+  const now = Date.now();
+  // Every 429 that goes through `providerError()` is wrapped in "Provider rate limit or
+  // quota reached…", which contains the word "quota". Classifying on the whole message
+  // would make `cooling` (and its countdown) unreachable for the OpenAI-compatible,
+  // Gemini and Antigravity adapters, so the provider's own words are read first.
+  const wrapped = providerMessage => ({
+    cooldownUntil: now + 30_000,
+    lastError: { code: 'RATE_LIMIT', message: `Provider rate limit or quota reached: ${providerMessage}. Try again later.`, providerMessage },
+  });
+  assert.equal(classifyState(wrapped('too many requests, slow down'), now), 'cooling', 'a plain rate limit stays cooling');
+  assert.equal(classifyState(wrapped('quota reached for credential #2'), now), 'exhausted', 'quota-shaped provider words are exhausted');
+  assert.equal(classifyState(wrapped('usage limit reached'), now), 'exhausted');
+  // No provider words at all: the wrapped sentence is all there is, and it says quota.
+  assert.equal(classifyState({ cooldownUntil: now + 30_000, lastError: { code: 'RATE_LIMIT', message: 'Provider rate limit or quota reached. Try again later.' } }, now), 'exhausted');
+});
+
 test('the ring serves the top key first, skips cooling keys, and returns them to rotation when the window ends', () => {
   const ring = new KeyRing();
   const c = pool();

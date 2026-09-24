@@ -128,6 +128,7 @@ test('Retry-After is read as seconds or an HTTP-date, and reaches the provider e
   const failures = async response => ensureOk(response).then(() => null, error => error);
   const seconds = await failures(new Response(JSON.stringify({ error: { message: 'slow down' } }), { status: 429, headers: { 'Retry-After': '90' } }));
   assert.equal(seconds.code, 'RATE_LIMIT'); assert.equal(seconds.retryAfterMs, 90_000);
+  assert.equal(seconds.providerMessage, 'slow down', 'the provider’s own words travel beside the router’s wrapped sentence');
   assert.equal(parseRetryAfter(' 45 '), 45_000, 'whitespace and a fractional value are still a number of seconds');
   assert.equal(parseRetryAfter('2.5'), 2_500);
   const date = await failures(new Response('slow down', { status: 429, headers: { 'Retry-After': new Date(Date.now() + 60_000).toUTCString() } }));
