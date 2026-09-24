@@ -2598,6 +2598,11 @@ eval, 18 tệp), **`79df0a9`** (tài liệu, 4 tệp). Nguồn: lượt soát l�
 - **Điều KHÔNG đổi (cố ý):** luật trung thực của kỹ năng — **không bịa ảnh**, **không dùng ảnh cũ**, nói rõ
   việc chưa chạy — và dòng bằng chứng vẫn chỉ có ở **phiên chính**, vẫn chỉ **một** lần, vẫn nằm sau
   `=== ANSWER LENGTH ===`.
+- **Bằng chứng SỐNG trên app thật (2026-09-24, 08:38 UTC):** một lượt THƯỜNG (không research, không công cụ)
+  trên harness scratch `3151`, phiên `ede6e940`, trả lời trong **8,5 s / 188 token** bằng **một đoạn văn**
+  tiếng Việt tự nhiên (*"Ừm cái này tôi gặp hoài, web tĩnh nhìn đơn giản vậy chứ lúc bàn giao hay dính lỗi
+  vặt lắm…"*) — **không** tiêu đề mục, **không** gạch đầu dòng, **không** dòng bằng chứng, **không** mục nào
+  của khuôn cũ. Ảnh: `/code/.generated_artifacts/images/v28-plain-turn-answer.png`.
 
 ### Lượt research Y TẾ THẬT — sáu lần thử trên app thật (harness scratch `3151`, 2026-09-24)
 
