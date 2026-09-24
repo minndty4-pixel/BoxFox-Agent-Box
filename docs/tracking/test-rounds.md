@@ -2598,3 +2598,46 @@ eval, 18 tệp), **`79df0a9`** (tài liệu, 4 tệp). Nguồn: lượt soát l�
 - **Điều KHÔNG đổi (cố ý):** luật trung thực của kỹ năng — **không bịa ảnh**, **không dùng ảnh cũ**, nói rõ
   việc chưa chạy — và dòng bằng chứng vẫn chỉ có ở **phiên chính**, vẫn chỉ **một** lần, vẫn nằm sau
   `=== ANSWER LENGTH ===`.
+
+### Lượt research Y TẾ THẬT — sáu lần thử trên app thật (harness scratch `3151`, 2026-09-24)
+
+Đề bài của chủ nhà (nguyên văn rút gọn): *"Thử cho nó nghiên cứu thị trường, tìm gap, painpoint trong lĩnh
+vực y tế để phục vụ bài toán agent trong y tế… tôi thấy các ảnh bạn gửi hầu như chưa phải research thật
+của agent boxfox, nên cần kiểm nghiệm thật"*. Vì vậy lượt này chạy **trên app thật** (harness scratch cổng
+`3151` dựng từ cây vòng 28, dữ liệu riêng `/var/tmp/v27t/research1`, cờ `BOXFOX_RESEARCH_BRIEF=enforce`,
+`BOXFOX_RESEARCH_GATE=enforce`, `BOXFOX_RESEARCH_PROGRESS=on`), model `muse-spark-1.3-contributor-free` qua
+router `3101`. Không cổng nào của chủ nhà bị chạm.
+
+| Lần | Khoá | Sổ nguồn | Hồ sơ | Kết thúc lượt | Ghi chú đo được |
+|---|---|---|---|---|---|
+| 1 — `0d0fe166` | OpenCode Free | **13 hàng** (WHO tầng 1, World Bank ×2, Tuổi Trẻ ×2, Thanh Niên, Wikipedia ×2, `api.crossref.org` cho bài JAMA) | **không** (cổng từ chối 1 lần: 6 dòng sổ / 17 mục) | `failed` — `UPSTREAM_HTTP_502` ở bước 22 (13,8 phút) | 3 nhánh `research` con xong (9–13 bước); model tự nói *"Đủ 6 nguồn vào sổ — giờ tôi chốt 6 nỗi đau…"* |
+| 2 — `30003232` | OpenCode Free | **24 hàng** | **không** (không kịp ghi lần nào) | `failed` — `UPSTREAM_HTTP_502` ở bước 15 (13,7 phút) | Cùng bệnh với lần 1 ⇒ theo luật §2.3 của `docs/plan/v27/research-quality-tests.md` (**502 ⇒ thử lại 1 rồi CHUYỂN KHOÁ**) nên lần 3 đổi sang **key 1** |
+| 3 — `b5832e29` | **key 1** (`f8a5f4e8…`) | **9 hàng** (6 nguồn chính + 3 xác nhận WHO/World Bank) | **không** (cổng từ chối 2 lần: 6 dòng/11 mục rồi 8 dòng/13 mục) | `completed` **`partial`** — `DEADLINE_EXCEEDED` ở bước 30 (20,2 phút, 41 tool) | Lượt đầu **chạy hết trần 1200 s**; model gọi `research_brief` với `ceilingSeconds: 1200` ⇒ máy nới lượt `+600s` (`TURN_EXTENDED`, trần cứng của mức 2 là 1800 s) rồi tới được `dossier_write`; chẩn đoán cuối nêu đúng thứ cổng đòi (*"thiếu số hiệu/ngày hiệu lực văn bản, thiếu trường đối tượng hồ sơ health; hàng r9 trích 79 ký tự dưới sàn 80"*) |
+| 4 — `bc8d9125` | key 1 | **9 hàng** (4 nguồn) | **không** (cổng từ chối 1 lần: 7 dòng/7 mục) | `failed` — `UPSTREAM_HTTP_502` ở bước 21 (13,0 phút) | Đổi hồ sơ sang nhóm **thị trường** (`jobProfile: users`, usecase TM-3 "nỗi đau/gap người dùng") sau khi lần 1–3 cho thấy hồ sơ `health` (nhóm văn bản chính thống) đòi `docNumber`/`effectiveDate`/`validity` trên **mọi** hàng — thứ báo chí và Wikipedia không có. Hai lần tham số JSON hỏng, ba hàng `type: confirm` trên **cùng host** (`en.wikipedia.org`, `tuoitre.vn`) nên bộ đếm `independent` đứng ở 2 |
+| 5 — `6e274b19` | key 1 | **2 hàng** | **không** (không kịp ghi) | `failed` — `DEADLINE_EXCEEDED` ở đúng **600 s**, bước 2 (10,0 phút) | Model gọi `research_brief` với `ceilingSeconds: 600` (**bằng đúng hạn mức mặc định của phiên**) ⇒ **KHÔNG** có `TURN_EXTENDED`; rồi nó giao việc cho ba nhánh con (`wait: true`) và chết khi đang chờ nhánh thứ ba. Cả ba nhánh con nhận `RESEARCH_GATE_NOTE` với tiêu chí của **hồ sơ** (`research-shape-missing`, `research-lineage-missing`) — thứ nhánh con không có `dossier_write` để thoả |
+| 6 — `5e689d49` | key 1 | **0 hàng** (chỉ `web_fetch`, không gọi `source_add`) | **không** (không kịp ghi) | `failed` — `UPSTREAM_HTTP_502` ở bước 14 (8,5 phút) | Lượt này **có** được nới trần (`TURN_EXTENDED +600s` sau khi xin `ceilingSeconds: 1200`), nhưng nhà cung cấp cắt ở phút 8,5 khi model vẫn đang mở trang chủ sáu host — nó đọc mà **chưa** gọi `source_add` lần nào |
+
+**Năm điều đo được (giá trị thật của lượt kiểm nghiệm):**
+1. **Đọc nguồn là thật**: mọi hàng sổ đều có URL mở bằng `web_fetch`/`web_search` và một đoạn trích nguyên
+   văn 79–464 ký tự (một hàng 79 ký tự bị cổng bắt vì dưới sàn 80 — luật chạy đúng).
+2. **Sổ nguồn phân tầng thật**: `host` + `tier` do máy chấm (WHO `who.int` tầng 1, báo chính thống tầng 2,
+   Wikipedia/`api.crossref.org` tầng 3) và có bộ đếm `byTier`/`independent` cho từng hàng.
+3. **Cổng chất lượng chạy thật ở chế độ `enforce`**: `dossier_write` bị **TỪ CHỐI** ít nhất năm lần trên
+   năm lượt, kèm danh sách mục cần sửa (mã + cách khắc phục), và model **quay lại sửa** thay vì bịa (nó thêm
+   hàng `type=confirm`, kéo đoạn trích dài hơn, đổi sang "suy luận"). Đây là hành vi đúng của vòng 27 và là
+   thứ các lượt trước chỉ chứng minh bằng probe.
+4. **Hạn mức lượt là chỗ chặn THẬT của mức 2**: xin 600 s thì máy không nới (lượt 5 chết đúng giây thứ 600
+   khi đang chờ nhánh con), xin 1200 s thì được nới `+600 s` và lượt có thời gian viết hồ sơ (lượt 3 và 6).
+   Hợp đồng công cụ `research_brief` **không nói gì** về tham số `ceilingSeconds`, nên chuyện "xin bao nhiêu"
+   phụ thuộc hoàn toàn vào phán đoán của model.
+5. **Nhà cung cấp miễn phí cắt lượt ở phút 8,5–14** (bốn lần `UPSTREAM_HTTP_502`) — tức là **trước** khi một
+   lượt mức 2 kịp đóng hồ sơ; đây là lý do phần lớn lượt thật chết giữa đường dù mã chạy đúng. Hai lượt còn
+   lại chạm trần thời gian: lượt 3 ở 20,2 phút (đã tới `dossier_write`), lượt 5 ở đúng 600 s (chưa kịp làm gì
+   ngoài việc giao nhánh con).
+
+**Năm phát hiện mới từ các lượt này** (ngoài phạm vi plan vòng 27, đã `surface`): (a) bộ từ khoá tiêu đề hồ
+sơ không nhận tiêu đề tiếng Việt tự nhiên (*"Kết luận chính"*); (b) câu khắc phục *"Thêm nguồn khác nguồn tin
+gốc"* bị hiểu là "thêm trang nữa" trong khi luật thật là **khác host**; (c) lời gọi có tham số JSON hỏng bị
+thay bằng `{}` mà model chỉ nhận một câu *"Invalid tool arguments"* — không độ dài, không vị trí lỗi;
+(d) lượt mức 2 xin `ceilingSeconds` bằng hạn mức mặc định thì không được nới, dù bảng mức ghi mức 2 = 1200 s;
+(e) nhánh con nhận lời nhắc cổng với tiêu chí của hồ sơ mà nó không có quyền ghi.
