@@ -7,7 +7,8 @@
 > hàm/tệp nêu ngay dưới — hay **`(spec, chưa có trong mã)`** — đã chốt trong kế hoạch vòng 27 nhưng chưa
 > thi công. Mục nào lẫn cả hai thì tách ngay trong mục; không mục nào được nói quá thứ có trong mã.
 >
-> **Nguồn số:** đọc thẳng từ mã tại `a959c51` (2026-09-24), không chép từ kế hoạch. Bảng hằng số tạm trong
+> **Nguồn số:** đọc thẳng từ mã tại `d0edca1` (mã đợt 3–7) và `a624933` (đợt 8, bộ eval), 2026-09-24,
+> không chép từ kế hoạch. Bảng hằng số tạm trong
 > `docs/plan/v27/subplans/flow.md` §"Hằng số mới" đã cũ ở vài chỗ (`RESEARCH_TIER_BRANCHES` nói `3`/`6` còn
 > mã là `5`/`15`; `RESEARCH_TIER_TURN_SECONDS` nói `600`/`1200` còn mã là `1200`/`3600`) — nơi nào mã khác kế
 > hoạch thì trang này theo **mã**.
@@ -123,7 +124,7 @@ không cổng chất lượng, không pha phản biện (xem `docs/architecture/
 
 ## 4. Nhịp tiến độ và can thiệp giữa lượt `(đã có trong mã)`
 
-**Nhịp báo tiến độ** — `maybe_nudge_progress` (`runtime.py:2590`) chạy ở ranh giới bước:
+**Nhịp báo tiến độ** — `maybe_nudge_progress` (`runtime.py:2591`) chạy ở ranh giới bước:
 
 - Cứ `RESEARCH_PROGRESS_NUDGE_SECONDS = 600` giây (≈10 phút) bơm **một** mục `user` mở đầu
   `[Nhịp tiến độ:`, tối đa `RESEARCH_PROGRESS_MAX_PER_TURN = 12` lần một lượt.
@@ -137,7 +138,7 @@ không cổng chất lượng, không pha phản biện (xem `docs/architecture/
 
 **Chỉ thị giữa lượt của chủ nhà** — hàng vào bảng `session_steers`:
 
-- `queue_owner_steer` (`research_runtime.py:1044`): `BOXFOX_STEER=off` ⇒ trả `None` (không nhận); nội dung
+- `queue_owner_steer` (`research_runtime.py:1047`): `BOXFOX_STEER=off` ⇒ trả `None` (không nhận); nội dung
   rỗng ⇒ `STEER_EMPTY`; cắt ở `STEER_TEXT_MAX_CHARS = 4 000` ký tự; hàng đợi đầy
   (`STEER_MAX_PENDING = 5`) ⇒ `STEER_QUEUE_FULL`. HTTP trả `202 {'status': 'steered', 'steerId', 'turn', 'pending'}`.
 - Mỗi **ranh giới bước**, `drain_steers` (`runtime.py:3165`) nhận tối đa `STEER_DRAIN_MAX = 3` hàng rồi bơm
@@ -145,7 +146,7 @@ không cổng chất lượng, không pha phản biện (xem `docs/architecture/
   một lần**.
 - Trạng thái hàng: `pending → injected` khi vào transcript; `pending → dropped` khi chỉ thị không còn dùng
   được (nhánh của nó bị huỷ).
-- `cancel_child` (orchestrator, `research_runtime.py:1005`) dừng **đúng một** nhánh con của phiên gọi, đánh
+- `cancel_child` (orchestrator, `research_runtime.py:1008`) dừng **đúng một** nhánh con của phiên gọi, đánh
   `dropped` các chỉ thị đang chờ của nhánh đó, trả slot về; kết quả nhánh ấy về cha như mọi kết quả con khác.
 
 ## 5. Ngân sách và nút duyệt — phần mã `(đã có trong mã)`, phần duyệt `(spec, chưa có trong mã)`

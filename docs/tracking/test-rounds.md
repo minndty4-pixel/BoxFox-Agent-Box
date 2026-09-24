@@ -2412,3 +2412,117 @@ giao diện; danh sách lỗi đầy đủ ở `bug-register.md` §6.34 — BUG-
   thô nào trong `filter`. Mã không giải được ⇒ ném lỗi ngay ở bước giải (`HTTP 404`), không dựng bộ lọc
   từ mã xấu. Lượt ấy cũng dựng bản sạch bằng `git archive` và so **blob hash** với repo (khớp cả bốn tệp),
   nên số đo thuộc về mã đã commit chứ không phải cây làm việc dở.
+
+## Vòng 27 — đợt 3 đến 8: sổ nguồn, hồ sơ `.research/`, bốn pha, ba mức, phản biện, nhịp tiến độ, steer, bộ ca R1–R12 (2026-09-24, rạng sáng)
+
+Ba commit: **`d0edca1`** (mã đợt 3–7 + test + giao diện + `deploy/`), **`a624933`** (đợt 8: bộ eval,
+12 fixture, runner ghi số), **`9abd191`** (tài liệu). Nền: **`a959c51`**.
+
+### Đợt 3 — sổ nguồn và thang nguồn (B-1, B-2)
+
+- Tệp mới `source_tiers.py`: năm tầng (0 chủ nhà cấp … 4 chưa kiểm), 13 host chính chủ, 11 báo chính
+  thống, 12 host tầng 4, 13 kênh xã hội chính chủ. Tiền tố `docs.` / `developer.` / `developers.` nay
+  khớp thật qua `_prefix_in` (BUG-107: bốn mục ấy **không bao giờ** khớp trước bản sửa).
+- Tệp mới `research_ledger.py`: luật thuần cho sổ — `MIN_EXCERPT_CHARS = 80`, dấu vân tay shingle 5 từ,
+  `JACCARD_MERGE = 0.85`, `MAX_LEDGER_ROWS = 400`; `assess_rows` sinh **bảy nhóm lỗi**.
+- ĐO SỐNG thang nguồn: `moh.gov.vn` ⇒ tầng **1** `nguồn chính chủ / chính thống`; `vnexpress.net` /
+  `baochinhphu.vn` / `thanhnien.vn` / `tuoitre.vn` ⇒ tầng **2**; `dantri.com.vn` / `vietnamnet.vn` ⇒
+  tầng **3** (lý do `default-unknown`).
+- ĐO SỐNG `assess_rows`: hai host **khác tầng** cùng đoạn trích ⇒ chỉ `research-origin-undeclared`
+  (không có `research-claim-single-source`); hai host **cùng tầng 3** + khai gốc ⇒ chỉ
+  `research-claim-single-source`; hai host cùng tầng 3 nhưng **đoạn trích khác** ⇒ **0 lỗi**.
+- Ba công cụ `source_add` / `source_list` / `source_verify`; `source_add` idempotent theo (URL chuẩn
+  hoá, đoạn trích) và ghi vào sổ của phiên **giữ brief** kèm mã nhánh (BUG-91, BUG-92, BUG-93).
+- Test: `test_source_tiers.py` **11**, `test_research_ledger.py` **12**, `test_source_add_tool.py` **6**,
+  `test_source_ledger_store.py` **6**, `test_research_header.py` **5**, `test_research_verify_source.py`
+  **7** — không ca nào cần mạng.
+
+### Đợt 4 — ba nhóm hồ sơ, cổng chất lượng, đường ghi (B-3a/B-3b/C-2)
+
+- `research_profiles.py`: chín hồ sơ, sáu nhóm việc, mười use-case TM-1…TM-10, bốn archetype C1–C4;
+  `test_research_profiles.py` **7**.
+- `research_quality.py`: **15 mã lỗi**, cổng `enforce|warn|off` (mặc định `enforce`), cổng đọc hồ sơ
+  theo mức (`critique_required(level)` đọc chính `DOSSIER_SECTIONS` — BUG-106).
+- Đường ghi: op `dossier_write` trong box (`worker.py`) + công cụ `dossier_write` **chỉ orchestrator**
+  (BUG-105 hoàn nguyên theo `ledger.md:194`); bảng `research_dossiers` khoá chính `(research_id, version)`.
+- Test: `test_research_quality.py` **25**, `test_research_gate_runtime.py` **12** (chạy thật đường
+  `submit` → `delegate_task` → con chạy → cha chốt), `test_dossier_write_tool.py` **16**,
+  `test_worker_dossier.py` **37**.
+- Giao diện (đợt 4/7): hàng đợi bước, nút dừng nhánh, thẻ mốc tiến độ, hai mặt duyệt ngân sách —
+  126 tệp / 1130 ca test giao diện.
+
+### Đợt 5 — ba mức, `research_brief`, skill `research-team`, SOP bốn pha
+
+- `limits.py`: bảng `RESEARCH_TIER_*` — nhánh 1/5/15, sóng 1/1/3, giây con 180/420/900, lượt
+  1 200/1 200/**3 600** (D-40), trần cứng 1 200/1 800/7 200, phản biện bật ở mức 3.
+- `research_brief` ghim brief vào cấu hình phiên, **chỉ hạ mức**, một việc một lượt (BUG-96, BUG-97);
+  `research_tier_limits` trả `branchCeiling` + `branchCeilingPerWave` (BUG-98: trước bản sửa mức 3 ra
+  `6` thay vì `15`).
+- Skill `research-team` (220 dòng) + sửa **36** tệp skill trong cây vendor sang tên tool thật (BUG-89):
+  quét lại cây vendor ⇒ **0** `web_extract`; cổng mới `test_skill_tool_names.py` **6**.
+- Test: `test_research_brief.py` **11** (bảy ca gốc + bốn ca ý kiến chủ nhà ba nhãn).
+
+### Đợt 6 — pha phản biện độc lập
+
+- Vai thứ 11 `research-review` — BUG-102 (`KeyError: 'research-review'`) từng làm nhánh phản biện
+  **không bao giờ** được sinh.
+- Sổ `research_verifications` + hai công cụ `research_critique` / `research_verify`; ba công cụ nay có
+  **cổng vai** (BUG-99); `source_verify` có **sàn thành công giả** (BUG-101).
+- Mục soi ý kiến chủ nhà ba nhãn (#6025): `OWNER_VIEW_LABELS`, `owner_view_findings`, schema
+  `ownerViews`, hướng dẫn `### Owner Views`.
+- Test: `test_research_critique.py` **7**, `test_research_review_role.py` **4**.
+
+### Đợt 7 — nhịp tiến độ, chỉ thị giữa lượt, hai mặt giao diện
+
+- `maybe_nudge_progress` (600 s, tối đa 12 dòng một lượt) + bảng `session_steers`
+  (`pending → injected | dropped`), `queue_owner_steer` / `drain_steers` / `cancel_child`; HTTP trả
+  **202** `{'status': 'steered'}` khi lượt đang chạy (`STEER_ENV = 'BOXFOX_STEER'`).
+- Test: `test_research_progress.py` **7**, `test_steer_queue.py` **9**, `test_runtime_info.py` **12**.
+
+### Đợt 8 — bộ ca R1–R12, 27 oracle máy, runner ghi số
+
+- `scripts/eval/research_checks.py`: **27 oracle thuần**; `scripts/eval/fixtures/R1.json` … `R12.json`
+  (chỉ R2 cần mạng); `rubric.py`, `fixtureset.py` (họ `Q|R`), `research_scores.py` (CLI ghi số).
+- `scripts/eval/benchmarks/tiers.json` + `tier-r1.md`: tầng `tier-r1`; mục `research-scores` vẫn
+  **blocked** — **chưa có benchmark research nào chạy** (F19). `scripts/eval/results/tier-r1-research/`
+  có `manifest.json` `measured: false` và **đúng một** dòng `scores.jsonl` sinh từ ví dụ dựng tay
+  (tên miền `.example`), không phải lượt thật.
+- Test: `test_research_checks.py` **79 ca**.
+- Hai lỗi thật của chính bộ đo đã vá: `milestone_ceiling_declared` so nhãn **có dấu** với dòng **đã bỏ
+  dấu** nên không bao giờ đạt (nay xanh, đã bỏ dấu `xfail`); `--plan --fixtures R1` in thừa khối chi phí
+  đường Q (tầng R = **0** lượt model).
+
+### Lỗi THẬT của đợt 3–8 đã vá
+
+Mười chín lỗi **BUG-90…BUG-108**, ghi ở `docs/tracking/bug-register.md` §6.36 (kèm căn và cách sửa).
+Nặng nhất:
+
+- **BUG-108 (im lặng, nặng):** `annotate_branch_answer` tìm **chủ sổ** từ phiên **CHA** ⇒ mọi nhánh bị
+  chú thích `research-lineage-missing` dù nhánh có để lại dòng (đo sống: `gate['rows'] == 0` trong khi
+  sổ cha có **1** hàng). Nay lấy phiên con rồi mới đi ngược; ca
+  `test_a_research_child_that_did_leave_a_row_keeps_its_row_out_of_the_notes` **đỏ trước / xanh sau**.
+- **BUG-94, BUG-95 (cổng ghi hồ sơ):** `NameError: RESEARCH_GATE_MODE_UNKNOWN_CODE` và `IndexError`
+  khi `dossier_versions()` rỗng ⇒ lần ghi hồ sơ **đầu tiên** có thể đổ.
+- **BUG-102:** `KeyError: 'research-review'` ⇒ nhánh phản biện không bao giờ được sinh.
+- **BUG-103:** `dossier_write.tables` mất bảng **âm thầm**.
+- **BUG-104:** cổng chất lượng thiếu luật `research-profile-field-missing` (#5989).
+- **BUG-107:** bốn mục `TIER1_SUFFIXES` không bao giờ khớp.
+- **BUG-90:** `origin-undeclared` đếm sai "nguồn độc lập".
+
+### Số đo của cả vòng (cây đã commit)
+
+- Bộ đơn vị đầy đủ: **1602 passed, 1 deselected in 256,05 s** (`test_terminal_exec_echo` deselected —
+  ca ấy đỏ y hệt trên mọi SHA: PowerShell trên Linux, không hồi quy).
+- Nhóm 17 tệp research/harness: **393 passed in 95,57 s**; 18 tệp research: **188 ca** (bảng ở trên).
+- `test_research_checks.py` + `test_eval_setup.py`: **135 passed**.
+- `run_eval.py --plan --fixtures R1 --tier tier-r1 --json` ⇒ `qualityTrackIncluded false`,
+  `modelCalls 0`, `costUsd [0, 0]`; `--list --fixtures R1` ⇒ tiêu đề
+  `Fixture research (tầng R, kế hoạch vòng 27 §8) — 1 ca tĩnh:`.
+
+### Chỗ chưa đo được, nói thẳng
+
+- **Chưa có benchmark research nào chạy** (F19): bộ ca `R1–R12` và 27 oracle đã có trong mã, nhưng
+  điểm của một lượt thật vẫn `blocked` — cần máy có model và box sinh `.research/**`.
+- **Nút duyệt ngân sách chỉ là spec**: không có chuỗi `research-budget` nào trong `backend/src` hay
+  `frontend/src`; trang `docs/architecture/research-agent.md` §5 ghi rõ phần nào đã có trong mã.
+- Mặt `unknown` của `researchTiers` trong `runtime-info` chưa có (bản hiện tại trả `overrides` + `tiers`).
