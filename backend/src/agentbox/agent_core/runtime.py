@@ -66,7 +66,7 @@ from ..skills.commands import CommandRegistry, ROLE_SKILLS, EXTERNAL
 from ..skills.lifecycle import SkillLoader
 from ..skills.runtime_commands import RuntimeCommands
 from ..observability.system_log import system_log
-from ..vendor.hermes.tool_arguments import _parse_tool_arguments
+from .tool_arg_errors import parse_tool_arguments
 
 TOOL_USE_ENFORCEMENT_GUIDANCE = """# Tool-Use Enforcement
 You MUST use your available tools or delegate to specialist subagents to make tangible progress — NEVER simply describe what you would do or promise future actions without executing them now.
@@ -456,6 +456,110 @@ def router_refusal(status, content):
     return refusal
 
 
+def _routable_model(connection, model):
+    """`(connection, model)` mà router THẬT SỰ định tuyến được — bản Python của `validTarget`.
+
+    Router là nơi duy nhất quyết định target nào chạy được (`router/src/service.mjs`,
+    `validTarget`), nên đây là bản sao duy nhất phía harness và hai bên phải nói cùng một
+    câu về "connection dùng được". Lệch nhau thì metadata gộp lại hứa một cửa sổ mà target
+    thật không phục vụ được.
+    """
+    if not isinstance(connection, dict) or not isinstance(model, dict):
+        return False
+    if not connection.get('enabled') or connection.get('authState') != 'ready':
+        return False
+    if connection.get('providerId') == 'antigravity' and connection.get('projectState') != 'ready':
+        return False
+    if not model.get('enabled') or model.get('health') == 'unavailable':
+        return False
+    if connection.get('discoveryState') == 'ready':
+        return True
+    # `degraded` là hình dạng khác của CÙNG một lần dò hỏng: router giữ lại id người dùng
+    # tự khai (`source: 'custom'`) để nó vẫn định tuyến được.
+    return model.get('source') == 'custom' and connection.get('discoveryState') in {'failed', 'degraded'}
+
+
+def provider_model_index(snapshot):
+    """`{(providerId, modelId): [record, ...]}` — mọi hàng model DÙNG ĐƯỢC của mỗi provider.
+
+    Đọc MỘT snapshot rồi nhóm theo (provider, model): hai nơi cần cùng câu trả lời
+    (`provider_model_metadata` cho một phiên, `provider_metadata_map` cho vòng sửa lúc khởi
+    động) không phải lọc hai lần theo hai cách.
+    """
+    index = {}
+    for connection in (snapshot or {}).get('connections', []) or []:
+        provider_id = connection.get('providerId') if isinstance(connection, dict) else None
+        if not provider_id:
+            continue
+        for model in connection.get('models', []) or []:
+            if not isinstance(model, dict) or not model.get('id'):
+                continue
+            if not _routable_model(connection, model):
+                continue
+            index.setdefault((provider_id, model['id']), []).append(model)
+    return index
+
+
+def aggregate_model_metadata(rows):
+    """Gộp record model của MỌI connection dùng được của một provider thành MỘT record.
+
+    Route `{providerId, modelId}` không nói trước target nào sẽ chạy lượt: router tự chọn
+    connection (thứ tự `connectionOrder`, có `roundRobin`, và failover khi lỗi còn retryable
+    mà chưa có output). Vì thế con số hứa cho phiên phải đúng với *mọi* target có thể nhận
+    lượt:
+
+    - `contextWindow`: **min** của các số công bố, `contextWindowSource` của chính hàng cho
+      số min. Hứa số của target rộng nhất thì lượt chết vì tràn ngữ cảnh ngay sau khi router
+      chuyển sang target hẹp hơn; hứa số nhỏ nhất chỉ khiến việc nén transcript sớm hơn một
+      chút. Không hàng nào công bố số ⇒ bỏ hẳn trường (người gọi rơi về sàn `fallback`, đúng
+      như khi router không có dòng nào cho model).
+    - `thinkingLevels`: **giao** các danh sách công bố (so khớp hoa/thường, giữ cách viết
+      của hàng đầu). Một hàng không công bố mức nào — hoặc giao rỗng — ⇒ bỏ hẳn trường: gửi
+      một mức cho target chưa công bố mức là đoán bừa, và `resolve_thinking_level` sẽ ném
+      `THINKING_LEVEL_UNSUPPORTED`.
+    - `thinkingType`: một target tắt thinking không được kéo cả nhóm về `none`, nên chỉ trả
+      `'none'` khi MỌI hàng nói `none`; còn lại lấy cách gọi của hàng đầu tiên có kiểu thật.
+    - `id`, `name`, `defaultThinking`: hàng đầu (chỉ để hiển thị).
+
+    Không hàng nào dùng được ⇒ `None`: người gọi rơi về đường cũ (số đã khai, hoặc sàn).
+    """
+    usable = [row for row in rows or [] if isinstance(row, dict)]
+    if not usable:
+        return None
+    first = usable[0]
+    context_window, context_source = None, None
+    for row in usable:
+        try:
+            value = int(row.get('contextWindow'))
+        except (TypeError, ValueError):
+            continue
+        if value <= 0:
+            continue
+        if context_window is None or value < context_window:
+            context_window, context_source = value, row.get('contextWindowSource')
+    published = []
+    for row in usable:
+        levels = row.get('thinkingLevels')
+        levels = [str(item).strip() for item in levels if str(item).strip()] if isinstance(levels, list) else []
+        if not levels:
+            published = []
+            break
+        published.append(levels)
+    shared = published[0] if published else []
+    for levels in published[1:]:
+        shared = [level for level in shared if any(candidate.lower() == level.lower() for candidate in levels)]
+    thinking_types = [row.get('thinkingType') for row in usable if row.get('thinkingType') not in (None, 'none')]
+    aggregate = {'id': first.get('id'), 'name': first.get('name'),
+                 'defaultThinking': first.get('defaultThinking'),
+                 'thinkingType': thinking_types[0] if thinking_types else (first.get('thinkingType') or 'none')}
+    if context_window is not None:
+        aggregate['contextWindow'] = context_window
+        aggregate['contextWindowSource'] = context_source
+    if shared:
+        aggregate['thinkingLevels'] = shared
+    return aggregate
+
+
 class RouterClient:
     def __init__(self, url='http://127.0.0.1:3101'):
         self.url = url.rstrip('/')
@@ -509,6 +613,38 @@ class RouterClient:
                 if model.get('id') == model_id:
                     return model
         return None
+
+    async def provider_model_metadata(self, provider_id, model_id):
+        """Record GỘP cho route `{providerId, modelId}` — xem `aggregate_model_metadata`.
+
+        Router trả lời được hai câu hỏi khác nhau: "record của connection này" là
+        `model_metadata()`, còn "record cho cả nhóm connection của provider" là hàm này.
+        Phiên route provider không biết trước connection nào phục vụ lượt, nên chỉ hàm này
+        mới nói đúng điều phiên được hứa. Trả `None` khi không có hàng nào dùng được —
+        người gọi giữ hành vi cũ thay vì hứa một con số không cơ sở.
+        """
+        if not provider_id or not model_id:
+            return None
+        snapshot = await self.snapshot()
+        if not snapshot:
+            return None
+        return aggregate_model_metadata(provider_model_index(snapshot).get((provider_id, model_id), []))
+
+    async def provider_metadata_map(self):
+        """`{(providerId, modelId): record gộp}` từ MỘT lần đọc snapshot.
+
+        Cho vòng sửa cửa sổ ngữ cảnh lúc khởi động: nhiều phiên route provider cần cùng
+        một câu trả lời, và mỗi phiên đọc một snapshot là N lời gọi router.
+        """
+        snapshot = await self.snapshot()
+        if not snapshot:
+            return {}
+        result = {}
+        for key, rows in provider_model_index(snapshot).items():
+            aggregate = aggregate_model_metadata(rows)
+            if aggregate:
+                result[key] = aggregate
+        return result
 
     async def complete(self, messages, tools, route, on_thought=None, on_content=None, max_tokens=4096):
         messages, dropped = bound_inline_media(messages)
@@ -649,6 +785,13 @@ def route_for(value):
         return {'connectionId': connection, 'modelId': model}
     if value.startswith('alias:'):
         return {'aliasId': value[6:]}
+    # Dạng `provider:<providerId>:<modelId>` là route NỘI BỘ harness ↔ router (chế độ
+    # single-model, và picker): router tự chọn connection trong nhóm của provider rồi
+    # failover khi khoá hết hạn mức. Thiếu nhánh này thì chuỗi rơi xuống `{'model': ...}`
+    # và router trả `404 MODEL_NOT_FOUND`.
+    if value.startswith('provider:'):
+        _, provider, model = value.split(':', 2)
+        return {'providerId': provider, 'modelId': model}
     return {'model': value}
 
 
@@ -1354,7 +1497,9 @@ class HarnessRuntime(RuntimeCommands):
 
         - đọc snapshot router MỘT lần (`model_metadata_map`), rồi tính lại đúng cặp
           `(số, nguồn)` bằng chính `resolve_context_window` — không có quy tắc thứ hai;
-        - bỏ qua phiên không có `route.connectionId`/`route.modelId` (không có gì để đối chiếu);
+        - bỏ qua phiên không có `route.connectionId`/`route.providerId`/`route.modelId` (không
+          có gì để đối chiếu); phiên route provider (`{providerId, modelId}`) lấy record GỘP
+          của cả nhóm connection — cùng luật `aggregate_model_metadata` như lúc tạo phiên;
         - cửa sổ người dùng TỰ KHAI (`manual`) chỉ bị sửa khi nó NHỎ HƠN con số router công
           bố cho đúng model đó, và mỗi lần sửa phát một event `context_window_healed`
           `{from, to, modelId, source}`. Lý do, đo sống 2026-09-21: 12 phiên còn kẹt ở
@@ -1376,15 +1521,27 @@ class HarnessRuntime(RuntimeCommands):
         metadata_map = await self.client.model_metadata_map()
         if not metadata_map:
             return 0
+        # Phiên route provider không có `connectionId` để tra bản đồ trên: chúng cần record GỘP
+        # của cả nhóm connection. Chỉ đọc snapshot thứ hai khi thật sự có phiên như vậy — đường
+        # thường giữ đúng một lời gọi router như trước.
+        provider_map = None
         healed = 0
         for sid, config in configurations.items():
             if not isinstance(config, dict):
                 continue
             route = config.get('route') if isinstance(config.get('route'), dict) else {}
             connection_id, model_id = route.get('connectionId'), route.get('modelId')
-            if not connection_id or not model_id:
+            provider_id = route.get('providerId')
+            if not model_id or not (connection_id or provider_id):
                 continue
-            metadata = metadata_map.get((connection_id, model_id))
+            if connection_id:
+                metadata = metadata_map.get((connection_id, model_id))
+            else:
+                if provider_map is None:
+                    lookup = getattr(self.client, 'provider_metadata_map', None)
+                    provider_map = await lookup() if callable(lookup) else {}
+                    provider_map = provider_map if isinstance(provider_map, dict) else {}
+                metadata = provider_map.get((provider_id, model_id))
             number, source = resolve_context_window(model_id, None, metadata)
             current, declared = config.get('contextWindow'), config.get('contextWindowSource')
             if current == number and declared == source:
@@ -1421,7 +1578,7 @@ class HarnessRuntime(RuntimeCommands):
                 s['model'] = single_model
             route = route_for(single_model)
         else:
-            route = {k: values[k] for k in ('connectionId', 'modelId', 'aliasId', 'thinkingLevel') if isinstance(values.get(k), str)}
+            route = {k: values[k] for k in ('connectionId', 'providerId', 'modelId', 'aliasId', 'thinkingLevel') if isinstance(values.get(k), str)}
             if values.get('model') and values['model'] not in {'default', 'inherit'}:
                 route = route_for(values['model'])
 
@@ -1576,11 +1733,16 @@ class HarnessRuntime(RuntimeCommands):
         stored = session['config'].get('modelMetadata')
         if isinstance(stored, dict) and stored.get('id') == model_id:
             return None
-        lookup = getattr(self.client, 'model_metadata', None)
+        # Route provider không có `connectionId`: record phải là bản GỘP của mọi connection
+        # dùng được của provider (cùng luật với lúc tạo phiên), vì lượt này có thể chạy trên
+        # bất kỳ target nào của nhóm.
+        provider_id = route.get('providerId')
+        lookup = getattr(self.client, 'provider_model_metadata' if provider_id else 'model_metadata', None)
         if not callable(lookup):
             return None
         try:
-            record = await lookup(route.get('connectionId'), model_id)
+            record = await (lookup(provider_id, model_id) if provider_id
+                            else lookup(route.get('connectionId'), model_id))
         except Exception:
             return None
         return record if isinstance(record, dict) else None
@@ -2313,7 +2475,7 @@ class HarnessRuntime(RuntimeCommands):
                                 if read_calls >= WRAP_UP_READ_TOOL_CALLS:
                                     break
                                 name = (call.get('function') or {}).get('name') or ''
-                                args, parse_error = _parse_tool_arguments((call.get('function') or {}).get('arguments'))
+                                args, parse_error = parse_tool_arguments((call.get('function') or {}).get('arguments'))
                                 read_ok = False
                                 if parse_error or name not in READ_TOOL_NAMES:
                                     result = {'is_error': True, 'error': parse_error or 'not a read tool'}
@@ -3482,7 +3644,7 @@ class HarnessRuntime(RuntimeCommands):
                         raise ValueError('Tool-call batch exceeds limit')
                     for call in calls:
                         fn = call['function']
-                        args, error = _parse_tool_arguments(fn.get('arguments'))
+                        args, error = parse_tool_arguments(fn.get('arguments'))
                         name = fn.get('name', '')
                         self.store.emit(sid, 'tool_start', {'id': call['id'], 'name': name, 'args': args})
                         tools_run += 1

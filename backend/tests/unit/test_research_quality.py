@@ -243,6 +243,56 @@ def test_every_level_names_its_own_required_sections(level):
                           research_quality.DOSSIER_SECTIONS[level])
 
 
+def natural_markdown():
+    """Hồ sơ viết bằng tiêu đề **tiếng Việt tự nhiên** — ca đo của lượt thật 2026-09-24.
+
+    Model viết `## Kết luận chính` thay cho `## Phát hiện` và bị cổng từ chối (`research-shape-missing`,
+    `mục Phát hiện`): bảng từ cũ chỉ nhận `phat hien` / `ket qua` / `findings`.
+    """
+    return '\n'.join([
+        '# Hồ sơ chuyển tuyến bảo hiểm y tế', '',
+        '## Mục tiêu', 'Cần những giấy tờ nào?', '',
+        '## Kết luận chính', 'Bốn loại giấy tờ [r1] [r2].', '',
+        '## Nguồn tham khảo', '- [r1] https://moh.gov.vn/r1 (tầng 1)',
+        '- [r2] https://baochinhphu.vn/r2 (tầng 2)', '',
+        '## Mâu thuẫn giữa các nguồn', 'Không có.', '',
+        '## Hạn chế', 'Chưa mở được bản gốc của [r2].',
+    ])
+
+
+def test_natural_vietnamese_headings_satisfy_the_shape_rule():
+    assert research_quality.missing_sections(natural_markdown(), 2) == []
+    verdict = assess(mode='enforce', markdown=natural_markdown())
+    assert 'research-shape-missing' not in codes(verdict)
+    assert verdict.ok is True, verdict.missing
+
+
+def test_a_heading_that_is_not_a_findings_heading_is_still_refused():
+    """Nới bộ từ không phải bỏ luật: `## Ghi chú` không phải mục Phát hiện."""
+    markdown = natural_markdown().replace('## Kết luận chính', '## Ghi chú')
+    assert 'mục Phát hiện' in research_quality.missing_sections(markdown, 2)
+    verdict = assess(mode='enforce', markdown=markdown)
+    assert 'mục Phát hiện' in details(verdict, 'research-shape-missing')
+
+
+def test_the_widened_table_still_accepts_every_word_the_old_table_did():
+    old_words = {'cau hoi', 'question', 'phat hien', 'ket qua', 'findings', 'nguon', 'sources',
+                 'dan nguon', 'mau thuan', 'conflict', 'chua lam', 'viec chua', 'open', 'ambigu',
+                 'phan bien', 'critique', 'review'}
+    accepted = {word for _key, variants in research_quality.DOSSIER_SECTIONS[3] for word in variants}
+    assert old_words <= accepted
+
+
+def test_the_single_source_remedy_asks_for_a_second_host_not_just_one_more_page():
+    """Câu cũ — "Thêm nguồn khác nguồn tin gốc" — bị đọc thành "thêm một TRANG nữa", trong khi luật
+    đếm theo *nơi đăng viết độc lập* (`research_ledger.origin_units`). Câu mới phải nói ra chữ
+    **host** và không được quay lại lối nói cũ."""
+    remedy = research_quality.REMEDIES['research-claim-single-source']
+    assert 'host' in remedy
+    assert 'độc lập' in remedy
+    assert 'nguồn tin gốc' not in remedy
+
+
 # --- #6025: mục soi ý kiến chủ nhà đủ ba nhãn, mỗi nhãn kèm nguồn ------------------------
 
 

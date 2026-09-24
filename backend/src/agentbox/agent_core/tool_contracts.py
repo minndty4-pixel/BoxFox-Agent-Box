@@ -306,7 +306,13 @@ SCHEMAS = [
                                                           'repo, price, competitor or users.'},
           'question': STRING, 'rationale': STRING,
           'branches': {'type': 'array', 'items': STRING},
-          'ceilingSeconds': {'type': 'integer'},
+          'ceilingSeconds': {'type': 'integer', 'description': 'How long THIS turn may run, in seconds. Leave it out to keep the ceiling already pinned for the '
+                                                                'job (clamped to the level ceiling). A value outside the level bounds is clamped: 60s floor, level '
+                                                                'ceiling as the top (RESEARCH_CEILING_CLAMPED). Within one turn the ceiling can only be LOWERED '
+                                                                '(raising it is refused, RESEARCH_BRIEF_RAISE_REFUSED). To get the running turn extended, ask for '
+                                                                'MORE seconds than the turn already has (TURN_EXTENDED, up to the level hard ceiling) - asking for '
+                                                                'the amount already running extends nothing. Level ceilings: tier 1 and 2 = 1200s, tier 3 = 3600s; '
+                                                                'hard ceilings: tier 1 = 1200s, tier 2 = 1800s, tier 3 = 7200s.'},
           'ownerViews': {'type': 'array', 'items': STRING,
                          'description': 'Opinions, assumptions or claims the owner stated in the request, '
                                         'one item each. When this list is not empty the dossier must carry a '

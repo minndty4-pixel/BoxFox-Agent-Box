@@ -62,8 +62,9 @@ Tên trong `rubric.RESEARCH_CHECKS` **phải khớp từng chữ** với bảng 
 | Đuổi trích dẫn, mâu thuẫn, ý kiến chủ nhà | `citation_chase_logged`, `saturation_logged`, `conflicts_file_exists`, `critique_file_exists`, `conflict_row_present`, `dual_source_declared`, `review_file_exists`, `owner_views_three_labels` |
 | Chặn nguồn, gap, trần | `blocked_source_recorded`, `gap_labelled_as_signal_unverified`, `milestone_ceiling_declared`, `hard_ceiling_reported` |
 
-Mỗi hàm có **một ca đúng và một ca sai** trong `backend/tests/unit/test_research_checks.py`
-(riêng một ca của `milestone_ceiling_declared` đang là `xfail` — xem §6). Ca kiểm chạy qua
+Mỗi hàm có **một ca đúng và một ca sai** trong `backend/tests/unit/test_research_checks.py`, không ca
+nào còn mang dấu `xfail`: ca đúng của `milestone_ceiling_declared` từng mang `xfail(strict=True)` vì
+một lỗi so nhãn — đã vá ở vòng 27, xem §6.1. Ca kiểm chạy qua
 `research_checks.run_checks([tên], …)` nên bảng tên, `CASE_OPTIONS` (mức/trần theo ca) và chính
 hàm oracle đều được kiểm trong cùng một lượt.
 

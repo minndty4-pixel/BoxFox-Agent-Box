@@ -64,7 +64,7 @@ REMEDIES: Mapping[str, str] = {
     'research-sources-unproven': 'Mở URL bằng `web_fetch` rồi `source_add` kèm đoạn trích nguyên văn.',
     'research-excerpt-missing': f'Lưu đoạn trích nguyên văn ≥ {RESEARCH_MIN_EXCERPT_CHARS} ký tự đã đọc, không phải tóm tắt.',
     'research-tier-unknown': 'Khai `type` (`host-doc`/`official-social`) hoặc dùng nguồn xếp được tầng.',
-    'research-claim-single-source': 'Thêm nguồn khác nguồn tin gốc, hoặc hạ khẳng định xuống "suy luận".',
+    'research-claim-single-source': 'Thêm nguồn thứ hai ở host khác, viết độc lập (bản đăng lại cùng bản tin hoặc cùng `origin` đã khai vẫn tính một nguồn), hoặc hạ khẳng định xuống "suy luận".',
     'research-origin-undeclared': 'Khai `origin` cho dòng bị đăng lại (ví dụ `nguồn: TTXVN`).',
     'research-host-doc-unmarked': 'Đánh dấu dòng là "do chủ nhà cung cấp" (`type=\'host-doc\'`).',
     'research-doc-pointer-missing': 'Trỏ bản gốc bằng nguồn tầng 1; không mở được thì ghi "chưa mở được bản gốc".',
@@ -84,27 +84,53 @@ MODE_UNKNOWN_CODE = limits.RESEARCH_GATE_MODE_UNKNOWN_CODE
 
 # --- Hình dạng hồ sơ theo mức ----------------------------------------------
 
+#: Từ khoá nhận dạng TIÊU ĐỀ theo từng mục — khớp **bỏ dấu + không phân biệt hoa thường**, và khớp
+#: theo kiểu *chứa* (`variant in line`), nên một tiêu đề dài như "Kết luận chính (mức 2)" vẫn khớp
+#: `ket luan`. Bộ từ của mỗi mục là hợp của ba nguồn: từ tiếng Anh trong hợp đồng `dossier_write`,
+#: từ tiếng Việt tự nhiên model hay viết, và các biến thể đã gặp trong lượt thật.
+_QUESTION_WORDS: tuple[str, ...] = ('cau hoi', 'question', 'muc tieu')
+_FINDINGS_WORDS: tuple[str, ...] = (
+    'phat hien', 'ket qua', 'findings',           # bản gốc
+    'ket luan', 'tong ket', 'diem chinh',         # tiếng Việt tự nhiên (lượt thật 2026-09-24: "Kết luận chính")
+    'nhan xet', 'so lieu', 'bang chung',
+)
+_SOURCES_WORDS: tuple[str, ...] = ('nguon', 'sources', 'dan nguon', 'tai lieu tham khao', 'tham khao')
+_CONFLICTS_WORDS: tuple[str, ...] = (
+    'mau thuan', 'conflict',
+    'xung dot', 'chua thong nhat', 'khac biet', 'bat dong',
+)
+# Cố ý KHÔNG có `con lai`: tiêu đề chuẩn của mục Mâu thuẫn là "Mâu thuẫn còn lại" — thêm `con lai` là
+# mục Mâu thuẫn tự thoả luôn mục Việc chưa làm.
+_TODO_WORDS: tuple[str, ...] = (
+    'chua lam', 'viec chua', 'open', 'ambigu',
+    'viec con', 'chua xong', 'han che', 'gioi han', 'cau hoi mo', 'can lam tiep',
+)
+#: `nhan xet` nằm ở CẢ hai mục: tiêu đề "Nhận xét" vừa có thể là chỗ kê điều rút ra, vừa là chỗ soi
+#: lại. Chỉ TIÊU ĐỀ được quét (thân bài không), và mọi luật theo DÒNG (nguồn, đoạn trích, tầng) vẫn
+#: nguyên độ chặt — nới bộ từ ở đây là để cổng thôi từ chối oan hồ sơ viết bằng tiếng Việt tự nhiên.
+_CRITIQUE_WORDS: tuple[str, ...] = ('phan bien', 'critique', 'review', 'nhan xet', 'soi xet', 'diem yeu')
+
 #: `mức -> ((khoá, nhãn), các từ khoá nhận dạng trong TIÊU ĐỀ)`. Khớp bỏ dấu, không phân biệt hoa thường.
 DOSSIER_SECTIONS: Mapping[int, tuple[tuple[str, tuple[str, ...]], ...]] = {
     1: (
-        ('question', ('cau hoi', 'question')),
-        ('findings', ('phat hien', 'ket qua', 'findings')),
-        ('sources', ('nguon', 'sources', 'dan nguon')),
+        ('question', _QUESTION_WORDS),
+        ('findings', _FINDINGS_WORDS),
+        ('sources', _SOURCES_WORDS),
     ),
     2: (
-        ('question', ('cau hoi', 'question')),
-        ('findings', ('phat hien', 'ket qua', 'findings')),
-        ('sources', ('nguon', 'sources', 'dan nguon')),
-        ('conflicts', ('mau thuan', 'conflict')),
-        ('todo', ('chua lam', 'viec chua', 'open', 'ambigu')),
+        ('question', _QUESTION_WORDS),
+        ('findings', _FINDINGS_WORDS),
+        ('sources', _SOURCES_WORDS),
+        ('conflicts', _CONFLICTS_WORDS),
+        ('todo', _TODO_WORDS),
     ),
     3: (
-        ('question', ('cau hoi', 'question')),
-        ('findings', ('phat hien', 'ket qua', 'findings')),
-        ('sources', ('nguon', 'sources', 'dan nguon')),
-        ('conflicts', ('mau thuan', 'conflict')),
-        ('todo', ('chua lam', 'viec chua', 'open', 'ambigu')),
-        ('critique', ('phan bien', 'critique', 'review')),
+        ('question', _QUESTION_WORDS),
+        ('findings', _FINDINGS_WORDS),
+        ('sources', _SOURCES_WORDS),
+        ('conflicts', _CONFLICTS_WORDS),
+        ('todo', _TODO_WORDS),
+        ('critique', _CRITIQUE_WORDS),
     ),
 }
 

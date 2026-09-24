@@ -11,7 +11,7 @@ import asyncio
 
 import pytest
 
-from agentbox.agent_core import limits, research_quality, research_runtime
+from agentbox.agent_core import limits, research_quality, research_runtime, tool_contracts
 from agentbox.agent_core.runtime import HarnessRuntime
 from agentbox.memory.session_store import SessionStore
 
@@ -260,6 +260,31 @@ def test_one_turn_may_lower_the_turn_ceiling_but_never_raise_it(harness):
     lowered = brief(runtime, session, tier=2, ceilingSeconds=600)
     assert lowered['ceilingSeconds'] == 600, 'cùng lượt hạ trần ⇒ nhận, không phải từ chối'
     assert research_runtime.research_config(store.get(sid))['ceilingSeconds'] == 600
+
+
+# --- Hợp đồng công cụ: tham số thời gian phải được MÔ TẢ, không chỉ khai kiểu -------------
+
+
+def brief_properties():
+    entry = next(item for item in tool_contracts.SCHEMAS
+                 if item['function']['name'] == 'research_brief')
+    return entry['function']['parameters']['properties']
+
+
+def test_the_turn_ceiling_parameter_is_described_in_the_tool_contract():
+    """Bẫy giết lượt thật (2026-09-24, lượt 5): `ceilingSeconds` chỉ có `{'type': 'integer'}`, nên model
+    xin bằng ĐÚNG hạn mức đang chạy, không có `TURN_EXTENDED`, và lượt chết ở giây thứ 600 giữa lúc
+    chờ nhánh con. Hợp đồng phải nói ra luật: bỏ trống thì GIỮ trần đã chốt; muốn nới thì phải xin
+    DÀI HƠN trần đang chạy."""
+    description = str(brief_properties()['ceilingSeconds'].get('description') or '')
+    assert len(description) > 120, 'tham số quyết định thời gian của lượt không được để trống mô tả'
+    assert 'Leave it out' in description, 'phải nói bỏ trống thì giữ trần đã chốt'
+    assert 'MORE seconds' in description, 'phải nói muốn nới thì xin dài hơn trần đang chạy'
+    for tier in research_runtime.RESEARCH_TIERS:
+        tier_limits = research_runtime.research_tier_limits(tier)
+        assert f'{tier_limits["turnSeconds"]}s' in description, f'trần mức {tier} phải có trong mô tả'
+        assert f'{tier_limits["hardCeilingSeconds"]}s' in description, \
+            f'trần cứng mức {tier} phải có trong mô tả'
 
 
 def test_a_later_turn_keeps_the_room_even_when_the_clock_moves(harness, monkeypatch):

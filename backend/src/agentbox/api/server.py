@@ -401,6 +401,13 @@ def create_app(runtime):
             metadata = await runtime.client.model_metadata(value.get('connectionId'), value.get('modelId'))
             if metadata:
                 value['modelMetadata'] = metadata
+        elif value.get('providerId') and value.get('modelId'):
+            # Route provider: phiên không nói trước connection nào sẽ phục vụ lượt (router tự
+            # chọn trong nhóm và failover khi hết hạn mức), nên record phải là bản GỘP của mọi
+            # connection dùng được — cùng luật `aggregate_model_metadata` của harness.
+            metadata = await runtime.client.provider_model_metadata(value.get('providerId'), value.get('modelId'))
+            if metadata:
+                value['modelMetadata'] = metadata
         # Tab Instructions nói tài liệu áp cho phiên MỚI, nhưng chỉ đường giao diện gửi
         # chỉ dẫn kèm yêu cầu; một phiên tạo không qua giao diện (script, lịch chạy) trước
         # đây không nhận được gì dù tài liệu đã lưu. Thiếu hẳn `instructions` trong yêu cầu
