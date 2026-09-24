@@ -480,6 +480,14 @@ async def research_brief(rt, session, args):
         if ceiling != wanted:
             clamped = wanted
     existing = research_config(session)
+    # `ceilingSeconds` bỏ trống ⇒ GIỮ trần đã chốt (kẹp theo trần của mức), cho CẢ lượt mới lẫn
+    # lượt đang chạy. Phải tính TRƯỚC guard bên dưới: nếu tính sau, một lời gọi "cập nhật" trong
+    # cùng lượt (đổi nhánh) mà bỏ trống trần sẽ bị từ chối oan, vì lúc ấy `ceiling` còn là hạn mức
+    # danh nghĩa của mức — to hơn trần đang chạy (lượt kiểm thử `v27d` đo được ở probe17 b/c).
+    if args.get('ceilingSeconds') is None and existing:
+        ceiling = max(60, min(int(existing.get('ceilingSeconds') or 0) or limits['turnSeconds'],
+                              limits['turnSeconds']))
+        clamped = None
     # Luật "một lượt một việc" và luật "chỉ được HẠ mức" là luật của MỘT LƯỢT: brief nằm trong
     # `config` của PHIÊN nên nếu không ghim lượt, mức đã chốt ở lượt trước khoá phiên ấy vĩnh viễn —
     # main không bao giờ nâng được lên mức 3 dù chủ nhà yêu cầu (lượt sau là lượt MỚI, xem D-24/D-40).
@@ -512,12 +520,6 @@ async def research_brief(rt, session, args):
     dossier_dir = str(existing.get('dossierDir') or '').strip()
     if not re.fullmatch(rf'{re.escape(DOSSIER_ROOM)}/{re.escape(slug)}-\d{{8}}-\d{{4}}', dossier_dir):
         dossier_dir = dossier_dir_for(slug)
-    # `ceilingSeconds` bỏ trống ở lượt mới: GIỮ trần đã chốt (kẹp theo trần của mức mới) thay vì
-    # âm thầm kéo lên trần mặc định của mức — đó là cách một lời gọi "cập nhật" từng bị từ chối oan.
-    if args.get('ceilingSeconds') is None and existing:
-        ceiling = max(60, min(int(existing.get('ceilingSeconds') or 0) or limits['turnSeconds'],
-                              limits['turnSeconds']))
-        clamped = None
     config = {'researchId': slug, 'tier': tier, 'jobProfile': profile.key, 'profileGroup': profile.group,
               'question': question, 'branches': branches, 'ceilingSeconds': ceiling,
               'ownerViews': owner_views,

@@ -298,3 +298,21 @@ def test_a_stored_room_that_does_not_match_the_shape_is_replaced(harness):
     answer = brief(runtime, store.get(sid))
     assert answer['dossierDir'] != '.research/phong-cu-khong-dau-phut'
     assert research_runtime.research_config(store.get(sid))['dossierDir'] == answer['dossierDir']
+
+
+def test_a_same_turn_update_that_omits_the_ceiling_keeps_it(harness):
+    """Gọi lại brief trong CÙNG lượt mà bỏ trống trần ⇒ giữ trần đã chốt, không bị từ chối oan.
+
+    Hệ quả phụ của bản vá BUG-110 nếu khối bảo tồn nằm SAU cổng cùng lượt: lúc chấm, `ceiling` còn là
+    hạn mức **danh nghĩa của mức** (lớn hơn trần đang chạy), nên một lời gọi "cập nhật" (đổi nhánh) bị
+    chấm như thể nó vừa đòi thêm thời gian — lượt kiểm thử `v27d` đo được ở `probe17` (b)/(c).
+    """
+    store, runtime, sid, session = harness
+    runtime.active_turn[sid] = 1
+    first = brief(runtime, session, tier=3, ceilingSeconds=900)
+    assert first['ceilingSeconds'] == 900
+    again = brief(runtime, session, tier=3, branches=['một'])
+    assert again['ceilingSeconds'] == 900, 'bỏ trống trần ⇒ giữ trần đang chạy'
+    assert again['updated'] is True
+    config = research_runtime.research_config(store.get(sid))
+    assert config['ceilingSeconds'] == 900 and config['branches'] == ['một']

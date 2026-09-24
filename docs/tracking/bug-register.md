@@ -1602,12 +1602,12 @@ trong `tool_contracts.SCHEMAS`.
 **Phạm vi chưa làm, ghi nhận có chủ đích.** Chín tên `browser_*` trong `skills/software-development/dogfood/SKILL.md` nằm trong `SERVED_EXCEPTIONS`
 kèm lý do (nợ của vai kiểm thử, ngoài đợt 8). `HERMES_HOME` chỉ có hiệu lực **sau khi box được dựng/khởi động lại** — đợt này chỉ sửa tệp, chưa khởi động lại box.
 
-### 6.36 Vòng 27 (đợt 3–8 và hậu kỳ) — hai mươi ba lỗi sản phẩm (và chín lỗi của chính ca test) lộ ra trong lúc thi công sổ nguồn, hồ sơ, phản biện và nhịp tiến độ (2026-09-24)
+### 6.36 Vòng 27 (đợt 3–8 và hậu kỳ) — hai mươi bốn lỗi sản phẩm (và chín lỗi của chính ca test) lộ ra trong lúc thi công sổ nguồn, hồ sơ, phản biện và nhịp tiến độ (2026-09-24)
 
 **Phát hiện.** Không lỗi nào do người dùng báo: mỗi lỗi lộ ra khi chạy ca test mới hoặc khi đo sống một
-đường vừa viết. **Mười chín** lỗi thuộc **mã sản phẩm** (bảng dưới, `BUG-90`…`BUG-108`) và **bốn** lỗi sản phẩm nữa
-(`BUG-109`…`BUG-112`) do **lượt kiểm thử độc lập `v27d`** tìm ra trên chính cây ấy rồi được vá ngay —
-**hai mươi ba** lỗi sản phẩm; ngoài ra **chín** lỗi thuộc **chính ca test** (ghi ở cuối mục, không tính
+đường vừa viết. **Mười chín** lỗi thuộc **mã sản phẩm** (bảng dưới, `BUG-90`…`BUG-108`) và **năm** lỗi sản phẩm nữa
+(`BUG-109`…`BUG-113`) do **lượt kiểm thử độc lập `v27d`** tìm ra trên chính cây ấy rồi được vá ngay —
+**hai mươi bốn** lỗi sản phẩm; ngoài ra **chín** lỗi thuộc **chính ca test** (ghi ở cuối mục, không tính
 là lỗi sản phẩm). Mọi sửa đều giữ bất biến: việc mới có công tắc tắt
 (`BOXFOX_RESEARCH_*`, `BOXFOX_STEER`), và thiếu brief thì hành vi cũ không đổi.
 
@@ -1637,6 +1637,8 @@ là lỗi sản phẩm). Mọi sửa đều giữ bất biến: việc mới có
 | **BUG-110** | **nặng (luật ngược)** | Guard trần lượt trong **cùng một lượt** so **ngược**: `stored > ceiling` ⇒ từ chối. Nên một lời gọi **NÂNG** trần (900 → 1800) đi qua im lặng, còn lời gọi **HẠ** trần (900 → 600) bị từ chối kèm câu "cần dài hơn thì xin chủ nhà ở lượt sau" — đúng ngược với luật "chỉ được hạ" (chính bản vá hậu kỳ `2bcc02b` gây ra) | Lượt kiểm thử `v27d` (F-G): cùng lượt `ceilingSeconds` 900 ⇒ 1800 nhận, ⇒ 600 từ chối | Điều kiện viết xuôi theo tên biến thay vì theo luật | `if stored and ceiling > stored: raise …`; ca `test_one_turn_may_lower_the_turn_ceiling_but_never_raise_it` ghim **cả hai chiều** (đỏ trước / xanh sau) |
 | **BUG-111** | nhẹ | Thẻ mốc của `research_brief` **không mang trần đang chạy**: lượt sau nâng mức mà bỏ trống `ceilingSeconds` thì `turnSeconds`/`softCeilingSeconds` là hạn mức **danh nghĩa của mức mới** (3600) trong khi trần thật vẫn là con số giữ lại (900) ⇒ thẻ mốc báo một con số không ai thi hành | Lượt kiểm thử `v27d` (F-H) | Thiếu khoá cho trần hiệu lực | Thêm `'ceilingSeconds': ceiling` vào `answer` (kèm chú thích phân biệt trần hiệu lực với hạn mức danh nghĩa); ca cũ `test_a_later_turn_may_raise_the_level…` ghim thêm `later['ceilingSeconds'] == 900` |
 | **BUG-112** | nhẹ (mã lệch lời) | Chú thích ở `research_brief` nói lượt sau **giữ lại phòng hồ sơ cũ**, nhưng mã lại mở phòng mới mỗi lượt (`dossier_dir` rỗng khi `turn` khác) ⇒ bản `v2` rơi sang phòng khác, và ca cũ chỉ xanh nhờ hai lời gọi rơi vào **cùng một phút** | Lượt kiểm thử `v27d` (F-I): hai lượt liền nhau qua mốc phút ⇒ phòng khác nhau | Bản vá hậu kỳ thu phòng theo `same_turn` | Trả về luật đã chốt: **một việc = một phòng** — giữ `dossierDir` khi nó khớp khuôn `.research/<slug>-<yyyymmdd-hhmm>`, thay khi không khớp (bản ghi cũ); ca `test_a_later_turn_keeps_the_room_even_when_the_clock_moves` (ghìm đồng hồ) và `test_a_stored_room_that_does_not_match_the_shape_is_replaced` |
+
+| **BUG-113** | vừa (báo động sai) | Hệ quả phụ của chính bản vá BUG-110: khối "bỏ trống `ceilingSeconds` ⇒ GIỮ trần đã chốt" nằm **SAU** cổng cùng lượt, nên lúc chấm `ceiling` còn là hạn mức **danh nghĩa của mức** ⇒ một lời gọi `research_brief` **cập nhật** trong cùng lượt (gọi lại y hệt hoặc chỉ đổi `branches`) mà bỏ trống trần bị từ chối oan `RESEARCH_BRIEF_RAISE_REFUSED` | Lượt kiểm thử `v27d` (F-J, `probe17` b/c): cùng lượt 900 rồi bỏ trống trần ⇒ từ chối; `79df0a9` nhận bình thường | Thứ tự hai khối luật trong `research_brief` | Hoist khối bảo tồn lên TRƯỚC cổng (`if args.get('ceilingSeconds') is None and existing: ceiling = max(60, min(int(stored) or limits['turnSeconds'], limits['turnSeconds']))`) + ca `test_a_same_turn_update_that_omits_the_ceiling_keeps_it` (đỏ trước / xanh sau) |
 
 **Chín lỗi thuộc chính ca test (không phải lỗi sản phẩm, ghi để khỏi lặp):** (1) ba ca
 `test_steer_queue.py` đọc cột `status`/`claimed`/`step` **không có** trong bảng `session_steers` — cột thật

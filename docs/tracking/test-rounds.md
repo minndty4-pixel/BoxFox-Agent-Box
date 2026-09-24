@@ -2551,7 +2551,7 @@ eval, 18 tệp), **`79df0a9`** (tài liệu, 4 tệp). Nguồn: lượt soát l�
   bị chạm): lúc lượt đang chạy có dải "áp ở bước sau" và nút gửi "gửi cho lượt đang chạy"; gửi thì hộp "đã
   xếp" hiện ra và hàng `session_steers` là `state=pending`; sang bước sau hàng thành `injected` và yêu cầu
   tới model mang `[Chỉ thị giữa lượt của chủ nhà]`; lượt xong thì hộp và dải tự mất.
-- **Hai lỗi còn mở ở `79df0a9`** (lượt ấy chỉ đọc, không sửa): **F-A** `DOSSIER_VERSION_TAKEN` lặp lại y hệt
+- **Hai lỗi nặng còn mở ở `79df0a9`** (lượt ấy chỉ đọc, không sửa): **F-A** `DOSSIER_VERSION_TAKEN` lặp lại y hệt
   khi phòng đã có tệp `v1` mà chỉ mục chưa biết — nay **BUG-109**; **F-G** guard trần lượt trong cùng lượt so
   **ngược** (nâng đi qua, hạ bị từ chối) — nay **BUG-110**, do chính bản vá `2bcc02b` gây ra. Hai mục nhẹ:
   **F-H** thẻ mốc thiếu trần đang chạy (**BUG-111**) và **F-I** chú thích nói phòng ở lại còn mã mở phòng mới
@@ -2566,5 +2566,9 @@ eval, 18 tệp), **`79df0a9`** (tài liệu, 4 tệp). Nguồn: lượt soát l�
   danh nghĩa của mức).
 - **Một việc = một phòng**: giữ `dossierDir` khi nó khớp khuôn `.research/<slug>-<yyyymmdd-hhmm>`, thay khi
   không khớp (bản ghi cũ) — ca cũ chỉ xanh nhờ hai lời gọi rơi vào cùng một phút, nay ghìm đồng hồ.
-- Năm ca mới (`test_research_brief.py` **16**, `test_dossier_write_tool.py` **20**); mỗi ca hành vi chứng minh
-  **đỏ trước / xanh sau** (đo: chạy lại trên đúng mã `79df0a9` thì cả năm ca đỏ).
+- Lượt đo lại trên `4843563` của chính lượt `v27d` tìm thêm **F-J** — hệ quả phụ của bản vá BUG-110: khối
+  "bỏ trống trần ⇒ giữ trần đã chốt" nằm SAU cổng cùng lượt, nên gọi lại brief trong cùng lượt mà bỏ trống
+  trần bị từ chối oan (nay **BUG-113**). Vá cùng ngày: hoist khối bảo tồn lên trước cổng.
+- Sáu ca mới (`test_research_brief.py` **17**, `test_dossier_write_tool.py` **20**); mỗi ca hành vi chứng minh
+  **đỏ trước / xanh sau** (đo: chạy lại trên đúng mã `4843563` thì ca F-J đỏ; trên `79df0a9` thì năm ca kia đỏ).
+- Bộ đơn vị đầy đủ sau lớp vá cuối: **1639 passed, 1 deselected** (`/var/tmp/v27/unit_after_fj.log`).
