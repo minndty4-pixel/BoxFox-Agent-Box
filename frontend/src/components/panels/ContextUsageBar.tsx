@@ -34,7 +34,7 @@ import { useHarnessChatStore } from '../../store/harnessChatStore'
 import { useHarnessStore, AVAILABLE_MODELS } from '../../store/harnessStore'
 import { useProviderStore } from '../../store/providerStore'
 import { useRouterChatStore, type RouterChatSelection } from '../../store/routerChatStore'
-import { eligible } from '../../lib/routeOptions'
+import { routable } from '../../lib/routeOptions'
 import type { ProviderSnapshot } from '../../types/provider'
 import { LabelDot } from '../LabelDot'
 import type { ContextChunk } from '../../types/context'
@@ -149,8 +149,12 @@ export function findRouterContextWindow(
     // lấy min cùng luật). Hứa số của target rộng nhất là hứa điều lượt không giữ được.
     let smallest: RouterWindow | null = null
     for (const connection of snapshot.connections) {
-      if (connection.providerId !== selection.providerId || !eligible(connection)) continue
-      const found = readRouterWindow(connection.models.find((m) => m.id === selection.modelId))
+      if (connection.providerId !== selection.providerId) continue
+      const model = connection.models.find((m) => m.id === selection.modelId)
+      // Cùng luật với router (`validTarget`): connection `degraded`/`failed` vẫn là một đích nếu
+      // model là thứ người dùng gõ tay. Bỏ nó đi là hứa cửa sổ RỘNG HƠN thứ harness nén theo.
+      if (!routable(connection, model)) continue
+      const found = readRouterWindow(model)
       if (!found) continue
       if (!smallest || found.tokens < smallest.tokens) smallest = found
     }

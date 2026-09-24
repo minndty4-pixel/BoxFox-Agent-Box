@@ -13,7 +13,7 @@
  * Chỗ mới `lib/` (không phải trong `RouterTestChat.tsx`) để `HarnessModelPicker` dùng được mà
  * không tạo vòng `RouterTestChat → ChatInputBar → HarnessModelPicker → RouterTestChat`.
  */
-import type { ProviderConnection, ProviderSnapshot } from '../types/provider'
+import type { ProviderConnection, ProviderModel, ProviderSnapshot } from '../types/provider'
 import type { RouterChatSelection } from '../store/routerChatStore'
 
 /** Một dòng trong bảng chọn model của composer. `pins` cũng mang đúng hình dạng này. */
@@ -27,17 +27,44 @@ export interface RouterChatOption {
   connections?: number
   /** Số khoá của cả nhóm (một connection có thể giữ nhiều khoá) — cũng chỉ để hiện ở dòng phụ. */
   keys?: number
+  /** Số connection trong nhóm mà danh sách model do người dùng gõ tay (dò hỏng) — dòng phụ nói ra. */
+  handTyped?: number
   /** Các connection riêng lẻ của cùng model; chỉ khi nhóm có ≥ 2 connection. */
   pins?: RouterChatOption[]
 }
 
 /**
- * Connection mà router THẬT SỰ định tuyến được — bản sao phía UI của `validTarget`
- * (`router/src/service.mjs`). Lệch với router thì danh sách hứa một đích mà lượt không tới được.
+ * `(connection, model)` mà router THẬT SỰ định tuyến được — bản sao phía UI của `validTarget`
+ * (`router/src/service.mjs`) và `_routable_model` (`backend/src/agentbox/agent_core/runtime.py`).
+ *
+ * Luật của router, nguyên văn: connection phải `enabled` + `authState === 'ready'` (antigravity
+ * thêm `projectState === 'ready'`), model phải `enabled` và không `unavailable`; danh sách model
+ * dò được (`discoveryState === 'ready'`) là đường thường, còn dò hỏng (`failed`/`degraded`) thì
+ * chỉ những model `source === 'custom'` — thứ người dùng tự gõ — mới còn định tuyến được.
+ *
+ * Lệch luật này theo BẤT KỲ hướng nào cũng hỏng (Duyệt 29 tìm ra cả hai):
+ * - rộng hơn ⇒ composer hứa một đích mà lượt không tới được;
+ * - hẹp hơn ⇒ bảng chọn bỏ mất đích router vẫn chạy (connection dò hỏng + model gõ tay biến mất,
+ *   và giao mức thinking tính trên tập HẸP hơn tập harness dùng, nên composer gửi `medium` cho
+ *   nhóm mà harness từ chối — THINKING_LEVEL_UNSUPPORTED).
+ * Mọi nơi cần trả lời "đích này có chạy được không" phải gọi hàm này, đừng chép lại luật.
  */
-export function eligible(c: ProviderConnection) {
-  return c.enabled && c.authState === 'ready' && c.discoveryState === 'ready'
-    && (c.providerId !== 'antigravity' || c.projectState === 'ready')
+export function routable(connection: ProviderConnection, model: ProviderModel | null | undefined): boolean {
+  if (!connection || !model) return false
+  if (!connection.enabled || connection.authState !== 'ready') return false
+  if (connection.providerId === 'antigravity' && connection.projectState !== 'ready') return false
+  if (!model.enabled || model.health === 'unavailable') return false
+  if (connection.discoveryState === 'ready') return true
+  return model.source === 'custom'
+    && (connection.discoveryState === 'failed' || connection.discoveryState === 'degraded')
+}
+
+/**
+ * Connection định tuyến được ÍT NHẤT một model — vẫn đúng luật trên, chỉ hỏi ở mức connection
+ * (danh sách model ở Settings dựng theo connection). Dùng hàm này thay vì tự lọc `discoveryState`.
+ */
+export function routableConnection(connection: ProviderConnection): boolean {
+  return (connection.models ?? []).some((model) => routable(connection, model))
 }
 
 /**
@@ -50,28 +77,33 @@ export function intersectThinkingLevels(a?: string[], b?: string[]): string[] | 
   return shared.length > 0 ? shared : undefined
 }
 
-/** Một nhóm connection dùng được của cùng (providerId, modelId). */
+/** Một nhóm connection định tuyến được của cùng (providerId, modelId). */
 export interface RouterModelRow {
   providerId: string
   providerName: string
   modelId: string
   name: string
-  connections: Array<{ id: string; name: string; thinkingLevels?: string[]; keys: number }>
+  connections: Array<{ id: string; name: string; thinkingLevels?: string[]; keys: number; handTyped: boolean }>
   /** Tổng số khoá của cả nhóm — vòng khoá router trang trí `keys`; vắng thì mỗi connection là một khoá. */
   keys: number
   /** Giao mức của MỌI connection trong nhóm — mức gửi đi phải hợp lệ với mọi đích. */
   thinkingLevels?: string[]
+  /** Số connection trong nhóm mà danh sách model là do người dùng GÕ TAY (`discoveryState` hỏng).
+   *  Vẫn định tuyến được, nhưng hàng phải nói ra thay vì gộp im lặng với connection đã dò xong. */
+  handTyped: number
 }
 
 export function providerModelRows(snapshot: ProviderSnapshot | null | undefined): RouterModelRow[] {
   const rows = new Map<string, RouterModelRow>()
-  for (const connection of (snapshot?.connections ?? []).filter(eligible)) {
+  for (const connection of snapshot?.connections ?? []) {
     for (const model of connection.models) {
-      if (!model.enabled || model.health === 'unavailable') continue
+      if (!routable(connection, model)) continue
       const levels = model.thinkingLevels?.length ? [...model.thinkingLevels] : undefined
       // Router chưa trang trí vòng khoá (`keys` vắng) thì một connection vẫn là một khoá —
       // con số hiện ra phải là số khoá THẬT có thể phục vụ lượt, không phải số 0.
       const keys = connection.keys && connection.keys.length > 0 ? connection.keys.length : 1
+      // Chỉ tới đây được khi `discoveryState === 'ready'`, hoặc khi dò hỏng mà model gõ tay.
+      const handTyped = connection.discoveryState !== 'ready'
       const key = `${connection.providerId}:${model.id}`
       const existing = rows.get(key)
       if (!existing) {
@@ -80,14 +112,16 @@ export function providerModelRows(snapshot: ProviderSnapshot | null | undefined)
           providerName: snapshot?.providers?.find((p) => p.id === connection.providerId)?.name ?? connection.name,
           modelId: model.id,
           name: model.name,
-          connections: [{ id: connection.id, name: connection.name, thinkingLevels: levels, keys }],
+          connections: [{ id: connection.id, name: connection.name, thinkingLevels: levels, keys, handTyped }],
           keys,
           thinkingLevels: levels,
+          handTyped: handTyped ? 1 : 0,
         })
         continue
       }
-      existing.connections.push({ id: connection.id, name: connection.name, thinkingLevels: levels, keys })
+      existing.connections.push({ id: connection.id, name: connection.name, thinkingLevels: levels, keys, handTyped })
       existing.keys = (existing.keys ?? 0) + keys
+      if (handTyped) existing.handTyped += 1
       existing.thinkingLevels = intersectThinkingLevels(existing.thinkingLevels, levels)
     }
   }
@@ -129,6 +163,7 @@ function rowOption(row: RouterModelRow): RouterChatOption {
     thinkingLevels: row.thinkingLevels,
     connections: row.connections.length,
     keys: row.keys,
+    handTyped: row.handTyped > 0 ? row.handTyped : undefined,
     pins: row.connections.length < 2 ? undefined : row.connections.map((connection) => ({
       value: `model:${connection.id}:${row.modelId}`,
       label: connection.name,
@@ -189,6 +224,8 @@ export interface RouterComposerModel {
   connections?: number
   /** Số khoá của cả nhóm — dòng phụ của picker đọc số này. */
   keys?: number
+  /** Số connection trong nhóm có danh sách model gõ tay (`discoveryState` hỏng) — dòng phụ đọc số này. */
+  handTyped?: number
   /** Các connection riêng lẻ của cùng model (nhóm ≥ 2 connection). */
   pins?: RouterComposerModel[]
 }
@@ -202,6 +239,7 @@ export function composerModels(options: RouterChatOption[]): RouterComposerModel
     thinkingLevels: option.thinkingLevels,
     connections: option.connections,
     keys: option.keys,
+    handTyped: option.handTyped,
     pins: option.pins?.map((pin) => ({
       id: pin.value,
       name: pin.label,

@@ -117,6 +117,33 @@ describe('routerChatOptions — một dòng cho mỗi (provider, model)', () => 
     expect(options[0].pins?.map((pin) => pin.value)).toEqual(['model:c1:m1', 'model:c3:m1'])
   })
 
+  it('giữ connection dò hỏng khi model là thứ người dùng gõ tay', () => {
+    const options = routerChatOptions(snapshot([
+      connection('c1', [model('m1')], 'opencode'),
+      connection('c2', [{ ...model('m1'), source: 'custom' }], 'opencode', { discoveryState: 'degraded' }),
+    ]))
+
+    // Nhánh `custom` của `validTarget`: dò hỏng mà model gõ tay thì router vẫn định tuyến, nên
+    // bảng chọn không được bỏ đích đó đi (ẩn nó là hứa hẹp thiếu, không phải hứa hẹp thừa).
+    expect(options[0].connections).toBe(2)
+    expect(options[0].pins?.map((pin) => pin.value)).toEqual(['model:c1:m1', 'model:c2:m1'])
+    // Hàng nói ra connection nào đang chạy bằng danh sách gõ tay; nhóm toàn connection dò xong thì im.
+    expect(options[0].handTyped).toBe(1)
+    expect(routerChatOptions(snapshot([connection('c1', [model('m1')])]))[0].handTyped).toBeUndefined()
+  })
+
+  it('mức thinking tính trên cả connection dò hỏng nên không hứa mức harness sẽ từ chối', () => {
+    const options = routerChatOptions(snapshot([
+      connection('c1', [model('m1', ['low', 'medium', 'high'])], 'opencode'),
+      connection('c2', [{ ...model('m1', ['low', 'high']), source: 'custom' }], 'opencode', { discoveryState: 'degraded' }),
+    ]))
+
+    // Harness giao mức trên MỌI connection định tuyến được, kể cả connection dò hỏng có model gõ
+    // tay; `medium` chỉ có ở c1, nên gửi nó là chắc chắn ăn THINKING_LEVEL_UNSUPPORTED.
+    expect(options[0].connections).toBe(2)
+    expect(options[0].thinkingLevels).toEqual(['low', 'high'])
+  })
+
   it('mức thinking của dòng là giao mức của mọi connection trong nhóm', () => {
     const options = routerChatOptions(snapshot([
       connection('c1', [model('m1', ['max', 'high', 'low'])], 'opencode'),

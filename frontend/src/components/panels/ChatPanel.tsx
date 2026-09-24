@@ -52,7 +52,7 @@ import { ProviderIcon } from '../providers/ProviderIcon'
 import { useHarnessStore } from '../../store/harnessStore'
 import { useHarnessChatStore } from '../../store/harnessChatStore'
 import { resolveThinkingLevel } from '../../lib/harnessThinking'
-import { composerModels, eligible, findRouteOption, routerChatOptions, selectionKey } from '../../lib/routeOptions'
+import { composerModels, findRouteOption, routerChatOptions, routable, selectionKey } from '../../lib/routeOptions'
 
 type ChatGroup =
   | { kind: 'single'; message: ChatMessage }
@@ -317,7 +317,10 @@ export function ChatPanel() {
       // Tuyến provider chạy trên BẤT KỲ connection dùng được nào của nhóm, nên chỉ cảnh báo khi
       // MỌI connection dùng được đều hỏng ping — còn một đích sống là lượt vẫn chạy được. Nhãn
       // nêu tên PROVIDER (tên connection trong nhóm chỉ là "key 1/2/3", không nói gì thêm).
-      const usable = snapshot.connections.filter(c => eligible(c) && c.providerId === selection.providerId)
+      // Cùng luật định tuyến với router (`validTarget`): connection dò hỏng vẫn là một đích nếu
+      // model là thứ người dùng gõ tay, nên đừng cảnh báo trong khi vẫn còn đích sống.
+      const usable = snapshot.connections.filter((c) => c.providerId === selection.providerId
+        && c.models.some((m) => m.id === selection.modelId && routable(c, m)))
       if (usable.length === 0 || usable.some(c => c.inferenceState !== 'failed')) return null
       const first = usable[0]
       return { ...first, name: snapshot.providers?.find(p => p.id === selection.providerId)?.name ?? first.name }

@@ -459,8 +459,13 @@ export function HarnessModelPicker({ routerModels, activeRouterModelId, onRouter
                                 <ProviderIcon providerId={model.provider} className="size-4" />
                                 <span className="font-semibold text-xs text-fg truncate">{model.name}</span>
                               </div>
-                              <div className="flex items-center gap-2 text-[10px] text-zinc-500 font-mono">
-                                <span className="flex items-center gap-1">
+                              {/* `flex-wrap` + `whitespace-nowrap`: hàng phụ có thể dài (nhiều connection,
+                                  nhiều khoá, thêm cảnh báo model gõ tay) — các mảnh phải xuống dòng
+                                  NGUYÊN VẸN, không bị bóp cho tới khi chữ gãy giữa từ. Khe hở `1.5` (không phải `2`) để
+                                  hàng phụ của nhóm bình thường VẪN vừa một dòng: đo trong bảng chọn thật,
+                                  một dòng cần 231.5px trong 235px. */}
+                              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-zinc-500 font-mono">
+                                <span className="flex items-center gap-1 whitespace-nowrap">
                                   <span className={`size-1.5 rounded-full inline-block ${isSelected ? 'bg-emerald-500' : 'bg-zinc-600'}`} />
                                   Live Provider
                                 </span>
@@ -469,7 +474,7 @@ export function HarnessModelPicker({ routerModels, activeRouterModelId, onRouter
                                 {model.connections && model.connections > 1 && (
                                   <>
                                     <span>·</span>
-                                    <span>{model.connections} connections</span>
+                                    <span className="whitespace-nowrap">{model.connections} connections</span>
                                   </>
                                 )}
                                 {/* Số khoá cũng nói được điều mà tên connection không nói: cả nhóm
@@ -477,7 +482,21 @@ export function HarnessModelPicker({ routerModels, activeRouterModelId, onRouter
                                 {model.keys && model.keys > 1 && (
                                   <>
                                     <span>·</span>
-                                    <span>{model.keys} keys</span>
+                                    <span className="whitespace-nowrap">{model.keys} keys</span>
+                                  </>
+                                )}
+                                {/* Connection dò hỏng nhưng model gõ tay: router VẪN định tuyến (nhánh
+                                    `custom` của `validTarget`), nên hàng phải nói ra thay vì gộp im
+                                    lặng với connection đã dò được danh sách. */}
+                                {(model.handTyped ?? 0) > 0 && (
+                                  <>
+                                    <span>·</span>
+                                    <span
+                                      className="whitespace-nowrap text-amber-400"
+                                      title={`Model discovery did not complete on ${model.handTyped} of these connections, so only the models typed by hand are routable there. The router still routes them.`}
+                                    >
+                                      {model.handTyped} hand-typed
+                                    </span>
                                   </>
                                 )}
                               </div>

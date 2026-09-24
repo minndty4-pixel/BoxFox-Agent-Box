@@ -210,6 +210,20 @@ describe('ContextUsageBar — nguồn cỡ context window (§D-U3)', () => {
       .toBeNull()
   })
 
+  it('tuyến provider: connection dò hỏng vẫn tính nếu model là thứ người dùng gõ tay', () => {
+    const snapshot = snapshotWith(1_000_000)
+    const [first] = snapshot.connections
+    snapshot.connections.push(
+      // Dò hỏng nhưng model gõ tay: `validTarget` vẫn định tuyến ⇒ cửa sổ của nó phải được tính.
+      { ...first, id: 'conn-hand', name: 'Antigravity (key 2)', discoveryState: 'degraded', models: [{ ...first.models[0], source: 'custom', contextWindow: 128_000 }] } as never,
+      // Dò hỏng với model dò được: router từ chối ⇒ không được kéo số xuống.
+      { ...first, id: 'conn-live', name: 'Antigravity (key 3)', discoveryState: 'failed', models: [{ ...first.models[0], source: 'live', contextWindow: 4_096 }] } as never,
+    )
+
+    expect(findRouterContextWindow(snapshot, { kind: 'provider', providerId: 'antigravity', modelId: 'gemini-3.8-flash-high' }))
+      .toEqual({ tokens: 128_000, basis: 'reported' })
+  })
+
   it('định dạng token count ổn định giữa thanh và modal', () => {
     expect(formatTokenCount(0)).toBe('0.0k')
     expect(formatTokenCount(28_600)).toBe('28.6k')

@@ -164,6 +164,31 @@ describe('HarnessModelPicker — một hàng cho mỗi (provider, model)', () =>
     expect(modelRows()[0].textContent).toContain('2 keys')
   })
 
+  it('connection dò hỏng mà model gõ tay vẫn lên hàng, và hàng nói ra điều đó', () => {
+    useProviderStore.setState({ snapshot: snapshotWith([
+      connection('c1', 'OpenCode Free (key 1)', [model(MUSE, ['low', 'high'])]),
+      connection('c2', 'OpenCode Free (key 2)', [{ ...model(MUSE, ['low', 'high']), source: 'custom' }], { discoveryState: 'degraded' }),
+    ]) })
+    const host = render(<HarnessModelPicker />)
+    openModels(host)
+
+    // Router vẫn định tuyến model gõ tay trên connection dò hỏng (`validTarget`), nên đích đó
+    // phải có mặt trong nhóm — và hàng phải nói ra thay vì gộp im lặng với connection đã dò xong.
+    expect(modelRows()).toHaveLength(1)
+    expect(modelRows()[0].textContent).toContain('2 connections')
+    expect(modelRows()[0].textContent).toContain('1 hand-typed')
+  })
+
+  it('connection dò hỏng với model dò được thì không lên hàng (router cũng từ chối đích đó)', () => {
+    useProviderStore.setState({ snapshot: snapshotWith([
+      connection('c1', 'OpenCode Free', [model(MUSE, ['low', 'high'])], { discoveryState: 'failed' }),
+    ]) })
+    const host = render(<HarnessModelPicker />)
+    openModels(host)
+
+    expect(modelRows()).toHaveLength(0)
+  })
+
   it('tab Single Models nhắc việc tự chuyển khoá khi hết hạn mức', () => {
     const host = render(<HarnessModelPicker />)
     openModels(host)
