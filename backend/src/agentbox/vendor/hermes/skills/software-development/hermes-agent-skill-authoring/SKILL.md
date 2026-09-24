@@ -126,9 +126,9 @@ POSIX-only signals to search for in `scripts/`: `fcntl`, `termios`, `pty`, `os.f
 
 Not every section applies to every skill (a pure-procedure task skill may have no Quick Reference), but When to Use + actionable body + Pitfalls + Verification are the minimum. Cut marketing intros, "Setup Check" no-ops, and re-explanations of env vars already in Prerequisites.
 
-### Reference Hermes tools, not raw shell
+### Reference harness tools, not raw shell
 
-When the skill needs a capability, name the proper Hermes tool in backticks: `terminal`, `read_file`, `write_file`, `patch`, `search_files`, `web_search`, `web_extract`, `browser_navigate`, `vision_analyze`, `delegate_task`, `cronjob`. Do NOT name shell utilities the agent already has wrapped (`grep` → `search_files`, `cat` → `read_file`, `sed`/`awk` → `patch`, `find`/`ls` → `search_files target='files'`). A CLI-wrapper skill should frame invocations as `terminal(command="<tool> ...", timeout=...)` — bare shell prose ("run `foo --version`") is a review-blocking non-conformance. If the skill depends on an MCP server, name it and document setup in Prerequisites.
+When the skill needs a capability, name the proper harness tool in backticks: `terminal_exec`, `file_read`, `file_write`, `file_edit_block`, `codebase_grep`, `codebase_glob`, `web_search`, `web_fetch`, `browser_use`, `computer_screen_capture`, `delegate_task`. Do NOT name shell utilities the agent already has wrapped (`grep` → `codebase_grep`, `cat` → `file_read`, `sed`/`awk` → `file_edit_block`, `find`/`ls` → `codebase_glob`). A CLI-wrapper skill should frame invocations as `terminal_exec(command="<tool> ...", timeout=...)` — bare shell prose ("run `foo --version`") is a review-blocking non-conformance. If the skill depends on an MCP server, name it and document setup in Prerequisites.
 
 ### Never use machine-local paths
 

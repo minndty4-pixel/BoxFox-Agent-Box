@@ -32,7 +32,7 @@ Record objective, audience, offer/message, platforms, date range, cadence, voice
 
 ### 2. Inventory source material
 
-Collect verified product facts, launches, articles, media, testimonials with permission, brand assets, and key dates using `read_file` and `web_extract`. Mark claim owners and expiration. Done when unsupported claims and missing assets are visible.
+Collect verified product facts, launches, articles, media, testimonials with permission, brand assets, and key dates using `read_file` and `web_fetch`. Mark claim owners and expiration. Done when unsupported claims and missing assets are visible.
 
 ### 3. Build themes and calendar slots
 

@@ -69,6 +69,14 @@ const IMAGE_FILE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp', '.svg', '.gif']
 const DEFAULT_FILE_LINK_LABEL = 'Open in Files'
 
 /**
+ * Vòng 27 / C-2 2.4 — phòng hồ sơ của một việc nghiên cứu: mọi đường dẫn tương đối nằm dưới
+ * `.research/<việc>/` (`.research/x/v1-x.md`, `sources.jsonl`, `tables/…`) đều là tệp THẬT trong
+ * workspace, và báo cáo cuối của main trỏ tới chúng. Chúng phải mở bằng tab Files đúng như tệp
+ * bằng chứng — không điều hướng tab trình duyệt (F5: đây là phép thử ĐẦU TIÊN, trước `isImageLink`).
+ */
+const DOSSIER_PREFIX = '.research/'
+
+/**
  * Đường dẫn artifact đã CHUẨN HOÁ: bỏ dấu cách thừa, bỏ `?query` và `#fragment` ở cuối, bỏ `./` đầu.
  *
  * Vì sao phải có: việc PHÂN LOẠI một link (ảnh? tệp bằng chứng? link ngoài?) và việc GỬI ĐI giá trị
@@ -133,6 +141,9 @@ function isImageLink(href: string): boolean {
 function isEvidenceFileLink(href: string): boolean {
   const clean = normalizeArtifactPath(href)
   if (!workspaceRelative(clean)) return false
+  // Hồ sơ nghiên cứu (`.research/<việc>/…`) là tệp để MỞ — kể cả khi tên tệp tình cờ mang đuôi ảnh
+  // (việc 2.4): nhận diện trước, nên nó không bao giờ rơi vào nhánh tile ảnh phía dưới.
+  if (clean.toLowerCase().startsWith(DOSSIER_PREFIX)) return true
   const lower = clean.toLowerCase()
   return !IMAGE_FILE_EXTENSIONS.some((ext) => lower.endsWith(ext))
 }

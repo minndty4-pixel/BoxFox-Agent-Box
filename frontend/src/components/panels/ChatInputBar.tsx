@@ -10,6 +10,8 @@ import {
   X,
   Check,
   FolderOpen,
+  Clock,
+  Info,
 } from 'lucide-react'
 import { useAgentStore } from '../../store/agentStore'
 import { useUiStore } from '../../store/uiStore'
@@ -31,6 +33,7 @@ import { ShortcutsPopover } from '../chat/ShortcutsPopover'
 import { useSlashCompletion } from '../chat/useSlashCompletion'
 import { LabelDot } from '../LabelDot'
 import { inspectChipLabel } from '../../lib/inspect/format'
+import type { SteerNotice } from '../../store/harnessChatStore'
 
 // Ở chế độ `live` (`VITE_TRANSPORT=live`) chưa có handler backend nào tiêu
 // thụ `elements` (xem `types/transport.ts` chú thích trên `user_message`) —
@@ -44,6 +47,14 @@ export interface RouterComposerAdapter {
   activeModelId: string
   isBusy: boolean
   connectionWarning?: string | null
+  /**
+   * Vòng 27 / C-5 — lượt ĐANG CHẠY vẫn nhận chỉ thị của chủ nhà: khi `true`, nút Gửi ở LẠI cạnh
+   * nút Stop, câu gõ vào được xếp hàng cho lượt đang chạy và main đọc ở bước kế. `isBusy` vẫn là
+   * thứ khoá nút Gửi ở mọi trạng thái khác (lượt chưa mở xong).
+   */
+  canSteer?: boolean
+  /** Dòng xác nhận của chỉ thị vừa vào hàng (nguyên văn + mốc thời gian) — không có thì không hiện. */
+  steerNotice?: SteerNotice | null
   onModelChange: (id: string) => void
   /**
    * Trả `false` (hoặc Promise resolve `false`) khi lần gửi thất bại — khi đó
@@ -326,9 +337,13 @@ export function ChatInputBar({
   }
 
   // Đang chạy: nút Gửi biến mất (thay bằng Stop) trừ khi ô nhập đang là một
-  // lệnh điều khiển — người dùng vẫn phải bấm gửi được `/stop` (BUG-21/U5).
+  // lệnh điều khiển — người dùng vẫn phải bấm gửi được `/stop` (BUG-21/U5) —
+  // hoặc lượt đang chạy NHẬN chỉ thị giữa lượt (vòng 27 / C-5: câu gõ vào được
+  // xếp hàng cho lượt đang chạy, áp ở bước kế, nên nút Gửi phải còn).
   const canSend = Boolean(input.trim() || attachments.length || pendingElements.length)
-  const showSendButton = !isBusy || isControlCommand(input)
+  const canSteer = Boolean(router?.canSteer)
+  const steerNotice = router?.steerNotice ?? null
+  const showSendButton = !isBusy || isControlCommand(input) || canSteer
 
   return (
     <div ref={barRef} className="border-t border-line bg-panel p-3 select-none">
@@ -494,6 +509,29 @@ export function ChatInputBar({
           <p className="mb-2 px-1 text-[11px] text-amber-500">{t('composer.elementContextLiveUnsupported')}</p>
         )}
 
+        {/* Chỉ thị đã xếp hàng cho lượt đang chạy (vòng 27 / C-5): dòng này nằm TRONG hộp soạn
+            tin, ngay trên ô nhập — nó thuộc về câu vừa gõ, không phải một khối quanh câu trả lời.
+            Nguyên văn được giữ lại để chủ nhà thấy đúng thứ mình đã gửi. */}
+        {steerNotice && (
+          <div
+            data-testid="composer-steer-queued"
+            className="mb-2 flex items-start gap-1.5 rounded-lg border border-brand/30 bg-brand/5 px-2 py-1.5 text-[11px] text-brand"
+          >
+            <Clock className="mt-0.5 size-3 shrink-0" />
+            <div className="min-w-0 flex-1">
+              <p className="font-medium">
+                {t('composer.steerQueued')}
+                <span className="ml-1.5 font-mono text-[10px] text-muted">
+                  {new Date(steerNotice.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </span>
+              </p>
+              <p className="truncate text-muted" title={steerNotice.text}>
+                “{steerNotice.text}”
+              </p>
+            </div>
+          </div>
+        )}
+
         <textarea
           role="combobox"
           aria-label="Message"
@@ -593,7 +631,15 @@ export function ChatInputBar({
                 data-uploading={uploading ? 'true' : undefined}
                 aria-busy={uploading || undefined}
                 className="flex size-7 items-center justify-center rounded-lg bg-zinc-100 text-zinc-900 shadow-xs transition hover:bg-white disabled:opacity-30 disabled:hover:bg-zinc-100 cursor-pointer animate-in fade-in zoom-in-90 duration-150"
-                title={uploading ? t('composer.uploadingAttachments') : isBusy ? t('composer.sendControlWhileBusy') : 'Send prompt (Enter)'}
+                title={
+                  uploading
+                    ? t('composer.uploadingAttachments')
+                    : isControlCommand(input) && isBusy
+                      ? t('composer.sendControlWhileBusy')
+                      : canSteer
+                        ? t('composer.sendSteer')
+                        : 'Send prompt (Enter)'
+                }
               >
                 {uploading ? <Loader2 className="size-3.5 animate-spin" /> : <ArrowUp className="size-3.5" />}
               </button>
@@ -601,6 +647,18 @@ export function ChatInputBar({
           </div>
         </div>
       </div>
+
+      {/* Dòng chú thích DƯỚI ô nhập khi lượt đang chạy (vòng 27 / C-5): câu gõ vào không cắt
+          ngang bước đang chạy và không mở lượt mới — nó vào hàng cho lượt này. */}
+      {canSteer && (
+        <div
+          data-testid="composer-steer-hint"
+          className="mt-1.5 flex items-center gap-1.5 px-1 text-[11px] text-amber-500"
+        >
+          <Info className="size-3 shrink-0" />
+          <span>{t('composer.steerHint')}</span>
+        </div>
+      )}
     </div>
   )
 }

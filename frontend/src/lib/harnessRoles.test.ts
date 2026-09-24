@@ -15,6 +15,13 @@ describe('harness role migration', () => {
     expect(roles.some(r => r.id === 'plan-review')).toBe(true)
     expect(roles.find(r => r.id === 'plan-review')).toMatchObject({ name: 'Plan Review', enabled: true })
   })
+  it('names the research critic role with a readable label', () => {
+    const roles = expandSubagents([])
+    expect(roles.some(r => r.id === 'research-review')).toBe(true)
+    expect(roles.find(r => r.id === 'research-review')).toMatchObject({ name: 'Research Review', enabled: true })
+    // Vai mới đứng CUỐI danh sách: thứ tự các vai cũ không đổi (test trên ghim thứ tự đó).
+    expect(roles.at(-1)?.id).toBe('research-review')
+  })
   it('retains explicitly selected live model routes', () => {
     expect(expandSubagents([{ id: 'build', name: 'Build', enabled: true, model: 'model:connection:model-id', systemPromptAppended: '' }]).find(r => r.id === 'build')?.model).toBe('model:connection:model-id')
   })

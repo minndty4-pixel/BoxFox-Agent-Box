@@ -85,6 +85,8 @@ const ROLE_DESCRIPTIONS: Record<string, string> = {
   simplify: 'Simplify existing code without changing behavior. Preserve public contracts.',
   testing: 'Run meaningful tests in the sandbox, including UI/visual checks when relevant.',
   research: 'Research using observed repository or browser sources with grounded citations.',
+  'research-review':
+    'Read the research dossier as an independent critic and return issues with severity, evidence and a concrete fix.',
 }
 
 interface ChildSessionView {
@@ -234,6 +236,10 @@ export function buildChildTurns(events: readonly HarnessEvent[]): ChildTurnGroup
     const declared = declaredTurn(event)
 
     if (event.type === 'user') {
+      // Vòng 27 / C-5 — chỉ thị giữa lượt (`{steer:true}`) KHÔNG mở lượt mới (harness cũng không
+      // tăng `_turn_index`): tính nó là mốc lượt thì nhánh đang chạy bị tách sang một lượt ma.
+      // Bỏ qua nó ⇒ con phía sau vẫn thuộc đúng lượt đang chạy.
+      if (event.data?.steer === true) continue
       userIndex += 1
       currentTurn = declared ?? userIndex
       const group = ensure(currentTurn)

@@ -248,15 +248,15 @@ find . -name "*.bib"
 
 **Load the `arxiv` skill** for structured paper discovery: `skill_view("arxiv")`. It provides arXiv REST API search, Semantic Scholar citation graphs, author profiles, and BibTeX generation.
 
-Use `web_search` for broad discovery, `web_extract` for fetching specific papers:
+Use `web_search` for broad discovery, `web_fetch` for fetching specific papers:
 
 ```
 # Via web_search:
 web_search("[main technique] + [application domain] site:arxiv.org")
 web_search("[baseline method] comparison ICML NeurIPS 2024")
 
-# Via web_extract (for specific papers):
-web_extract("https://arxiv.org/abs/2303.17651")
+# Via web_fetch (for specific papers):
+web_fetch(url="https://arxiv.org/abs/2303.17651")
 ```
 
 Additional search queries to try:
@@ -1392,7 +1392,7 @@ Compose this skill with other Hermes skills for specific phases:
 | **`execute_code`** | Run Python for citation verification, statistical analysis, data aggregation. Has tool access via RPC. |
 | **`read_file`** / **`write_file`** / **`patch`** | Paper editing, experiment scripts, result files. Use `patch` for targeted edits to large .tex files. |
 | **`web_search`** | Literature discovery: `web_search("transformer attention mechanism 2024")` |
-| **`web_extract`** | Fetch paper content, verify citations: `web_extract("https://arxiv.org/abs/2303.17651")` |
+| **`web_fetch`** | Fetch paper content, verify citations: `web_fetch(url="https://arxiv.org/abs/2303.17651")` |
 | **`delegate_task`** | **Parallel section drafting** — spawn isolated subagents for each section. Also for concurrent citation verification. |
 | **`todo`** | Primary state tracker across sessions. Update after every phase transition. |
 | **`memory`** | Persist key decisions across sessions: contribution framing, venue choice, reviewer feedback. |
@@ -1418,7 +1418,7 @@ delegate_task("Draft the Methods section based on these experiment scripts and c
   Include: pseudocode, all hyperparameters, architectural details sufficient for 
   reproduction. Write in LaTeX using the neurips2025 template conventions.")
 
-delegate_task("Draft the Related Work section. Use web_search and web_extract to 
+delegate_task("Draft the Related Work section. Use web_search and web_fetch to 
   find papers. Verify every citation via Semantic Scholar. Group by methodology.")
 
 delegate_task("Draft the Experiments section. Read all result files in results/. 

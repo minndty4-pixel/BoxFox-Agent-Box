@@ -1,7 +1,7 @@
-"""Tám nhóm công cụ của runtime — bảng "Nút vặn của runtime" nói với giao diện.
+"""Mười nhóm công cụ của runtime — bảng "Nút vặn của runtime" nói với giao diện.
 
-Bảng này là nguồn duy nhất cho khối "Tool access" ở tab Harness: hợp của tám nhóm
-phải bằng ĐÚNG bộ công cụ của orchestrator (`roles.ORCHESTRATOR_TOOLS`, 24 công cụ),
+Bảng này là nguồn duy nhất cho khối "Tool access" ở tab Harness: hợp của mười nhóm
+phải bằng ĐÚNG bộ công cụ của orchestrator (`roles.ORCHESTRATOR_TOOLS`, 35 công cụ),
 và mỗi nhóm giữ trật tự như bảng trong kế hoạch. `alwaysOn` đánh dấu nhóm không thể
 tắt: hỏi người dùng và xin phép là hai công cụ quyết định (`roles.DECISION`), mọi
 vai trò đều có, nên một harness tắt chúng là một harness không còn hỏi được ai.
@@ -29,6 +29,15 @@ TOOL_GROUPS = [
      'alwaysOn': False},
     {'key': 'delegationPlans',
      'tools': ['delegate_task', 'session_search', 'write_plan', 'plan_verify', 'journal_write', 'journal_brief'],
+     'alwaysOn': False},
+    # Vòng 27 (đợt 3–7) — sổ nguồn và hồ sơ research, chèn NGAY SAU `delegationPlans`:
+    # hai nhóm này là phần "research có kiểm chứng" của cùng một việc giao cho con,
+    # nên chúng đứng cạnh nhóm giao việc chứ không cạnh nhóm đọc web.
+    {'key': 'researchLedger',
+     'tools': ['source_add', 'source_list', 'source_verify'],
+     'alwaysOn': False},
+    {'key': 'researchDossiers',
+     'tools': ['research_brief', 'dossier_write', 'research_verify', 'research_status', 'cancel_child'],
      'alwaysOn': False},
     {'key': 'peerMesh',
      'tools': ['peer_read', 'await_children'],

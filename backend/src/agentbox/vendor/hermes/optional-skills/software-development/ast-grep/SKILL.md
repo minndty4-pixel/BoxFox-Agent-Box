@@ -35,12 +35,12 @@ Use it whenever the question is about **code structure**, not bytes:
 - "Apply this codemod across these 200 files."
 - "Run our YAML lint rules and surface violations."
 
-Switch to `search_files` (or plain `rg`) when the question is text-shaped (string literal contents, comments, license headers, file names, cross-language regex). When in doubt, ask: "does the answer depend on the language's syntax tree, or just on the file's bytes?" If the former, ast-grep. If the latter, search_files.
+Switch to `codebase_grep` (or plain `rg`) when the question is text-shaped (string literal contents, comments, license headers, file names, cross-language regex). When in doubt, ask: "does the answer depend on the language's syntax tree, or just on the file's bytes?" If the former, ast-grep. If the latter, search_files.
 
 Hermes integration notes:
-- Run the helper and `sg` through the `terminal` tool. Single-quote every pattern so the shell never expands `$VAR`.
-- For find→read chains around matches, use `--json-out` and process with `execute_code` rather than piping through interpreters.
-- This complements (does not replace) Hermes's `patch` tool: `patch` is for targeted edits you author; ast-grep is for pattern-driven bulk rewrites across many sites.
+- Run the helper and `sg` through the `terminal_exec` tool. Single-quote every pattern so the shell never expands `$VAR`.
+- For find→read chains around matches, use `--json-out` and process it with a short Python one-liner through `terminal_exec` rather than piping through interpreters.
+- This complements (does not replace) the `file_edit_block` tool: `file_edit_block` is for targeted edits you author; ast-grep is for pattern-driven bulk rewrites across many sites.
 
 ---
 

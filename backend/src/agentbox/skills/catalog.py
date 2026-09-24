@@ -11,7 +11,26 @@ DEFAULT_SKILLS = {'codebase-inspection', 'systematic-debugging', 'requesting-cod
                   'final-report',
                   # Vòng 25 (D-33): vòng lặp kế hoạch (nghiên cứu → ghi → phản biện → ghi nhận
                   # verdict → duyệt). Nhận mặc định vì lượt lập kế hoạch nào cũng cần nó.
-                  'planning'}
+                  'planning',
+                  # Vòng 27 (A7/C-1): ba mức + bốn pha + sổ nguồn + hình dạng hồ sơ. Nhận mặc
+                  # định vì mọi lượt nghiên cứu đều phải mở đầu bằng `research_brief`.
+                  'research-team',
+                  # Vòng 27 (A7): `arxiv` gọi `web_fetch` trên API export.arxiv.org (không còn
+                  # `curl` — vai research không có `terminal_exec`); `blocked-page-recovery` là
+                  # thang 5 bậc cho trang bị chặn, đúng việc research và không cần gói nào.
+                  'arxiv', 'blocked-page-recovery'}
+
+
+# Sáu kỹ năng nghiên cứu CỐ Ý để TẮT (vòng 27, A7) — không phải bỏ quên. Lý do có chữ:
+#   rss-feeds, blogwatcher  — cần script/CLI trong box chạy nền (#5977 cấm cài gói).
+#   pdf                     — cần `pdftotext`/`pypdf`/`tesseract`; box không có, không cài được.
+#   scrapling               — cần gói Python ngoài .venv của box.
+#   duckduckgo-search, searxng-search — cần script + điểm cuối tìm kiếm ngoài; harness đã có
+#                             `web_search` (HOST) làm đúng việc đó, không cần kỹ năng trùng.
+# Mở lại theo thứ tự rss-feeds → pdf → scrapling khi Phạm vi A giao runner/allowlist cho script.
+DISABLED_RESEARCH_SKILLS = {'rss-feeds', 'blogwatcher', 'pdf', 'scrapling', 'duckduckgo-search', 'searxng-search'}
+DISABLED_RESEARCH_REASON = ('cần gói/script không cài được trong box (#5977) — xem khối chú thích '
+                            'DISABLED_RESEARCH_SKILLS trong catalog.py')
 
 
 class SkillCatalog:

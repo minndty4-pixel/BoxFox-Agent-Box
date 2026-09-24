@@ -611,3 +611,24 @@ describe('SubagentInspectorPanel — đường ống peer (T15)', () => {
     expect(text).not.toContain('[object Object]')
   })
 })
+
+/**
+ * Vòng 27 / C-5 — chỉ thị giữa lượt (`user` với `{steer:true}`) không phải một mốc lượt: harness
+ * không tăng `_turn_index` cho nó, nên bảng Sub-agents cũng không được tách nhánh đang chạy sang
+ * một lượt ma. Con mở TRƯỚC và SAU chỉ thị vẫn thuộc cùng lượt đó.
+ */
+describe('SubagentInspectorPanel — chỉ thị giữa lượt không mở lượt mới (C-5)', () => {
+  it('con sau chỉ thị vẫn nằm cùng lượt với con trước chỉ thị', async () => {
+    seed([
+      userEvent(1, 'nhờ em nghiên cứu chuyển tuyến', 1),
+      childEvent(2, 'child-law', 'research', { turn: 1 }),
+      ev(3, 'user', { text: 'dừng nhánh luật', steer: true, control: true, turn: 1 }),
+      childEvent(4, 'child-health', 'research', { turn: 1 }),
+    ])
+
+    const host = await render()
+
+    expect(turnBlocks(host)).toEqual(['1'])
+    expect(rows(host).sort()).toEqual(['child-health', 'child-law'])
+  })
+})

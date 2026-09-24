@@ -50,11 +50,13 @@ from .limits import (ANSWER_LENGTH_HINT, ANSWER_LENGTH_WARN_CODE, ANSWER_MAX_CHA
                      WEB_READER_MODES, WEB_READER_MODE_UNKNOWN_CODE,
                      WEB_READ_STORE_DEFAULT_MODE, WEB_READ_STORE_ENV, WEB_READ_STORE_MODES,
                      WEB_READ_STORE_MODE_UNKNOWN_CODE,
+                     RESEARCH_PROGRESS_NUDGE_SECONDS, RESEARCH_HARD_CEILING_NOTICE_CODE,
                      WRAP_UP_MAX_TOKENS,
                      WRAP_UP_READ_TOOL_CALLS, WRAP_UP_STEPS_RESERVED, WRAP_UP_TIMEOUT_SECONDS)
-from . import plan_quality
+from . import plan_quality, research_runtime
 from .plan_quality import check_plan_quality
 from .roles import ROLES, allowed_tools
+from .limits import OWNER_STEER_PREFIX, RESEARCH_NUDGE_PREFIX
 from . import evidence_gate, journal, plan_eval, plan_header, plan_registry, session_journal
 from .tool_contracts import schemas_for
 from .tool_groups import TOOL_GROUPS
@@ -103,6 +105,8 @@ CORE MULTI-AGENT DELEGATION PROTOCOL:
    - Phase 1 (Explore): Delegate to role='explore' to survey files, symbols, dependency trees, and existing architecture.
      * `write_plan` refuses a plan that leans on outside facts without a Sources / Citations section naming where each fact came from; that answer must come from a real tool call of this session (`web_search`/`web_fetch` host-side, or `role='research'`), never from memory.
      * Hand every external-knowledge question (a library's real API, a standard, a version, a web page) to role='research'. It reaches the browser AND the host-side `web_search`/`web_fetch` tools; you hold those two tools as well, so answer a quick fact yourself and delegate the deep survey. The sandbox network can be OFF — the host tools are not affected — so a research answer may still honestly say "could not verify". Accept that over a guessed source.
+     * Open a research job with `research_brief` BEFORE the first `delegate_task(role='research')`: it fixes the tier (1, 2 or 3), the job profile, the dossier folder and the branch/wave budget, and the owner gets to see the cost before the work runs. A job without a brief is reported (`RESEARCH_BRIEF_MISSING`) with the tier it assumed. Do not raise the tier mid-job.`research_brief` keeps one job per turn: a new question is a new turn.
+     * The dossier is MAIN's file: a research branch reports ledger rows up with `source_add` and answers with its findings — it never writes the dossier. Write it with `dossier_write` after the gate passes, then, at level 3, delegate `role='research-review'` and record its verdict with `research_verify`. When the owner stated an opinion or an assumption, list it in `ownerViews` at brief time: the dossier must then carry the three-label critique section (support / contradict / unsure), each label with a source.
    - Phase 2 (Plan & Design):
      * Delegate to role='plan' to construct ordered milestones, risks, and acceptance criteria.
      * A written plan is NOT finished work. Right after `write_plan`, delegate role='plan-review' on the file it just wrote (read-only critic: it checks every path, command and criterion you claimed) and then record its verdict with `plan_verify(identity, version, verdict, issues, summary)`. That verdict is bound to the exact version: after you write the next version, critique that one too.
@@ -1166,6 +1170,9 @@ def turn_prompt_excerpt(messages, limit=RECAP_REQUEST_CHARS):
     một chuyên gia là DỮ LIỆU tới kèm trong lượt, không phải việc chủ giao, nên nó không được đội
     lốt "owner request" của bản nhắc việc. Hết message của chủ (chỉ còn kết quả bạn) ⇒ `''`: chỗ
     gọi nói thẳng là không thấy, không gán nhãn chủ cho thứ khác.
+    Vòng 27 (D-43, #5969) bỏ qua thêm HAI tiền tố của đường research: `OWNER_STEER_PREFIX` (chỉ
+    thị giữa lượt) và `RESEARCH_NUDGE_PREFIX` (nhịp báo tiến độ). Cả hai đều không phải việc chủ
+    giao ở lượt này — thứ nhất là một điều chỉnh giữa lượt, thứ hai do máy bơm.
     """
     for message in reversed(list(messages or [])):
         if message.get('role') != 'user':
@@ -1174,7 +1181,8 @@ def turn_prompt_excerpt(messages, limit=RECAP_REQUEST_CHARS):
         if isinstance(content, list):
             content = ' '.join(part.get('text', '') for part in content if isinstance(part, dict))
         text = ' '.join(str(content or '').split())
-        if not text or text.startswith(PEER_DELIVERY_PREFIX):
+        if not text or text.startswith((PEER_DELIVERY_PREFIX, OWNER_STEER_PREFIX,
+                                        RESEARCH_NUDGE_PREFIX)):
             continue
         return text[:limit]
     return ''
@@ -1272,6 +1280,10 @@ class HarnessRuntime(RuntimeCommands):
         # ngay lúc sinh con; cặp đó đã nằm trong event `turn_start`/`turn_end` nhưng không
         # nằm trong RAM, nên `delegate` cần bản đọc nhanh này.
         self.active_step = {}
+        # Vòng 27 (đợt 7): trạng thái nhịp báo tiến độ của lượt (một mục mỗi phiên), và số lần
+        # đã nới trần lượt cho một việc research mức 3 (D-40 — tối đa MỘT lần mỗi lượt).
+        self.progress_state = {}
+        self.research_extensions = {}
         # sessionId -> đã gọi op `session_ensure` trong box (A1). Thư mục phiên sinh ở LẦN GHI đầu
         # tiên của phiên, nhưng một tiến trình harness chỉ trả MỘT `docker exec` cho việc đó; lượt
         # sau đọc lại set này. Không nhớ khi box chưa trả lời — hỏng thì lượt kế thử lại.
@@ -2505,6 +2517,95 @@ class HarnessRuntime(RuntimeCommands):
                 found.extend(HarnessRuntime.source_strings(item, depth + 1))
         return found
 
+    # --- Vòng 27 (đợt 3–8): sổ nguồn, ba mức, nhịp tiến độ --------------------------------
+
+    async def queue_owner_steer(self, sid, text):
+        """Cửa duy nhất xếp chỉ thị giữa lượt — `submit` của phiên gốc gọi nó khi lượt đang chạy."""
+        return await research_runtime.queue_owner_steer(self, sid, text)
+
+    async def research_ledger_tool(self, session, name, args):
+        """Ba công cụ sổ nguồn đi qua MỘT cửa: luật nằm ở `research_runtime`, không chép lại."""
+        if name == 'source_add':
+            return research_runtime.source_add(self, session, args)
+        if name == 'source_list':
+            return research_runtime.source_list(self, session, args)
+        return await research_runtime.source_verify(self, session, args)
+
+    def current_turn_seconds(self, sid):
+        """Độ dài ĐANG có của lượt (giây), hoặc hạn mặc định khi chưa mở ngân sách."""
+        budget = self.run_budget.get(sid)
+        when = budget.when() if budget is not None else None
+        if when is None:
+            return float(DEADLINE_DEFAULT_SECONDS)
+        started = self.turn_started_at.get(sid)
+        if started is None:
+            return max(0.0, when - time.time())
+        return max(0.0, when - started)
+
+    async def extend_research_budget(self, sid, tier, ceiling):
+        """Nới trần LƯỢT cho một việc research (D-40) — tối đa MỘT lần, không quá trần cứng của mức.
+
+        Khác `extend_turn_budget`: phần nới này **không** đụng bộ đếm `PLAN_TURN_EXTENSIONS_MAX`
+        (đó là luật của vòng lặp kế hoạch), và trần của nó là `hardCeilingSeconds` — 30 phút cho
+        mức 1–2, 120 phút cho mức 3. Chạm trần cứng thì báo cho chủ nhà: vượt nữa phải là một lượt
+        mới, không phải một lần nới ngầm.
+        """
+        limits = research_runtime.research_tier_limits(tier)
+        hard = float(limits['hardCeilingSeconds'])
+        budget = self.run_budget.get(sid)
+        when = budget.when() if budget is not None else None
+        if when is None:
+            return None
+        if int(self.research_extensions.get(sid, 0)) >= 1:
+            return None
+        base = self.turn_started_at.get(sid)
+        if base is None:
+            base = when - float(DEADLINE_DEFAULT_SECONDS)
+        new_when = max(when, min(base + float(ceiling), base + hard, time.time() + hard))
+        if new_when <= when:
+            return None
+        try:
+            budget.reschedule(new_when)
+        except RuntimeError:  # pragma: no cover - ngân sách đã đóng giữa hai bước
+            return None
+        self.research_extensions[sid] = 1
+        gain = round(new_when - when, 1)
+        self.store.emit(sid, 'notice', {
+            'code': TURN_EXTENDED_CODE, 'tier': int(tier), 'partial': False, 'seconds': gain,
+            'message': (f'{TURN_EXTENDED_CODE}: +{round(gain)}s cho lượt research mức {int(tier)} '
+                        f'(trần cứng của mức: {int(hard)}s)')})
+        system_log.write('research.turn.extended', level='info', session_id=sid, code=TURN_EXTENDED_CODE,
+                         tier=int(tier), seconds=gain, hardCeiling=int(hard))
+        if float(ceiling) >= hard:
+            self.store.emit(sid, 'notice', {
+                'code': RESEARCH_HARD_CEILING_NOTICE_CODE, 'tier': int(tier), 'partial': False,
+                'message': (f'{RESEARCH_HARD_CEILING_NOTICE_CODE}: việc này xin trần {int(ceiling)}s nhưng '
+                            f'trần CỨNG của mức {int(tier)} là {int(hard)}s — phần vượt phải là một lượt '
+                            f'mới, hoặc chủ nhà nâng phạm vi việc')})
+            system_log.write('research.ceiling.touched_hard', level='warn', session_id=sid,
+                             code=RESEARCH_HARD_CEILING_NOTICE_CODE, tier=int(tier),
+                             asked=int(ceiling), hard=int(hard))
+        return {'seconds': gain, 'newDeadline': new_when, 'hardCeiling': int(hard),
+                'ceiling': int(ceiling), 'tier': int(tier)}
+
+    def maybe_nudge_progress(self, sid, messages):
+        """Nhịp báo tiến độ (#5969): mỗi 600 s bơm MỘT câu nhắc, `RESEARCH_PROGRESS_MAX_PER_TURN` lần.
+
+        Câu nhắc **không** phát event và **không** sinh hàng `D:` — nó là một mục `user` trong
+        transcript, không phải một sự kiện của phiên: đếm nó thành lượt hay vẽ nó thành một dải
+        trạng thái đều sai. Trạng thái nhịp sống theo từng phiên và tự đặt lại khi sang lượt mới.
+        """
+        turn = self.active_turn.get(sid) or 0
+        state = self.progress_state.get(sid)
+        if not isinstance(state, dict) or state.get('turn') != turn:
+            self.progress_state[sid] = {'turn': turn, 'count': 0,
+                                        'due': time.time() + RESEARCH_PROGRESS_NUDGE_SECONDS}
+            return False
+        minutes = research_runtime.nudge_due(self, sid)
+        if minutes is None:
+            return False
+        return research_runtime.inject_progress_nudge(self, sid, messages, minutes)
+
     def extend_turn_budget(self, sid, reason):
         """Nới hạn chót của LƯỢT đang chạy đúng MỘT lần, cho một sự kiện có thật (D-35).
 
@@ -3058,6 +3159,11 @@ class HarnessRuntime(RuntimeCommands):
                     # sau khi nén (khối ký ức đã dựng lại) và trước `step`, tức trước khi model
                     # của bước này được gọi.
                     self.drain_peer_deliveries(sid, messages)
+                    # Vòng 27 (đợt 7, D-43): chỉ thị giữa lượt của chủ nhà vào transcript NGAY
+                    # trước bước kế tiếp (mỗi chỉ thị đúng MỘT lần), rồi tới nhịp báo tiến độ
+                    # nếu đã tới hạn và còn quota của lượt (#5969).
+                    research_runtime.drain_steers(self, sid, messages)
+                    self.maybe_nudge_progress(sid, messages)
                     self.store.emit(sid, 'step', {'turn': turn_no, 'iteration': step + 1, 'contextEstimate': estimate_tokens(messages, tools)})
                     # The router callback hands over the text accumulated so far (that is the shape
                     # every provider adapter can satisfy). Events must carry only the NEW part:
@@ -3500,6 +3606,8 @@ class HarnessRuntime(RuntimeCommands):
                 self.settle(record, record['defaultChoice'], 'cancelled', 'session_cancelled', None)
             self.active_messages.pop(sid, None)
             self.active_step.pop(sid, None)
+            self.progress_state.pop(sid, None)
+            self.research_extensions.pop(sid, None)
             await self.executor.cleanup(sid)
             # T7 — lượt này đóng thì con của CHÍNH NÓ không được sống tiếp. Con đã xong trước đó
             # thì hàm này không thấy hàng `started` nào, nên đây là no-op ở lượt thường. Dọn con
@@ -3544,6 +3652,18 @@ class HarnessRuntime(RuntimeCommands):
             return await self.write_plan(session, args)
         if name == 'plan_verify':
             return await self.plan_verify(session, args)
+        if name in {'source_add', 'source_list', 'source_verify'}:
+            return await self.research_ledger_tool(session, name, args)
+        if name == 'dossier_write':
+            return await research_runtime.dossier_write(self, session, args)
+        if name == 'research_brief':
+            return await research_runtime.research_brief(self, session, args)
+        if name == 'research_verify':
+            return await research_runtime.research_verify(self, session, args)
+        if name == 'research_status':
+            return research_runtime.research_status(self, session, args)
+        if name == 'cancel_child':
+            return await research_runtime.cancel_child(self, session, args)
         if name == 'journal_write':
             return await self.journal_write(sid, args)
         if name == 'journal_brief':
@@ -5024,13 +5144,24 @@ class HarnessRuntime(RuntimeCommands):
                              f' (limit {CHILDREN_PER_TURN_MAX}) — finish or await them first')
         # Slot mua TRƯỚC khi sinh phiên con: hết chỗ thì chỉ có một lỗi tool, không có hàng
         # `sessions` mồ côi nằm ở `idle` mà không ai chạy.
+        # Vòng 27 (đợt 5, D-40/D-41): cổng mềm thiếu brief + trần nhánh theo mức, rồi hai hệ số
+        # của con research (bước, giây). Chưa có brief ⇒ cả ba đều là no-op, hành vi y như trước.
+        research_runtime.missing_brief_gate(self, session, role)
+        research_runtime.branch_limit_check(self, session, role)
+        tier = int(research_runtime.research_config(session).get('tier') or 0)
+        child_steps = min(CHILD_MAX_STEPS, config['maxSteps'])
+        child_deadline = min(CHILD_DEADLINE_SECONDS, config['deadlineSeconds'])
+        if role == 'research' and tier:
+            tier_limits = research_runtime.research_tier_limits(tier)
+            child_steps = min(child_steps, tier_limits['childSteps'])
+            child_deadline = min(child_deadline, tier_limits['childSeconds'])
         await self.acquire_child_slot(parent_id)
         try:
             child_route = route_for(configured.get('model')) or config['route']
             child = self.create({**child_route,
                 'skills': sorted(set(config['skills']) & ROLE_SKILLS[role]),
-                'maxSteps': min(CHILD_MAX_STEPS, config['maxSteps']),
-                'deadlineSeconds': min(CHILD_DEADLINE_SECONDS, config['deadlineSeconds']),
+                'maxSteps': child_steps,
+                'deadlineSeconds': child_deadline,
                 'contextWindow': config['contextWindow'],
                 'contextWindowSource': config.get('contextWindowSource'),
                 'instructions': configured.get('systemPromptAppended', '')},
@@ -5184,5 +5315,18 @@ class HarnessRuntime(RuntimeCommands):
             system_log.write('child.delivery_failed', level='warn', session_id=child['id'],
                              parent=parent_id, message=str(exc)[:300])
             result['deliveries'] = []
+        # Vòng 27 (đợt 4, A5) — tầng CON của cổng chất lượng: CHÚ THÍCH tất định cho nhánh research.
+        # Chỉ đọc: không viết lại câu trả lời của con (I2/D-18), không đổi `status` (I3). Hỏng thì
+        # ghi lại rồi đi tiếp — đường đóng lượt con không bao giờ bị chặn vì một chú thích.
+        if role == 'research':
+            try:
+                result['researchGate'] = research_runtime.annotate_branch_answer(
+                    self, session, child['id'], answer_text, tools_run)
+                self.store.emit(session['id'], 'notice', {
+                    'code': research_runtime.RESEARCH_GATE_NOTE_CODE, 'partial': False,
+                    'message': result['researchGate'].get('notice') or ''})
+            except Exception as exc:  # pragma: no cover - phòng vệ
+                system_log.write('research.gate.annotate_failed', level='warn', session_id=child['id'],
+                                 message=str(exc)[:300])
         self.store.emit(session['id'], 'child', result)
         return result

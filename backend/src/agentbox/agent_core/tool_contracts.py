@@ -181,7 +181,7 @@ SCHEMAS = [
          '(`deliverTo`), and you read it with `await_children`. The default `wait=true` blocks this '
          'call until the child answers.',
          {'role': {'type': 'string',
-                   'enum': ['explore', 'plan', 'plan-review', 'design', 'build', 'debug', 'review', 'simplify', 'testing', 'research'],
+                   'enum': ['explore', 'plan', 'plan-review', 'design', 'build', 'debug', 'review', 'simplify', 'testing', 'research', 'research-review'],
                    'description': 'Specialist id. Only `research` can look things up outside the workspace: it holds '
                                   'web_search, web_fetch, read_source and paper_citations (host-side, real '
                                   'Internet) plus read-only browser_use for box-local pages. Ask it for external facts and expect "could not verify" '
@@ -251,6 +251,92 @@ SCHEMAS = [
                          'required': ['severity', 'text']}},
           'summary': STRING},
          ['identity', 'version', 'verdict']),
+    tool('source_add',
+         'Record ONE source row in the session source ledger: the claim you are backing, the exact URL you '
+         'opened, and a VERBATIM excerpt of at least 80 characters from what you actually read (not a summary, '
+         'not a snippet you only saw in search results). Pass `origin` when the same story is republished '
+         'elsewhere (e.g. "TTXVN") so the harness counts it as ONE source, `type` = "host-doc" for a file the '
+         'owner supplied, "official-social" for an official agency page on a social platform, or "confirm" for a '
+         'second place confirming an existing row (`sourceRowId`). Pass `payload` with the profile fields this '
+         'row proves (e.g. {"docNumber":"100/2019/NĐ-CP","effectiveDate":"2020-01-01","validity":"in_force"}). '
+         'The answer returns the harness-assigned `rowId` (r1, r2, …) plus the tier the host scales to.',
+         {'claim': STRING, 'url': STRING, 'excerpt': STRING, 'origin': STRING, 'method': STRING,
+          'type': {'type': 'string', 'enum': ['normal', 'host-doc', 'official-social', 'confirm']},
+          'sourceRowId': STRING,
+          'payload': {'type': 'object', 'description': 'Profile fields this row proves.', 'properties': {}}},
+         ['claim', 'url', 'excerpt']),
+    tool('source_list',
+         'Read the session source ledger — every row already recorded, with its tier, host, type and child. Use '
+         'it before writing a dossier to see what is already backed, which rows are still unverified, and which '
+         'branch left no row at all. Filters are AND-ed; `limit` is capped by the harness.',
+         {'turn': {'type': 'integer'}, 'childId': STRING, 'tier': {'type': 'integer'},
+          'limit': {'type': 'integer'}},
+         ()),
+    tool('source_verify',
+         'Re-open a ledger row URL through the same reader the fetches use and compare it with the recorded '
+         'excerpt. It answers `status` ok (text still matches), stale (the page changed), or unverified (could '
+         'not be opened), plus `fakeSuccess` when a 200 response is really an empty shell (a bare "Trang chủ" '
+         'title or under 300 characters) — a fake success is never `ok`. Use it before a dossier claims a '
+         'document number or a price that matters.',
+         {'rowId': STRING}, ['rowId']),
+    tool('dossier_write',
+         'Write a research dossier into the workspace folder `.research/<researchId>/` as the next version file '
+         'vN-<researchId>.md, together with `sources.jsonl` and `sources.md` generated FROM the source ledger '
+         '(`tables/<name>.md` and `review.md` at level 3). The harness refuses (RESEARCH_QUALITY_REJECTED, '
+         'nothing written, no version spent) a dossier whose shape is missing a required section, that cites a '
+         'URL with no ledger row, whose ledger rows have no verbatim excerpt, or whose key claims rest on a '
+         'single source. Write from the ledger, never from memory.',
+         {'researchId': STRING, 'markdown': STRING, 'title': STRING,
+          'level': {'type': 'integer', 'enum': [1, 2, 3]},
+          'profile': {'type': 'string', 'description': 'Profile key: law, health, finance, paper, vendor-doc, '
+                                                       'repo, price, competitor or users.'},
+          'tables': {'type': 'array', 'items': {'type': 'object', 'properties': {'name': STRING, 'markdown': STRING}}},
+          'review': STRING, 'critique': STRING, 'rows': {'type': 'array', 'items': STRING}},
+         ['researchId', 'markdown', 'level', 'profile']),
+    tool('research_brief',
+         'Open a research job BEFORE spawning branches: it picks the tier (1, 2 or 3), the job profile, the '
+         'dossier folder, the branch/wave budget, the per-child step and second ceilings, the turn ceiling and '
+         'whether an independent critique is mandatory. Call it once per job, then spawn branches with that '
+         'budget in mind, and write the dossier with the profile it returned. Tier lets the owner see the cost '
+         'before the work runs; a missing brief is reported (RESEARCH_BRIEF_MISSING) with the tier it assumed. '
+         'Pass `ownerViews` when the owner stated an opinion, an assumption or a claim: the dossier then must '
+         'carry the three-label owner-view section (ủng hộ / phản bác / chưa chắc), each label with a source.',
+         {'tier': {'type': 'integer', 'enum': [1, 2, 3]},
+          'jobProfile': {'type': 'string', 'description': 'Profile key: law, health, finance, paper, vendor-doc, '
+                                                          'repo, price, competitor or users.'},
+          'question': STRING, 'rationale': STRING,
+          'branches': {'type': 'array', 'items': STRING},
+          'ceilingSeconds': {'type': 'integer'},
+          'ownerViews': {'type': 'array', 'items': STRING,
+                         'description': 'Opinions, assumptions or claims the owner stated in the request, '
+                                        'one item each. When this list is not empty the dossier must carry a '
+                                        'section with the three labels (ủng hộ / phản bác / chưa chắc), each '
+                                        'with its source.'}},
+         ['tier', 'jobProfile', 'question']),
+    tool('research_verify',
+         'Record the independent critique verdict for one dossier version: delegate `research-review` to read the '
+         'written file (tell it the exact path and that its answer must end with `VERDICT: ok` or '
+         '`VERDICT: revise`), then record that verdict here. The harness checks that such a child really ran '
+         'after this version was written and that its own last line matches — otherwise RESEARCH_VERIFY_NO_CRITIC, '
+         'RESEARCH_VERIFY_VERDICT_MISSING or RESEARCH_VERIFY_VERDICT_MISMATCH comes back with the fix. `revise` '
+         'caps at one round per version: fix the dossier and write the next version with that label.',
+         {'researchId': STRING, 'version': {'type': 'integer'},
+          'verdict': {'type': 'string', 'enum': ['ok', 'revise']},
+          'issues': {'type': 'array', 'items': {'type': 'object', 'properties': {
+              'severity': {'type': 'string', 'enum': ['high', 'medium', 'low']},
+              'text': STRING, 'fix': STRING}, 'required': ['severity', 'text']}},
+          'summary': STRING},
+         ['researchId', 'version', 'verdict']),
+    tool('research_status',
+         'Read back a research job: every dossier version written, the latest one with its profile, level, '
+         'critique and gate labels, and the recorded critique verdicts. Use it before reporting to the owner so '
+         'the report names the real files and the real state instead of your memory of them.',
+         {'researchId': STRING}, []),
+    tool('cancel_child',
+         'Stop ONE running child of this session (the owner asked for it, or the branch is off-track). The child '
+         'is closed as cancelled, its slot is released, and the result reaches you like any other child result. '
+         'It does not touch the other branches.',
+         {'sessionId': STRING, 'reason': STRING}, ['sessionId', 'reason']),
 ]
 
 

@@ -194,10 +194,13 @@ export function ChatPanel() {
   const harnessBusy =
     harnessRun?.status === 'running' ||
     harnessRun?.status === 'starting' ||
-    // Phiên đang chờ người dùng quyết định vẫn là một lượt chạy đang sống: ô soạn
-    // tin phải khoá (một prompt thường sẽ bị harness trả 409 SESSION_BUSY) nhưng
-    // nút Stop và các lệnh điều khiển vẫn phải dùng được.
+    // Phiên đang chờ người dùng quyết định vẫn là một lượt chạy đang sống: nút Stop và các lệnh
+    // điều khiển vẫn phải dùng được. Từ vòng 27 (C-5) ô soạn tin KHÔNG còn bị khoá ở trạng thái
+    // này — câu gõ vào được xếp hàng cho lượt đang chạy (`canSteer` bên dưới).
     harnessRun?.status === 'awaiting_decision'
+  // Vòng 27 / C-5 — lượt đang chạy nhận chỉ thị giữa lượt: nhận ở `running`/`awaiting_decision`
+  // và áp ở BƯỚC KẾ. Riêng `starting` (lượt chưa mở xong, chưa có bước nào để áp) vẫn khoá nút gửi.
+  const harnessSteerable = harnessRun?.status === 'running' || harnessRun?.status === 'awaiting_decision'
 
   // Lỗi của lần gửi/dừng vừa rồi được giữ thêm một bản cục bộ: `refresh` được
   // gọi mỗi 1200ms ghi lại `sessions[id].error` (thành `null` khi phiên không
@@ -370,6 +373,10 @@ export function ChatPanel() {
       models,
       activeModelId: selKey(selection),
       isBusy: isGlobalBusy,
+      // Chỉ khi lượt harness thật đang chạy (không phải `starting`) mới có chỉ thị giữa lượt —
+      // nút Stop vẫn ở nguyên chỗ cũ, nút Gửi chỉ hiện thêm (C-5).
+      canSteer: usesHarnessChat(activeType) && harnessSteerable,
+      steerNotice: harnessRun?.steerNotice ?? null,
       connectionWarning,
       onModelChange: (id: string) => {
         setSelection(routerOptions.find(o => o.value === id)?.selection ?? null)
@@ -392,11 +399,12 @@ export function ChatPanel() {
         )
         const modelLabel = hasThinking && effectiveLevel ? `${baseLabel} (${effectiveLevel.charAt(0).toUpperCase() + effectiveLevel.slice(1)})` : baseLabel
         if (usesHarnessChat(activeType)) {
-          // Phiên đang chạy (kể cả đang chờ người dùng quyết định) không nhận
-          // prompt thường: `send` từ chối tại chỗ, nên trả `false` để composer
-          // giữ nguyên bản nháp thay vì xoá im lặng (BUG-17/F1).
+          // Lượt CHƯA mở xong (`starting`) không nhận prompt thường: `send` từ chối tại chỗ, nên
+          // trả `false` để composer giữ nguyên bản nháp thay vì xoá im lặng (BUG-17/F1).
+          // Lượt ĐANG chạy (`running`/`awaiting_decision`) thì nay gửi được: harness xếp chỉ thị
+          // vào hàng đợi và áp ở bước kế (vòng 27 / C-5) — không còn bị chặn tại đây.
           const status = useHarnessChatStore.getState().sessions[chatId]?.status
-          if (status === 'running' || status === 'starting' || status === 'awaiting_decision') {
+          if (status === 'starting') {
             return Promise.resolve(false)
           }
           // Trả về kết quả để composer biết lần gửi có thất bại không — khi
@@ -424,7 +432,7 @@ export function ChatPanel() {
       },
       onStop: handleStopAll,
     }
-  }, [routerOptions, selected, selection, isGlobalBusy, connectionWarning, setSelection, routerSend, activeType, harnessSend, handleStopAll, chatId, harnessClearError, captureRunError])
+  }, [routerOptions, selected, selection, isGlobalBusy, harnessSteerable, harnessRun?.steerNotice, connectionWarning, setSelection, routerSend, activeType, harnessSend, handleStopAll, chatId, harnessClearError, captureRunError])
 
   // Escape to stop streaming
   useEffect(() => {

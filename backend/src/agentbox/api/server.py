@@ -35,6 +35,18 @@ from ..agent_core.roles import ORCHESTRATOR_TOOLS, ROLES
 from ..agent_core.limits import (CHILD_WALL_MAX_SECONDS, FANOUT_GLOBAL_CEILING, FANOUT_PER_PARENT_DEFAULT,
                                  FANOUT_PER_PARENT_MAX, PEER_DELIVER_MAX, PEER_WAIT_MAX_SECONDS,
                                  PEER_WAIT_SAFETY_SECONDS, WATCHDOG_TICK_SECONDS)
+# Vòng 27 (đợt 5–8) — khối `research` của `runtime_info` đọc CÙNG hằng và CÙNG hàm với runtime:
+# bảng công tắc, hạn mức theo mức, danh mục hồ sơ và thang nguồn không thể lệch khỏi hành vi thật.
+from ..agent_core import research_profiles, research_quality, research_runtime, source_tiers
+from ..agent_core.limits import (DOSSIER_MAX_BYTES, RESEARCH_BRIEF_DEFAULT_MODE, RESEARCH_BRIEF_MODES,
+                                 RESEARCH_GATE_DEFAULT_MODE, RESEARCH_GATE_MODES,
+                                 RESEARCH_MAX_ROWS_PER_DOSSIER, RESEARCH_PROGRESS_DEFAULT_MODE,
+                                 RESEARCH_PROGRESS_MODES, RESEARCH_PROGRESS_NUDGE_SECONDS,
+                                 RESEARCH_REVIEW_MIN_ANSWER_CHARS, RESEARCH_TIERS,
+                                 RESEARCH_TIER_CHILD_SECONDS, RESEARCH_TIER_CHILD_STEPS,
+                                 RESEARCH_TIER_DEFAULT, RESEARCH_TIER_HARD_CEILING_SECONDS,
+                                 RESEARCH_VERIFY_REVISE_MAX, STEER_DEFAULT_MODE, STEER_MAX_PENDING,
+                                 STEER_MODES, STEER_TEXT_MAX_CHARS)
 from ..agent_core.tool_groups import tool_groups
 from ..memory.session_store import SessionStore
 from ..observability.system_log import (DEFAULT_READ_LINES, MAX_READ_LINES, clamp_lines,
@@ -263,10 +275,61 @@ def create_app(runtime):
                                 'planSourcesDefault': PLAN_SOURCES_DEFAULT_MODE,
                                 'planReviewMinAnswerChars': PLAN_REVIEW_MIN_ANSWER_CHARS,
                                 'planVerifyReviseMax': PLAN_VERIFY_REVISE_MAX,
-                                'planTurnExtensionSeconds': PLAN_TURN_EXTENSION_SECONDS},
+                                'planTurnExtensionSeconds': PLAN_TURN_EXTENSION_SECONDS,
+                                # Vòng 27 (đợt 4, A5) — cùng nhóm `gate`: mức ĐANG ÁP của cổng chất
+                                # lượng research và giá trị thô khi env đặt sai (khuôn `evidenceMode`),
+                                # kèm tóm tắt ghi đè thang nguồn. Bản đầy đủ nằm ở khối `research`.
+                                'researchGate': {'mode': research_quality.gate_mode()[0],
+                                                 'modes': list(RESEARCH_GATE_MODES),
+                                                 'default': RESEARCH_GATE_DEFAULT_MODE,
+                                                 'unknown': (research_quality.gate_mode()[1]
+                                                             if research_quality.gate_mode()[1]
+                                                             not in RESEARCH_GATE_MODES else None)},
+                                'researchTiers': {'overrides': source_tiers.overrides_summary(),
+                                                  'tiers': {str(key): value
+                                                            for key, value in source_tiers.TIERS.items()}}},
                        # Vòng 27 (đợt 1, A-9) — khối `web`: giao diện và DEV đọc mức ĐANG ÁP của
                        # lớp đọc nguồn từ đây, không chép tay con số nào. `textHardChars` là trần
                        # một lời gọi; `storeMaxEntries` là trần bộ đệm đọc (A-4).
+                       # Vòng 27 (đợt 5–8) — khối `research`: mức ĐANG ÁP của bốn công tắc mới
+                       # (`brief`/`gate`/`progress`/`steer`) và hạn mức theo mức. `*Now` là giá trị
+                       # đọc ở thời điểm gọi, đúng khuôn khối `peer`.
+                       'research': {'briefMode': research_runtime.brief_mode()[0],
+                                    'briefModes': list(RESEARCH_BRIEF_MODES),
+                                    'briefDefault': RESEARCH_BRIEF_DEFAULT_MODE,
+                                    'gateMode': research_runtime.research_quality.gate_mode()[0],
+                                    'gateModes': list(RESEARCH_GATE_MODES),
+                                    'gateDefault': RESEARCH_GATE_DEFAULT_MODE,
+                                    'progressMode': research_runtime.research_progress_mode()[0],
+                                    'progressModes': list(RESEARCH_PROGRESS_MODES),
+                                    'progressDefault': RESEARCH_PROGRESS_DEFAULT_MODE,
+                                    'progressNudgeSeconds': RESEARCH_PROGRESS_NUDGE_SECONDS,
+                                    'steerMode': research_runtime.steer_mode()[0],
+                                    'steerModes': list(STEER_MODES),
+                                    'steerDefault': STEER_DEFAULT_MODE,
+                                    'steerMaxPending': STEER_MAX_PENDING,
+                                    'steerTextMaxChars': STEER_TEXT_MAX_CHARS,
+                                    'tiers': list(RESEARCH_TIERS),
+                                    'tierDefault': RESEARCH_TIER_DEFAULT,
+                                    'tierLimits': {str(tier): research_runtime.research_tier_limits(tier)
+                                                   for tier in RESEARCH_TIERS},
+                                    'profiles': research_profiles.describe(),
+                                    # Thang nguồn: bốn tầng + tầng 0 (host-doc), nhãn loại,
+                                    # và tóm tắt ghi đè từ env (`source`, `hosts`, `officialSocial`,
+                                    # `unknown`) — DEV đọc ở đây, không chép tay con số nào.
+                                    'sourceTiers': {'tiers': {str(key): value
+                                                              for key, value in source_tiers.TIERS.items()},
+                                                    'tierLabels': {str(key): value
+                                                                   for key, value in source_tiers.TIER_LABELS.items()},
+                                                    'typeLabels': dict(source_tiers.TYPE_LABELS),
+                                                    'overrides': source_tiers.overrides_summary()},
+                                    'reviewMinAnswerChars': RESEARCH_REVIEW_MIN_ANSWER_CHARS,
+                                    'verifyReviseMax': RESEARCH_VERIFY_REVISE_MAX,
+                                    'maxRowsPerDossier': RESEARCH_MAX_ROWS_PER_DOSSIER,
+                                    'maxDossierBytes': DOSSIER_MAX_BYTES,
+                                    'childStepsByTier': dict(RESEARCH_TIER_CHILD_STEPS),
+                                    'childSecondsByTier': dict(RESEARCH_TIER_CHILD_SECONDS),
+                                    'hardCeilingSecondsByTier': dict(RESEARCH_TIER_HARD_CEILING_SECONDS)},
                        'web': {'readerMode': runtime.web_reader_mode()[0],
                                'readerModes': list(WEB_READER_MODES),
                                'readerDefault': WEB_READER_DEFAULT_MODE,
@@ -385,7 +448,7 @@ def create_app(runtime):
         result = await runtime.submit(sid, body.get('prompt'), body.get('image'), body.get('route'),
                                       body.get('invocationId'), images=body.get('images'),
                                       attachments=body.get('attachments'))
-        return web.json_response(result, status=202 if result['status'] == 'running' else 200)
+        return web.json_response(result, status=202 if result['status'] in ('running', 'steered') else 200)
 
     async def stop(request):
         sid = request.match_info['sid']
@@ -521,7 +584,7 @@ def create_app(runtime):
         if prompt is None:
             prompt = plan_wake_prompt(identity, version, relative_path, decision, note)
         try:
-            await runtime.submit(owner, prompt, invocation_id=invocation_id)
+            await runtime.submit(owner, prompt, invocation_id=invocation_id, allow_steer=False)
         except ValueError as exc:
             message = str(exc)
             if 'SESSION_BUSY' in message:

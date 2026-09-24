@@ -55,7 +55,25 @@ interface RunView { id: string | null; status: string; events: HarnessEvent[]; e
   /** Cặp `(số, nguồn)` của cửa sổ ngữ cảnh trong `config` phiên — harness nén theo đúng số này. */
   contextWindow?: number | null; contextWindowSource?: string | null
   /** Nhật ký bền của phiên (khối `journal` đã gộp qua các vòng poll). */
-  journal?: HarnessJournal | null }
+  journal?: HarnessJournal | null
+  /**
+   * Vòng 27 / C-5 — chỉ thị vừa được XẾP HÀNG cho lượt đang chạy (harness trả 202
+   * `{status:'steered'}`): giữ nguyên văn để ô soạn tin nói thật là đã nhận, chứ không xoá im lặng.
+   */
+  steerNotice?: SteerNotice | null }
+/**
+ * Vòng 27 / C-5 — dấu vết của một chỉ thị đã vào hàng cho lượt ĐANG chạy.
+ *
+ * `text` là nguyên văn chủ nhà vừa gõ (ô soạn tin không được nuốt nó), `at` là mốc thời gian
+ * (ms) để hiện giờ cạnh dòng xác nhận, `steerId` là id hàng đợi harness trả về (có thì hiện,
+ * không có thì không bịa).
+ */
+export interface SteerNotice {
+  text: string
+  at: number
+  steerId: string | null
+}
+
 export interface SavedSessionRow {
   id: string
   role: string
@@ -426,6 +444,19 @@ function isStaleSession(error: unknown): boolean {
   return /SESSION_NOT_FOUND/.test(String(error))
 }
 
+/**
+ * Vòng 27 / C-5 — đọc câu trả lời của `POST /sessions/{id}/turns` khi lượt đang chạy: harness trả
+ * 202 `{status:'steered', steerId}` lúc chỉ thị đã vào hàng đợi. `agentApi` coi 202 là `ok` nên
+ * phản hồi này tới đây nguyên vẹn; mọi dạng khác (kể cả `{status:'running'}` của lượt vừa mở) đều
+ * không phải "đã xếp hàng", nên không được ghi lời xác nhận.
+ */
+function parseSteerAccepted(result: unknown): { accepted: boolean; steerId: string | null } {
+  if (!result || typeof result !== 'object') return { accepted: false, steerId: null }
+  const body = result as Record<string, unknown>
+  if (body.status !== 'steered') return { accepted: false, steerId: null }
+  return { accepted: true, steerId: typeof body.steerId === 'string' ? body.steerId : null }
+}
+
 export const useHarnessChatStore = create<State>((set, get) => ({
   sessions: {},
   decisions: {},
@@ -481,6 +512,11 @@ export const useHarnessChatStore = create<State>((set, get) => ({
               events: allEvents,
               journal: journalPush ? mergeJournal(current.journal, journalPush) : current.journal,
               ...sessionContextWindow(session.config),
+              // Lời xác nhận "đã xếp hàng" chỉ sống trong lúc lượt còn đang chạy: lượt đã đóng thì
+              // nó là thông tin cũ, và bong bóng "can thiệp" trong transcript đã là biên nhận thật.
+              steerNotice: session.status === 'running' || session.status === 'awaiting_decision'
+                ? current.steerNotice ?? null
+                : null,
             },
           },
           decisions: { ...state.decisions, [chatId]: decisions },
@@ -536,7 +572,12 @@ export const useHarnessChatStore = create<State>((set, get) => ({
   send: async (chatId, prompt, selection, image, modelLabel, thinkingLevels, images, attachments) => {
     const current = get().sessions[chatId] ?? empty()
     const control = /^\/(help|skills|agents|status|context|stop)\s*$/.test(prompt)
-    if ((current.status === 'running' || current.status === 'starting' || current.status === 'awaiting_decision') && !control) return
+    // Vòng 27 / C-5 — lượt ĐANG chạy vẫn nhận chỉ thị của chủ nhà: câu này vào hàng đợi
+    // (`session_steers` của harness) và main đọc ở BƯỚC KẾ, nên không còn bị chặn tại chỗ.
+    // Chỉ `starting` mới còn khoá (lượt chưa mở xong, chưa có bước nào để áp), và phiên con
+    // vẫn bị harness trả 409 `SESSION_BUSY` như trước — lỗi ấy hiện nguyên trong banner.
+    const steering = !control && (current.status === 'running' || current.status === 'awaiting_decision')
+    if (current.status === 'starting' && !control) return
     if (control && current.id) {
       try {
         await agentApi(`/sessions/${current.id}/turns`, { prompt, invocationId: crypto.randomUUID() })
@@ -551,7 +592,7 @@ export const useHarnessChatStore = create<State>((set, get) => ({
     const newModel = modelLabel || (selection?.kind === 'model' ? selection.modelId : selection?.kind === 'alias' ? selection.aliasId : undefined)
 
     const updatedEvents = [...current.events]
-    if (prevModel && newModel && prevModel !== newModel && updatedEvents.length > 0) {
+    if (!steering && prevModel && newModel && prevModel !== newModel && updatedEvents.length > 0) {
       const changeEvent: HarnessEvent = {
         seq: Date.now(),
         type: 'model_change',
@@ -561,18 +602,30 @@ export const useHarnessChatStore = create<State>((set, get) => ({
       updatedEvents.push(changeEvent)
     }
 
-    set((state) => ({
-      sessions: {
-        ...state.sessions,
-        [chatId]: {
-          ...current,
-          events: updatedEvents,
-          lastModelLabel: newModel || current.lastModelLabel,
-          status: 'starting',
-          error: null,
+    // Chỉ thị giữa lượt KHÔNG mở lượt mới: trạng thái `running` giữ nguyên, danh sách event giữ
+    // nguyên — lượt đang chạy phải tiếp tục hiện đúng nội dung của nó (C-5).
+    if (steering) {
+      set((state) => ({
+        sessions: {
+          ...state.sessions,
+          [chatId]: { ...current, error: null, steerNotice: null },
         },
-      },
-    }))
+      }))
+    } else {
+      set((state) => ({
+        sessions: {
+          ...state.sessions,
+          [chatId]: {
+            ...current,
+            events: updatedEvents,
+            lastModelLabel: newModel || current.lastModelLabel,
+            status: 'starting',
+            error: null,
+            steerNotice: null,
+          },
+        },
+      }))
+    }
     /** Mở phiên mới cho khung chat này; trả id để lượt sau dùng lại. */
     const openSession = async (): Promise<string> => {
       {
@@ -659,8 +712,9 @@ export const useHarnessChatStore = create<State>((set, get) => ({
         : selection?.kind === 'alias'
         ? { aliasId: selection.aliasId, ...(thinkingLevel ? { thinkingLevel } : {}) }
         : {}
+      let turnResult: unknown
       try {
-        await submitTurn(id, route)
+        turnResult = await submitTurn(id, route)
       } catch (error) {
         // Id phiên mà harness không còn biết (phiên bị xoá, hoặc harness chạy lại với store
         // mới) trước đây làm mọi lần gửi hỏng mãi với đúng một chữ "Not found". Mở phiên mới
@@ -674,11 +728,33 @@ export const useHarnessChatStore = create<State>((set, get) => ({
         // `sessions[chatId].id` trước, nên nếu chỉ ghi localStorage thì cả hai vẫn
         // nhắm vào id đã chết và khung chat đỏ vĩnh viễn dù lượt đã chạy xong.
         set(state => ({ sessions: { ...state.sessions, [chatId]: { ...(state.sessions[chatId] ?? current), id, error: null } } }))
-        await submitTurn(id, route)
+        turnResult = await submitTurn(id, route)
+      }
+      // 202 `{status:'steered'}` (Vòng 27 / C-5): harness đã NHẬN câu này vào hàng đợi của lượt
+      // đang chạy ⇒ ghi lại lời xác nhận kèm nguyên văn, KHÔNG đóng lượt và không xoá nội dung
+      // đang chạy. Đây là đường duy nhất để ô soạn tin nói thật "đã nhận" thay vì im lặng.
+      const steer = parseSteerAccepted(turnResult)
+      if (steer.accepted) {
+        set(state => ({
+          sessions: {
+            ...state.sessions,
+            [chatId]: {
+              ...(state.sessions[chatId] ?? current),
+              error: null,
+              steerNotice: { text: prompt, at: Date.now(), steerId: steer.steerId },
+            },
+          },
+        }))
       }
       await get().refresh(chatId)
     } catch (error) {
-      set((state) => ({ sessions: { ...state.sessions, [chatId]: { ...(state.sessions[chatId] ?? current), status: 'failed', error: String(error) } } }))
+      // Chỉ thị bị từ chối (`BOXFOX_STEER=off` ⇒ 409, hàng đầy ⇒ `STEER_QUEUE_FULL`) KHÔNG làm
+      // lượt đang chạy thành `failed`: lượt vẫn sống ở harness, chỉ câu vừa gõ là không được nhận,
+      // nên giữ nguyên trạng thái và chỉ nêu lỗi (banner ngay trên ô nhập).
+      set((state) => ({ sessions: { ...state.sessions,
+        [chatId]: steering
+          ? { ...(state.sessions[chatId] ?? current), error: String(error), steerNotice: null }
+          : { ...(state.sessions[chatId] ?? current), status: 'failed', error: String(error) } } }))
     }
   },
 

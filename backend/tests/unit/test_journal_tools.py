@@ -60,7 +60,7 @@ def test_the_two_journal_tools_are_advertised_and_held_by_the_orchestrator_only(
     names = {schema['function']['name'] for schema in SCHEMAS}
     assert {'journal_write', 'journal_brief'} <= names
     assert {'journal_write', 'journal_brief'} <= ORCHESTRATOR_TOOLS
-    assert len(ORCHESTRATOR_TOOLS) == 27, 'bảng Nút vặn của runtime nói 27 công cụ (T8 thêm peer_read/await_children, vòng 25 thêm plan_verify, vòng 27 đợt 2 thêm read_source và paper_citations)'
+    assert len(ORCHESTRATOR_TOOLS) == 35, 'bảng Nút vặn của runtime nói 35 công cụ (T8 thêm peer_read/await_children, vòng 25 thêm plan_verify, vòng 27 đợt 2 thêm read_source và paper_citations, đợt 3–8 thêm tám công cụ sổ nguồn/hồ sơ/phản biện)'
     for role in ('build', 'explore', 'review', 'testing'):
         assert not ({'journal_write', 'journal_brief'} & allowed_tools(role)), \
             f'phiên con ({role}) không được cấp công cụ nhật ký — cha ghi hộ'

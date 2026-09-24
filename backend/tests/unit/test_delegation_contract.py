@@ -81,8 +81,9 @@ def test_delegate_task_schema_states_the_result_shape_and_stays_backward_compati
     for name, spec in properties.items():
         assert spec.get('description', '').strip(), f'{name} must describe itself'
     # Vòng 25 (D-33): vai thứ mười `plan-review` — người phản biện độc lập một bản kế hoạch đã ghi.
+    # Vòng 27 (D-36): vai thứ mười một `research-review` — người phản biện độc lập một hồ sơ research.
     assert properties['role']['enum'] == ['explore', 'plan', 'plan-review', 'design', 'build', 'debug',
-                                          'review', 'simplify', 'testing', 'research']
+                                          'review', 'simplify', 'testing', 'research', 'research-review']
     assert 'RESULT SHAPE' in properties['expect']['description']
     assert 'RESULT SHAPE' in schema['description'] and 'evidence' in schema['description']
     # the only web-capable role is named where the parent chooses it, together with its limits

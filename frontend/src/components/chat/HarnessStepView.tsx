@@ -23,6 +23,7 @@ import {
   ShieldAlert,
   RefreshCw,
   FolderOpen,
+  Crosshair,
 } from 'lucide-react'
 import type { HarnessJournal, HarnessEvent, JournalRow } from '../../store/harnessChatStore'
 import { useUiStore } from '../../store/uiStore'
@@ -89,6 +90,9 @@ interface HarnessStepViewProps {
  */
 type TurnTimelineItem =
   | { kind: 'text'; id: string; seq: number; text: string; live: boolean }
+  // Vòng 27 / C-5 — chỉ thị chủ nhà gửi GIỮA lượt (harness phát `user` với `{steer:true}`): nó
+  // thuộc lượt ĐANG chạy, không mở lượt mới, nên nằm trong dòng thời gian ở đúng chỗ `seq` của nó.
+  | { kind: 'user_steer'; id: string; seq: number; event: HarnessEvent }
   | { kind: 'tool'; id: string; seq: number; start: HarnessEvent | null; end: HarnessEvent | null }
   | { kind: 'child'; id: string; seq: number; event: HarnessEvent }
   | { kind: 'plan'; id: string; seq: number; event: HarnessEvent }
@@ -1359,6 +1363,13 @@ export function buildHarnessTurns(events: HarnessEvent[]): HarnessTurn[] {
     }
 
     if (event.type === 'user') {
+      // Chỉ thị giữa lượt (`{control:true, steer:true}`) KHÔNG mở lượt mới và không đếm thêm lượt:
+      // nó là một hàng của lượt đang chạy, đúng vị trí `seq` (C-5). Chưa có lượt nào để gắn (transcript
+      // cũ/thiếu) thì rơi về đường cũ — vẫn phải hiển thị, không được nuốt mất câu của chủ nhà.
+      if (event.data?.steer === true && current) {
+        current.items.push({ kind: 'user_steer', id: `steer_${event.seq}`, seq: event.seq, event })
+        continue
+      }
       closeTurn()
       current = emptyTurn(`turn_${event.seq}`, pendingModelChange, event, event.created)
       pendingModelChange = null
@@ -1889,6 +1900,9 @@ function TurnBlock({
               if (item.kind === 'text') {
                 return <TimelineTextBlock key={item.id} text={item.text} isLive={item.live && isTurnBusy} />
               }
+              if (item.kind === 'user_steer') {
+                return <OwnerSteerRow key={item.id} event={item.event} />
+              }
               if (item.kind === 'tool') {
                 return (
                   <ToolTimelineRow
@@ -1911,6 +1925,10 @@ function TurnBlock({
                 // và transcript không đọc luồng con (tab Sub-agents mới là chỗ poll luồng đó).
                 const childData = item.event.data
                 const childStatus = String(childData.status ?? '')
+                // C-5: nhánh bị CHỦ NHÀ dừng bằng `cancel_child` — sổ con vẫn ghi `failed`, nhưng
+                // câu hiện ra phải nói đúng việc đã xảy ra, không gọi đó là "lỗi".
+                const childStatusLabel =
+                  String(childData.cancelledBy ?? '') === 'owner' ? t('chat.childStoppedByOwner') : childStatus
                 const pipeParts: string[] = []
                 const childTargets: string[] = []
                 if (childStatus === 'started' || childStatus === 'running') {
@@ -1952,7 +1970,7 @@ function TurnBlock({
                   >
                     <BrainCircuit className="size-3 animate-pulse" />
                     <span className="group-hover:underline">
-                      Specialist: {String(item.event.data.role)} ({String(item.event.data.status)})
+                      Specialist: {String(item.event.data.role)} ({childStatusLabel})
                       {pipeSuffix}
                     </span>
                     <ChevronRight className="size-3 opacity-0 transition group-hover:opacity-100" />
@@ -2030,6 +2048,36 @@ function TurnBlock({
           {turn.error}
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * Vòng 27 / C-5 — chỉ thị chủ nhà gửi GIỮA lượt: hiện như bong bóng của chủ nhà ngay tại chỗ nó
+ * được gửi (theo `seq` trong dòng thời gian của lượt đang chạy), kèm nhãn nhỏ "can thiệp".
+ *
+ * Không khung, không dải, không huy hiệu quanh câu trả lời cuối (D-19–D-25): đây là MỘT hàng của
+ * mạch đọc, đúng như hàng `text` của lượt.
+ */
+function OwnerSteerRow({ event }: { event: HarnessEvent }) {
+  const t = useT()
+  const text = String(event.data?.text ?? '')
+  if (!text) return null
+  return (
+    <div className="flex flex-col items-end gap-1" data-timeline="owner-steer">
+      <div className="flex items-center gap-1.5 pr-1 text-[10px] text-muted select-none">
+        <span
+          data-testid="owner-steer-label"
+          className="inline-flex items-center gap-1 rounded-full border border-brand/30 bg-brand/5 px-1.5 py-0.5 font-medium text-brand"
+        >
+          <Crosshair className="size-2.5" />
+          {t('chat.steerLabel')}
+        </span>
+        <span className="font-mono">{formatTime(event.created)}</span>
+      </div>
+      <div className="w-fit max-w-[68%] rounded-2xl border border-line bg-panel2 px-4 py-3 text-xs leading-relaxed text-fg shadow-xs">
+        <MarkdownRenderer content={text} />
+      </div>
     </div>
   )
 }

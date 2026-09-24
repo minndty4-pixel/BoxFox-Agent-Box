@@ -46,7 +46,7 @@ for serial chains. For a refactor or fix campaign on hermes-agent itself, load
   (`$TMPDIR`, else the platform temp dir). Never a literal `/tmp`: Termux has no
   `/tmp`, native Windows breaks on it. Use `<tmp>/wf_<name>_<uuid>/`, unique per
   run, so an interrupted earlier run cannot leave stale outputs to be misread.
-- `execute_code` for the deterministic layer (only `web_search`, `web_extract`,
+- `execute_code` for the deterministic layer (only `web_search`, `web_fetch`,
   `read_file`, `write_file`, `search_files`, `terminal`, `patch` exist inside it).
 
 ## How to Run

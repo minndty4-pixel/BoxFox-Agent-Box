@@ -106,6 +106,74 @@ class SessionStore:
                 created REAL NOT NULL, injected REAL, skip_reason TEXT,
                 UNIQUE(child_id, recipient, recipient_turn));
         ''')
+        # Vòng 27 (đợt 3, B-1) — SỔ NGUỒN: mỗi khẳng định của một hồ sơ research gắn một dòng ở
+        # đây (URL thật + đoạn trích nguyên văn + ngày lấy + tầng + nguồn tin gốc). `UNIQUE(session_id,
+        # row_id)` biến "hai dòng cùng mã" thành chuyện KHÔNG-THỂ, và `row_id` do harness cấp (`r12`)
+        # nên hồ sơ trỏ được vào đúng dòng mà không cần biết id tự tăng.
+        # `research_dossiers` là chỉ mục các bản hồ sơ đã ghi trong workspace (`.research/<slug>/vN-<slug>.md`).
+        # `session_steers` là hàng đợi chỉ thị giữa lượt của chủ nhà (vòng 27 đợt 7, D-43): `claim_steers`
+        # giành MỘT lần rồi bơm vào transcript ở ranh giới bước, y như `child_deliveries`.
+        self.db.executescript('''
+            CREATE TABLE IF NOT EXISTS source_ledger (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                child_id TEXT,
+                job TEXT,
+                row_id TEXT NOT NULL,
+                claim TEXT NOT NULL DEFAULT '',
+                url TEXT NOT NULL DEFAULT '',
+                host TEXT NOT NULL DEFAULT '',
+                tier INTEGER NOT NULL DEFAULT 4,
+                type TEXT NOT NULL DEFAULT 'normal',
+                excerpt TEXT NOT NULL DEFAULT '',
+                fetched_at TEXT NOT NULL DEFAULT '',
+                origin TEXT,
+                method TEXT,
+                source_row_id TEXT,
+                status TEXT NOT NULL DEFAULT 'unverified',
+                fingerprint TEXT NOT NULL DEFAULT '',
+                payload TEXT NOT NULL DEFAULT '{}',
+                turn INTEGER NOT NULL DEFAULT 0,
+                step INTEGER,
+                created REAL NOT NULL,
+                UNIQUE(session_id, row_id));
+            CREATE INDEX IF NOT EXISTS source_ledger_session ON source_ledger(session_id, id);
+            CREATE TABLE IF NOT EXISTS research_dossiers (
+                research_id TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                session_id TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
+                profile TEXT NOT NULL DEFAULT '',
+                level INTEGER NOT NULL DEFAULT 0,
+                critique TEXT NOT NULL DEFAULT 'none',
+                gate TEXT NOT NULL DEFAULT 'clear',
+                rows INTEGER NOT NULL DEFAULT 0,
+                bytes INTEGER NOT NULL DEFAULT 0,
+                created REAL NOT NULL,
+                PRIMARY KEY (research_id, version));
+            CREATE TABLE IF NOT EXISTS session_steers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                turn INTEGER NOT NULL DEFAULT 0,
+                text TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'pending',
+                created REAL NOT NULL,
+                injected REAL);
+            CREATE INDEX IF NOT EXISTS session_steers_pending ON session_steers(session_id, state, id);
+            CREATE TABLE IF NOT EXISTS research_verifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                research_id TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                session_id TEXT NOT NULL,
+                verdict TEXT NOT NULL,
+                issues TEXT NOT NULL DEFAULT '[]',
+                summary TEXT NOT NULL DEFAULT '',
+                critic_session_id TEXT,
+                critic_answer_chars INTEGER NOT NULL DEFAULT 0,
+                critic_verdict TEXT,
+                created REAL NOT NULL);
+            CREATE INDEX IF NOT EXISTS research_verifications_job ON research_verifications(research_id, id);
+        ''')
         # Bộ đếm lượt của phiên (T2 đọc nó để mọi event mang `turn`). Cột thêm kiểu cộng thêm:
         # phiên cũ đọc ra `0` rồi lượt kế tiếp bắt đầu từ 1.
         self._add_missing_columns('sessions', {'turn_count': 'INTEGER NOT NULL DEFAULT 0'})
@@ -792,7 +860,315 @@ class SessionStore:
             # một kế hoạch có thể được sửa ở phiên khác, và xoá phiên cũ mà làm biến mất phán quyết
             # phản biện của bản đang nằm trên đĩa thì cổng duyệt sẽ từ chối một bản đã được phản
             # biện thật. Xoá hàng `.plans/` mới là cách kết thúc vòng đời của một kế hoạch.
+            #
+            # Vòng 27 (đợt 3, B-1): `source_ledger`, `research_dossiers`, `session_steers` cũng **CỐ Ý**
+            # KHÔNG nằm trong cascade — cùng một lý do. Sổ nguồn là BẰNG CHỨNG của một hồ sơ đang nằm
+            # trên đĩa (`.research/<slug>/vN-<slug>.md` + `sources.jsonl`): hồ sơ vẫn đọc được sau khi
+            # phiên bị xoá, và một sổ nguồn biến mất trong im lặng sẽ biến hồ sơ ấy thành lời nói suông
+            # — đúng thứ mà cả vòng 27 dựng lên để chặn. Dọn `.research/` là cách kết thúc vòng đời.
+            pass
         return True
+
+    # ------------------------------------------------------------------
+    # Sổ nguồn (vòng 27 đợt 3, B-1) — bằng chứng của một hồ sơ research
+    #
+    # Vì sao là BẢNG chứ không phải một tệp JSON: `source_add` chạy từ nhiều phiên con CÙNG LÚC, và
+    # `UNIQUE(session_id, row_id)` là chỗ biến "không ghi hai dòng cùng mã" thành chuyện KHÔNG-THỂ.
+    # Vì sao `payload` giữ `TEXT` chứ không cột rời: luật hồ sơ đổi theo usecase (`docNumber`,
+    # `price`, `captureAt`…); đổi cột theo từng luật mới là đổi schema theo từng ý chủ nhà.
+
+    SOURCE_FIELDS = ('child_id', 'job', 'claim', 'url', 'host', 'tier', 'type', 'excerpt', 'fetched_at',
+                     'origin', 'method', 'source_row_id', 'status', 'fingerprint', 'payload', 'turn', 'step')
+
+    def next_source_row_id(self, sid):
+        """Mã dòng kế tiếp của phiên: `r1`, `r2`… — đọc từ mã LỚN NHẤT, không từ số hàng."""
+        row = self.db.execute("SELECT MAX(CAST(SUBSTR(row_id, 2) AS INTEGER)) AS top"
+                              ' FROM source_ledger WHERE session_id=?', (sid,)).fetchone()
+        return 'r%d' % (int((row['top'] if row else 0) or 0) + 1)
+
+    def source_add(self, sid, row):
+        """Ghim một dòng sổ. Trả hàng đã ghi (kèm `row_id` harness cấp).
+
+        Ghi lặp cùng `row_id` ⇒ trả **hàng cũ** (idempotent), đúng khuôn `queue_delivery`: đường gọi
+        lại sau một lỗi mạng không được sinh ra dòng thứ hai cho cùng một khẳng định.
+
+        Mã TỰ CẤP mà đụng mã của nhánh khác thì **thử lại với mã mới**, không trả hàng của nhánh kia:
+        hai phiên con ghi cùng lúc là chuyện thường, và trả nhầm hàng thì hồ sơ sẽ trỏ bằng chứng
+        của người khác.
+        """
+        values = dict(row or {})
+        given = str(values.get('row_id') or values.get('rowId') or '').strip()
+        row_id = given
+        last_error = None
+        for _attempt in range(3):
+            if not row_id:
+                row_id = self.next_source_row_id(sid)
+            try:
+                with self.db:
+                    cursor = self.db.execute(
+                        'INSERT INTO source_ledger(session_id,row_id,child_id,job,claim,url,host,tier,type,'
+                        ' excerpt,fetched_at,origin,method,source_row_id,status,fingerprint,payload,turn,step,created)'
+                        ' VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                        (sid, row_id, values.get('child_id'), values.get('job'),
+                         str(values.get('claim') or ''), str(values.get('url') or ''),
+                         str(values.get('host') or ''), int(values.get('tier') or 4),
+                         str(values.get('type') or 'normal'), str(values.get('excerpt') or ''),
+                         str(values.get('fetched_at') or ''), values.get('origin'), values.get('method'),
+                         values.get('source_row_id'), str(values.get('status') or 'unverified'),
+                         str(values.get('fingerprint') or ''),
+                         json.dumps(values.get('payload') or {}, ensure_ascii=False),
+                         int(values.get('turn') or 0),
+                         None if values.get('step') is None else int(values.get('step')),
+                         time.time()))
+                return self.source_row(sid, row_id)
+            except sqlite3.IntegrityError as exc:
+                last_error = exc
+                if given:
+                    existing = self.source_row(sid, row_id)
+                    if existing is not None:
+                        return existing
+                row_id = ''
+        raise last_error or sqlite3.IntegrityError('source_ledger: row id not available')
+
+    def source_row(self, sid, row_id):
+        """Một dòng sổ theo mã, hoặc `None`."""
+        row = self.db.execute('SELECT * FROM source_ledger WHERE session_id=? AND row_id=?',
+                              (sid, str(row_id))).fetchone()
+        return self._source_view(row) if row is not None else None
+
+    def source_rows(self, sid, child_id=None, turn=None, tier=None, limit=None, newest_first=False):
+        """Các dòng sổ của một phiên, cũ → mới (hoặc mới → cũ), có trần."""
+        sql = 'SELECT * FROM source_ledger WHERE session_id=?'
+        params = [sid]
+        if child_id:
+            sql += ' AND child_id=?'
+            params.append(child_id)
+        if turn is not None:
+            sql += ' AND turn=?'
+            params.append(int(turn))
+        if tier is not None:
+            sql += ' AND tier=?'
+            params.append(int(tier))
+        sql += ' ORDER BY id DESC' if newest_first else ' ORDER BY id'
+        if limit:
+            sql += ' LIMIT ?'
+            params.append(int(limit))
+        return [self._source_view(row) for row in self.db.execute(sql, params).fetchall()]
+
+    def source_count(self, sid):
+        """Số dòng sổ của phiên (đếm ở SQL, không kéo hàng về)."""
+        row = self.db.execute('SELECT COUNT(*) AS total FROM source_ledger WHERE session_id=?',
+                              (sid,)).fetchone()
+        return int((row['total'] if row else 0) or 0)
+
+    def source_counts_by_child(self, sid):
+        """`{child_id: số dòng}` — luật "mỗi nhánh con phải để lại một dòng" đọc từ đây."""
+        rows = self.db.execute('SELECT child_id, COUNT(*) AS total FROM source_ledger'
+                               ' WHERE session_id=? GROUP BY child_id', (sid,)).fetchall()
+        return {str(row['child_id'] or ''): int(row['total'] or 0) for row in rows}
+
+    def source_rows_for(self, sid, child_ids):
+        """Mọi dòng sổ thuộc một tập con (`child_ids`) — cổng chất lượng đọc theo nhánh."""
+        wanted = [str(item) for item in (child_ids or []) if str(item)]
+        if not wanted:
+            return []
+        placeholders = ','.join('?' for _ in wanted)
+        rows = self.db.execute(f'SELECT * FROM source_ledger WHERE session_id=? AND child_id IN ({placeholders})'
+                               ' ORDER BY id', [sid] + wanted).fetchall()
+        return [self._source_view(row) for row in rows]
+
+    def source_status_set(self, sid, row_id, status, matched=None):
+        """Ghim kết luận `source_verify` vào dòng: `status` + `payload.verify`.
+
+        Dòng đã đổi (hoặc phiên đã xoá) ⇒ trả hàng HIỆN TẠI, không tự tạo hàng mới.
+        """
+        current = self.source_row(sid, row_id)
+        if current is None:
+            return None
+        payload = dict(current.get('payload') or {})
+        payload['verify'] = {'matched': bool(matched) if matched is not None else None,
+                             'at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
+        with self.db:
+            self.db.execute('UPDATE source_ledger SET status=?, payload=? WHERE session_id=? AND row_id=?',
+                            (str(status or 'unverified'), json.dumps(payload, ensure_ascii=False), sid, str(row_id)))
+        return self.source_row(sid, row_id)
+
+    @staticmethod
+    def _source_view(row):
+        """Hàng DB → dict dùng được ở tầng trên (`payload` đã giải JSON, `steps` không lộ id nội bộ)."""
+        item = dict(row)
+        try:
+            item['payload'] = json.loads(item.get('payload') or '{}')
+        except (TypeError, ValueError):
+            item['payload'] = {}
+        item['rowId'] = item.pop('row_id', '')
+        item['fetchedAt'] = item.pop('fetched_at', '')
+        item['childId'] = item.pop('child_id', None)
+        item['sourceRowId'] = item.pop('source_row_id', None)
+        item.pop('id', None)
+        item.pop('session_id', None)
+        return item
+
+    # ------------------------------------------------------------------
+    # Hồ sơ research (vòng 27 đợt 4, C-2) — chỉ mục các bản đã ghi trong `.research/`
+
+    def record_dossier(self, sid, research_id, version, relative_path, profile='', level=0,
+                       critique='none', gate='clear', rows=0, bytes=0):
+        """Ghim một bản hồ sơ đã ghi (khoá `(research_id, version)` — ghi đè cùng version là KHÔNG-THỂ)."""
+        with self.db:
+            self.db.execute(
+                'INSERT INTO research_dossiers(research_id,version,session_id,relative_path,profile,level,'
+                ' critique,gate,rows,bytes,created) VALUES(?,?,?,?,?,?,?,?,?,?,?)'
+                ' ON CONFLICT(research_id, version) DO UPDATE SET session_id=excluded.session_id,'
+                ' relative_path=excluded.relative_path, profile=excluded.profile, level=excluded.level,'
+                ' critique=excluded.critique, gate=excluded.gate, rows=excluded.rows, bytes=excluded.bytes',
+                (str(research_id), int(version), sid, str(relative_path), str(profile or ''), int(level or 0),
+                 str(critique or 'none'), str(gate or 'clear'), int(rows or 0), int(bytes or 0), time.time()))
+        return self.dossier(research_id, version)
+
+    def dossier(self, research_id, version):
+        """Một bản hồ sơ, hoặc `None`."""
+        row = self.db.execute('SELECT * FROM research_dossiers WHERE research_id=? AND version=?',
+                              (str(research_id), int(version))).fetchone()
+        return dict(row) if row is not None else None
+
+    def dossier_versions(self, research_id):
+        """Số version đang có của một việc, tăng dần."""
+        rows = self.db.execute('SELECT version FROM research_dossiers WHERE research_id=? ORDER BY version',
+                               (str(research_id),)).fetchall()
+        return [int(row['version']) for row in rows]
+
+    def dossier_latest(self, research_id):
+        """Bản mới nhất của một việc, hoặc `None`."""
+        row = self.db.execute('SELECT * FROM research_dossiers WHERE research_id=? ORDER BY version DESC LIMIT 1',
+                              (str(research_id),)).fetchone()
+        return dict(row) if row is not None else None
+
+    def dossiers_for(self, research_id):
+        """Mọi bản của một việc, cũ → mới."""
+        rows = self.db.execute('SELECT * FROM research_dossiers WHERE research_id=? ORDER BY version',
+                               (str(research_id),)).fetchall()
+        return [dict(row) for row in rows]
+
+    def dossiers_recent(self, sid, limit=10):
+        """Các bản hồ sơ gần đây của một phiên (cho `research_status` khi chưa biết `researchId`)."""
+        rows = self.db.execute('SELECT * FROM research_dossiers WHERE session_id=?'
+                               ' ORDER BY created DESC LIMIT ?', (sid, int(limit))).fetchall()
+        return [dict(row) for row in rows]
+
+    # ------------------------------------------------------------------
+    # Chỉ thị giữa lượt (vòng 27 đợt 7, D-43) — hàng đợi của chủ nhà
+
+    def queue_steer(self, sid, text, turn=0):
+        """Xếp một chỉ thị giữa lượt. Trần `STEER_MAX_PENDING` do tầng gọi giữ, không phải bảng."""
+        body = str(text or '').strip()
+        if not body:
+            raise ValueError('steer text must not be empty')
+        with self.db:
+            cursor = self.db.execute('INSERT INTO session_steers(session_id,turn,text,state,created)'
+                                     ' VALUES(?,?,?,?,?)', (sid, int(turn or 0), body, 'pending', time.time()))
+        return self.steer(cursor.lastrowid)
+
+    def steer(self, steer_id):
+        """Một hàng chỉ thị, hoặc `None`."""
+        row = self.db.execute('SELECT * FROM session_steers WHERE id=?', (int(steer_id),)).fetchone()
+        return dict(row) if row is not None else None
+
+    def pending_steer_count(self, sid):
+        """Số chỉ thị đang chờ bơm (hàng `pending`)."""
+        row = self.db.execute("SELECT COUNT(*) AS total FROM session_steers WHERE session_id=? AND state='pending'",
+                              (sid,)).fetchone()
+        return int((row['total'] if row else 0) or 0)
+
+    def claim_steers(self, sid, limit=3):
+        """Giành các chỉ thị `pending` để bơm vào transcript — **một lần**, y như `claim_deliveries`.
+
+        `UPDATE … WHERE state='pending'` là chỗ chốt: hàng đã bị nhịp khác giành thì `rowcount == 0`.
+        """
+        claimed = []
+        with self.db:
+            rows = self.db.execute("SELECT * FROM session_steers WHERE session_id=? AND state='pending'"
+                                   ' ORDER BY id LIMIT ?', (sid, int(limit))).fetchall()
+            for row in rows:
+                cursor = self.db.execute("UPDATE session_steers SET state='injected', injected=?"
+                                         " WHERE id=? AND state='pending'", (time.time(), row['id']))
+                if cursor.rowcount == 1:
+                    claimed.append(dict(row))
+        return claimed
+
+    def mark_steer(self, steer_id, state='dropped'):
+        """`pending` → `dropped` (chủ nhà đổi ý, hoặc quá hạn lượt): trả hàng sau khi đổi."""
+        with self.db:
+            self.db.execute("UPDATE session_steers SET state=?, injected=? WHERE id=? AND state='pending'",
+                            (str(state or 'dropped'), time.time(), int(steer_id)))
+        return self.steer(steer_id)
+
+    # ------------------------------------------------------------------
+    # Phán quyết phản biện hồ sơ (vòng 27 đợt 6, #5968) — khuôn `record_plan_verification`
+
+    def record_research_verification(self, research_id, version, session_id, verdict, issues=None,
+                                     summary='', critic_session_id=None, critic_answer_chars=0,
+                                     critic_verdict=None):
+        """Ghim MỘT phán quyết cho `(research_id, version)`. Trả hàng vừa ghi."""
+        with self.db:
+            cursor = self.db.execute(
+                'INSERT INTO research_verifications(research_id,version,session_id,verdict,issues,summary,'
+                ' critic_session_id,critic_answer_chars,critic_verdict,created) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                (str(research_id), int(version), session_id, str(verdict),
+                 json.dumps(list(issues or []), ensure_ascii=False), str(summary or ''),
+                 critic_session_id, int(critic_answer_chars or 0), critic_verdict, time.time()))
+        row = self.db.execute('SELECT * FROM research_verifications WHERE id=?',
+                              (int(cursor.lastrowid),)).fetchone()
+        return self._verification_view(row)
+
+    def research_verifications(self, research_id, version=None, limit=20):
+        """Phán quyết của một việc (mới → cũ), lọc theo bản khi có `version`."""
+        sql = 'SELECT * FROM research_verifications WHERE research_id=?'
+        params = [str(research_id)]
+        if version is not None:
+            sql += ' AND version=?'
+            params.append(int(version))
+        sql += ' ORDER BY id DESC LIMIT ?'
+        params.append(int(limit))
+        return [self._verification_view(row) for row in self.db.execute(sql, params).fetchall()]
+
+    def research_verification_latest(self, research_id, version=None):
+        """Phán quyết MỚI NHẤT của một việc (hoặc của một bản), hay `None`."""
+        rows = self.research_verifications(research_id, version=version, limit=1)
+        return rows[0] if rows else None
+
+    def research_verification_count(self, research_id, verdict=None):
+        """Số phán quyết của một việc — có `verdict` thì đếm đúng loại (`revise` để đếm vòng)."""
+        sql = 'SELECT COUNT(*) AS total FROM research_verifications WHERE research_id=?'
+        params = [str(research_id)]
+        if verdict is not None:
+            sql += ' AND verdict=?'
+            params.append(str(verdict))
+        row = self.db.execute(sql, params).fetchone()
+        return int((row['total'] if row else 0) or 0)
+
+    def dossier_critique_set(self, research_id, version, critique):
+        """Ghi nhãn phản biện lên chính hàng hồ sơ: `none` → `ok`/`revise`."""
+        with self.db:
+            self.db.execute('UPDATE research_dossiers SET critique=? WHERE research_id=? AND version=?',
+                            (str(critique or 'none'), str(research_id), int(version)))
+        return self.dossier(research_id, version)
+
+    @staticmethod
+    def _verification_view(row):
+        """Hàng DB → dict dùng được ở tầng trên (`issues` đã giải JSON)."""
+        item = dict(row)
+        try:
+            item['issues'] = json.loads(item.get('issues') or '[]')
+        except (TypeError, ValueError):
+            item['issues'] = []
+        item['researchId'] = item.pop('research_id', '')
+        item['sessionId'] = item.pop('session_id', '')
+        item['criticSessionId'] = item.pop('critic_session_id', None)
+        item['criticAnswerChars'] = int(item.pop('critic_answer_chars', 0) or 0)
+        item['criticVerdict'] = item.pop('critic_verdict', None)
+        item.pop('id', None)
+        return item
 
     def close(self):
         self.db.close()
