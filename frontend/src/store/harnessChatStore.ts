@@ -589,7 +589,7 @@ export const useHarnessChatStore = create<State>((set, get) => ({
     }
 
     const prevModel = current.lastModelLabel
-    const newModel = modelLabel || (selection?.kind === 'model' ? selection.modelId : selection?.kind === 'alias' ? selection.aliasId : undefined)
+    const newModel = modelLabel || (selection?.kind === 'model' ? selection.modelId : selection?.kind === 'provider' ? selection.modelId : selection?.kind === 'alias' ? selection.aliasId : undefined)
 
     const updatedEvents = [...current.events]
     if (!steering && prevModel && newModel && prevModel !== newModel && updatedEvents.length > 0) {
@@ -640,6 +640,7 @@ export const useHarnessChatStore = create<State>((set, get) => ({
         const ownerDirectives = useOwnerSettingsStore.getState()
         const skills = useSkillsStore.getState().skills.filter(s => s.enabled).map(s => s.id)
         const route = selection?.kind === 'model' ? { connectionId: selection.connectionId, modelId: selection.modelId }
+          : selection?.kind === 'provider' ? { providerId: selection.providerId, modelId: selection.modelId }
           : selection?.kind === 'alias' ? { aliasId: selection.aliasId } : {}
         // Chỉ gửi trần bước/thời gian/công cụ khi harness thật sự đặt chúng: thiếu trường
         // nghĩa là engine tự quyết, không phải client gửi số đoán.
@@ -650,7 +651,11 @@ export const useHarnessChatStore = create<State>((set, get) => ({
         }
         
         // Single Model Mode: When user selects Single Model, override entire harness with this single model
-        const singleModelId = isSingleModel ? (selection?.kind === 'model' ? `model:${selection.connectionId}:${selection.modelId}` : harnessStore.activeModelId) : null
+        const singleModelId = isSingleModel
+          ? (selection?.kind === 'model' ? `model:${selection.connectionId}:${selection.modelId}`
+            : selection?.kind === 'provider' ? `provider:${selection.providerId}:${selection.modelId}`
+            : harnessStore.activeModelId)
+          : null
 
         const session = await agentApi<HarnessSession>('/sessions', {
           ...route,
@@ -700,15 +705,18 @@ export const useHarnessChatStore = create<State>((set, get) => ({
       // Mức thinking chỉ được là mức model đã công bố: `thinkingLevels` của model
       // đang chọn tới từ đây, để composer không gửi `medium` cho một model chỉ có
       // `max/high/low` (harness trả THINKING_LEVEL_UNSUPPORTED và lượt chết).
-      // Tuyến alias không mang danh sách mức (nhiều đích, mỗi đích một bộ mức), và
-      // khi không biết model nào sẽ nhận lượt thì gửi kèm một mức là đoán bừa —
-      // bỏ hẳn để router tự chọn mức mặc định của đích nó chọn.
+      // Tuyến alias và tuyến provider đều không mang danh sách mức của MỘT đích: mỗi
+      // tuyến là nhiều đích, và khi không biết model nào sẽ nhận lượt thì gửi kèm một
+      // mức là đoán bừa — bỏ hẳn để router tự chọn mức mặc định của đích nó chọn.
+      // (Danh sách mức của tuyến provider là GIAO mức của mọi connection trong nhóm.)
       const levelKnown = Array.isArray(thinkingLevels) && thinkingLevels.length > 0
-      const thinkingLevel = selection?.kind === 'alias' && !levelKnown
+      const thinkingLevel = (selection?.kind === 'alias' || selection?.kind === 'provider') && !levelKnown
         ? undefined
         : resolveThinkingLevel(thinkingLevels, useHarnessStore.getState().thinkingLevel)
       const route = selection?.kind === 'model'
         ? { connectionId: selection.connectionId, modelId: selection.modelId, ...(thinkingLevel ? { thinkingLevel } : {}) }
+        : selection?.kind === 'provider'
+        ? { providerId: selection.providerId, modelId: selection.modelId, ...(thinkingLevel ? { thinkingLevel } : {}) }
         : selection?.kind === 'alias'
         ? { aliasId: selection.aliasId, ...(thinkingLevel ? { thinkingLevel } : {}) }
         : {}

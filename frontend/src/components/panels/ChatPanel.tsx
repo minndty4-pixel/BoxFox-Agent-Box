@@ -35,7 +35,7 @@ import type { ChatMessage, ReferencedFile } from '../../types/ui'
 import { useAgentStore } from '../../store/agentStore'
 import { useUiStore } from '../../store/uiStore'
 import { readingColumnClass } from '../../lib/readingColumn'
-import { useRouterChatStore, type RouterChatSelection, type RouterChatTurn } from '../../store/routerChatStore'
+import { useRouterChatStore, type RouterChatTurn } from '../../store/routerChatStore'
 import { useProviderStore } from '../../store/providerStore'
 import { useT } from '../../i18n/context'
 import { LabelDot } from '../LabelDot'
@@ -52,7 +52,7 @@ import { ProviderIcon } from '../providers/ProviderIcon'
 import { useHarnessStore } from '../../store/harnessStore'
 import { useHarnessChatStore } from '../../store/harnessChatStore'
 import { resolveThinkingLevel } from '../../lib/harnessThinking'
-import { routerChatOptions } from './RouterTestChat'
+import { composerModels, eligible, findRouteOption, routerChatOptions, selectionKey } from '../../lib/routeOptions'
 
 type ChatGroup =
   | { kind: 'single'; message: ChatMessage }
@@ -294,16 +294,17 @@ export function ChatPanel() {
 
   // Derive options from snapshot
   const routerOptions = useMemo(() => snapshot ? routerChatOptions(snapshot) : [], [snapshot])
-  const selKey = (s: RouterChatSelection | null) => !s ? '' : s.kind === 'alias' ? `alias:${s.aliasId}` : `model:${s.connectionId}:${s.modelId}`
-  const selected = routerOptions.find(o => o.value === selKey(selection))
+  // `findRouteOption` tra cả trong `pins`: một phiên ghim connection (route `model:<c>:<m>`) phải
+  // thấy đúng hàng con, không rơi về hàng cha của nhóm provider.
+  const selected = findRouteOption(routerOptions, selectionKey(selection))
 
   // Auto-select default route when provider loads
   useEffect(() => {
     if (!snapshot || selected) return
     const r = snapshot.defaultRoute
     const key = r.aliasId ? `alias:${r.aliasId}` : `model:${r.connectionId}:${r.modelId}`
-    const next = routerOptions.find(o => o.value === key)?.selection ?? routerOptions[0]?.selection ?? null
-    if (selKey(next) !== selKey(selection)) setSelection(next)
+    const next = findRouteOption(routerOptions, key)?.selection ?? routerOptions[0]?.selection ?? null
+    if (selectionKey(next) !== selectionKey(selection)) setSelection(next)
   }, [snapshot, routerOptions, selected, selection, setSelection])
 
   // Kiểm tra trạng thái connection của model đang chọn để cảnh báo người dùng nếu ping false
@@ -311,6 +312,15 @@ export function ChatPanel() {
     if (!snapshot || !selection) return null
     if (selection.kind === 'model') {
       return snapshot.connections.find(c => c.id === selection.connectionId) || null
+    }
+    if (selection.kind === 'provider') {
+      // Tuyến provider chạy trên BẤT KỲ connection dùng được nào của nhóm, nên chỉ cảnh báo khi
+      // MỌI connection dùng được đều hỏng ping — còn một đích sống là lượt vẫn chạy được. Nhãn
+      // nêu tên PROVIDER (tên connection trong nhóm chỉ là "key 1/2/3", không nói gì thêm).
+      const usable = snapshot.connections.filter(c => eligible(c) && c.providerId === selection.providerId)
+      if (usable.length === 0 || usable.some(c => c.inferenceState !== 'failed')) return null
+      const first = usable[0]
+      return { ...first, name: snapshot.providers?.find(p => p.id === selection.providerId)?.name ?? first.name }
     }
     if (selection.kind === 'alias') {
       const alias = snapshot.aliases.find(a => a.id === selection.aliasId)
@@ -363,15 +373,10 @@ export function ChatPanel() {
 
   // Build router adapter only when live models available
   const routerAdapter: RouterComposerAdapter | undefined = useMemo(() => {
-    const models = routerOptions.map(o => ({
-      id: o.value,
-      name: o.label,
-      provider: o.providerId,
-      thinkingLevels: o.thinkingLevels,
-    }))
+    const models = composerModels(routerOptions)
     return {
       models,
-      activeModelId: selKey(selection),
+      activeModelId: selectionKey(selection),
       isBusy: isGlobalBusy,
       // Chỉ khi lượt harness thật đang chạy (không phải `starting`) mới có chỉ thị giữa lượt —
       // nút Stop vẫn ở nguyên chỗ cũ, nút Gửi chỉ hiện thêm (C-5).
@@ -379,7 +384,7 @@ export function ChatPanel() {
       steerNotice: harnessRun?.steerNotice ?? null,
       connectionWarning,
       onModelChange: (id: string) => {
-        setSelection(routerOptions.find(o => o.value === id)?.selection ?? null)
+        setSelection(findRouteOption(routerOptions, id)?.selection ?? null)
         harnessClearError(chatId)
         setDismissedWarning(null)
       },
@@ -387,8 +392,8 @@ export function ChatPanel() {
         harnessClearError(chatId)
         if (connectionWarning) setDismissedWarning(connectionWarning)
         const thinkingLevel = useHarnessStore.getState().thinkingLevel
-        const baseLabel = selected?.label || (selection?.kind === 'model' ? selection.modelId : selection?.kind === 'alias' ? selection.aliasId : 'Gemini 3.7 Flash')
-        const activeOption = routerOptions.find(o => o.value === selKey(selection))
+        const baseLabel = selected?.label || (selection?.kind === 'model' || selection?.kind === 'provider' ? selection.modelId : selection?.kind === 'alias' ? selection.aliasId : 'Gemini 3.7 Flash')
+        const activeOption = findRouteOption(routerOptions, selectionKey(selection))
         const publishedLevels = activeOption?.thinkingLevels
         // Nhãn phải nói đúng mức sẽ gửi: model chỉ công bố một mức (`['high']`) cũng
         // có mức thật, và store kéo mức toàn cục về đúng nó trước khi gửi.

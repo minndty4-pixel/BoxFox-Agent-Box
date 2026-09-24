@@ -181,6 +181,35 @@ describe('ContextUsageBar — nguồn cỡ context window (§D-U3)', () => {
     expect(findRouterContextWindow(snapshot, null, 'model-không-có-trong-snapshot')).toBeNull()
   })
 
+  /**
+   * Vòng 29 — tuyến `{providerId, modelId}` chạy trên BẤT KỲ connection dùng được nào của nhóm
+   * (router tự luân phiên, tự chuyển khoá khi hết hạn mức), nên con số hiển thị phải là con số
+   * NHỎ NHẤT của nhóm. Hứa cửa sổ của connection rộng nhất là hứa điều lượt không giữ được.
+   */
+  it('tuyến provider: lấy cửa sổ NHỎ NHẤT trong nhóm, bỏ connection không dùng được', () => {
+    const snapshot = snapshotWith(1_000_000)
+    const [first] = snapshot.connections
+    snapshot.connections.push(
+      // Cùng provider, cửa sổ nhỏ hơn → phải thắng.
+      { ...first, id: 'conn-2', name: 'Antigravity (key 2)', models: [{ ...first.models[0], contextWindow: 200_000 }] } as never,
+      // Cùng provider nhưng đã tắt → không bao giờ nhận lượt, không được kéo số xuống.
+      { ...first, id: 'conn-off', enabled: false, models: [{ ...first.models[0], contextWindow: 32_768 }] } as never,
+      // Provider KHÁC, cùng model id, cửa sổ nhỏ hơn → không thuộc nhóm.
+      { ...first, id: 'conn-other', providerId: 'openrouter', name: 'OpenRouter', models: [{ ...first.models[0], contextWindow: 8_192 }] } as never,
+    )
+
+    expect(findRouterContextWindow(snapshot, { kind: 'provider', providerId: 'antigravity', modelId: 'gemini-3.8-flash-high' }))
+      .toEqual({ tokens: 200_000, basis: 'reported' })
+    // Cả nhóm chỉ còn một đích dùng được thì số của đích đó là câu trả lời.
+    expect(findRouterContextWindow(snapshotWith(1_000_000), { kind: 'provider', providerId: 'antigravity', modelId: 'gemini-3.8-flash-high' }))
+      .toEqual({ tokens: 1_000_000, basis: 'reported' })
+    // Nhóm không còn connection nào báo số → rơi xuống nhãn harness, không bịa số.
+    expect(findRouterContextWindow(snapshotWith(null), { kind: 'provider', providerId: 'antigravity', modelId: 'gemini-3.8-flash-high' }, 'Gemini 3.8 Flash'))
+      .toEqual(null)
+    expect(findRouterContextWindow(snapshotWith(1_000_000), { kind: 'provider', providerId: 'opencode', modelId: 'gemini-3.8-flash-high' }))
+      .toBeNull()
+  })
+
   it('định dạng token count ổn định giữa thanh và modal', () => {
     expect(formatTokenCount(0)).toBe('0.0k')
     expect(formatTokenCount(28_600)).toBe('28.6k')
@@ -303,6 +332,20 @@ describe('ContextUsageBar — nhãn hiển thị', () => {
     expect(limitLabelText(host)).toContain('est.')
     const label = host.querySelector('[data-testid="context-usage-label"]') as HTMLElement
     expect(label.getAttribute('title')).toContain('BoxFox model table')
+  })
+
+  it('nhãn tuyến provider dùng số nhỏ nhất của nhóm, không phải số của connection đầu', () => {
+    const snapshot = snapshotWith(1_000_000)
+    const [first] = snapshot.connections
+    snapshot.connections.push(
+      { ...first, id: 'conn-2', name: 'Antigravity (key 2)', models: [{ ...first.models[0], contextWindow: 200_000 }] } as never,
+    )
+    useProviderStore.setState({ snapshot })
+    useRouterChatStore.setState({ selection: { kind: 'provider', providerId: 'antigravity', modelId: 'gemini-3.8-flash-high' } })
+    seedRun()
+
+    const host = render(<ContextUsageBar />)
+    expect(limitLabelText(host)).toContain('28.6k / 200k (14%)')
   })
 
   it('nhãn không còn phần tử bị ẩn theo breakpoint (lỗi cắt cụt ở 900px)', () => {

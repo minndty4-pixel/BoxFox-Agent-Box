@@ -984,7 +984,11 @@ function exitCodeOfNote(note: string | null): number | null {
   return matched ? Number(matched[1]) : null
 }
 
-function resolveProvider(modelId?: string, connectionId?: string, snapshot?: ProviderSnapshot | null): string {
+function resolveProvider(modelId?: string, connectionId?: string, snapshot?: ProviderSnapshot | null, providerId?: string): string {
+  // Vòng 29 — tuyến provider (`{providerId, modelId}`) không có `connectionId` nào để dò ngược:
+  // `providerId` của route là câu trả lời trực tiếp. Connection THẬT đã phục vụ lượt vẫn đọc
+  // được ở `turn.target.connectionId` (khung `boxfox` của event `usage`).
+  if (providerId) return providerId
   if (connectionId && snapshot?.connections) {
     const conn = snapshot.connections.find((c) => c.id === connectionId)
     if (conn?.providerId) return conn.providerId
@@ -1521,13 +1525,13 @@ function TurnBlock({
   // Xác định Model info và Provider
   const targetModelId =
     turn.target?.modelId ??
-    (selection?.kind === 'model' ? selection.modelId : selection?.kind === 'alias' ? selection.aliasId : 'gemini-3.7-flash-high')
+    (selection?.kind === 'model' || selection?.kind === 'provider' ? selection.modelId : selection?.kind === 'alias' ? selection.aliasId : 'gemini-3.7-flash-high')
 
   const targetConnId =
     turn.target?.connectionId ??
     (selection?.kind === 'model' ? selection.connectionId : undefined)
 
-  const providerId = resolveProvider(targetModelId, targetConnId, snapshot)
+  const providerId = resolveProvider(targetModelId, targetConnId, snapshot, selection?.kind === 'provider' ? selection.providerId : undefined)
 
   // F5: endTime chỉ được cộng khi lượt chưa xong.
   const durationSec = Math.max(1, Math.round((toMs(turn.endTime) - toMs(turn.startTime)) / 1000))

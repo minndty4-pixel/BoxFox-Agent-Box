@@ -64,4 +64,45 @@ describe('providerStore backend state', () => {
     expect(useProviderStore.getState().busy).toBe(false)
     expect(useProviderStore.getState().snapshot).toEqual(snapshot)
   })
+
+  it('hands the key ring of a connection to the UI unchanged and adds nothing to it', async () => {
+    const ringed = {
+      connection: {
+        id: 'openrouter-key', providerId: 'openrouter', name: 'OpenCode Free', enabled: true, credentialPresent: true,
+        authState: 'ready', discoveryState: 'ready', inferenceState: 'unknown', models: [], error: null, quota: null, revision: 4,
+        activeKeyId: 'key-2',
+        keys: [
+          { id: 'key-1', label: 'Key 1', prefix: 'sk-or-', state: 'cooling', cooldownUntil: 1_758_700_000_000, resetAt: null, lastErrorCode: 'RATE_LIMIT', lastErrorMessage: '429 rate limit · retry-after 30s', lastUsedAt: 1_758_600_000_000 },
+          { id: 'key-2', label: 'Key 2', prefix: 'sk-or-', state: 'ready', cooldownUntil: null, resetAt: null, lastErrorCode: null, lastErrorMessage: null, lastUsedAt: 1_758_600_500_000 },
+        ],
+      },
+    }
+    vi.stubGlobal('fetch', vi.fn(async () => json({ ...snapshot, connections: [ringed.connection] })))
+    await useProviderStore.getState().load()
+
+    // The store is a pass through: whatever the router decorated stays byte for byte,
+    // and the UI is the only layer that decides how to draw a ring.
+    expect(useProviderStore.getState().snapshot?.connections[0]).toEqual(ringed.connection)
+    expect(Object.keys(useProviderStore.getState().snapshot!.connections[0])).toContain('keys')
+  })
+
+  it('reports a refused key write with its code and still reloads the ring the router kept', async () => {
+    const message = 'Provider returned 429 for this key.'
+    let state = snapshot
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === '/api/router/state') return json(state)
+      state = { ...snapshot, health: { status: 'ok', version: 'after-429' } }
+      return new Response(JSON.stringify({ error: { code: 'RATE_LIMIT', message, retryable: true } }), { status: 429, headers: { 'content-type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    await useProviderStore.getState().load()
+
+    const rejection = useProviderStore.getState().request('/api/router/connections/openrouter-key/keys/key-1/try', 'POST')
+    await expect(rejection).rejects.toMatchObject({ code: 'RATE_LIMIT', status: 429, message })
+    // The banner gets the sentence, the ring gets the router's own view, and nothing is stuck busy.
+    expect(useProviderStore.getState().error).toBe(message)
+    expect(useProviderStore.getState().snapshot?.health.version).toBe('after-429')
+    expect(useProviderStore.getState().busy).toBe(false)
+    expect(fetchMock.mock.calls.at(-1)![0]).toBe('/api/router/state')
+  })
 })
