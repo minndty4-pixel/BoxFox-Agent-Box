@@ -2646,3 +2646,37 @@ gốc"* bị hiểu là "thêm trang nữa" trong khi luật thật là **khác 
 thay bằng `{}` mà model chỉ nhận một câu *"Invalid tool arguments"* — không độ dài, không vị trí lỗi;
 (d) lượt mức 2 xin `ceilingSeconds` bằng hạn mức mặc định thì không được nới, dù bảng mức ghi mức 2 = 1200 s;
 (e) nhánh con nhận lời nhắc cổng với tiêu chí của hồ sơ mà nó không có quyền ghi.
+## Vòng 29 — vòng khoá trong một connection
+
+### Đợt 4 — kiểm OFFLINE phần research (chưa có lượt sống nào)
+
+- **Đợt này KHÔNG gọi nhà cung cấp nào.** Bằng chứng là unit test hai tầng probe provider GIẢ: tầng router
+  (`router/tests/**`, `createProviders({ fetchImpl })` — sở hữu của luồng router) và tầng harness
+  (`backend/tests/unit/test_router_keyring_probe.py`, mới, **2 ca**). Câu chốt nguyên văn: *"đợt 29 chỉ
+  chứng minh bằng unit test; nó KHÔNG chứng minh một lượt research thật giờ chạy xong — đợt này không gọi
+  nhà cung cấp nào."*
+- Giàn harness ghim hai hành vi: xoay khoá ở TRONG router ⇒ harness thấy **một** lời gọi HTTP và một câu trả
+  lời 200 (không phải sửa harness); hết sạch khoá (429 cho mọi lần thử) ⇒ **một** lỗi tạm thời đọc được
+  (`Router HTTP 429`, mã `RATE_LIMIT`, `UPSTREAM_HTTP_429`), lời khuyên thử lại bị chặn hai đầu
+  (`delay ∈ [2, 30] s`), và lời gọi trả về ngay (đo: cả hai ca trong 0,46 s).
+- **Bốn sửa nhỏ offline** (đo từ sáu lượt thật của vòng 28 — xem §"Lượt research Y TẾ THẬT" ở trên):
+  (a) bảng từ tiêu đề hồ sơ nhận tiêu đề Việt tự nhiên ("Kết luận chính" không còn bị
+  `research-shape-missing mục Phát hiện`); (b) câu khắc phục `research-claim-single-source` nay nói ra chữ
+  **host** thay vì "khác nguồn tin gốc"; (c) thông báo tham số công cụ hỏng mang thêm độ dài + vị trí lỗi
+  (`tool_arg_errors.py` + 7 ca — luồng chính của phiên); (d) `ceilingSeconds` được MÔ TẢ trong hợp đồng
+  `research_brief` (bỏ trống ⇒ giữ trần đã chốt; muốn nới thì phải xin dài hơn số giây lượt đang có).
+  Câu tài liệu lệch ở `scripts/eval/benchmarks/tier-r1.md:66` (còn nói ca `milestone_ceiling_declared`
+  "đang là `xfail`") đã sửa cho khớp §6.1 của cùng tệp.
+- **Số đo trên cây sửa của đợt này (nền `deda6e8`):** nhóm research **286 → 291 passed** (24,85 s; +5 ca:
+  4 ở `test_research_quality.py`, 1 ở `test_research_brief.py`); `test_research_checks.py` **83 passed**,
+  không còn `xfail` nào; giàn probe mới **2 passed in 0,46 s**. Bộ router (`cd router && npm test`)
+  **không chạy ở đây** — `router/**` đang được luồng router sửa song song và `router/node_modules` chưa cài
+  trên cây này.
+- **Chỗ chưa đo được, nói thẳng:** vẫn KHÔNG có lượt research thật nào ghi `.research/**`;
+  `scripts/eval/results/tier-r1-research/manifest.json` còn `measured: false`; `scores.jsonl` vẫn đúng **một**
+  dòng dựng tay; `R1–R12` chưa chạy trên dữ liệu thật (**C-7** còn mở, **F19** còn hiệu lực). Bốn câu giàn
+  probe KHÔNG trả lời: nhà cung cấp thật có cắt lượt ở phút 8,5–14 không; một lượt mức 2 có kịp đóng hồ sơ
+  trên khoá thật không; hạn mức theo phiên của provider miễn phí có luật gì; và phát hiện (e) (chú thích cổng
+  cho nhánh con) còn treo vì phải kiểm bằng một lượt thật.
+- Tài liệu handoff của phần này: `docs/handoff/research-verification.md` (giao thức chạy sống `R1 → R6 → R7 →
+  R3`, luật chuyển khoá, bước migrate một lần trên máy chủ nhà, và bảng "chưa làm được").
