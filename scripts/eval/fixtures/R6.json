@@ -1,0 +1,42 @@
+{
+  "id": "R6",
+  "case": "phiên mơ hồ: KHÔNG nói mức",
+  "request": "Tìm hiểu giúp tôi về chủ đề này.",
+  "request_source": "nguyên văn bảng ca của kế hoạch (docs/plan/v27/subplans/flow.md §7.1)",
+  "oracle_pass": [
+    "Header hồ sơ ghi `Level: 2` (mức mặc định — #5965)",
+    "Nhật ký có lời gọi `research_brief` (thẻ chốt mức/trần/hồ sơ của lượt)",
+    "Có dấu hiệu mức được lấy mặc định (brief không kèm `tier`, hoặc mã `RESEARCH_TIER_DEFAULTED`)"
+  ],
+  "bad_answer": [
+    "Tự chọn mức 3 cho một câu hỏi mơ hồ (vượt trần ngân sách) mà không hỏi chủ nhà",
+    "Giao việc research mà không có brief, để trần theo mức không áp được"
+  ],
+  "rubric_dimensions": [
+    "C1",
+    "C5",
+    "C7"
+  ],
+  "environment": {
+    "network": "off",
+    "workspace": "sạch, không có mạng"
+  },
+  "budget": {
+    "max_steps": 40,
+    "deadline_seconds": 1200,
+    "source": "trần của mức 2 trong nhật ký hệ thống (RESEARCH_TIER_CHILD_STEPS=40, RESEARCH_TIER_TURN_SECONDS=1200)"
+  },
+  "seeds": [
+    "workspace sạch",
+    "yêu cầu KHÔNG nói mức — mức phải lấy mặc định"
+  ],
+  "layer1_checks": [
+    "tier_recorded_default",
+    "brief_notice_present"
+  ],
+  "open_questions": [
+    "Ngưỡng \"mơ hồ tới mức phải hỏi lại\" chưa có trong kế hoạch; ca này chỉ kiểm mức mặc định + brief."
+  ],
+  "plan_ref": "docs/plan/v27/subplans/flow.md §7.1",
+  "bad_answer_source": "script này soạn theo chiều ngược của oracle; kế hoạch chỉ có cột 'oracle máy' nên 'bad answer' chưa được chủ sở hữu ghim"
+}

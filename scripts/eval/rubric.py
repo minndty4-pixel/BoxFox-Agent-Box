@@ -103,6 +103,71 @@ HARD_GATE_MIN = 1
 BANDS: tuple[tuple[int, str], ...] = ((13, 'đạt tốt'), (9, 'đạt có điều kiện'), (0, 'chưa đạt'))
 PASS_MIN_TOTAL = 9  # §6: pass = qua điều kiện cứng VÀ tổng điểm ≥ 9
 
+
+# ------------------------------------------------------------------ oracle máy (R1–R12)
+#
+# Đây là khối hằng **RIÊNG** của bộ ca research R1–R12 (`docs/plan/v27/subplans/flow.md` §7.2
+# + `docs/plan/v27/research-rework.md` §5). Nó KHÔNG phải chiều chất lượng C1–C8, không đổi
+# `HARD_GATE_DIMENSIONS`, và không đi vào `MAX_TOTAL`. Mỗi tên dưới đây là một hàm thuần
+# trong `scripts/eval/research_checks.py` (khối "oracle máy cho bộ ca research R1–R12"),
+# trả `{name, ok, detail}` và chạy được hoàn toàn offline.
+RESEARCH_CHECKS: tuple[str, ...] = (
+    'dossier_frontmatter_present',
+    'sources_opened',
+    'tier_recorded',
+    'tier_recorded_default',
+    'brief_notice_present',
+    'branch_files_exist',
+    'dossier_files_exist',
+    'branch_count_at_most',
+    'claims_have_sources',
+    'read_beyond_first_chunk',
+    'no_snippet_cited_as_read',
+    'no_unread_snippet',
+    'citation_chase_logged',
+    'saturation_logged',
+    'conflicts_file_exists',
+    'review_file_exists',
+    'critique_file_exists',
+    'conflict_row_present',
+    'dual_source_declared',
+    'blocked_source_recorded',
+    'no_fabricated_url',
+    'tables_from_structured_source',
+    'gap_labelled_as_signal_unverified',
+    'wave_branch_ceiling_respected',
+    'milestone_ceiling_declared',
+    'hard_ceiling_reported',
+    'owner_views_three_labels',
+)
+
+#: Bộ ca R và oracle máy của từng ca — cột "Oracle máy (layer1_checks)" của flow §7.1, cộng
+#: bốn ca R8–R12 của `docs/plan/v27/research-rework.md` §5. Dùng để kiểm một fixture có ghim
+#: đúng những oracle mà ca của nó cần, thay vì ghim tên bằng tay ở ba chỗ.
+RESEARCH_CASE_CHECKS: dict[str, tuple[str, ...]] = {
+    'R1': ('dossier_frontmatter_present', 'sources_opened', 'tier_recorded'),
+    'R2': ('branch_files_exist', 'dossier_files_exist', 'branch_count_at_most', 'claims_have_sources'),
+    'R3': ('read_beyond_first_chunk', 'no_snippet_cited_as_read'),
+    'R4': ('citation_chase_logged', 'saturation_logged', 'conflicts_file_exists', 'critique_file_exists'),
+    'R5': ('conflict_row_present', 'dual_source_declared'),
+    'R6': ('tier_recorded_default', 'brief_notice_present'),
+    'R7': ('blocked_source_recorded', 'no_fabricated_url', 'no_unread_snippet'),
+    'R8': ('tables_from_structured_source',),
+    'R9': ('gap_labelled_as_signal_unverified',),
+    'R10': ('wave_branch_ceiling_respected',),
+    'R11': ('milestone_ceiling_declared', 'hard_ceiling_reported'),
+    'R12': ('owner_views_three_labels', 'review_file_exists'),
+}
+
+#: Năm số của một ca R (flow §7.3) — thang riêng, KHÔNG phải C1–C8 và không cộng vào `MAX_TOTAL`.
+RESEARCH_CASE_NUMBERS: tuple[str, ...] = (
+    'factual_accuracy', 'citation_precision', 'coverage', 'source_quality', 'efficiency',
+)
+
+#: Trần của oracle: ba khoá, không ném, không gọi mạng. Ghi ở đây để người đọc tài liệu thấy
+#: hợp đồng trước khi mở `research_checks.py`.
+RESEARCH_CHECK_KEYS: tuple[str, ...] = ('name', 'ok', 'detail')
+
 # §6: "không gộp ca hỏng vì hạ tầng vào điểm chất lượng — đó là `infrastructure outcome`".
 INFRASTRUCTURE_OUTCOMES: tuple[str, ...] = (
     'network_down',      # mạng đứt

@@ -1,0 +1,47 @@
+{
+  "id": "R2",
+  "case": "mức 2: khảo sát một chủ đề, 3 nhánh",
+  "request": "Khảo sát ba hướng tiếp cận khác nhau cho bài toán chuyển tuyến ở tuyến cơ sở.",
+  "request_source": "nguyên văn bảng ca của kế hoạch (docs/plan/v27/subplans/flow.md §7.1)",
+  "oracle_pass": [
+    "Mỗi nhánh con ghi được ít nhất một tệp vào `.research/<việc>/`",
+    "Bộ tệp của mức 2 có đủ tệp hồ sơ + hai bản sổ nguồn (`sources.jsonl`, `sources.md`)",
+    "Số nhánh mở không quá 3 (trần của ca)",
+    "Mọi khẳng định trong sổ nguồn đều có URL"
+  ],
+  "bad_answer": [
+    "Mở 4 nhánh trở lên cho cùng một việc, hoặc nhánh con không ghi tệp nào vào phòng",
+    "Khẳng định trong sổ nguồn không có URL (không kiểm lại được)"
+  ],
+  "rubric_dimensions": [
+    "C1",
+    "C2",
+    "C3",
+    "C4",
+    "C8"
+  ],
+  "environment": {
+    "network": "on",
+    "workspace": "sạch, có mạng"
+  },
+  "budget": {
+    "max_steps": 40,
+    "deadline_seconds": 1200,
+    "source": "trần của mức 2 trong nhật ký hệ thống (RESEARCH_TIER_CHILD_STEPS=40, RESEARCH_TIER_TURN_SECONDS=1200)"
+  },
+  "seeds": [
+    "workspace sạch",
+    "mạng bật — ca duy nhất của họ R cần mạng (flow §7.1)"
+  ],
+  "layer1_checks": [
+    "branch_files_exist",
+    "dossier_files_exist",
+    "branch_count_at_most",
+    "claims_have_sources"
+  ],
+  "open_questions": [
+    "Ca này cần mạng: chạy trong CI offline phải chuyển sang chân seed (chưa có trong kế hoạch)."
+  ],
+  "plan_ref": "docs/plan/v27/subplans/flow.md §7.1",
+  "bad_answer_source": "script này soạn theo chiều ngược của oracle; kế hoạch chỉ có cột 'oracle máy' nên 'bad answer' chưa được chủ sở hữu ghim"
+}

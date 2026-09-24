@@ -1,0 +1,43 @@
+{
+  "id": "R12",
+  "case": "Soi ý kiến chủ nhà: review.md đủ ba nhãn ủng hộ / phản bác / chưa chắc",
+  "request": "Tôi nghĩ hướng này đúng; soi lại ý kiến của tôi bằng nguồn.",
+  "request_source": "nguyên văn bảng ca của kế hoạch (docs/plan/v27/research-rework.md §5)",
+  "oracle_pass": [
+    "`review.md` có mục riêng cho ý kiến của chủ nhà",
+    "Đủ ba nhãn: ủng hộ / phản bác / chưa chắc",
+    "Mỗi nhãn kèm nguồn (URL hoặc mã hàng sổ nguồn)"
+  ],
+  "bad_answer": [
+    "Phản biện chung chung, không tách ba nhãn, hoặc chỉ nói thuận theo ý chủ nhà",
+    "Nhãn không kèm nguồn nào (không kiểm lại được)"
+  ],
+  "rubric_dimensions": [
+    "C2",
+    "C3",
+    "C4",
+    "C7"
+  ],
+  "environment": {
+    "network": "off",
+    "workspace": "sạch, không có mạng"
+  },
+  "budget": {
+    "max_steps": 40,
+    "deadline_seconds": 3600,
+    "source": "trần của mức 3 trong nhật ký hệ thống (RESEARCH_TIER_CHILD_STEPS=40, RESEARCH_TIER_TURN_SECONDS=3600)"
+  },
+  "seeds": [
+    "brief có ý kiến/giả định của chủ nhà",
+    "không có kết nối mạng ra ngoài"
+  ],
+  "layer1_checks": [
+    "owner_views_three_labels",
+    "review_file_exists"
+  ],
+  "open_questions": [
+    "Ba nhãn có bắt buộc khi brief KHÔNG có ý kiến chủ nhà không — hiện chỉ áp cho ca có ý kiến."
+  ],
+  "plan_ref": "docs/plan/v27/research-rework.md §5",
+  "bad_answer_source": "script này soạn theo chiều ngược của oracle; kế hoạch chỉ có cột 'oracle máy' nên 'bad answer' chưa được chủ sở hữu ghim"
+}

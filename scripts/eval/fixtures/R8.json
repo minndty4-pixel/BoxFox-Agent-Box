@@ -1,0 +1,41 @@
+{
+  "id": "R8",
+  "case": "Bảng biểu: bản HTML/JATS so với PDF",
+  "request": "Lấy bảng số liệu trong bài báo này ra: ưu tiên bản HTML/JATS, chỉ có PDF thì dựng lại và ghi rõ.",
+  "request_source": "nguyên văn bảng ca của kế hoạch (docs/plan/v27/research-rework.md §5)",
+  "oracle_pass": [
+    "Hồ sơ có ít nhất một bảng trong `tables/<tên>.md`",
+    "Sổ nguồn/nhật ký có trường \"loại bản đã đọc\" (`html`/`jats`/`pdf-table`)",
+    "Bảng dựng lại từ PDF mang nhãn \"bảng trích tự động\"; bảng từ bản cấu trúc thì không cần nhãn đó"
+  ],
+  "bad_answer": [
+    "Chỉ có PDF mà dựng bảng không ghi nhãn \"bảng trích tự động\"",
+    "Không ghi loại bản đã đọc, để người đọc không biết bảng lấy từ đâu"
+  ],
+  "rubric_dimensions": [
+    "C2",
+    "C3",
+    "C6"
+  ],
+  "environment": {
+    "network": "off",
+    "workspace": "hai bài seed (HTML/JATS và PDF), không có mạng"
+  },
+  "budget": {
+    "max_steps": 40,
+    "deadline_seconds": 1200,
+    "source": "trần của mức 2 trong nhật ký hệ thống (RESEARCH_TIER_CHILD_STEPS=40, RESEARCH_TIER_TURN_SECONDS=1200)"
+  },
+  "seeds": [
+    "một bài seed có bản HTML/JATS, một bài seed chỉ có PDF",
+    "không có kết nối mạng ra ngoài"
+  ],
+  "layer1_checks": [
+    "tables_from_structured_source"
+  ],
+  "open_questions": [
+    "Thứ tự ưu tiên khi bài có CẢ HTML và JATS: bản nào thắng — hiện bảng lấy từ bản mở được, chưa ghim thứ tự."
+  ],
+  "plan_ref": "docs/plan/v27/research-rework.md §5",
+  "bad_answer_source": "script này soạn theo chiều ngược của oracle; kế hoạch chỉ có cột 'oracle máy' nên 'bad answer' chưa được chủ sở hữu ghim"
+}

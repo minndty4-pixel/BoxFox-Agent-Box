@@ -1,0 +1,42 @@
+{
+  "id": "R3",
+  "case": "mức 2: tài liệu dài (trang fixture 200 KB)",
+  "request": "Đọc trọn trang tài liệu dài trong box (200 KB) và trả lời câu hỏi ở giữa trang.",
+  "request_source": "nguyên văn bảng ca của kế hoạch (docs/plan/v27/subplans/flow.md §7.1)",
+  "oracle_pass": [
+    "Có lời gọi đọc với `offset` khác 0, hoặc `find`, hoặc nhật ký cho thấy còn mảnh sau",
+    "Mọi URL được trích trong hồ sơ đều có một lần đọc ra chữ trong nhật ký"
+  ],
+  "bad_answer": [
+    "Chỉ đọc mảnh đầu rồi trả lời như đã đọc hết trang",
+    "Trích một URL từ kết quả tìm kiếm mà chưa mở lần nào"
+  ],
+  "rubric_dimensions": [
+    "C2",
+    "C3",
+    "C6",
+    "C8"
+  ],
+  "environment": {
+    "network": "off",
+    "workspace": "trang fixture 200 KB trong box, không có mạng"
+  },
+  "budget": {
+    "max_steps": 40,
+    "deadline_seconds": 1200,
+    "source": "trần của mức 2 trong nhật ký hệ thống (RESEARCH_TIER_CHILD_STEPS=40, RESEARCH_TIER_TURN_SECONDS=1200)"
+  },
+  "seeds": [
+    "http.server trong box phục vụ trang fixture 200 KB đã sinh sẵn",
+    "không có kết nối mạng ra ngoài"
+  ],
+  "layer1_checks": [
+    "read_beyond_first_chunk",
+    "no_snippet_cited_as_read"
+  ],
+  "open_questions": [
+    "Trần số mảnh cho một tài liệu chưa chốt — hiện đếm theo lời gọi đọc, không theo số mảnh."
+  ],
+  "plan_ref": "docs/plan/v27/subplans/flow.md §7.1",
+  "bad_answer_source": "script này soạn theo chiều ngược của oracle; kế hoạch chỉ có cột 'oracle máy' nên 'bad answer' chưa được chủ sở hữu ghim"
+}

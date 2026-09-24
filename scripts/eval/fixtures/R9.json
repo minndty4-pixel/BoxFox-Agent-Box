@@ -1,0 +1,41 @@
+{
+  "id": "R9",
+  "case": "Gap hai tầng số: đủ sàn thì \"đã kiểm\", chưa đủ thì \"tín hiệu, chưa kiểm\" + lý do",
+  "request": "Chủ đề này đã kiểm đủ chưa hay mới là tín hiệu?",
+  "request_source": "nguyên văn bảng ca của kế hoạch (docs/plan/v27/research-rework.md §5)",
+  "oracle_pass": [
+    "Chỗ chưa đủ sàn ghi đúng nhãn \"tín hiệu, chưa kiểm\" kèm lý do",
+    "Không có vòng lặp thử vô hạn: hết trần thử thì ghi nhãn rồi dừng, không treo lượt"
+  ],
+  "bad_answer": [
+    "Ghi \"đã kiểm\" cho phần mới có hai nguồn (dưới sàn), hoặc im lặng về chỗ chưa đủ",
+    "Thử lại mãi đến khi hết trần lượt mà không ghi nhãn nào"
+  ],
+  "rubric_dimensions": [
+    "C3",
+    "C4",
+    "C7",
+    "C8"
+  ],
+  "environment": {
+    "network": "off",
+    "workspace": "tài liệu seed dưới sàn, không có mạng"
+  },
+  "budget": {
+    "max_steps": 40,
+    "deadline_seconds": 3600,
+    "source": "trần của mức 3 trong nhật ký hệ thống (RESEARCH_TIER_CHILD_STEPS=40, RESEARCH_TIER_TURN_SECONDS=3600)"
+  },
+  "seeds": [
+    "tài liệu seed chỉ đủ 2 nguồn / 1 nền tảng (dưới sàn)",
+    "không có kết nối mạng ra ngoài"
+  ],
+  "layer1_checks": [
+    "gap_labelled_as_signal_unverified"
+  ],
+  "open_questions": [
+    "Sàn/đích gap (20/30 hàng, 10/15 cùng chủ đề, 2/3 nền tảng — #6012/#6013/#6016) có hiệu lực từ mức nào — chờ chủ nhà."
+  ],
+  "plan_ref": "docs/plan/v27/research-rework.md §5",
+  "bad_answer_source": "script này soạn theo chiều ngược của oracle; kế hoạch chỉ có cột 'oracle máy' nên 'bad answer' chưa được chủ sở hữu ghim"
+}
