@@ -2404,7 +2404,7 @@ giao diện; danh sách lỗi đầy đủ ở `bug-register.md` §6.34 — BUG-
 - **Ghi chú cho đúng sổ (lượt xác nhận cuối bắt được):** ba sửa một-dòng ở `web.py` (bình luận `perQuery`
   và bình luận `TypeError`/chữ ký hai tham số, ghi chú `select` trong docstring `paper_citations`) **đã
   không** vào `0015d35` — lệnh vá dừng ở mẫu không khớp nên chỉ hai sửa tài liệu `host-web-tools.md` được
-  ghi. Nay đã áp lại và ghim bằng `fd76b53`+**`<SHA>`**; cả ba là bình luận/docstring, **không** đổi hành
+  ghi. Nay đã áp lại ở **`e60ec0e`** (sau `fd76b53`); cả ba là bình luận/docstring, **không** đổi hành
   vi (nhóm web 5 tệp: **139 passed** trước và sau).
 - **Lượt xác nhận cuối trên cây đã commit (`fd76b53`): `OVERALL STATUS: PASSED`.** Đúng ca A-6 từng đỏ
   nay xanh sống: `doi` + `forward` ⇒ 200, `work W2741809807`, `total 1255`, `count 3`; câu hỏi gửi đi là
