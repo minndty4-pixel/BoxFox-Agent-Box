@@ -262,9 +262,8 @@ def test_the_limits_are_the_numbers_the_runtime_applies(tmp_path):
             'researchGate': {'mode': research_quality.gate_mode(None)[0],
                              'modes': list(limits.RESEARCH_GATE_MODES),
                              'default': limits.RESEARCH_GATE_DEFAULT_MODE,
-                             'unknown': (research_quality.gate_mode(None)[1]
-                                         if research_quality.gate_mode(None)[1]
-                                         not in limits.RESEARCH_GATE_MODES else None)},
+                             # `gate_mode()` trả `None` khi giá trị hợp lệ (cùng hợp đồng `_mode`).
+                             'unknown': research_quality.gate_mode(None)[1]},
             'researchTiers': {'overrides': source_tiers.overrides_summary(),
                               'tiers': {str(key): value for key, value in source_tiers.TIERS.items()}},
         },

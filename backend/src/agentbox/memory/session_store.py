@@ -39,6 +39,11 @@ class SessionStore:
         # ngưỡng bao nhiêu, phải mò sang `events.payload` (33 hàng `kind='compression'`, mà 8 hàng
         # trong đó không mang số). Thêm cột là **thuần cộng thêm**: hàng cũ `NULL` vẫn đọc được, và
         # `ALTER TABLE` chỉ chạy khi cột còn thiếu (DB sống đã có bảng từ trước).
+        # Vòng 27 đợt 8: `branches` — danh sách nhánh con ĐÃ dùng dòng sổ này làm bằng chứng. Một
+        # dòng sổ là chuyện của CẢ VIỆC, không phải của riêng nhánh ghim nó: hai nhánh mở cùng một
+        # trang, cùng đoạn trích thì luật idempotent (BUG-92) giữ MỘT dòng, và nếu dòng ấy chỉ nhớ
+        # nhánh A thì nhánh B bị `research-lineage-missing` mà không có cách nào gỡ (vòng 27, đợt 8).
+        self._add_missing_columns('source_ledger', {'branches': "TEXT NOT NULL DEFAULT '[]'"})
         self._add_missing_columns('checkpoints', {
             'before_estimate': 'INTEGER', 'after_estimate': 'INTEGER',
             'context_window': 'INTEGER', 'model_id': 'TEXT',
@@ -133,6 +138,7 @@ class SessionStore:
                 status TEXT NOT NULL DEFAULT 'unverified',
                 fingerprint TEXT NOT NULL DEFAULT '',
                 payload TEXT NOT NULL DEFAULT '{}',
+                branches TEXT NOT NULL DEFAULT '[]',
                 turn INTEGER NOT NULL DEFAULT 0,
                 step INTEGER,
                 created REAL NOT NULL,
@@ -907,8 +913,9 @@ class SessionStore:
                 with self.db:
                     cursor = self.db.execute(
                         'INSERT INTO source_ledger(session_id,row_id,child_id,job,claim,url,host,tier,type,'
-                        ' excerpt,fetched_at,origin,method,source_row_id,status,fingerprint,payload,turn,step,created)'
-                        ' VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                        ' excerpt,fetched_at,origin,method,source_row_id,status,fingerprint,payload,branches,'
+                        ' turn,step,created)'
+                        ' VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                         (sid, row_id, values.get('child_id'), values.get('job'),
                          str(values.get('claim') or ''), str(values.get('url') or ''),
                          str(values.get('host') or ''), int(values.get('tier') or 4),
@@ -917,6 +924,7 @@ class SessionStore:
                          values.get('source_row_id'), str(values.get('status') or 'unverified'),
                          str(values.get('fingerprint') or ''),
                          json.dumps(values.get('payload') or {}, ensure_ascii=False),
+                         json.dumps(list(values.get('branches') or []), ensure_ascii=False),
                          int(values.get('turn') or 0),
                          None if values.get('step') is None else int(values.get('step')),
                          time.time()))
@@ -967,14 +975,52 @@ class SessionStore:
                                ' WHERE session_id=? GROUP BY child_id', (sid,)).fetchall()
         return {str(row['child_id'] or ''): int(row['total'] or 0) for row in rows}
 
+    def source_payload_merge(self, sid, row_id, payload):
+        """Ghi lại `payload` của một dòng sổ đã có (chỉ dùng cho đường DÙNG LẠI dòng).
+
+        `source_add` gọi hàm này khi lời gọi thứ hai mang trường hồ sơ mà dòng cũ chưa có: bỏ qua
+        chúng là biến một nguồn đã mở thành nguồn thiếu trường, và hồ sơ sẽ bị từ chối ở cổng chất
+        lượng vì lỗi thuộc về chính harness. Dòng đã đổi ⇒ trả hàng hiện tại.
+        """
+        current = self.source_row(sid, row_id)
+        if current is None:
+            return None
+        with self.db:
+            self.db.execute('UPDATE source_ledger SET payload=? WHERE session_id=? AND row_id=?',
+                            (json.dumps(dict(payload or {}), ensure_ascii=False), sid, str(row_id)))
+        return self.source_row(sid, row_id)
+
+    def source_link_branch(self, sid, row_id, child_id):
+        """Ghi thêm một nhánh con vào dòng sổ đã có. Dòng đã đổi ⇒ trả hàng hiện tại.
+
+        Đây là chỗ gỡ `research-lineage-missing` cho nhánh thứ hai mở CÙNG một nguồn với đoạn trích
+        y hệt: luật idempotent giữ một dòng, và dòng ấy nhớ đủ cả hai nhánh.
+        """
+        branch = str(child_id or '').strip()
+        current = self.source_row(sid, row_id)
+        if current is None or not branch:
+            return current
+        branches = [str(item) for item in (current.get('branches') or []) if str(item)]
+        if str(current.get('childId') or '') == branch or branch in branches:
+            return current
+        branches.append(branch)
+        with self.db:
+            self.db.execute('UPDATE source_ledger SET branches=? WHERE session_id=? AND row_id=?',
+                            (json.dumps(branches, ensure_ascii=False), sid, str(row_id)))
+        return self.source_row(sid, row_id)
+
     def source_rows_for(self, sid, child_ids):
         """Mọi dòng sổ thuộc một tập con (`child_ids`) — cổng chất lượng đọc theo nhánh."""
         wanted = [str(item) for item in (child_ids or []) if str(item)]
         if not wanted:
             return []
         placeholders = ','.join('?' for _ in wanted)
-        rows = self.db.execute(f'SELECT * FROM source_ledger WHERE session_id=? AND child_id IN ({placeholders})'
-                               ' ORDER BY id', [sid] + wanted).fetchall()
+        # Nhánh ĐẦU tiên ghim dòng nằm ở cột `child_id`; các nhánh sau mở cùng nguồn nằm trong
+        # `branches` (JSON) — đọc cả hai chỗ, nếu không nhánh thứ hai mất bằng chứng của chính nó.
+        like = ' OR '.join('branches LIKE ?' for _ in wanted)
+        rows = self.db.execute(
+            f'SELECT * FROM source_ledger WHERE session_id=? AND (child_id IN ({placeholders}) OR {like})'
+            ' ORDER BY id', [sid] + wanted + ['%"' + item + '"%' for item in wanted]).fetchall()
         return [self._source_view(row) for row in rows]
 
     def source_status_set(self, sid, row_id, status, matched=None):
@@ -1001,6 +1047,10 @@ class SessionStore:
             item['payload'] = json.loads(item.get('payload') or '{}')
         except (TypeError, ValueError):
             item['payload'] = {}
+        try:
+            item['branches'] = [str(entry) for entry in json.loads(item.get('branches') or '[]')]
+        except (TypeError, ValueError):
+            item['branches'] = []
         item['rowId'] = item.pop('row_id', '')
         item['fetchedAt'] = item.pop('fetched_at', '')
         item['childId'] = item.pop('child_id', None)
@@ -1095,6 +1145,17 @@ class SessionStore:
                 if cursor.rowcount == 1:
                     claimed.append(dict(row))
         return claimed
+
+    def requeue_steer(self, steer_id):
+        """`injected` → `pending`: transcript ghi hỏng thì chỉ thị phải quay lại hàng chờ.
+
+        `mark_steer` chỉ chạm hàng `pending`, nên nó không gỡ được một hàng đã bị `claim_steers`
+        đánh dấu `injected` — đúng trạng thái cần lùi lại khi bước bơm thất bại.
+        """
+        with self.db:
+            self.db.execute("UPDATE session_steers SET state='pending', injected=NULL"
+                            " WHERE id=? AND state='injected'", (int(steer_id),))
+        return self.steer(steer_id)
 
     def mark_steer(self, steer_id, state='dropped'):
         """`pending` → `dropped` (chủ nhà đổi ý, hoặc quá hạn lượt): trả hàng sau khi đổi."""

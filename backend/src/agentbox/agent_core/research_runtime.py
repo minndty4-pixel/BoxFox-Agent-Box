@@ -19,7 +19,7 @@ from typing import Any
 from . import journal, research_header, research_ledger, research_profiles, research_quality
 from . import session_journal, source_tiers
 from .limits import (
-    CHILD_DEADLINE_SECONDS, CHILD_MAX_STEPS, DOSSIER_MAX_BYTES, DOSSIER_ROOM,
+    CHILD_DEADLINE_SECONDS, CHILD_MAX_STEPS, DOSSIER_DIR_MISMATCH_CODE, DOSSIER_MAX_BYTES, DOSSIER_ROOM,
     FANOUT_PER_PARENT_MAX, OWNER_STEER_PREFIX, RESEARCH_BRIEF_DEFAULT_MODE, RESEARCH_BRIEF_ENV,
     RESEARCH_BRIEF_MISSING_CODE, RESEARCH_BRIEF_MODES, RESEARCH_BRIEF_MODE_UNKNOWN_CODE,
     RESEARCH_BRIEF_TAKEN_CODE, RESEARCH_CRITIQUE_LABEL, RESEARCH_CRITIQUE_MISSING_CODE,
@@ -212,6 +212,7 @@ def _row_of(item) -> Any:
         origin=item.get('origin'), method=item.get('method'), source_row_id=item.get('sourceRowId'),
         status=item.get('status') or 'unverified', fingerprint=item.get('fingerprint') or '',
         payload=item.get('payload') or {}, child_id=item.get('childId'),
+        branches=tuple(str(entry) for entry in (item.get('branches') or []) if str(entry)),
         turn=int(item.get('turn') or 0), step=item.get('step'), created=str(item.get('created') or ''))
 
 
@@ -255,10 +256,41 @@ def source_add(rt, session, args):
             continue
         if _excerpt_key(item.excerpt) != key:
             continue
-        return {'rowId': item.row_id, 'tier': item.tier, 'type': item.type, 'host': item.host,
-                'fetchedAt': item.fetched_at, 'reused': True,
-                'counts': _ledger_counts(rt, owner), 'label': source_tiers.TIER_LABELS.get(item.tier, ''),
-                'reason': 'đã có dòng sổ cho đúng URL và đúng đoạn trích này'}
+        # Dùng LẠI dòng là chuyện đúng, nhưng lời gọi thứ hai không được biến thành im lặng:
+        # (a) trường hồ sơ nó gửi lên mà dòng cũ chưa có thì phải vào dòng (nguồn vẫn là nguồn ấy);
+        # (b) nhánh con gọi lần hai phải được ghi vào dòng — nếu không, nhánh ấy bị chấm
+        # `research-lineage-missing` mà không có cách nào gỡ (vòng 27, đợt 8).
+        incoming = args.get('payload') if isinstance(args.get('payload'), dict) else {}
+        merged = dict(item.payload or {})
+        added = sorted(key for key, value in incoming.items()
+                       if str(value or '').strip() and not str(merged.get(key) or '').strip())
+        for name in added:
+            merged[name] = incoming[name]
+        conflicts = sorted(key for key, value in incoming.items()
+                           if str(merged.get(key) or '').strip() and merged.get(key) != value)
+        linked = False
+        if child_id and item.child_id != child_id and child_id not in (item.branches or ()):
+            rt.store.source_link_branch(owner, item.row_id, child_id)
+            linked = True
+        if added or conflicts:
+            rt.store.source_payload_merge(owner, item.row_id, merged)
+            system_log.write('research.source.reused', level='info', session_id=sid,
+                             code='SOURCE_REUSED', row=item.row_id, host=item.host,
+                             added=len(added), conflicts=conflicts, branchLinked=linked)
+        item = _row_of(rt.store.source_row(owner, item.row_id) or {})
+        answer = {'rowId': item.row_id, 'tier': item.tier, 'type': item.type, 'host': item.host,
+                  'fetchedAt': item.fetched_at, 'reused': True,
+                  'counts': _ledger_counts(rt, owner), 'label': source_tiers.TIER_LABELS.get(item.tier, ''),
+                  'reason': 'đã có dòng sổ cho đúng URL và đúng đoạn trích này'}
+        if added:
+            answer['payloadMerged'] = added
+        if conflicts:
+            answer['payloadKept'] = conflicts
+            answer['note'] = (f'trường {", ".join(conflicts)} đã có giá trị khác trong dòng sổ — giữ giá '
+                              f'trị CŨ; cần sửa thì mở lại nguồn và ghim đoạn trích khác')
+        if linked:
+            answer['branchLinked'] = True
+        return answer
     row = {
         'claim': claim[:SOURCE_CLAIM_MAX_CHARS],
         'url': url,
@@ -447,7 +479,12 @@ async def research_brief(rt, session, args):
         if ceiling != wanted:
             clamped = wanted
     existing = research_config(session)
-    if existing:
+    # Luật "một lượt một việc" và luật "chỉ được HẠ mức" là luật của MỘT LƯỢT: brief nằm trong
+    # `config` của PHIÊN nên nếu không ghim lượt, mức đã chốt ở lượt trước khoá phiên ấy vĩnh viễn —
+    # main không bao giờ nâng được lên mức 3 dù chủ nhà yêu cầu (lượt sau là lượt MỚI, xem D-24/D-40).
+    current_turn = int(rt.active_turn.get(sid) or 0)
+    same_turn = bool(existing) and int(existing.get('turn') or 0) == current_turn
+    if existing and same_turn:
         if args.get('researchId') is not None:
             asked = slug_from_question(question, str(args.get('researchId')))
             if asked != existing.get('researchId'):
@@ -462,13 +499,24 @@ async def research_brief(rt, session, args):
             raise ValueError(f'{RESEARCH_BRIEF_RAISE_REFUSED_CODE}: trần lượt đã chốt '
                              f'{existing.get("ceilingSeconds")}s; cần dài hơn thì xin chủ nhà ở lượt sau')
     slug = slug_from_question(question, args.get('researchId'))
-    dossier_dir = str(existing.get('dossierDir') or '').strip() or dossier_dir_for(slug)
+    # Lượt mới cùng câu hỏi vẫn dùng lại phòng hồ sơ cũ (bản ghi nối tiếp, không mở phòng thứ hai);
+    # câu hỏi mới ⇒ phòng mới, vì phòng được đặt tên theo câu hỏi.
+    dossier_dir = str(existing.get('dossierDir') or '').strip() if same_turn else ''
+    if not dossier_dir or (existing and existing.get('researchId') != slug):
+        dossier_dir = dossier_dir_for(slug)
+    # `ceilingSeconds` bỏ trống ở lượt mới: GIỮ trần đã chốt (kẹp theo trần của mức mới) thay vì
+    # âm thầm kéo lên trần mặc định của mức — đó là cách một lời gọi "cập nhật" từng bị từ chối oan.
+    if args.get('ceilingSeconds') is None and existing:
+        ceiling = max(60, min(int(existing.get('ceilingSeconds') or 0) or limits['turnSeconds'],
+                              limits['turnSeconds']))
+        clamped = None
     config = {'researchId': slug, 'tier': tier, 'jobProfile': profile.key, 'profileGroup': profile.group,
               'question': question, 'branches': branches, 'ceilingSeconds': ceiling,
               'ownerViews': owner_views,
               'dossierDir': dossier_dir, 'startedAt': journal.utc_now_iso(), 'rationale': rationale,
               'waves': limits['waves'], 'waveSize': limits['waveSize'],
-              'hardCeilingSeconds': limits['hardCeilingSeconds'], 'mode': 'brief'}
+              'hardCeilingSeconds': limits['hardCeilingSeconds'], 'mode': 'brief',
+              'turn': current_turn}
     session.setdefault('config', {})['research'] = config
     # `save` chỉ ghi MESSAGES, nên brief nằm trong `config` phải đi qua `update_config`: không có
     # dòng này thì mức/hồ sơ/phòng hồ sơ biến mất ở lượt sau (harness đọc lại phiên từ store).
@@ -696,6 +744,13 @@ async def dossier_write(rt, session, args):
     if not research_id or not re.fullmatch(RESEARCH_SLUG_RE, research_id):
         raise ValueError(f'RESEARCH_ID_INVALID: researchId {research_id!r} is not a slug — use the id '
                          f'`research_brief` returned, format {RESEARCH_SLUG_RE}')
+    # Một lượt chỉ mở MỘT việc: brief đang mở việc nào thì hồ sơ phải ghi cho việc ấy. Bản trước nhận
+    # id lạ rồi vẫn ghi vào PHÒNG của brief — hàng `E:` và bản ghi hồ sơ trỏ vào một việc khác với
+    # id ghi trong header (hai danh tính cho cùng một tệp).
+    brief_id = str(cfg.get('researchId') or '').strip().lower()
+    if brief_id and brief_id != research_id:
+        raise ValueError(f'{RESEARCH_BRIEF_TAKEN_CODE}: brief của lượt này đang mở việc {brief_id!r}; '
+                         f'hồ sơ phải ghi cho việc ấy (nhận được {research_id!r})')
     try:
         level = int(args.get('level'))
     except (TypeError, ValueError):
@@ -747,11 +802,16 @@ async def dossier_write(rt, session, args):
         raise ValueError(research_quality.rejection_message(verdict))
     versions = rt.store.dossier_versions(research_id)
     version = (int(versions[-1] or 0) if versions else 0) + 1
-    dossier_dir = str(cfg.get('dossierDir') or '').strip() or f'{DOSSIER_ROOM}/{research_id}'
+    # Phòng hồ sơ phải là `.research/<researchId>-<yyyymmdd-hhmm>` — đúng khuôn tên phòng của
+    # `dossier_dir_for`, và cũng đúng khuôn `DOSSIER_PATH_RE` mà op của box áp. Bản trước dựng
+    # `path` TỪ `dossier_dir` rồi so `path` với chính `dossier_dir` (vòng lặp rỗng), nên một phòng
+    # sai vẫn đi thẳng xuống đĩa và `DOSSIER_DIR_MISMATCH_CODE` chưa từng được import ⇒ `NameError`
+    # đúng vào lúc cần báo lỗi (cùng lớp BUG-94/95).
+    dossier_dir = str(cfg.get('dossierDir') or '').strip() or dossier_dir_for(research_id)
+    if not re.fullmatch(rf'{re.escape(DOSSIER_ROOM)}/{re.escape(research_id)}-\d{{8}}-\d{{4}}', dossier_dir):
+        raise ValueError(f'{DOSSIER_DIR_MISMATCH_CODE}: phòng hồ sơ phải có dạng '
+                         f'{DOSSIER_ROOM}/{research_id}-<yyyymmdd-hhmm> (nhận được: {dossier_dir!r})')
     path = f'{dossier_dir}/v{version}-{research_id}.md'
-    if not path.startswith(f'{DOSSIER_ROOM}/{research_id}') and not path.startswith(dossier_dir):
-        raise ValueError(f'{DOSSIER_DIR_MISMATCH_CODE}: hồ sơ phải nằm trong phòng {dossier_dir!r} '
-                         f'(đường dẫn nhận được: {path!r})')
     gate_label = _gate_label(verdict, level, critique_arg)
     header = research_header.build_research_header(
         version, research_id, profile.key, level, critique=critique_arg, gate=gate_label,
@@ -1021,6 +1081,8 @@ async def cancel_child(rt, session, args):
                 'reason': row.get('reason')}
     await rt.stop(target)
     closed = rt.store.child_close_once(target, 'cancelled', reason='OWNER_CANCELLED')
+    # Chỉ thị giữa lượt chỉ xếp cho phiên GỐC, nên vòng lặp này thường không có gì để bỏ; giữ lại để
+    # một nhánh đã đóng không bao giờ giữ chỉ thị của chủ nhà trong hàng chờ của mình.
     for steer in rt.store.claim_steers(target, limit=STEER_MAX_PENDING):
         rt.store.mark_steer(steer['id'], 'dropped')
     rt.store.emit(sid, 'child', {'sessionId': target, 'status': 'cancelled', 'cancelledBy': 'owner',
@@ -1090,7 +1152,17 @@ def drain_steers(rt, sid, messages) -> int:
     if not claimed:
         return 0
     messages.append({'role': 'user', 'content': steer_block(claimed)})
-    rt.store.save(sid, messages)
+    try:
+        rt.store.save(sid, messages)
+    except Exception:  # pragma: no cover - DB hỏng: chỉ thị phải ở LẠI hàng chờ, không được rơi
+        # `claim_steers` đánh dấu `injected` TRƯỚC khi transcript kịp ghi; ghi hỏng mà không trả lại
+        # hàng chờ là chủ nhà mất một chỉ thị trong im lặng (vòng 27, đợt 8). Trả về `pending` rồi đi
+        # tiếp: ranh giới bước sau sẽ bơm lại — lặp một câu còn hơn mất một câu.
+        for record in claimed:
+            rt.store.requeue_steer(record['id'])
+        system_log.write('steer.inject_failed', level='warn', session_id=sid, code='OWNER_STEER',
+                         steerIds=[record['id'] for record in claimed], requeued=True)
+        return 0
     system_log.write('steer.injected', level='info', session_id=sid, code='OWNER_STEER',
                      count=len(claimed), steerIds=[record['id'] for record in claimed])
     return len(claimed)

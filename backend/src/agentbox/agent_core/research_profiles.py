@@ -311,7 +311,10 @@ class UseCase:
 
 USECASES: Mapping[str, UseCase] = {
     'TM-1': UseCase('TM-1', 'giá & chính sách giá', 'C1', ('price', 'capturedAt', 'region'), (5, 8)),
-    'TM-2': UseCase('TM-2', 'đối thủ', 'C1', ('name', 'channel'), (5, 8), 'trần 10–15'),
+    # TM-2 là ngoại lệ đã chốt ở kế hoạch vòng 27 §C-10 (#6007): trần đối thủ là **10–15** đơn vị,
+    # không phải 5–8. Con số sống ở đây, trên chính usecase — bảng `MARKET_CAPS` chép lại nó ở chỗ
+    # khác đã bị xoá vì hai bản ấy lệch nhau và không ai đọc bản thứ hai.
+    'TM-2': UseCase('TM-2', 'đối thủ', 'C1', ('name', 'channel'), (10, 15)),
     'TM-3': UseCase('TM-3', 'nỗi đau / gap người dùng', 'C2′', ('pain', 'reports', 'platforms')),
     'TM-4': UseCase('TM-4', 'quy mô & xu hướng', 'C3', ('value', 'unit', 'year', 'publisher')),
     'TM-5': UseCase('TM-5', 'khách hàng mục tiêu', 'C3', ('segment', 'basis')),
@@ -321,13 +324,6 @@ USECASES: Mapping[str, UseCase] = {
     'TM-9': UseCase('TM-9', 'sản phẩm thay thế & công nghệ mới', 'C3', ('name', 'status', 'year')),
     'TM-10': UseCase('TM-10', 'niềm tin, uy tín & cộng đồng', 'C2', ('claim', 'direction', 'reports')),
 }
-
-MARKET_CAPS: Mapping[str, tuple[int, int]] = {
-    'TM-1': (5, 8),
-    'TM-2': (5, 15),
-    'TM-7': (3, 5),
-}
-
 
 def usecase(key: str) -> UseCase | None:
     return USECASES.get((key or '').strip().upper())

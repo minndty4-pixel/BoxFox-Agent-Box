@@ -16,6 +16,7 @@ from __future__ import annotations
 import pytest
 
 from agentbox.agent_core import research_ledger, research_quality, research_profiles
+from agentbox.agent_core.reading import normalize_url
 from agentbox.agent_core.limits import RESEARCH_GATE_ENV
 
 REMEDY_CODES = set(research_quality.RESEARCH_CODES)
@@ -92,9 +93,18 @@ def test_the_gate_never_raises_and_a_missing_env_reads_the_default(monkeypatch):
 def test_an_unknown_value_falls_back_to_enforce_and_the_raw_value_is_kept(monkeypatch):
     monkeypatch.setenv(RESEARCH_GATE_ENV, 'chặt-vừa-thôi')
     mode, raw = research_quality.gate_mode()
-    assert (mode, raw) == (research_quality.gate_mode({'BOXFOX_RESEARCH_GATE': 'chặt-vừa-thôi'})[1] and mode, 'chặt-vừa-thôi')
+    assert (mode, raw) == ('enforce', 'chặt-vừa-thôi')
     assert mode == 'enforce' == research_quality.RESEARCH_GATE_MODES[0]
     assert assess(mode=None).mode == 'enforce'
+
+
+@pytest.mark.parametrize('value', research_quality.RESEARCH_GATE_MODES)
+def test_a_valid_value_is_not_reported_as_unknown(monkeypatch, value):
+    """Giá trị HỢP LỆ ⇒ phần tử thứ hai là `None`; bản trước trả lại chính giá trị ấy nên đường
+    `dossier_write` phát notice `RESEARCH_GATE_MODE_UNKNOWN` mỗi lần ghi, kể cả khi mức áp đúng."""
+    assert research_quality.gate_mode({RESEARCH_GATE_ENV: value}) == (value, None)
+    assert research_quality.gate_mode({RESEARCH_GATE_ENV: '  ' + value.upper() + ' '}) == (value, None)
+    assert research_quality.gate_mode({}) == (research_quality.RESEARCH_GATE_DEFAULT_MODE, None)
 
 
 def test_off_never_inspects_anything(monkeypatch):
@@ -265,3 +275,35 @@ def test_the_rule_reads_the_dossier_when_no_review_file_text_was_given():
                                          'https://baochinhphu.vn/b\n- chưa chắc: [r2]\n')
     verdict = assess(markdown=dossier, owner_views=['phí sẽ tăng'], mode='enforce')
     assert 'research-owner-views-missing' not in codes(verdict)
+
+
+@pytest.mark.parametrize('tail', ['.', ',', ';', ':', '!', '?', '*', '**', ').', '`'])
+def test_a_url_with_trailing_punctuation_is_still_the_ledger_row(tail):
+    """Dấu câu đuôi URL không được biến một nguồn CÓ trong sổ thành "nguồn chưa chứng minh".
+
+    Bản trước: `_URL_RE` nuốt luôn dấu `.` `,` `;` `:` `*` `!` ở đuôi, mà `normalize_url` không cắt,
+    nên hồ sơ viết "… theo https://moh.gov.vn/r1." bị cổng `enforce` TỪ CHỐI với cách sửa không thể
+    thi hành ("nguồn chưa chứng minh: https://moh.gov.vn/r1.") — trong khi dòng sổ đúng là nguồn ấy.
+    """
+    markdown = good_markdown(level=2) + f'\nTheo https://moh.gov.vn/r1{tail} thì phí tăng.\n'
+    verdict = assess(markdown=markdown, rows=clean_rows())
+    assert 'research-sources-unproven' not in codes(verdict)
+
+
+def test_a_url_outside_the_ledger_still_says_so_with_punctuation():
+    markdown = good_markdown(level=2) + '\nTheo https://vnexpress.net/bai-la, thì phí tăng.\n'
+    verdict = assess(markdown=markdown, rows=clean_rows())
+    assert 'https://vnexpress.net/bai-la' in details(verdict, 'research-sources-unproven')
+
+
+def test_the_two_faces_of_the_ledger_compare_urls_the_same_way():
+    """`urls_in` (hồ sơ) và phần chú thích nhánh con dùng CHUNG một phép cắt dấu câu."""
+    assert research_quality.clean_url('https://moh.gov.vn/r1.') == research_quality.clean_url('https://moh.gov.vn/r1')
+    assert research_quality.clean_url('https://moh.gov.vn/r1**') == 'https://moh.gov.vn/r1'
+    # Không phá URL thật có sẵn dấu trong đường dẫn hay truy vấn: dấu câu CHỈ bị cắt ở ĐUÔI.
+    assert research_quality.clean_url('https://a.vn/x?q=1,2') == normalize_url('https://a.vn/x?q=1,2')
+    assert research_quality.clean_url('https://a.vn/x/') == normalize_url('https://a.vn/x/')
+    assert research_quality.clean_url('https://a.vn/x/') != normalize_url('https://a.vn/x')
+    notes = research_quality.annotate_child_answer('Kết luận theo https://moh.gov.vn/r1.', rows=clean_rows()[:1],
+                                                   child_id='c1')
+    assert 'research-sources-unproven' not in notes['issues']

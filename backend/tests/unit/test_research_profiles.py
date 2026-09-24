@@ -107,3 +107,14 @@ def test_a_soft_field_alone_never_blocks_and_hard_keys_are_listed_once():
     assert rp.missing_fields('không-có', {}) == []
     assert rp.required_keys('không-có') == ()
     assert rp.required_keys('LAW') == rp.required_keys('law'), 'đọc không phân biệt hoa thường'
+
+
+def test_the_competitor_cap_is_the_one_the_plan_froze():
+    """Trần TM-2 = 10–15 đơn vị (#6007, kế hoạch vòng 27 §C-10), và chỉ có MỘT bản con số."""
+    competitor = rp.usecase('TM-2')
+    assert competitor.cap == (10, 15)
+    assert competitor.note == '', 'ghi chú cũ nói lại con số ⇒ hai bản trần lệch nhau'
+    assert not hasattr(rp, 'MARKET_CAPS'), \
+        'bảng trần thứ hai không ai đọc và từng mâu thuẫn với `UseCase.cap` — đã xoá'
+    assert rp.usecase('TM-1').cap == (5, 8)
+    assert rp.usecase('TM-7').cap == (3, 5)

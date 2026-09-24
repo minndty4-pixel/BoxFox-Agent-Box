@@ -202,3 +202,39 @@ def test_the_same_owner_views_twice_do_not_append_a_second_decision_row(harness)
     brief(runtime, session, ownerViews=views)
     again = [row for row in store.journal_tail(sid, limit=50) if row['kind'] == 'decision']
     assert len(again) == len(rows) == 1, 'gọi lại y hệt không ghim thêm hàng `D:`'
+
+
+def test_a_later_turn_may_raise_the_level_the_earlier_turn_had_to_refuse(harness):
+    """Luật "chỉ được hạ mức" là luật của MỘT LƯỢT: lượt sau nâng mức được (D-24/D-40).
+
+    Bản trước ghim brief `turn` vào `config` của PHIÊN nên mức đã chốt khoá phiên vĩnh viễn: chủ nhà
+    bảo "đào sâu hơn" ở lượt sau thì `research_brief(tier=3)` bị từ chối mãi mãi, và mức 3 (phản biện
+    độc lập, 15 nhánh, trần một giờ) không có đường nào tới.
+    """
+    store, runtime, sid, session = harness
+    runtime.active_turn[sid] = 1
+    first = brief(runtime, session, tier=2, ceilingSeconds=900)
+    assert first['tier'] == 2
+    # Cùng lượt: nâng mức vẫn bị từ chối (luật cũ giữ nguyên).
+    with pytest.raises(ValueError) as caught:
+        brief(runtime, session, tier=3)
+    assert limits.RESEARCH_BRIEF_RAISE_REFUSED_CODE in str(caught.value)
+    # Lượt sau: nâng mức được, và trần giữ nguyên con số đã chốt (không tự kéo lên trần mức 3).
+    runtime.active_turn[sid] = 2
+    later = brief(runtime, store.get(sid), tier=3)
+    assert later['tier'] == 3 and later['critique'] is True
+    config = research_runtime.research_config(store.get(sid))
+    assert config['tier'] == 3 and config['turn'] == 2
+    assert config['ceilingSeconds'] == 900, 'bỏ trống ceilingSeconds thì GIỮ trần đã chốt'
+    assert config['dossierDir'] == first['dossierDir'], 'cùng câu hỏi ⇒ cùng phòng hồ sơ'
+
+
+def test_a_new_question_in_a_later_turn_opens_its_own_room(harness):
+    """Lượt mới + câu hỏi mới ⇒ phòng hồ sơ mới; không ghi nối vào phòng của việc cũ."""
+    store, runtime, sid, session = harness
+    runtime.active_turn[sid] = 1
+    first = brief(runtime, session, question='Mức hưởng chuyển tuyến 2026?')
+    runtime.active_turn[sid] = 2
+    second = brief(runtime, store.get(sid), question='Giá vàng SJC ngày 24/09/2026?')
+    assert second['dossierDir'] != first['dossierDir']
+    assert second['researchId'] != first['researchId']

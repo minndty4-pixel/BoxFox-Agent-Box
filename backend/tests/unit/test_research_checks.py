@@ -757,6 +757,34 @@ def test_wave_branch_ceiling_respected_truot(tmp_path, evalmods):
     assert '6 nhánh mở cùng lúc > 5' in result['detail']
 
 
+def test_wave_branch_ceiling_respected_truot_tren_phong_rong(tmp_path, evalmods):
+    """Phòng rỗng là TRƯỢT, không phải "đạt": R10 lấy đúng oracle này làm thước đo duy nhất, nên
+    một lượt không mở nhánh nào từng được chấm `ok` — sai hẳn ý ca (3–5 nhánh mỗi sóng)."""
+    ws = room(tmp_path)
+    result = only(evalmods, 'wave_branch_ceiling_respected', room=ws, records=[])
+    assert result['ok'] is False
+    assert 'chưa mở nhánh nào' in result['detail']
+
+
+def test_branch_count_at_most_truot_tren_phong_rong(tmp_path, evalmods):
+    """Cùng luật cho R2: "không quá N nhánh" mà chưa mở nhánh nào thì chưa chứng minh được gì."""
+    ws = room(tmp_path)
+    result = only(evalmods, 'branch_count_at_most', room=ws, records=[])
+    assert result['ok'] is False
+    assert 'chưa mở nhánh nào' in result['detail']
+
+
+def test_moi_fixture_r_khai_muc_va_khop_voi_ca(tmp_path, evalmods):
+    """Tệp fixture của họ R phải khai `level`: thiếu nó thì ca mức 3 bị đo bằng trần mức 2."""
+    fixtureset = evalmods.fixtures
+    fixtures = fixtureset.load_research_fixtures()
+    levels = {code: fixture.get('level') for code, fixture in fixtures.items()}
+    assert all(level in (1, 2, 3) for level in levels.values()), levels
+    assert levels['R1'] == 1 and levels['R4'] == 3 and levels['R10'] == 3
+    assert fixtureset.fixture_level('R10') == 3
+    assert fixtureset.fixture_level('R99') is None
+
+
 def test_milestone_ceiling_declared_truot(tmp_path, evalmods):
     """R11: thẻ mốc không khai `ceilingSeconds` ⇒ trượt."""
     ws = room(tmp_path)
@@ -924,6 +952,27 @@ def test_cli_ghi_mot_dong_json_roi_ghi_noi_duoc(tmp_path, evalmods):
     assert row['workspace'] == str(ws) and row['log'] is None and row['workspaceFiles'] == 2
     assert [item['name'] for item in row['checks']] == list(evalmods.rubric.RESEARCH_CASE_CHECKS['R1'])
     assert all(item['ok'] for item in row['checks']), row['checks']
+
+
+def test_cli_lay_muc_cua_ca_khi_ho_so_khong_ghi_level(tmp_path):
+    """Hồ sơ không ghi `Level:` ⇒ mức lấy từ tệp fixture của CA, không rơi về mặc định 2.
+
+    Trước bản sửa, `--case R10` trên hồ sơ không có `Level:` bị đo bằng trần mức 2 — một "đạt"
+    chứng minh ít hơn hẳn điều ca mức 3 muốn đo.
+    """
+    ws = room(tmp_path)
+    dossier(ws, 'mot-viec', level=0)          # header KHÔNG ghi Level
+    out = tmp_path / 'scores.jsonl'
+    done = run_scores('--workspace', str(ws), '--case', 'R10', '--out', str(out), '--append')
+    assert done.returncode == 0, done.stderr
+    row = json.loads(out.read_text(encoding='utf-8').strip())
+    assert row['level'] == 3, row
+    assert 'mức của ca' in row['levelSource'] and 'R10.json' in row['levelSource']
+    # Cờ --level vẫn là thứ mạnh nhất; header hồ sơ vẫn thắng tệp fixture.
+    done = run_scores('--workspace', str(ws), '--case', 'R10', '--level', '1',
+                      '--out', str(tmp_path / 'b.jsonl'), '--append')
+    assert done.returncode == 0, done.stderr
+    assert json.loads((tmp_path / 'b.jsonl').read_text(encoding='utf-8'))['level'] == 1
 
 
 def test_cli_doc_nhat_ky_event_that(tmp_path):

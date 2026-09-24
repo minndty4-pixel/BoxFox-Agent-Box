@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
 from . import plan_quality
+from . import limits
 from .limits import (
     RESEARCH_GATE_DEFAULT_MODE,
     RESEARCH_GATE_ENV,
@@ -76,8 +77,10 @@ REMEDIES: Mapping[str, str] = {
     'research-owner-views-missing': 'Thêm mục soi ý kiến chủ nhà đủ ba nhãn ủng hộ / phản bác / chưa chắc, mỗi nhãn kèm nguồn.',
 }
 
-NOTICE_CODE = 'RESEARCH_GATE_NOTE'
-MODE_UNKNOWN_CODE = 'RESEARCH_GATE_MODE_UNKNOWN'
+#: Hai mã này sống ở `limits` (nguồn chân lý cho mã notice của vòng 27) — giữ tên ở đây làm bí danh
+#: cho những chỗ gọi `research_quality.<MÃ>`, chứ không chép lại chuỗi (chép là hai chỗ trôi lệch).
+NOTICE_CODE = limits.RESEARCH_GATE_NOTE_CODE
+MODE_UNKNOWN_CODE = limits.RESEARCH_GATE_MODE_UNKNOWN_CODE
 
 # --- Hình dạng hồ sơ theo mức ----------------------------------------------
 
@@ -115,6 +118,11 @@ SECTION_LABELS: Mapping[str, str] = {
 }
 
 _URL_RE = re.compile(r'https?://[^\s)\]<>"\'`]+', re.IGNORECASE)
+# Dấu câu dính vào CUỐI URL trong văn xuôi (`… tại https://a.vn/x.`, `(https://a.vn/x),`,
+# `**https://a.vn/x**`). Bỏ chúng là bắt buộc: `normalize_url` không cắt, và một URL sạch trong sổ
+# nguồn bị so với bản còn dấu câu sẽ đội lốt "nguồn chưa chứng minh" ⇒ cổng `enforce` TỪ CHỐI hồ sơ
+# không có gì sai, kèm cách sửa không thể thi hành (vòng 27, đợt 8).
+_TRAILING_JUNK = '.,;:!?*`"\'’”)'
 _HEADING_RE = re.compile(r'^\s{0,3}#{1,6}\s+(.*)$', re.MULTILINE)
 _ROW_ID_RE = re.compile(r'\br\d{1,4}\b')
 
@@ -135,11 +143,25 @@ def missing_sections(markdown: str, level: int) -> list[str]:
     return missing
 
 
+def clean_url(value: str) -> str:
+    """Bỏ dấu câu dính ở cuối một URL trong văn xuôi, rồi chuẩn hoá (`normalize_url`).
+
+    Dùng chung cho cả hai mặt đọc URL (`urls_in` của hồ sơ và phần chú thích nhánh con) để hai mặt
+    không bao giờ lệch nhau về định nghĩa "một URL".
+    """
+    text = str(value or '').strip()
+    while text and text[-1] in _TRAILING_JUNK:
+        text = text[:-1].rstrip()
+    # Một dấu `/` lẻ ở cuối cũng hay bị gõ thêm trong câu, nhưng `/` là phần thật của nhiều đường dẫn
+    # (`…/x/`), nên chỉ bỏ khi bản bỏ đi khớp một URL đã biết — việc so khớp đó thuộc về người gọi.
+    return normalize_url(text)
+
+
 def urls_in(markdown: str) -> list[str]:
-    """URL xuất hiện trong hồ sơ, đã chuẩn hoá, giữ thứ tự."""
+    """URL xuất hiện trong hồ sơ, đã bỏ dấu câu cuối + chuẩn hoá, giữ thứ tự."""
     out: list[str] = []
     for match in _URL_RE.finditer(str(markdown or '')):
-        value = normalize_url(match.group(0))
+        value = clean_url(match.group(0))
         if value and value not in out:
             out.append(value)
     return out
@@ -150,13 +172,18 @@ def has_external_claims(markdown: str) -> bool:
     return bool(urls_in(markdown)) or bool(plan_quality.cited_hosts(markdown))
 
 
-def gate_mode(env: Mapping[str, str] | None = None) -> tuple[str, str]:
-    """`(mode, giá trị thô)`. Giá trị lạ ⇒ `(enforce, raw)` — không bao giờ ném."""
+def gate_mode(env: Mapping[str, str] | None = None) -> tuple[str, str | None]:
+    """`(mode, giá trị lạ)`. Giá trị hợp lệ ⇒ phần tử hai là `None` — cùng hợp đồng với `_mode`.
+
+    Bản trước trả `(raw, raw)` cả khi `raw` hợp lệ, nên mọi lời gọi `dossier_write` với
+    `BOXFOX_RESEARCH_GATE=warn` lại phát notice `RESEARCH_GATE_MODE_UNKNOWN` ("giá trị lạ") trong khi
+    `mode` áp đúng là `warn` — một lời báo sai ở đúng đường chủ nhà đọc (vòng 27, đợt 8).
+    """
     source = os.environ if env is None else env
     raw = str(source.get(RESEARCH_GATE_ENV, '') or '').strip().lower()
     if raw in RESEARCH_GATE_MODES:
-        return raw, raw
-    return RESEARCH_GATE_DEFAULT_MODE, raw
+        return raw, None
+    return RESEARCH_GATE_DEFAULT_MODE, raw or None
 
 
 # --- Kết luận --------------------------------------------------------------
@@ -256,7 +283,7 @@ def assess(
         for row_id in pinned_row_ids(markdown, rows):
             issues.append(Issue('research-sources-unproven', f'{row_id} không có trong sổ'))
 
-        known_urls = {normalize_url(row.url) for row in rows}
+        known_urls = {clean_url(row.url) for row in rows}
         unproven = [url for url in urls_in(markdown) if url not in known_urls]
         if rows:
             for url in unproven:
@@ -267,7 +294,10 @@ def assess(
         issues.extend(assess_rows(rows, profile, verified=verified))
 
         planned = [str(item) for item in child_ids if str(item)]
+        # Một nhánh để lại dấu vết khi dòng sổ mang mã nhánh ấy — hoặc ở cột `child_id` (nhánh ghim
+        # dòng) hoặc trong `branches` (nhánh thứ hai mở CÙNG nguồn với đoạn trích y hệt).
         seen_children = {row.child_id for row in rows if row.child_id}
+        seen_children.update(str(item) for row in rows for item in (row.branches or ()) if str(item))
         for child_id in planned:
             if child_id not in seen_children:
                 issues.append(Issue('research-lineage-missing', child_id))
@@ -429,7 +459,7 @@ def annotate_child_answer(
     if used_web and not urls_in(text):
         issues.append(Issue('research-sources-missing', 'lượt con có gọi web mà câu trả lời không có URL'))
     if rows:
-        known = {normalize_url(row.url) for row in rows}
+        known = {clean_url(row.url) for row in rows}
         for url in urls_in(text):
             if url not in known:
                 issues.append(Issue('research-sources-unproven', url))

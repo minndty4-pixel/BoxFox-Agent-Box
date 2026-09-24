@@ -139,3 +139,24 @@ def test_the_steer_never_reaches_a_child_transcript(harness):
     assert research_runtime.drain_steers(runtime, sid, own_messages) == 1
     assert any(str(m.get('content') or '').startswith(limits.OWNER_STEER_PREFIX)
                for m in store.get(sid)['messages'])
+
+
+def test_a_failed_transcript_write_puts_the_steer_back_in_the_queue(tmp_path, monkeypatch):
+    """Chỉ thị không được RƠI khi transcript ghi hỏng: `claim_steers` đánh dấu `injected` trước đó."""
+    store = SessionStore(tmp_path / 'state.db')
+    runtime = HarnessRuntime(store, FixtureExecutor(), FixtureModel())
+    sid = runtime.create({'skills': []})['id']
+    answer = asyncio.run(research_runtime.queue_owner_steer(runtime, sid, 'đổi trọng tâm: giá vàng'))
+    assert answer['status'] == 'steered'
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError('disk full')
+
+    monkeypatch.setattr(store, 'save', boom)
+    messages = []
+    assert research_runtime.drain_steers(runtime, sid, messages) == 0
+    assert store.pending_steer_count(sid) == 1, 'chỉ thị ở lại hàng chờ'
+    monkeypatch.undo()
+    assert research_runtime.drain_steers(runtime, sid, messages) == 1
+    assert store.pending_steer_count(sid) == 0
+    assert 'giá vàng' in messages[0]['content']

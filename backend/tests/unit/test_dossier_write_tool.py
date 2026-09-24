@@ -95,8 +95,9 @@ def seed_row(runtime, session, **overrides):
 
 
 def write(runtime, session, **overrides):
-    args = {'researchId': 'chuyen-tuyen-2026', 'level': 2, 'profile': 'health',
-            'markdown': MARKDOWN, 'title': 'Chuyển tuyến 2026'}
+    """Gọi `dossier_write`. Có brief thì ghi cho ĐÚNG việc của brief (một lượt một việc)."""
+    args = {'level': 2, 'profile': 'health', 'markdown': MARKDOWN, 'title': 'Chuyển tuyến 2026'}
+    args['researchId'] = research_runtime.research_config(session).get('researchId') or 'chuyen-tuyen-2026'
     args.update(overrides)
     return asyncio.run(runtime.dispatch(session, 'dossier_write', args))
 
@@ -124,7 +125,9 @@ def test_a_dossier_with_evidence_lands_in_the_research_room_with_its_header(harn
     store, runtime, sid, session, executor = harness
     seed_row(runtime, session)
     answer = write(runtime, session)
-    assert answer['relativePath'] == '.research/chuyen-tuyen-2026/v1-chuyen-tuyen-2026.md'
+    room = research_runtime.dossier_dir_for('chuyen-tuyen-2026')
+    assert answer['relativePath'] == f'{room}/v1-chuyen-tuyen-2026.md', \
+        'không brief ⇒ phòng vẫn đúng khuôn `.research/<slug>-<yyyymmdd-hhmm>`'
     assert answer['version'] == 1
     assert answer['gate']['ok'] is True and answer['gate']['mode'] == 'enforce'
     assert executor.calls[0][0] == 'dossier_write'
@@ -153,7 +156,8 @@ def test_the_written_dossier_leaves_a_journal_row_pointing_at_the_file(harness, 
     answer = write(runtime, session)
     assert answer['journal'] is True
     assert caught and caught[0][0] == 'evidence'
-    assert caught[0][2]['evidence'][0]['path'] == '.research/chuyen-tuyen-2026/v1-chuyen-tuyen-2026.md'
+    assert caught[0][2]['evidence'][0]['path'] == \
+        f'{research_runtime.dossier_dir_for("chuyen-tuyen-2026")}/v1-chuyen-tuyen-2026.md'
     assert caught[0][2]['data']['research']['version'] == 1
 
 
@@ -345,3 +349,41 @@ def test_a_brief_without_owner_views_never_asks_for_the_label_section(harness):
         'rationale': 'cần dẫn nguồn văn bản'}))
     answer = write(runtime, session)
     assert 'research-owner-views-missing' not in answer['gate']['issues']
+
+
+def test_a_dossier_for_another_job_is_refused_while_a_brief_is_open(harness):
+    """Một lượt một việc: brief mở việc nào thì hồ sơ ghi cho việc ấy.
+
+    Bản trước nhận `researchId` lạ rồi vẫn ghi vào PHÒNG của brief ⇒ tệp hồ sơ mang hai danh tính
+    (header ghi id này, hàng `E:` và bản ghi hồ sơ trỏ việc khác), và bản vá phòng hồ sơ đã bắt được
+    đúng chỗ lệch ấy.
+    """
+    store, runtime, sid, session, executor = harness
+    seed_row(runtime, session)
+    brief = asyncio.run(runtime.dispatch(session, 'research_brief', {
+        'tier': 2, 'jobProfile': 'health', 'question': 'Mức hưởng chuyển tuyến 2026?',
+        'rationale': 'văn bản chính thống'}))
+    other_id = 'viec-khac-2026'
+    assert other_id != brief['researchId']
+    with pytest.raises(ValueError) as exc:
+        write(runtime, session, researchId=other_id)
+    assert limits.RESEARCH_BRIEF_TAKEN_CODE in str(exc.value)
+    assert not dossier_calls(executor), 'cổng từ chối ⇒ không tệp nào được ghi'
+
+
+def test_a_room_that_does_not_belong_to_the_job_is_refused_not_a_nameerror(harness):
+    """Phòng hồ sơ phải là `.research/<researchId>-<yyyymmdd-hhmm>` của ĐÚNG việc đang ghi.
+
+    Bản trước so `path` với chính `dossier_dir` (vòng lặp rỗng) và `DOSSIER_DIR_MISMATCH_CODE` chưa
+    từng được import ⇒ một phòng sai đi thẳng xuống đĩa, còn nhánh báo lỗi thì `NameError`.
+    """
+    store, runtime, sid, session, executor = harness
+    seed_row(runtime, session)
+    session.setdefault('config', {})['research'] = {
+        'researchId': 'chuyen-tuyen-2026', 'tier': 2, 'jobProfile': 'health',
+        'question': 'Mức hưởng chuyển tuyến?', 'dossierDir': '.research/phong-cua-viec-khac-20260101-0000',
+        'ceilingSeconds': 1200, 'turn': int(runtime.active_turn.get(sid) or 0)}
+    with pytest.raises(ValueError) as exc:
+        write(runtime, session)
+    assert limits.DOSSIER_DIR_MISMATCH_CODE in str(exc.value)
+    assert not dossier_calls(executor), 'không có lệnh nào chạm tệp hồ sơ'

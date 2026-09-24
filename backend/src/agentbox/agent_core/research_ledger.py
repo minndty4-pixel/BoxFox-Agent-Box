@@ -66,6 +66,9 @@ class Row:
     fingerprint: str = ''
     payload: Mapping[str, Any] = field(default_factory=dict)
     child_id: str | None = None
+    #: Các nhánh con KHÁC cũng dùng dòng này làm bằng chứng (luật idempotent giữ một dòng cho một
+    #: (URL, đoạn trích), nên một dòng phải nhớ đủ mọi nhánh đã mở nguồn ấy).
+    branches: tuple[str, ...] = ()
     turn: int = 0
     step: int | None = None
     created: str = ''
@@ -103,7 +106,13 @@ class Unit:
 
 
 def fold_text(value: Any) -> str:
-    """Bỏ dấu nhưng **giữ độ dài** (khuôn `reading.fold_text` của vòng 27 đợt 1)."""
+    """Bỏ dấu để so khớp: hạ chữ, `đ` → `d`, rồi gộp dấu NFD.
+
+    KHÔNG giữ độ dài và KHÔNG phải `reading.fold_text`: `reading.fold_text` giữ nguyên chuỗi NFD (nên
+    `'a\u0301b'` ở lại 3 ký tự), còn hàm này gộp dấu thật (`'a\u0301b'` → `'ab'`, 2 ký tự). Hai hàm
+    phục vụ hai việc khác nhau (so khớp tiêu đề/khẳng định ở đây; chuẩn hoá văn bản đọc được ở kia),
+    nên **đừng** trỏ cái này về cái kia.
+    """
     text_value = '' if value is None else str(value)
     lowered = text_value.lower().replace('đ', 'd')
     return ''.join(ch for ch in unicodedata.normalize('NFD', lowered) if not unicodedata.combining(ch))
@@ -209,7 +218,9 @@ def origin_units(rows: Sequence[Row]) -> list[Unit]:
                 unit_id=f'u{position + 1}',
                 hosts=hosts,
                 row_ids=tuple(row.row_id for row in members),
-                reason=reasons[0] if reasons[0] != 'place' else 'place',
+                # `reasons` luôn kết thúc bằng `'place'`; nhãn là lý do ĐẦU TIÊN tìm được, còn
+                # `'place'` chỉ là nhãn nền khi không có lý do nào khác.
+                reason=reasons[0],
                 tier=tier_of(members),
             )
         )
@@ -374,7 +385,7 @@ def assess_rows(
     return issues
 
 
-def gap_verdict(rows: Sequence[Row], *, target: bool = False) -> dict[str, Any]:
+def gap_verdict(rows: Sequence[Row]) -> dict[str, Any]:
     """Luật gap hai tầng số (#6012, #6013, #6016) — thuần, không đòi thêm dữ liệu.
 
     Trả `{'checked': bool, 'rows': n, 'platforms': n, 'label': str|None, 'ceiling': ...}`.
@@ -386,7 +397,9 @@ def gap_verdict(rows: Sequence[Row], *, target: bool = False) -> dict[str, Any]:
     rows_floor = GAP_FLOOR_ROWS
     platforms_floor = GAP_FLOOR_PLATFORMS
     checked = rows_count >= rows_floor and platforms >= platforms_floor
-    ceiling = GAP_TARGET_ROWS_MAX if (target or True) else GAP_TARGET_ROWS
+    # Trần của luật gap là `GAP_TARGET_ROWS_MAX` (50): bản trước còn một tham số `target` chết —
+    # `(target or True)` luôn đúng, nên nhánh `GAP_TARGET_ROWS` (30) không bao giờ chạy.
+    ceiling = GAP_TARGET_ROWS_MAX
     return {
         'checked': checked,
         'rows': rows_count,

@@ -114,3 +114,35 @@ def test_two_branches_writing_at_once_do_not_collide_on_a_row_id(tmp_path):
     assert len(calls) == 2
     assert store.source_count(sid) == 2
     store.close()
+
+
+def test_a_row_remembers_every_branch_that_used_it(tmp_path):
+    """Dòng sổ nhớ đủ các nhánh đã mở nguồn ấy: luật idempotent giữ MỘT dòng cho một nguồn."""
+    store = SessionStore(tmp_path / 'state.db')
+    sid = store.create({'skills': []})['id']
+    store.source_add(sid, {'claim': 'c', 'url': 'https://moh.gov.vn/a', 'excerpt': 'x' * 90,
+                           'child_id': 'branch-a'})
+    row_id = store.source_rows(sid)[0]['rowId']
+    # Luật idempotent theo (URL, đoạn trích) nằm ở tầng TOOL (`source_add`); ở tầng bảng, mã hàng do
+    # người gọi cấp — ghim lại cùng mã thì trả hàng cũ.
+    again = store.source_add(sid, {'row_id': row_id, 'claim': 'c', 'url': 'https://moh.gov.vn/a',
+                                   'excerpt': 'x' * 90, 'child_id': 'branch-a'})
+    assert again['rowId'] == row_id and store.source_count(sid) == 1
+    linked = store.source_link_branch(sid, row_id, 'branch-b')
+    assert linked['branches'] == ['branch-b']
+    assert store.source_link_branch(sid, row_id, 'branch-b')['branches'] == ['branch-b'], 'ghim lại không nhân đôi'
+    assert store.source_link_branch(sid, row_id, 'branch-a')['branches'] == ['branch-b'], 'nhánh đầu đã ở cột child_id'
+    # Nhánh thứ hai đọc được dòng ấy bằng chính mã của mình.
+    assert [item['rowId'] for item in store.source_rows_for(sid, ['branch-b'])] == [row_id]
+    assert [item['rowId'] for item in store.source_rows_for(sid, ['branch-a'])] == [row_id]
+
+
+def test_the_payload_of_a_reused_row_can_be_filled_in(tmp_path):
+    store = SessionStore(tmp_path / 'state.db')
+    sid = store.create({'skills': []})['id']
+    store.source_add(sid, {'claim': 'c', 'url': 'https://moh.gov.vn/a', 'excerpt': 'x' * 90,
+                           'payload': {'docNumber': '15/2026/TT-BYT'}})
+    row_id = store.source_rows(sid)[0]['rowId']
+    updated = store.source_payload_merge(sid, row_id, {'docNumber': '15/2026/TT-BYT', 'validity': 'in_force'})
+    assert updated['payload'] == {'docNumber': '15/2026/TT-BYT', 'validity': 'in_force'}
+    assert store.source_payload_merge(sid, 'r99', {'a': 1}) is None, 'dòng không có ⇒ không tạo hàng mới'

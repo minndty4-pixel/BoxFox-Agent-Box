@@ -11,7 +11,7 @@ import asyncio
 
 import pytest
 
-from agentbox.agent_core import limits
+from agentbox.agent_core import limits, research_quality, research_runtime
 from agentbox.agent_core.runtime import HarnessRuntime
 from agentbox.memory.session_store import SessionStore
 
@@ -131,3 +131,49 @@ def test_a_child_row_records_which_branch_read_it(harness):
     assert store.source_counts_by_child(sid).get(child['id']) == 1
     listed = asyncio.run(runtime.dispatch(session, 'source_list', {'childId': child['id']}))
     assert listed['counts']['byChild'][child['id']] == 1
+
+
+def test_a_second_branch_that_reuses_the_row_gets_its_own_credit_and_its_fields_kept(harness):
+    """Nhánh B mở CÙNG nguồn với đoạn trích y hệt nhánh A: dùng lại dòng, nhưng không mất gì.
+
+    Đo được trước khi vá: `source_add` trả `reused` rồi **nuốt** `payload` của lời gọi thứ hai (trường
+    hồ sơ hard gửi lên biến mất) và giữ `child_id` của nhánh A, nên nhánh B bị chấm
+    `research-lineage-missing` mà không có cách nào gỡ — cổng chất lượng từ chối hồ sơ vì lỗi của
+    chính harness.
+    """
+    store, runtime, sid, session = harness
+    first = add(runtime, session)                                  # nhánh đầu: chính main
+    row_id = first['rowId']
+    assert store.source_count(sid) == 1
+    a = runtime.create({'skills': [], 'tools': ['source_add']}, parent_id=sid, role='research')
+    b = runtime.create({'skills': [], 'tools': ['source_add']}, parent_id=sid, role='research')
+    branch_b = store.get(b['id'])
+    again = asyncio.run(runtime.dispatch(branch_b, 'source_add', {
+        'claim': 'mức hưởng chuyển tuyến', 'url': 'https://vanban.chinhphu.vn/?pageid=27160&docid=1',
+        'excerpt': LONG, 'payload': {'docNumber': '15/2026/TT-BYT', 'effectiveDate': '2026-07-01'}}))
+    assert again['rowId'] == row_id and again['reused'] is True
+    assert store.source_count(sid) == 1, 'một nguồn, một dòng'
+    assert again['branchLinked'] is True
+    assert sorted(again['payloadMerged']) == ['docNumber', 'effectiveDate'], 'trường gửi lên không bị nuốt'
+    row = store.source_row(sid, row_id)
+    assert row['payload'] == {'docNumber': '15/2026/TT-BYT', 'effectiveDate': '2026-07-01'}
+    assert row['branches'] == [str(b['id'])]
+    # Nhánh B đếm được là nhánh ĐÃ để lại dòng, và cổng chất lượng không còn oan cho nó.
+    assert store.source_counts_by_child(sid).get(str(b['id'])) is None, 'cột child_id vẫn của nhánh đầu'
+    demo = research_quality.annotate_child_answer('Kết luận [r1] theo https://vanban.chinhphu.vn/x.',
+                                                 rows=[research_runtime._row_of(row)], child_id=str(b['id']))
+    assert 'research-lineage-missing' not in demo['issues']
+    # Nhánh A vẫn giữ dòng của chính nó (không bị nhánh B lấy mất).
+    assert [item['rowId'] for item in store.source_rows_for(sid, [str(b['id'])])] == [row_id]
+
+
+def test_a_field_with_a_different_value_keeps_the_old_one_and_says_so(harness):
+    store, runtime, sid, session = harness
+    add(runtime, session, payload={'docNumber': '15/2026/TT-BYT'})
+    child = store.get(runtime.create({'skills': [], 'tools': ['source_add']}, parent_id=sid,
+                                     role='research')['id'])
+    again = asyncio.run(runtime.dispatch(child, 'source_add', {
+        'claim': 'mức hưởng chuyển tuyến', 'url': 'https://vanban.chinhphu.vn/?pageid=27160&docid=1',
+        'excerpt': LONG, 'payload': {'docNumber': '99/2026/TT-BYT'}}))
+    assert again['payloadKept'] == ['docNumber'] and 'giữ giá trị CŨ' in again['note']
+    assert store.source_row(sid, again['rowId'])['payload'] == {'docNumber': '15/2026/TT-BYT'}

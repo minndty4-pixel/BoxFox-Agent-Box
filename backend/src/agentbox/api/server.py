@@ -282,9 +282,8 @@ def create_app(runtime):
                                 'researchGate': {'mode': research_quality.gate_mode()[0],
                                                  'modes': list(RESEARCH_GATE_MODES),
                                                  'default': RESEARCH_GATE_DEFAULT_MODE,
-                                                 'unknown': (research_quality.gate_mode()[1]
-                                                             if research_quality.gate_mode()[1]
-                                                             not in RESEARCH_GATE_MODES else None)},
+                                                 # `gate_mode()` đã trả `None` khi giá trị hợp lệ.
+                                                 'unknown': research_quality.gate_mode()[1]},
                                 'researchTiers': {'overrides': source_tiers.overrides_summary(),
                                                   'tiers': {str(key): value
                                                             for key, value in source_tiers.TIERS.items()}}},
