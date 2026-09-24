@@ -36,43 +36,52 @@
 | Router | `http://127.0.0.1:3101`, DB `~/.local/share/boxfox/router/router.sqlite` |
 | Luật hình dạng `muse-spark-*` | Responses API (`input`, `instructions`), `reasoning_effort` bị từ chối `400` ⇒ dịch thành `reasoning:{effort,summary:'auto'}`; UA `opencode/1.18.31`; 2 decoy tool `bash`/`read`; `stream:true` |
 
-### 2.2 Ba khoá = ba connection
+### 2.2 Ba khoá = MỘT connection (key ring)
 
 Khoá **không** nằm trong tài liệu này và không được commit. Chúng nằm mã hoá ở
-`~/.local/share/boxfox/router/router.sqlite` (bảng `credentials` + `records`), mỗi khoá là một
-connection của provider `opencode`:
+`~/.local/share/boxfox/router/router.sqlite` (bảng `credentials` + `records`). Từ vòng 29, ba khoá
+`opencode` sống trong **một** connection duy nhất dưới dạng **key ring** (`connection.keys`, thứ
+tự = thứ tự thử):
 
-| Nhãn trong doc | Connection id | Ghi chú |
+| Nhãn trong doc | Key id (= row id trong `credentials`) | Vị trí trong ring |
 |---|---|---|
-| key 1 | `f8a5f4e8-0986-45f9-bf5b-555e8b96a95c` | "OpenCode Free (key 1)" |
-| key 2 | `a43ff124-359f-4da5-bbd0-82c54df64a53` | "OpenCode Free (key 2)" |
-| key 3 | `3d27b0b0-1de7-4c67-a803-c6e26afab631` | "OpenCode Free (key 3)" |
-| (connection của phiên) | `7c59f6b5-d0ee-4206-9d04-bc19936b0681` | "OpenCode Free" — mặc định `BOXFOX_LIVE_CONNECTION_ID` |
+| key 1 | `f8a5f4e8-0986-45f9-bf5b-555e8b96a95c` | connection `OpenCode Free` (survivor), khoá trên cùng |
+| key 2 | `a43ff124-359f-4da5-bbd0-82c54df64a53` | đã `import` vào survivor, khoá thứ hai |
+| key 3 | `3d27b0b0-1de7-4c67-a803-c6e26afab631` | đã `import` vào survivor, khoá thứ ba |
+
+Ba khoá này từng là ba connection riêng; `docs/plan/v29-keyring-merge-runbook.md` là runbook gộp
+một lần (survivor `f8a5f4e8…`, mỗi khoá giữ nguyên dòng đã mã hoá — không gõ lại khoá, không
+re-encrypt). Connection `7c59f6b5-d0ee-4206-9d04-bc19936b0681` (bản dán lại của key 1, từng là mặc
+định của `BOXFOX_LIVE_CONNECTION_ID`) **đã bị xoá** trong runbook đó — mặc định của lượt chạy sống
+nay là survivor.
 
 Tệp nhắc của chủ nhà `~/BoxFox/secrets/opencode-free-keys.txt` ghi luật: *"hết hạn mức ở key nào
-thì chuyển sang key kế tiếp"*. Tài liệu này chỉ dùng **nhãn** `key 1|2|3` — không dán khoá, không
-in khoá ra log, không đưa khoá vào PR.
+thì chuyển sang key kế tiếp"* — từ vòng 29 **router tự làm việc đó**, không cần thao tác tay.
+Tài liệu này chỉ dùng **nhãn** `key 1|2|3` — không dán khoá, không in khoá ra log, không đưa khoá
+vào PR.
 
-### 2.3 Luật chuyển khoá (cách chạy)
+### 2.3 Luật chuyển khoá (router tự làm — không thao tác tay)
 
 ```
-# lần 1 — key 1
+# một lượt chạy duy nhất; không đổi biến giữa các lượt
 BOXFOX_LIVE_CONNECTION_ID=f8a5f4e8-0986-45f9-bf5b-555e8b96a95c \
 BOXFOX_LIVE_MODEL_ID=muse-spark-1.3-contributor-free \
   ./.venv/bin/python -m pytest backend/tests/integration/test_peer_mesh_chain.py -q -p no:randomly
-# 429 / hết hạn mức ⇒ chạy lại y hệt với key 2, rồi key 3
+# 429 ở khoá nào ⇒ router park ĐÚNG khoá đó (30 s; theo Retry-After, trần 120 s) rồi thử
+# khoá kế tiếp NGAY TRONG request đó. Không chạy lại, không đổi biến, không gõ lại khoá.
 ```
 
 | Mã lỗi gặp | Nghĩa | Việc làm | Nhãn ghi vào doc |
 |---|---|---|---|
-| `429` / "rate limit" | hết hạn mức của khoá đó | chuyển **khoá kế tiếp** | `RATE_LIMIT → chuyển key N+1` |
-| `403` | khoá hỏng/không đủ quyền (AUTH, không thử lại) | chuyển khoá kế tiếp, và **ghi lại** vì `403` có thể là lỗi hình dạng client chứ không phải hạn mức | `AUTH(403) → chuyển key N+1` |
-| `500`/timeout | lỗi hạ tầng | thử lại đúng khoá đó 1 lần rồi mới chuyển | `INFRA → retry 1 → key N+1` |
+| `429` / "rate limit" | hết hạn mức của **khoá** đang gọi | router tự park khoá đó rồi xoay sang khoá kế tiếp trong cùng request; cả ba khoá đều nghỉ thì lỗi thật của provider đi ra và lượt đó không tốn lần gọi nào | `RATE_LIMIT → router xoay khoá` |
+| `403` | khoá hỏng/không đủ quyền (AUTH, không thử lại) | **không** đổi khoá (AUTH giữ luật cũ), và **ghi lại** vì `403` có thể là lỗi hình dạng client chứ không phải hạn mức | `AUTH(403) → ghi lại, sửa client` |
+| `500`/timeout | lỗi hạ tầng | thử lại đúng khoá đó (harness) rồi mới sang connection khác; **không** đổi khoá | `INFRA → retry 1` |
 | `400` hình dạng | mình gửi sai (không phải khoá) | **không** chuyển khoá: sửa hình dạng trước | `400 hình dạng → sửa client` |
 
 Mọi lần chạy ghi **một hàng** vào `docs/tracking/test-rounds.md` §vòng 27: thời điểm, model,
-nhãn khoá, mã lỗi, kết luận. Nếu cả ba khoá đều `429` ⇒ ghi "hết hạn mức cả ba khoá", dừng phần
-sống và chuyển sang bộ ca offline (không đổi model — đổi model không cứu được hạn mức).
+nhãn khoá, mã lỗi, kết luận. Hàng `usage` của lượt đó mang `keyId`/`keyLabel` — đó là bằng chứng
+router đã dùng khoá nào. Nếu cả ba khoá đều `429` ⇒ ghi "hết hạn mức cả ba khoá", dừng phần sống
+và chuyển sang bộ ca offline (không đổi model — đổi model không cứu được hạn mức).
 
 ### 2.4 Khi nào mới đổi model
 

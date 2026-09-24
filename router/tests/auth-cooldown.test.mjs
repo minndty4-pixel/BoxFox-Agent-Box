@@ -7,7 +7,9 @@
 // ("all 1 accounts locked for <model> | lastError=[400]: ..."), which hides the real
 // cause and makes unrelated sessions look rate-limited
 // (`open-sse/services/accountFallback.js:48-60`). Account-scoped statuses keep their
-// rules: 401/403 still expire the credential, 429 still takes a strike and a cooldown.
+// rules: 401/403 still expire the credential, 429 still parks the key it came from — since
+// round 29 the window belongs to the KEY, not the connection, and the first 429 parks it
+// (the old \"two strikes inside five minutes\" rule is gone).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -80,8 +82,9 @@ test('a request-scoped 4xx leaves the account healthy and takes no cooldown', as
   assert.equal(after.inferenceState, before.inferenceState, 'a bad request is not a bad account');
   assert.equal(after.error, before.error, 'and its message is never written onto the account');
   assert.equal(after.authState, before.authState, 'the credential is untouched');
-  assert.equal(f.engine.cooldowns.size, 0, 'nothing takes the target out of rotation');
-  assert.equal(f.engine.rateLimitStrikes.size, 0, 'and no strike is filed against it');
+  const ring = f.service.keyRing.state(f.service.connection(f.c.id), Date.now()).keys[0];
+  assert.equal(ring.state, 'error', 'the key keeps the error as information only — a 400 never parks a key');
+  assert.equal(f.engine.keyRing.pick(f.service.connection(f.c.id))?.id, f.c.id, 'so the same key serves the next request immediately');
 });
 
 test('a 400 does not lock the single connection out of the next request', async t => {
@@ -107,7 +110,7 @@ test('a capability rejection is request-scoped too', async t => {
   const failure = await outcome(f.engine, f.c.id);
   assert.equal(failure.code, 'CAPABILITY');
   assert.equal(f.service.connection(f.c.id).inferenceState, before.inferenceState);
-  assert.equal(f.engine.cooldowns.size, 0);
+  assert.equal(f.engine.keyRing.pick(f.service.connection(f.c.id))?.id, f.c.id, 'and a capability rejection never parks a key either');
 });
 
 test('401 still expires the credential and 429 still cools the target down', async t => {
@@ -120,13 +123,13 @@ test('401 still expires the credential and 429 still cools the target down', asy
 
   const limited = await fixture(t, { async *generate() { throw new RouterError('RATE_LIMIT', 'Provider rate limit or quota reached. Try again later.', 429, true); } });
   await outcome(limited.engine, limited.c.id);
-  assert.equal(limited.engine.rateLimitStrikes.get(`${limited.c.id}/${model.id}`).count, 1, 'the first 429 is a strike');
-  assert.equal(limited.engine.cooldowns.size, 0, 'one strike is not yet a cooldown');
-  await outcome(limited.engine, limited.c.id);
-  assert.equal(limited.engine.rateLimitStrikes.get(`${limited.c.id}/${model.id}`).count, 2);
-  assert.ok(limited.engine.cooldowns.get(`${limited.c.id}/${model.id}`) > Date.now(), 'the second 429 inside the window cools the target down');
+  const parked = limited.service.keyRing.state(limited.service.connection(limited.c.id), Date.now()).keys[0];
+  assert.equal(parked.state, 'exhausted', 'the first 429 parks the key — the two-strike wait is gone (round 29)');
+  assert.ok(parked.cooldownUntil > Date.now(), 'with the shared window: 30 s when the provider sends no Retry-After header');
+  assert.equal(limited.engine.keyRing.pick(limited.service.connection(limited.c.id)), null, 'a parked ring hands out no key at all');
   const callsBefore = limited.calls.length;
   const blocked = await outcome(limited.engine, limited.c.id);
   assert.equal(blocked.code, 'RATE_LIMIT');
-  assert.equal(limited.calls.length, callsBefore, 'a cooling-down target is skipped instead of being called again');
+  assert.match(blocked.message, /rate limit or quota reached/, 'the caller gets the provider’s own 429 — never a cooldown notice');
+  assert.equal(limited.calls.length, callsBefore, 'a parked ring is skipped instead of being called again: zero provider calls');
 });

@@ -5,7 +5,22 @@ import { PROVIDER_CATALOG, PROVIDER_ENDPOINTS } from './catalog.mjs';
 import { normalizePrice } from './pricing.mjs';
 import { isAntigravityModelValid } from './providers/antigravity-models.mjs';
 import { modelThinking } from './providers/common.mjs';
+import { MAX_KEYS_PER_CONNECTION, KeyRing, headOf } from './keyring.mjs';
 export { PROVIDER_CATALOG };
+
+/** Provider gọi được mà không cần khoá (OpenCode Free: `Authorization: Bearer public`). */
+function anonymousProvider(provider) {
+  return Boolean(provider && (provider.id === 'opencode' || provider.authModes?.includes('anonymous')));
+}
+/**
+ * Dòng `credentials` mà một thao tác GHI phải nhắm tới: khoá đầu của ring, hoặc
+ * chính dòng của connection khi connection chưa có ring. Sau khi gộp khoá, id
+ * connection có thể không còn thuộc ring của nó nữa, nên mọi chỗ ghi phải đi qua
+ * đây — ghi vào một dòng mồ côi là làm khoá "biến mất" một cách im lặng.
+ */
+export function credentialRowId(c) {
+  return c?.keys?.[0]?.id ?? c?.id ?? null;
+}
 function label(value, fallback) {
   assert(value === undefined || typeof value === 'string', 'Name must be text.');
   const text = (value ?? fallback).trim();
@@ -117,6 +132,11 @@ export class ProviderService {
     this.refreshes = new Map();
     this.discoveries = new Map();
     this.active = new Map();
+    // Vòng 29: trạng thái nghỉ của từng khoá sống ở đây và được dùng CHUNG với
+    // engine (`engine.keyRing` là chính đối tượng này), nên snapshot và vòng xoay
+    // không bao giờ nhìn thấy hai sự thật khác nhau. Chỉ trong RAM: restart là mọi
+    // khoá về vòng xoay ngay — đúng ý đồ với cửa sổ nghỉ 30 s–2 phút.
+    this.keyRing = new KeyRing();
     this.sanitizeAllConnections();
   }
   sanitizeConnection(c) {
@@ -180,6 +200,32 @@ export class ProviderService {
     if (modified) {
       this.store.put('connection', c);
     }
+    // Vòng 29: ring được dựng một lần, chỉ thêm, idempotent.
+    this.ensureRing(c);
+    return c;
+  }
+  /**
+   * Di trú ring cho connection cũ. Chỉ thêm, một lần, idempotent:
+   *
+   *   1. Đã có `keys` ⇒ không làm gì — kể cả ring RỖNG: connection đã chuyển hết
+   *      khoá đi vẫn phải giữ nguyên mảng rỗng của nó (`keys` vắng nghĩa là
+   *      "connection chưa từng có khoá", nhánh legacy của giao diện).
+   *   2. Chưa từng có dòng credential (ví dụ một `opencode` không khoá) ⇒ KHÔNG
+   *      tạo ring rỗng.
+   *   3. Còn lại: dòng credential đang có trở thành khoá đầu tiên, và `id` của
+   *      entry CHÍNH LÀ id dòng đó. Không có thao tác mật mã nào ở đây: AAD của
+   *      bản mã là id DÒNG chứ không phải id connection (`store.mjs:44`).
+   */
+  ensureRing(c) {
+    if (!c) return c;
+    if (Array.isArray(c.keys)) {
+      if (c.activeKeyId && !c.keys.some(key => key.id === c.activeKeyId)) { delete c.activeKeyId; this.store.put('connection', c); }
+      return c;
+    }
+    const blob = this.store.credentials(c.id);
+    if (!blob) return c;
+    c.keys = [{ id: c.id, label: c.name || 'Key 1', prefix: headOf(blob.apiKey || blob.accessToken), createdAt: Date.now(), lastUsedAt: null }];
+    this.store.put('connection', c);
     return c;
   }
   sanitizeAllConnections() {
@@ -190,10 +236,21 @@ export class ProviderService {
       }
     } catch { /* best effort on startup */ }
   }
-  connection(id) { const c = this.store.get('connection', id); assert(c, 'Connection not found.', 'NOT_FOUND', 404); return c; }
-  provider(id) { const provider = PROVIDER_CATALOG.find(value => value.id === id); assert(provider, 'Provider not found.', 'NOT_FOUND', 404); return { ...provider, connections: this.store.list('connection').filter(value => value.providerId === id) }; }
+  connection(id) { const c = this.store.get('connection', id); assert(c, 'Connection not found.', 'NOT_FOUND', 404); return this.ensureRing(c); }
+  provider(id) { const provider = PROVIDER_CATALOG.find(value => value.id === id); assert(provider, 'Provider not found.', 'NOT_FOUND', 404); return { ...provider, connections: this.connections().filter(value => value.providerId === id) }; }
+  /** Mọi connection đã trang trí ring — nguồn chung cho `/state`, `GET /connections` và chi tiết provider. */
+  connections() { return this.store.list('connection').map(c => this.#ringView(c)); }
+  /**
+   * `keys` chỉ có mặt khi connection thật sự có ring (hoặc đã từng có — ring
+   * rỗng cũng là một mảng). Vắng `keys` là nhánh legacy của giao diện, nên ở đó
+   * hàm này KHÔNG được thêm một mảng rỗng vào.
+   */
+  #ringView(c) {
+    this.ensureRing(c);
+    return Array.isArray(c.keys) ? { ...c, ...this.keyRing.state(c, Date.now()) } : { ...c };
+  }
   snapshot() {
-    return { providers: PROVIDER_CATALOG, connections: this.store.list('connection'), providerConfigs: this.store.list('provider_config'), aliases: this.store.list('alias'), defaultRoute: this.store.getDefault(), keys: this.store.list('key').map(k => this.store.publicKey(k)), usage: this.store.list('usage').slice(0, 200), health: { status: 'ok', version: '0.1.0' } };
+    return { providers: PROVIDER_CATALOG, connections: this.connections(), providerConfigs: this.store.list('provider_config'), aliases: this.store.list('alias'), defaultRoute: this.store.getDefault(), keys: this.store.list('key').map(k => this.store.publicKey(k)), usage: this.store.list('usage').slice(0, 200), health: { status: 'ok', version: '0.1.0' } };
   }
   providerConfig(id) {
     this.provider(id);
@@ -393,7 +450,10 @@ export class ProviderService {
       assert(c.providerId !== 'antigravity', 'Use account authorization for Antigravity.');
       const val = (values.apiKey ?? values.accessToken ?? values.token)?.trim();
       if (val) {
-        this.store.saveCredentials(id, {
+        // Nhánh legacy giữ nguyên hành vi hôm nay, chỉ đổi ĐÍCH ghi sang khoá đầu
+        // của ring: một khoá đã bị chuyển sang connection khác thì không được ghi
+        // vào dòng cũ của nó nữa.
+        this.saveCredential(c, {
           apiKey: secret(val),
           accessToken: secret(val),
           ...(values.refreshToken ? { refreshToken: secret(values.refreshToken) } : {}),
@@ -402,8 +462,8 @@ export class ProviderService {
       }
     }
     if (values.projectId !== undefined) {
-      const credential = this.store.credentials(id);
-      if (credential) this.store.saveCredentials(id, { ...credential, projectId: c.projectId });
+      const credential = this.store.credentials(credentialRowId(c));
+      if (credential) this.saveCredential(c, { ...credential, projectId: c.projectId });
     }
     if (invalidates) {
       const fallback = this.providers[c.providerId]?.fallbackModels || [];
@@ -417,7 +477,17 @@ export class ProviderService {
     return c;
   }
   remove(id) {
-    const removed = this.connection(id); this.cancelConnection(id); this.store.removeCredentials(id); this.store.delete('connection', id);
+    const removed = this.connection(id);
+    // Còn khoá thì không xoá connection: xoá nó là bỏ luôn những khoá đó, và giao
+    // diện đã disable nút Delete — đây là lớp thứ hai cho người gọi API trực tiếp.
+    const keys = Array.isArray(removed.keys) ? removed.keys : [];
+    assert(keys.length === 0, `Remove the ${keys.length} keys on this connection first — deleting it would drop them.`, 'KEYS_PRESENT', 409);
+    this.cancelConnection(id);
+    // Chỉ xoá những dòng thuộc ring của CHÍNH connection này (ring rỗng ⇒ không
+    // xoá gì). Sau khi gộp khoá, dòng của một connection shell có thể đã thuộc
+    // ring của connection đích — xoá nó là xoá mất khoá của đích.
+    for (const key of keys) this.store.removeCredentials(key.id);
+    this.store.delete('connection', id);
     const config = this.providerConfig(removed.providerId); this.setProviderConfig(removed.providerId, { connectionOrder: config.connectionOrder.filter(value => value !== id) });
     for (const alias of this.store.list('alias')) {
       alias.targets = alias.targets.filter(t => t.connectionId !== id);
@@ -427,9 +497,21 @@ export class ProviderService {
     this.repairDefault();
   }
   cancelConnection(id) { for (const run of this.active.values()) if (run.connectionId === id) run.controller.abort(new DOMException('Cancelled', 'AbortError')); }
-  async credentials(id, signal) {
+  /**
+   * Credential của MỘT khoá trong connection. Không bao giờ đọc thẳng
+   * `store.credentials(connectionId)` nữa: giải qua ring trước, nên một dòng mồ côi
+   * (khoá đã bị chuyển đi) không thể bị đọc nhầm, và ring rỗng cho ra đúng câu AUTH
+   * 401 hôm nay. `id` của khoá được TIÊM LÚC ĐỌC — không bao giờ ghi xuống blob —
+   * nên `opencode` thấy mỗi khoá là một session riêng (`providers/opencode.mjs:179-182`)
+   * trong khi blob trên đĩa không đổi một byte.
+   */
+  async credentials(id, signal, keyId = null) {
     const c = this.connection(id);
-    let credentials = this.store.credentials(id);
+    const keys = Array.isArray(c.keys) ? c.keys : [];
+    const chosen = keyId ? keys.find(key => key.id === keyId) : keys[0];
+    assert(!keyId || chosen, 'This key is not on the connection.', 'NOT_FOUND', 404);
+    assert(chosen, 'Connect an account or configure an API key first.', 'AUTH', 401);
+    let credentials = this.store.credentials(chosen.id);
     assert(credentials, 'Connect an account or configure an API key first.', 'AUTH', 401);
     if (c.providerId === 'antigravity' && Number(credentials.expiresAt) <= Date.now() + 300000) {
       if (!this.refreshes.has(id)) {
@@ -438,7 +520,7 @@ export class ProviderService {
           const current = this.store.get('connection', id);
           assert(current && current.revision === revision, 'Credential configuration changed during refresh.', 'STALE_RESULT', 409);
           const merged = { ...credentials, ...refreshed, refreshToken: refreshed.refreshToken || credentials.refreshToken, oauthClient: credentials.oauthClient };
-          this.store.saveCredentials(id, merged); current.authState = 'ready'; this.store.put('connection', current); return merged;
+          this.saveCredential(current, merged); current.authState = 'ready'; this.store.put('connection', current); return merged;
         }).catch(error => {
           const current = this.store.get('connection', id);
           if (current && current.revision === revision) {
@@ -453,7 +535,7 @@ export class ProviderService {
       credentials = await this.refreshes.get(id);
       signal?.throwIfAborted();
     }
-    return { ...credentials, ...(c.projectId ? { projectId: c.projectId } : {}) };
+    return { ...credentials, id: chosen.id, ...(c.projectId ? { projectId: c.projectId } : {}) };
   }
   async discover(id, signal = AbortSignal.timeout(60000)) {
     if (this.discoveries.has(id)) return this.discoveries.get(id);
@@ -508,9 +590,11 @@ export class ProviderService {
       // nguyên). Chỉ một lần "thay thế" danh sách tường minh mới được xoá — hiện
       // chưa có đường đó.
       current.models.push(...previous.values().filter(model => model.source === 'custom' && model.id && !current.models.some(row => row.id === model.id)));
-      if (found.credentials) this.store.saveCredentials(id, { ...credentials, ...found.credentials });
+      // `credentials` đã đi qua ring nên mang theo `id` tiêm lúc đọc; blob ghi xuống
+      // đĩa KHÔNG bao giờ mang trường đó (nó là id DÒNG, không phải dữ liệu).
+      if (found.credentials) { const { id: _keyId, ...blob } = credentials; this.saveCredential(current, { ...blob, ...found.credentials }); }
       if (found.email) { current.email = found.email; current.accountLabel = found.email; }
-      if (found.projectId) { current.projectId = found.projectId; this.store.saveCredentials(id, { ...this.store.credentials(id), projectId: found.projectId }); }
+      if (found.projectId) { current.projectId = found.projectId; this.saveCredential(current, { ...(this.store.credentials(credentialRowId(current)) || {}), projectId: found.projectId }); }
       current.authState = 'ready'; current.discoveryState = 'ready'; current.lastModelSyncAt = new Date().toISOString(); current.nextModelSyncAt = new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString(); current.error = null;
       if (current.providerId === 'antigravity') current.projectState = found.projectState || (current.projectId ? 'ready' : 'required');
       this.store.put('connection', current);
@@ -544,7 +628,7 @@ export class ProviderService {
       throw error;
     }
   }
-  async testInference(id, modelId, signal = AbortSignal.timeout(90000)) {
+  async testInference(id, modelId, signal = AbortSignal.timeout(90000), keyId = null) {
     const connection = this.connection(id);
     // Phép thử thuộc về một model, không thuộc về cờ bật/tắt của nó: người dùng
     // phải Test được đúng id họ vừa khai (và cả id họ vừa tắt) trước khi quyết
@@ -552,7 +636,7 @@ export class ProviderService {
     assert(connection.models.some(model => model.id === modelId), 'This model is not on the connection. Add the model id first, then test it.', 'MODEL_NOT_FOUND', 404);
     const startedAt = Date.now();
     try {
-      const credentials = await this.credentials(id, signal);
+      const credentials = await this.credentials(id, signal, keyId);
       let meaningful = false; let finished = false; let usage = null;
       for await (const event of this.providers[connection.providerId].generate({ connection, credentials, body: { model: modelId, messages: [{ role: 'user', content: 'Reply exactly: BOXFOX_OK' }], max_tokens: 64, stream: false }, signal })) {
         if (event.type === 'delta' && (event.delta?.content || event.delta?.tool_calls?.length)) meaningful = true;
@@ -620,6 +704,159 @@ export class ProviderService {
     const provider = this.providers[connection.providerId];
     const current = typeof provider?.documentedPricing === 'function' ? provider.documentedPricing(model, at) : null;
     return current ?? price;
+  }
+  // ── Vòng 29: khoá trong một connection ─────────────────────────────────────
+  /**
+   * Ghi một blob credential vào ĐÚNG dòng của connection: khoá đầu của ring, hoặc
+   * dòng của chính connection khi chưa có ring. Ring RỖNG (mọi khoá đã được chuyển
+   * đi) thì credential mới là một dòng MỚI và thành khoá đầu tiên — không bao giờ
+   * ghi đè id cũ, vì dòng đó có thể đang là khoá của connection khác.
+   */
+  saveCredential(c, blob) {
+    if (Array.isArray(c.keys) && !c.keys.length) {
+      const rowId = randomUUID();
+      this.store.saveCredentials(rowId, blob);
+      c.keys.push({ id: rowId, label: c.name || 'Key 1', prefix: headOf(blob.apiKey || blob.accessToken), createdAt: Date.now(), lastUsedAt: null });
+      this.store.put('connection', c);
+      return rowId;
+    }
+    const rowId = credentialRowId(c);
+    this.store.saveCredentials(rowId, blob);
+    const key = Array.isArray(c.keys) ? c.keys.find(entry => entry.id === rowId) : null;
+    if (key) { key.prefix = headOf(blob.apiKey || blob.accessToken); this.store.put('connection', c); }
+    return rowId;
+  }
+  /** Còn khoá nào gọi được không — dùng cho phép lọc target đang nghỉ của alias `round_robin`. */
+  hasCallableKeys(id, now = Date.now()) {
+    const c = this.store.get('connection', id);
+    return Boolean(c) && this.keyRing.hasCallable(c, now);
+  }
+  /** Khoá của một connection, đã dựng ring nếu cần. */
+  #keyList(c) {
+    this.ensureRing(c);
+    return Array.isArray(c.keys) ? c.keys : [];
+  }
+  /**
+   * Thêm một khoá vào CUỐI ring. `key` bắt buộc với provider cần khoá; provider
+   * anonymous (`opencode`) cho phép bỏ trống — khi đó dòng credential là một blob
+   * rỗng, vẫn có id riêng để mỗi khoá là một session riêng.
+   */
+  addKey(id, values = {}) {
+    const c = this.connection(id);
+    const keys = this.#keyList(c);
+    if (!Array.isArray(c.keys)) c.keys = keys;
+    assert(keys.length < MAX_KEYS_PER_CONNECTION, `A connection holds at most ${MAX_KEYS_PER_CONNECTION} keys.`);
+    const provider = PROVIDER_CATALOG.find(entry => entry.id === c.providerId);
+    const provided = typeof values.key === 'string' && values.key.trim() ? secret(values.key) : null;
+    assert(provided || anonymousProvider(provider), 'Enter a valid API key.');
+    if (provided) assert(c.providerId !== 'antigravity', 'Use account authorization for Antigravity.');
+    const rowId = randomUUID();
+    this.store.saveCredentials(rowId, provided ? { apiKey: provided } : {});
+    keys.push({ id: rowId, label: label(values.label, `Key ${keys.length + 1}`), prefix: headOf(provided), createdAt: Date.now(), lastUsedAt: null });
+    c.credentialPresent = true; c.authState = 'ready'; c.inferenceState = 'unknown'; c.error = null;
+    this.store.put('connection', c);
+    this.repairDefault();
+    return this.#ringView(c);
+  }
+  /**
+   * Thay secret của ĐÚNG khoá đó, và/hoặc đổi nhãn. Cố ý KHÔNG reset danh sách
+   * `models` (khác nhánh legacy `PATCH {apiKey}`): endpoint không đổi thì danh sách
+   * model không đổi — sửa một chữ trong khoá 2 không được xoá 43 model.
+   */
+  replaceKey(id, keyId, values = {}) {
+    const c = this.connection(id);
+    const keys = this.#keyList(c);
+    const index = keys.findIndex(key => key.id === keyId);
+    assert(index >= 0, 'This key is not on the connection.', 'NOT_FOUND', 404);
+    const key = keys[index];
+    if (values.key !== undefined) {
+      assert(c.providerId !== 'antigravity', 'Use account authorization for Antigravity.');
+      const value = secret(values.key);
+      const blob = this.store.credentials(key.id) || {};
+      this.store.saveCredentials(key.id, { ...blob, apiKey: value, accessToken: value });
+      key.prefix = headOf(value);
+      // Khoá vừa đổi secret là khoá mới với vòng xoay: hết nghỉ, hết dòng lỗi cũ.
+      this.keyRing.clear(key.id);
+    }
+    if (values.label !== undefined) key.label = label(values.label, key.label || `Key ${index + 1}`);
+    c.credentialPresent = true; c.authState = 'ready'; c.inferenceState = 'unknown'; c.error = null;
+    this.store.put('connection', c);
+    this.repairDefault();
+    return this.#ringView(c);
+  }
+  /**
+   * Bỏ MỘT khoá. Xoá khoá cuối ⇒ ring rỗng và connection Ở LẠI với
+   * `credentialPresent: false`, `authState: 'required'` (nó tự rời khỏi định tuyến
+   * qua `validTarget`), không tự xoá mình.
+   */
+  removeKey(id, keyId) {
+    const c = this.connection(id);
+    const keys = this.#keyList(c);
+    const index = keys.findIndex(key => key.id === keyId);
+    assert(index >= 0, 'This key is not on the connection.', 'NOT_FOUND', 404);
+    keys.splice(index, 1);
+    this.store.removeCredentials(keyId);
+    this.keyRing.clear(keyId);
+    if (c.activeKeyId === keyId) delete c.activeKeyId;
+    if (keys.length) { c.credentialPresent = true; c.authState = 'ready'; }
+    else { c.credentialPresent = false; c.authState = 'required'; }
+    c.inferenceState = 'unknown'; c.error = null;
+    this.store.put('connection', c);
+    this.repairDefault();
+    return this.#ringView(c);
+  }
+  /**
+   * Chuyển TOÀN BỘ khoá của một connection khác vào CUỐI ring này, giữ nguyên thứ
+   * tự. Không dedupe, không mã hoá lại: mỗi entry `{ id, label, prefix, createdAt }`
+   * được bê nguyên sang (nên ciphertext trong DB không đổi một byte), và nguồn ở
+   * lại với ring rỗng — nó chỉ rời khỏi định tuyến chứ không tự xoá.
+   */
+  importKeys(id, fromConnectionId) {
+    const target = this.connection(id);
+    const sourceId = typeof fromConnectionId === 'string' ? fromConnectionId.trim() : '';
+    assert(sourceId, 'Choose a connection to move keys from.');
+    assert(sourceId !== id, 'Choose a different connection.');
+    const source = this.connection(sourceId);
+    const from = Array.isArray(source.keys) ? source.keys : [];
+    const into = this.#keyList(target);
+    assert(target.providerId === source.providerId, 'Keys can only move between connections of the same provider.');
+    assert((target.endpoint || null) === (source.endpoint || null), 'Keys can only move between connections with the same endpoint.');
+    assert(target.enabled, 'Enable the target connection before moving keys into it.');
+    assert(from.length > 0, 'The source connection has no key to move.');
+    assert(into.length + from.length <= MAX_KEYS_PER_CONNECTION, `A connection holds at most ${MAX_KEYS_PER_CONNECTION} keys.`);
+    for (const key of from) into.push({ id: key.id, label: key.label || source.name, prefix: key.prefix ?? null, createdAt: key.createdAt ?? Date.now(), lastUsedAt: key.lastUsedAt ?? null });
+    target.keys = into;
+    source.keys = [];
+    delete source.activeKeyId;
+    source.credentialPresent = false; source.authState = 'required'; source.inferenceState = 'unknown'; source.error = null;
+    target.credentialPresent = true; target.authState = 'ready'; target.inferenceState = 'unknown'; target.error = null;
+    this.store.put('connection', source);
+    this.store.put('connection', target);
+    this.repairDefault();
+    return this.#ringView(target);
+  }
+  /**
+   * "Thử ngay" của giao diện: bỏ nghỉ và xoá dòng lỗi của khoá đó, đánh dấu nó là
+   * khoá của lượt thử gần nhất, rồi — nếu có model — chạy ĐÚNG một probe ghim vào
+   * khoá ấy. Probe 429 park lại khoá theo luật mới.
+   */
+  async tryKey(id, keyId, { modelId = null } = {}) {
+    const c = this.connection(id);
+    const keys = this.#keyList(c);
+    assert(keys.some(key => key.id === keyId), 'This key is not on the connection.', 'NOT_FOUND', 404);
+    this.keyRing.clear(keyId);
+    c.activeKeyId = keyId;
+    this.store.put('connection', c);
+    let probe = null;
+    if (modelId) {
+      try { probe = await this.testInference(id, modelId, AbortSignal.timeout(90000), keyId); }
+      catch (error) {
+        const safe = safeError(error);
+        if (safe.code === 'RATE_LIMIT') this.keyRing.park(keyId, { retryAfterMs: safe.retryAfterMs, error: safe, modelId });
+        throw error;
+      }
+    }
+    return { connection: this.#ringView(this.connection(id)), probe };
   }
   /**
    * Một model gõ tay là lời khai của người dùng, không phải kết quả dò: khi

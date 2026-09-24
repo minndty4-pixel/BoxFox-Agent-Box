@@ -267,7 +267,9 @@ export function createRouterServer({ service, engine, oauth, frontendDir = null,
       const providerDetail = path.match(/^\/api\/router\/providers\/([^/]+)$/);
       if (providerDetail && method === 'GET') return json(res, 200, service.provider(decodeURIComponent(providerDetail[1])));
       if (providerDetail && method === 'PUT') return json(res, 200, service.setProviderConfig(decodeURIComponent(providerDetail[1]), await body(req)));
-      if (path === '/api/router/connections' && method === 'GET') return json(res, 200, service.store.list('connection'));
+      // Vòng 29: danh sách connection đi qua `service.connections()` để mỗi dòng mang
+      // theo `keys`/`activeKeyId` đã trang trí — cùng hình dạng với `GET /api/router/state`.
+      if (path === '/api/router/connections' && method === 'GET') return json(res, 200, service.connections());
       if (path === '/api/router/connections' && method === 'POST') {
         const created = service.create(await body(req));
         // API providers can expose their inventory immediately. Keep the
@@ -287,6 +289,21 @@ export function createRouterServer({ service, engine, oauth, frontendDir = null,
         if (!connection[2] && method === 'DELETE') { service.remove(id); return json(res, 200, { deleted: true }); }
         if (['test', 'models/refresh'].includes(connection[2]) && method === 'POST') return json(res, 200, await service.discover(id, AbortSignal.timeout(60000)));
         if (connection[2] === 'quota' && method === 'GET') return json(res, 200, await service.quota(id, AbortSignal.timeout(20000)));
+      }
+      const connectionKeys = path.match(/^\/api\/router\/connections\/([^/]+)\/keys(?:\/([^/]+))?(?:\/try)?$/);
+      if (connectionKeys) {
+        // Năm đường dẫn khoá của hợp đồng vòng 29 (tên do nửa UI chốt, không đổi):
+        // `POST .../keys` (201), `PATCH`/`DELETE .../keys/:keyId` (200),
+        // `POST .../keys/:keyId/try` (200 { connection, probe }), `POST .../keys/import` (200).
+        // Nhánh `import` phải đọc TRƯỚC nhánh `:keyId`, nếu không chữ "import" bị nuốt
+        // làm key id và route import biến thành một khoá tên "import".
+        const id = decodeURIComponent(connectionKeys[1]);
+        const keyId = connectionKeys[2] ? decodeURIComponent(connectionKeys[2]) : null;
+        if (keyId === 'import' && !path.endsWith('/try') && method === 'POST') return json(res, 200, service.importKeys(id, (await body(req)).fromConnectionId));
+        if (!keyId && method === 'POST') return json(res, 201, service.addKey(id, await body(req)));
+        if (keyId && method === 'PATCH') return json(res, 200, service.replaceKey(id, keyId, await body(req)));
+        if (keyId && method === 'DELETE') return json(res, 200, service.removeKey(id, keyId));
+        if (keyId && path.endsWith('/try') && method === 'POST') return json(res, 200, await service.tryKey(id, keyId, await body(req)));
       }
       if ((path === '/callback' || path === '/auth/callback') && method === 'GET') return await oauth.handleHttpCallback(req, res);
       if (path === '/api/router/oauth/attempts' && method === 'POST') return json(res, 201, await oauth.start((await body(req)).connectionId));
