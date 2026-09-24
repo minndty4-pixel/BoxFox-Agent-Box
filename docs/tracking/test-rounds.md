@@ -2401,3 +2401,14 @@ giao diện; danh sách lỗi đầy đủ ở `bug-register.md` §6.34 — BUG-
   `/memory/knowledge/vorflux/when-you-edit-the-tree-after-dispatching-testing-agents.md`.
 - **Bộ đơn vị trên cây có bản sửa**: **1344 passed, 1 deselected in 216,63 s**
   (`/var/tmp/v27/unit_run_10.log`); `f12de93` (chưa có bản sửa): **1339 passed, 1 deselected**.
+- **Ghi chú cho đúng sổ (lượt xác nhận cuối bắt được):** ba sửa một-dòng ở `web.py` (bình luận `perQuery`
+  và bình luận `TypeError`/chữ ký hai tham số, ghi chú `select` trong docstring `paper_citations`) **đã
+  không** vào `0015d35` — lệnh vá dừng ở mẫu không khớp nên chỉ hai sửa tài liệu `host-web-tools.md` được
+  ghi. Nay đã áp lại và ghim bằng `fd76b53`+**`<SHA>`**; cả ba là bình luận/docstring, **không** đổi hành
+  vi (nhóm web 5 tệp: **139 passed** trước và sau).
+- **Lượt xác nhận cuối trên cây đã commit (`fd76b53`): `OVERALL STATUS: PASSED`.** Đúng ca A-6 từng đỏ
+  nay xanh sống: `doi` + `forward` ⇒ 200, `work W2741809807`, `total 1255`, `count 3`; câu hỏi gửi đi là
+  `works/doi:…?select=id` rồi `works?filter=cites:W2741809807&select=PAPER_SELECT` — **không** có DOI
+  thô nào trong `filter`. Mã không giải được ⇒ ném lỗi ngay ở bước giải (`HTTP 404`), không dựng bộ lọc
+  từ mã xấu. Lượt ấy cũng dựng bản sạch bằng `git archive` và so **blob hash** với repo (khớp cả bốn tệp),
+  nên số đo thuộc về mã đã commit chứ không phải cây làm việc dở.

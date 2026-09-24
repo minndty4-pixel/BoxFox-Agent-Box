@@ -1039,8 +1039,10 @@ class WebTools:
             found, failure = self._search_leg(providers, effective, count, options)
             entry = {'query': query, 'count': len(found)}
             if failure:
-                # Một chân hỏng KHÔNG được im lặng khi các chân khác còn kết quả: người đọc phải biết
-                # truy vấn nào không trả về gì (chân keyless bị giới hạn nhịp — đo được 2026-09-23).
+                # Một TRUY VẤN hỏng không được im lặng khi các truy vấn khác còn kết quả: người đọc
+                # phải biết truy vấn nào không trả về gì (chân keyless bị giới hạn nhịp — 2026-09-23).
+                # Hỏng ở cấp CHÂN trong một truy vấn thì chuỗi rơi tiếp; lỗi ấy chỉ hiện khi MỌI chân
+                # của truy vấn ấy đều hỏng.
                 entry['error'] = failure[:160]
                 errors.append(failure)
             per_query.append(entry)
@@ -1083,6 +1085,9 @@ class WebTools:
                 # A live front-end can answer 200 with a challenge page or another shape
                 # entirely (measured 2026-09-20: `text/html` "Just a moment…"). One provider
                 # being unparsable must not abort the chain — the next one still gets a turn.
+                # `TypeError` cũng là dấu hiệu chân viết theo chữ ký CŨ `(query, count)`: nó KHÔNG
+                # được gọi lại hai tham số, mà bị coi là chân hỏng và rơi tiếp — mọi chân trong cây
+                # đã theo chữ ký ba tham số `(query, count, options)`.
                 errors.append(f'{provider.__name__}: unreadable answer ({exc.__class__.__name__})')
                 continue
             if not isinstance(results, list):
@@ -1341,8 +1346,10 @@ class WebTools:
 
         `backward` = bài này dựa trên gì (danh sách tham chiếu) · `forward` = ai trích dẫn nó.
         ĐO ĐƯỢC 2026-09-23: `referenced_works` sống qua `select` (n=54 cho `W2741809807`) và
-        `filter=cites:W2741809807&per-page=2` trả `count=1255` trong 891 byte ⇒ cả hai chiều chạy
-        được KHÔNG cần khoá. KHÔNG dùng `cited_by_api_url`: khoá đó không có trong bản trả về.
+        `filter=cites:W2741809807&select=PAPER_SELECT&per-page=2` trả `count=1255` trong 891 byte ⇒ cả
+        hai chiều chạy được KHÔNG cần khoá. Số byte phụ thuộc bộ `select` (cùng URL với `per-page=2`
+        đo hôm sau là 4 895 byte) nên đọc con số ấy là "nhỏ hơn một bậc", không phải hằng số. KHÔNG
+        dùng `cited_by_api_url`: khoá đó không có trong bản trả về.
         `filter=cites:` chỉ nhận mã `W…` — chỉ có DOI thì giải trước qua `works/doi:…` (xem
         `_openalex_citable_id`), không đẩy `doi:…` thẳng vào `filter`.
         """
