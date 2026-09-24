@@ -2,6 +2,8 @@
 import asyncio
 import json
 import uuid
+from ..agent_core import research_runtime
+from ..agent_core.limits import STEER_MAX_PENDING
 from dataclasses import asdict
 from .commands import INFO, ROLE_SKILLS, EXTERNAL
 from ..agent_core.attachments import (attachment_prompt_block, validate_attachments,
@@ -13,7 +15,7 @@ from ..agent_core.compression import ContextCompressor, context_estimate, estima
 
 class RuntimeCommands:
     async def submit(self, sid, prompt, image=None, route=None, invocation_id=None, images=None,
-                     attachments=None):
+                     attachments=None, allow_steer=True):
         session = self.store.get(sid)
         if not isinstance(prompt, str):
             raise ValueError('Prompt is required')
@@ -37,13 +39,35 @@ class RuntimeCommands:
         enabled = settings['enabled'] if settings['initialized'] else session['config']['skills']
         resolved = self.commands.resolve(prompt, enabled, session['config']['subagents'])
         busy = session['status'] in {'running', 'awaiting_decision'}
+        steered = False
         if busy and not (resolved.kind == 'control' and resolved.command in INFO | {'stop'}):
-            raise ValueError('SESSION_BUSY: Turn in progress')
-        result = {'status': 'running', 'invocationId': invocation_id, 'resolution': asdict(resolved)}
+            # Vòng 27 (đợt 7, D-43): lượt của PHIÊN GỐC đang chạy thì lời nhắn của chủ nhà không bị
+            # trả 409 nữa — nó thành một CHỈ THỊ giữa lượt, bơm vào transcript ở ranh giới bước.
+            # Phiên CON giữ nguyên `SESSION_BUSY` (con không nói chuyện với chủ nhà, #5961), và
+            # bên gọi có thể tắt đường này bằng `allow_steer=False` (đường `plan_wake` giữ nguyên
+            # kết cục `PLAN_WAKE_BUSY` đã tài liệu hoá).
+            if allow_steer and not session.get('parent_id') and research_runtime.steer_mode()[0] == 'on':
+                if self.store.pending_steer_count(sid) >= STEER_MAX_PENDING:
+                    raise ValueError(f'STEER_QUEUE_FULL: đã có {STEER_MAX_PENDING} chỉ thị đang chờ bơm '
+                                     f'vào lượt này — chờ lượt bơm bớt rồi gửi tiếp')
+                steered = True
+            else:
+                raise ValueError('SESSION_BUSY: Turn in progress')
+        result = {'status': 'steered' if steered else 'running', 'invocationId': invocation_id,
+                  'resolution': asdict(resolved)}
         # Persist admission before scheduling a child. Replaying an interrupted invocation never reruns effects.
         with self.store.db:
             self.store.db.execute('INSERT INTO command_invocations VALUES(?,?,?,?)', (sid, invocation_id, request, json.dumps(result)))
         self.store.emit(sid, 'command_resolved', asdict(resolved) | {'invocationId': invocation_id})
+        if steered:
+            queued = await self.queue_owner_steer(sid, prompt)
+            result.update({'steerId': (queued or {}).get('steerId'), 'turn': (queued or {}).get('turn'),
+                           'pending': (queued or {}).get('pending'),
+                           'output': 'Chỉ thị đã vào hàng đợi của lượt đang chạy.'})
+            with self.store.db:
+                self.store.db.execute('UPDATE command_invocations SET result=? WHERE session_id=? AND id=?',
+                                      (json.dumps(result), sid, invocation_id))
+            return result
         if resolved.kind == 'control':
             # `control: True` — hàng `user` của một LỆNH ĐIỀU KHIỂN không phải một lượt: bộ đếm
             # lượt dựng lại từ bảng (`HarnessRuntime._turn_index`) bỏ qua đúng những hàng này.

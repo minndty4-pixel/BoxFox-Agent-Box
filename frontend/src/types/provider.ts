@@ -49,6 +49,18 @@ export interface ProviderModel {
   lastProbe?: { status: 'passed' | 'failed'; httpStatus: number; latencyMs: number; testedAt: string; error: string | null }
   capabilities: Record<'streaming' | 'tools' | 'vision', CapabilityEvidence> & { reasoning?: CapabilityEvidence }
 }
+/**
+ * One key of a connection's ring. The router sends the label, the leading characters of
+ * the secret (`prefix`) and the state it observed — never the secret itself. `state` is
+ * the router's verdict: `cooling`/`exhausted` mean parked after a 429 (`exhausted` when
+ * the provider's message named a quota), `error` means the last call failed for another
+ * reason. The UI renders whichever value arrives and never derives one of its own.
+ */
+export interface ConnectionKey {
+  id: string; label: string; prefix: string; state: 'ready' | 'cooling' | 'exhausted' | 'error';
+  cooldownUntil: number | null; resetAt: number | null;
+  lastErrorCode: string | null; lastErrorMessage: string | null; lastUsedAt: number | null;
+}
 export interface ProviderConnection {
   id: string; providerId: ProviderId; name: string; endpoint: string | null; email: string | null; accountLabel: string | null; projectId: string | null;
   revision: number; enabled: boolean; credentialPresent: boolean;
@@ -59,6 +71,11 @@ export interface ProviderConnection {
   costMode?: 'metered' | 'included';
   /** Epoch ms of the last discovery attempt, so a failed listing can say when it was tried. */
   lastDiscoveryAttemptAt?: number | null; error: string | null; quota: ProviderQuota | null;
+  /** Ordered key ring, first key tried first. Absent while the router does not decorate
+   *  the connection — that absence is the legacy single-key shape the card still renders. */
+  keys?: ConnectionKey[];
+  /** Key that served the last attempt, `null` when the router has not recorded one. */
+  activeKeyId?: string | null;
 }
 export interface ProviderQuota {
   updatedAt: string; plan?: string | null; models: Array<{ modelId: string; upstreamModelId?: string; quotaFamily?: 'gemini' | 'claude_gpt' | null; remainingFraction: number | null; resetAt: string | null; source?: string }>;

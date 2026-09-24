@@ -28,6 +28,11 @@ const CAPTURE_REL = '.generated_artifacts/captures/tab/2e4f1a20/2e4f1a20_007_tab
 const CAPTURE_ABS = `/home/agent/workspace/${CAPTURE_REL}`
 /** Tệp kết quả test (D-23/D-25) — bằng chứng văn bản, mở bằng tab Files. */
 const EVIDENCE_REL = '.generated_artifacts/captures/evidence/2e4f1a20/2e4f1a20_009_pytest-result.txt'
+/** Vòng 27 / C-2 2.4 — hồ sơ việc nghiên cứu nằm trong phòng `.research/<việc>/`. */
+const DOSSIER_DOC = '.research/chuyen-tuyen-nhap-vien/v1-chuyen-tuyen-nhap-vien.md'
+const DOSSIER_SOURCES = '.research/chuyen-tuyen-nhap-vien/sources.jsonl'
+/** Tên tệp trong phòng hồ sơ tình cờ mang đuôi ảnh: vẫn là TỆP, không thành tile ảnh. */
+const DOSSIER_IMAGE_NAME = '.research/chuyen-tuyen-nhap-vien/bia.png'
 
 describe('MarkdownRenderer', () => {
   it('renders GFM, code, links, and KaTeX through the shared safe pipeline', () => {
@@ -214,6 +219,42 @@ describe('MarkdownRenderer', () => {
 
     // Đường dự phòng giữ NGUYÊN `href` thô của model (trình duyệt tự hiểu link của nó).
     expect(host.querySelector('a')?.getAttribute('href')).toBe('https://example.com/live.txt?raw=1')
+  })
+
+  it('C-2 2.4: mọi đường dẫn dưới `.research/` mở bằng tab Files, ảnh vẫn đi nhánh ảnh', () => {
+    const onOpenFile = vi.fn()
+    const onOpenImage = vi.fn()
+    const host = renderMarkdown(
+      [
+        `- Hồ sơ: [${DOSSIER_DOC}](${DOSSIER_DOC})`,
+        `[sổ nguồn](./${DOSSIER_SOURCES})`,
+        `[hồ sơ tuyệt đối](/home/agent/workspace/${DOSSIER_DOC})`,
+        `[bảng phụ](${DOSSIER_IMAGE_NAME})`,
+        `![Ảnh chụp bảng chạy](${CAPTURE_REL})`,
+      ].join('\n\n'),
+      { onOpenFile, onOpenImage },
+    )
+
+    // Mọi đường dẫn hồ sơ (kể cả khuôn `./`, khuôn tuyệt đối, và tên tệp mang đuôi ảnh) đều là nút
+    // Files đúng đường dẫn workspace — nhận diện hồ sơ đứng TRƯỚC phép thử ảnh, thứ tự không đổi.
+    const buttons = [...host.querySelectorAll('[data-artifact-open="files"]')]
+    expect(buttons.map((button) => button.getAttribute('data-artifact-path'))).toEqual([
+      DOSSIER_DOC,
+      DOSSIER_SOURCES,
+      DOSSIER_DOC,
+      DOSSIER_IMAGE_NAME,
+    ])
+    // ...nên KHÔNG còn `<a target="_blank">` nào cho chúng (bấm vào là mở tab trắng).
+    expect(host.querySelector('a')).toBeNull()
+    click(buttons[1])
+    expect(onOpenFile).toHaveBeenCalledWith(DOSSIER_SOURCES)
+
+    // Ảnh thật của box vẫn thành tile (đi nhánh `isImageLink`), không thành nút Files.
+    const tile = host.querySelector('[data-capture-tile="true"]')
+    expect(tile?.getAttribute('data-artifact-path')).toBe(CAPTURE_REL)
+    expect(host.querySelectorAll('[data-artifact-open="files"]').length).toBe(4)
+    click(tile?.querySelector('[data-artifact-open="media"]'))
+    expect(onOpenImage).toHaveBeenCalledTimes(1)
   })
 
   it('P4.1: không truyền callback ⇒ hành vi cũ giữ nguyên (không phá chỗ dùng khác)', () => {

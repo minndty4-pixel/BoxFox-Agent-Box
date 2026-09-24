@@ -150,7 +150,7 @@ Cloudflare Pages and Netlify also keep per-deploy history in their dashboards ("
 Do NOT report success from the deploy log alone. Before telling the user anything:
 
 1. `curl -sS -o /dev/null -w '%{http_code}' <live-url>` returns `200` (retry over ~2 minutes for a first GitHub Pages deploy).
-2. `curl -sS <live-url> | head -30` shows the expected `index.html` content — optionally confirm markup with `web_extract` on the live URL.
+2. `curl -sS <live-url> | head -30` shows the expected `index.html` content — optionally confirm markup with `web_fetch` on the live URL.
 3. For SPAs, also curl one deep route (e.g. `/about`) and confirm it returns `200`, not `404`.
 4. `git tag --list 'deploy-*'` shows the tag for this deploy.
 

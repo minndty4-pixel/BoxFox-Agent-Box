@@ -213,10 +213,11 @@ def test_compaction_keeps_pairs_goal_and_prefix():
 
 def test_skills_are_full_upstream_and_path_safe():
     catalog = SkillCatalog()
-    # 208 gói upstream + `final-report` + `planning` — kỹ năng của BoxFox (vòng 23 P1.3, vòng 25
-    # D-33) nằm cùng cây `vendor/hermes` để `DEFAULT_SKILLS` nạp được bằng id. Con số này là chốt
-    # chống cây bị cắt cụt, không phải hợp đồng với upstream: sửa nó khi CÓ CHỦ Ý thêm/bớt gói.
-    assert len(catalog.items) == 210
+    # 208 gói upstream + `final-report` + `planning` (vòng 23 P1.3, vòng 25 D-33) + `research-team`
+    # (vòng 27 A7) — kỹ năng của BoxFox nằm cùng cây `vendor/hermes` để `DEFAULT_SKILLS` nạp được
+    # bằng id. Con số này là chốt chống cây bị cắt cụt, không phải hợp đồng với upstream: sửa nó
+    # khi CÓ CHỦ Ý thêm/bớt gói.
+    assert len(catalog.items) == 211
     for sid, item in catalog.items.items():
         read = catalog.read(sid)
         assert hashlib.sha256(read['content'].encode()).hexdigest() == item['sha256']
@@ -244,7 +245,7 @@ def test_http_router_auth_and_agent_session_api(tmp_path):
                 async with ClientSession(headers={'Host': '127.0.0.1:3102', 'X-BoxFox-Admin': '1'}) as client:
                     url = str(server.make_url('/api/agent'))
                     async with client.get(url + '/catalog') as resp:
-                        assert len((await resp.json())['roles']) == 10
+                        assert len((await resp.json())['roles']) == 11, 'thêm `research-review` (vòng 27 đợt 6)'
                     async with client.post(url + '/sessions', json={'skills': []}) as resp:
                         assert resp.status == 201
                         sid = (await resp.json())['id']

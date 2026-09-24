@@ -13,6 +13,9 @@ export interface RouterChatMessage {
 
 export interface RouterGenerateBody {
   connectionId?: string
+  // `providerId` + `modelId` là dạng chọn theo nhà cung cấp: router tự chọn connection trong
+  // nhóm của provider (xem `router/CONTRACT.md`).
+  providerId?: string
   modelId?: string
   aliasId?: string
   messages: RouterChatMessage[]

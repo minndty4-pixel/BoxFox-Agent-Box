@@ -125,6 +125,13 @@ const en: SameShape<typeof vi> = {
     elementContextLiveUnsupported:
       'LIVE mode has no consumer for attached elements yet — the backend does not process them, so this content will not reach the agent.',
     sendControlWhileBusy: 'Send a control command while the agent is running',
+    // Round 27 / C-5 — a running turn still takes the owner's instruction (the `session_steers`
+    // queue): the send button must say where the text goes, unlike "open a new turn".
+    sendSteer: 'Send to the running turn',
+    // Hint under the composer while the turn is running: the instruction is read at the NEXT STEP.
+    steerHint: 'applies at the next step',
+    // Confirmation line right after the instruction was queued (harness answers 202 `{status:'steered'}`).
+    steerQueued: 'queued · applies at the next step',
     // Send-button label while the attachments are being uploaded (A5/A6).
     uploadingAttachments: 'Uploading attachments to the sandbox…',
   },
@@ -186,6 +193,12 @@ const en: SameShape<typeof vi> = {
       done: 'Completed',
     },
     userLabel: 'You',
+    // Round 27 / C-5 — a mid-turn instruction from the owner: the bubble sits where it was sent
+    // (by `seq`) with this small label so it is not read as a new turn.
+    steerLabel: 'steering',
+    // Round 27 / C-5 — a branch stopped by the owner via `cancel_child`: the child book still says
+    // `failed`, but the sentence on screen must say what actually happened.
+    childStoppedByOwner: 'stopped by the owner',
     agentLabel: 'Agent',
     systemLabel: 'System',
     // Đợt 22 / T4 + T15 — nhãn của bảng Sub-agents theo lượt và đường ống peer. Chủ nhà chốt

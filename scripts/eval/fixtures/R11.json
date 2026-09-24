@@ -1,0 +1,43 @@
+{
+  "id": "R11",
+  "case": "Trần mềm + trần cứng: khai trần ở thẻ mốc, chạm trần cứng thì báo + hỏi chủ nhà",
+  "level": 3,
+  "request": "Việc này ước tính bao lâu, và nếu vượt trần thì làm gì?",
+  "request_source": "nguyên văn bảng ca của kế hoạch (docs/plan/v27/research-rework.md §5)",
+  "oracle_pass": [
+    "Thẻ mốc có khai trần ước lượng (`ceilingSeconds`) và hồ sơ nhắc lại trần đó",
+    "Chạm trần cứng thì có dòng báo (mã `RESEARCH_HARD_CEILING`) hoặc lời hỏi chủ nhà",
+    "Trần lượt mức 3 khai 3 600 s, không bị cắt ở 1 200 s"
+  ],
+  "bad_answer": [
+    "Chạy tiếp sau khi chạm trần cứng mà không báo cho chủ nhà",
+    "Lượt mức 3 vẫn bị cắt ở 1 200 s vì chưa nới trần theo D-40"
+  ],
+  "rubric_dimensions": [
+    "C5",
+    "C7",
+    "C8"
+  ],
+  "environment": {
+    "network": "off",
+    "workspace": "đồng hồ giả trong nhật ký, không có mạng"
+  },
+  "budget": {
+    "max_steps": 40,
+    "deadline_seconds": 3600,
+    "source": "trần của mức 3 trong nhật ký hệ thống (RESEARCH_TIER_CHILD_STEPS=40, RESEARCH_TIER_TURN_SECONDS=3600)"
+  },
+  "seeds": [
+    "việc mức 3 chạm trần cứng 120 phút (đồng hồ giả trong nhật ký)",
+    "không có kết nối mạng ra ngoài"
+  ],
+  "layer1_checks": [
+    "milestone_ceiling_declared",
+    "hard_ceiling_reported"
+  ],
+  "open_questions": [
+    "Đơn vị hiển thị trần (giây + token trước, USD sau — MỞ-H/#6020) chưa có số đo thật để ghim."
+  ],
+  "plan_ref": "docs/plan/v27/research-rework.md §5",
+  "bad_answer_source": "script này soạn theo chiều ngược của oracle; kế hoạch chỉ có cột 'oracle máy' nên 'bad answer' chưa được chủ sở hữu ghim"
+}

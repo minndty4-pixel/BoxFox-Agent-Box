@@ -199,7 +199,7 @@ def add_sources(
 def urls_from_json(payload: Any) -> list[tuple[str, str]]:
     """Walk arbitrary JSON tool output collecting (url, title) pairs.
 
-    Handles web_search (``data.web[]``), web_extract (``results[]``) and any
+    Handles web_search (``data.web[]``), web_fetch (``results[]``) and any
     other nesting, in document order, deduped.
     """
     found: list[tuple[str, str]] = []
@@ -235,7 +235,8 @@ def _normalize_ws(text: str) -> str:
 
 
 # Markdown artifacts that retrieval tools inject into otherwise-identical prose.
-# ``web_extract`` returns markdown, so the most citation-worthy sentences are
+# The fetch tool returns page text with markdown links and emphasis intact, so
+# the most citation-worthy sentences are
 # exactly the ones carrying inline links and emphasis around terms:
 #   "including _[ERAP1](https://…/erap1/)_, _[IL1A](…)_, have also been…"
 # reads identically to the page a human sees.  Matching has to see through that

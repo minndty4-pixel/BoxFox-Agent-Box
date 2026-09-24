@@ -105,7 +105,13 @@ def build_plan(*, fixtures: dict[str, dict], config_count: int, repeat: int, tie
     section it comes from. When the tier's own written range and the sum of its
     items disagree, both are shown instead of quietly picking one.
     """
-    estimate = quality_estimate(len(fixtures), config_count, repeat, tiers)
+    # Số của đường Q chỉ tính ca họ Q. Một bộ chọn chỉ có ca research (họ R) mà vẫn nhân theo
+    # `len(fixtures)` là bịa ngân sách: tầng R chạy 0 lượt gọi model (vòng 27, đợt 8).
+    quality_codes = [code for code in fixtures
+                     if fixtureset.family_of(code) == fixtureset.QUALITY_FAMILY]
+    research_codes = [code for code in fixtures
+                      if fixtureset.family_of(code) == fixtureset.RESEARCH_FAMILY]
+    estimate = quality_estimate(len(quality_codes), config_count, repeat, tiers)
     line_items: list[dict] = []
     tier = tier_plan(tier_id, tiers) if tier_id is not None else None
     if tier is not None:
@@ -120,7 +126,13 @@ def build_plan(*, fixtures: dict[str, dict], config_count: int, repeat: int, tie
                 'blocked': item.get('blocked'),
                 'commands': item.get('commands'),
             })
-    include_quality = (tier is None) or (tier['id'] == TIER_WITH_QUALITY_FIXTURES) or explicit_fixtures
+    # Chỉ tính khối chi phí đường Q khi bộ fixture được chọn THẬT SỰ có ca chất lượng: tầng R chạy
+    # 0 lượt gọi model, in khối Q ở đó là bịa ngân sách (vòng 27, đợt 8).
+    families = {fixtureset.family_of(code) for code in fixtures}
+    quality_selected = not families or fixtureset.QUALITY_FAMILY in families
+    include_quality = quality_selected and ((tier is None)
+                                            or (tier['id'] == TIER_WITH_QUALITY_FIXTURES)
+                                            or explicit_fixtures)
     if include_quality:
         line_items.append(quality_line_item(estimate))
     lows = [item['costUsd'][0] for item in line_items if item.get('costUsd')]
@@ -133,14 +145,9 @@ def build_plan(*, fixtures: dict[str, dict], config_count: int, repeat: int, tie
         'lineItems': line_items,
         'estimate': estimate if include_quality else None,
         'qualityTrackIncluded': include_quality,
-        'fixtures': [
-            {'id': code,
-             'case': item['case'],
-             'dimensions': item['rubric_dimensions'],
-             'network': item['environment']['network'],
-             'maxSteps': item['budget']['max_steps']}
-            for code, item in fixtures.items()
-        ] if include_quality else [],
+        'fixtures': [_fixture_row(code, fixtures[code]) for code in quality_codes]
+                    if include_quality else [],
+        'researchFixtures': [_fixture_row(code, fixtures[code]) for code in research_codes],
         'configs': [dict(item) for item in CONFIGS[:config_count]] if include_quality else [],
         'configNote': CONFIG_NOTE if include_quality else None,
         'networkCalls': 0,
@@ -157,6 +164,15 @@ def build_plan(*, fixtures: dict[str, dict], config_count: int, repeat: int, tie
     return plan
 
 
+def _fixture_row(code: str, item: dict) -> dict:
+    """Một hàng fixture cho phần chi tiết của `--plan` (giữ đúng khoá giao diện cũ)."""
+    return {'id': code,
+            'case': item['case'],
+            'dimensions': item['rubric_dimensions'],
+            'network': item['environment']['network'],
+            'maxSteps': item['budget']['max_steps']}
+
+
 def _money(range_usd) -> str:
     if not range_usd:
         return 'chưa cho trong kế hoạch'
@@ -171,14 +187,36 @@ def _tier_label(tier: dict) -> str:
     return label[len(prefix):] if label.startswith(prefix) else label
 
 
-def render_list(fixtures: dict[str, dict], tiers: dict) -> str:
-    lines = ['Fixture chất lượng (kế hoạch chất lượng §4) — 12 ca tĩnh:']
-    lines.append('| Mã | Ca | Chiều | Mạng | Trần bước |')
-    lines.append('|---|---|---|---|---|')
-    for code, item in fixtures.items():
+def _fixture_table(items: dict[str, dict]) -> list[str]:
+    """Bảng fixture của MỘT họ — hàng nào cũng thuộc đúng tiêu đề đang in phía trên nó."""
+    lines = ['| Mã | Ca | Chiều | Mạng | Trần bước |', '|---|---|---|---|---|']
+    for code, item in items.items():
         lines.append(f"| {code} | {item['case']} | {', '.join(item['rubric_dimensions'])} | "
                      f"{item['environment']['network']} | {item['budget']['max_steps']} |")
-    lines.append('')
+    return lines
+
+
+def render_list(fixtures: dict[str, dict], tiers: dict) -> str:
+    """Bảng fixture ĐANG chọn + các tầng. Danh sách phải theo `--fixtures`, không in cả bộ."""
+    research = {code: item for code, item in fixtures.items()
+                if fixtureset.family_of(code) == fixtureset.RESEARCH_FAMILY}
+    quality = {code: item for code, item in fixtures.items() if code not in research}
+    if quality:
+        lines = [f'Fixture chất lượng (kế hoạch chất lượng §4) — {len(quality)} ca tĩnh:']
+    elif research:
+        lines = [f'Fixture research (tầng R, kế hoạch vòng 27 §8) — {len(research)} ca tĩnh:']
+    else:
+        lines = ['Fixture: bộ đang chọn rỗng:']
+    lines.extend(_fixture_table(quality if quality else research))
+    if research and quality:
+        # Chỉ in khối thứ hai khi bộ chọn CÓ cả hai họ (một tiêu đề là đủ khi chỉ có một họ).
+        lines.append('')
+        lines.append(f'Fixture research (tầng R, kế hoạch vòng 27 §8) — {len(research)} ca tĩnh:')
+        lines.extend(_fixture_table(research))
+        lines.append('')
+    elif research:
+        # Đang chỉ có họ R: bảng R đã nằm dưới tiêu đề R ở trên, không lặp tiêu đề.
+        lines.append('')
     lines.append('Tầng benchmark (kế hoạch benchmark §3):')
     for tier in tiers['tiers']:
         lines.append(f"  Tầng {tier['id']} — {_tier_label(tier)} ({tier['window']}), "
@@ -199,7 +237,7 @@ def render_plan(plan: dict, out_dir: Path) -> str:
         tier = plan['tier']
         lines.append(f"{tier['label']} ({tier['window']})")
     else:
-        lines.append('Bộ 12 fixture chất lượng (không kèm tầng benchmark nào)')
+        lines.append('Bộ fixture chất lượng (không kèm tầng benchmark nào)')
     lines.append('')
     lines.append('Hạng mục sẽ chạy (mỗi dòng ghi rõ nguồn số):')
     for item in plan['lineItems']:
@@ -211,7 +249,7 @@ def render_plan(plan: dict, out_dir: Path) -> str:
         for command in item.get('commands') or []:
             lines.append(f"      lệnh: {command}")
     if not plan['qualityTrackIncluded']:
-        lines.append('  (12 fixture chất lượng KHÔNG nằm trong tầng này: kế hoạch chỉ xếp chúng vào '
+        lines.append('  (bộ fixture chất lượng KHÔNG nằm trong tầng này: kế hoạch chỉ xếp chúng vào '
                      'tầng 1. Muốn xem riêng thì bỏ --plan-tier.)')
     lines.append('')
     lines.append(f"Tổng lượt gọi model nếu chạy thật: {plan['modelCalls']}")
@@ -227,7 +265,7 @@ def render_plan(plan: dict, out_dir: Path) -> str:
     lines.append('')
     if plan['estimate']:
         estimate = plan['estimate']
-        lines.append('Bộ 12 fixture chất lượng, chi tiết:')
+        lines.append(f"Bộ {len(plan['fixtures'])} fixture chất lượng, chi tiết:")
         for item in plan['fixtures']:
             lines.append(f"  - {item['id']}: {item['case']} | chiều {', '.join(item['dimensions'])} | "
                          f"mạng {item['network']} | trần {item['maxSteps']} bước")
@@ -242,6 +280,13 @@ def render_plan(plan: dict, out_dir: Path) -> str:
                      f"{_money(estimate['judgeCostUsd'])} | cộng: {_money(estimate['totalCostUsd'])}")
         lines.append(f"  ({estimate['scaleNote']})")
         lines.append(f"  {estimate['judgeNote']}")
+        lines.append('')
+    if plan['researchFixtures']:
+        lines.append(f"Bộ {len(plan['researchFixtures'])} fixture research (tầng R, không lượt model "
+                     f"nào — hạng mục `research-scores` đang chặn):")
+        for item in plan['researchFixtures']:
+            lines.append(f"  - {item['id']}: {item['case']} | chiều {', '.join(item['dimensions'])} | "
+                         f"mạng {item['network']} | trần {item['maxSteps']} bước")
         lines.append('')
     lines.append('Nơi ghi kết quả nếu chạy thật:')
     lines.append(f"  - manifest:  {out_dir / 'manifest.json'}")
@@ -270,9 +315,16 @@ def main(argv: list[str] | None = None) -> int:
                         help='chỉ in kế hoạch chạy (đây là hành vi MẶC ĐỊNH)')
     parser.add_argument('--execute', action='store_true',
                         help='ĐƯỜNG DUY NHẤT có thể gọi model (cần opt-in + ngân sách)')
-    parser.add_argument('--plan-tier', choices=['0', '1', '2', '3'], default=None)
+    parser.add_argument('--plan-tier', default=None,
+                        help='mã tầng trong scripts/eval/benchmarks/tiers.json, ví dụ 0 hoặc tier-r1')
+    parser.add_argument('--tier', dest='plan_tier', default=None,
+                        help='tên khác của --plan-tier (bộ ca research dùng --tier tier-r1)')
+    parser.add_argument('--plan', action='store_true',
+                        help='tên khác của --dry-run: chỉ in kế hoạch chạy')
     parser.add_argument('--fixture', action='append', default=None,
                         help='lặp lại được, ví dụ --fixture Q1 --fixture Q5')
+    parser.add_argument('--fixtures', dest='fixture', action='append', default=None,
+                        help='tên khác của --fixture; nhận cả họ R, ví dụ --fixtures R1')
     parser.add_argument('--out', default=None,
                         help=f'thư mục kết quả (mặc định {DEFAULT_OUT_ROOT}/<tên bộ>)')
     parser.add_argument('--configs', type=int, default=len(CONFIGS))
@@ -281,17 +333,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--json', action='store_true', help='in JSON của kế hoạch')
     args = parser.parse_args(argv)
 
+    wants_research = any(fixtureset.family_of(code) == fixtureset.RESEARCH_FAMILY
+                         for code in (args.fixture or []))
     try:
-        fixtures = fixtureset.load_fixtures()
+        fixtures = fixtureset.load_fixtures(family=None if wants_research else fixtureset.QUALITY_FAMILY)
         selected = fixtureset.select(fixtures, args.fixture)
     except (FileNotFoundError, ValueError, KeyError) as exc:
         print(f'lỗi dữ liệu fixture: {exc}', file=sys.stderr)
         return EXIT_USAGE
     issues = fixtureset.set_issues(selected)
     tiers = load_tiers()
+    if args.plan_tier is not None and args.plan_tier not in [tier['id'] for tier in tiers['tiers']]:
+        known = ', '.join(tier['id'] for tier in tiers['tiers'])
+        print(f'--tier/--plan-tier không có trong kế hoạch: {args.plan_tier} (đang có: {known})',
+              file=sys.stderr)
+        return EXIT_USAGE
 
     if args.list:
-        print(render_list(fixtures, tiers))
+        print(render_list(selected, tiers))
         if issues:
             print('\ncảnh báo bộ fixture: ' + '; '.join(issues))
         return EXIT_OK
@@ -306,9 +365,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.out:
         out_dir = Path(args.out)
     else:
-        name = f"tier{args.plan_tier}" if args.plan_tier else 'quality-fixtures'
+        name = (f"tier{args.plan_tier}" if args.plan_tier and args.plan_tier.isdigit()
+                else (args.plan_tier or 'quality-fixtures'))
         out_dir = DEFAULT_OUT_ROOT / name
 
+    if args.plan and args.execute:
+        print('--plan và --execute loại trừ nhau: --plan chỉ in kế hoạch', file=sys.stderr)
+        return EXIT_USAGE
     if not args.execute:
         plan = build_plan(fixtures=selected, config_count=args.configs, repeat=args.repeat,
                           tiers=tiers, tier_id=args.plan_tier,

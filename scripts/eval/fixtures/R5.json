@@ -1,0 +1,44 @@
+{
+  "id": "R5",
+  "case": "mức 3: hai nguồn mâu thuẫn về cùng con số",
+  "level": 3,
+  "request": "Tỉ lệ này là bao nhiêu? Có hai tài liệu seed nói hai con số khác nhau.",
+  "request_source": "nguyên văn bảng ca của kế hoạch (docs/plan/v27/subplans/flow.md §7.1)",
+  "oracle_pass": [
+    "Sổ nguồn có con số xuất hiện ở hai nguồn khác nhau",
+    "Có hàng mâu thuẫn cho con số đó trong `conflicts.md` / mục Mâu thuẫn",
+    "Hàng mâu thuẫn nêu cả hai nguồn (hai host), không chỉ một"
+  ],
+  "bad_answer": [
+    "Chọn một trong hai con số mà không ghi nguồn còn lại nói gì",
+    "Nêu mâu thuẫn chung chung (\"có tài liệu nói khác\") mà không có hàng nào cho con số"
+  ],
+  "rubric_dimensions": [
+    "C2",
+    "C3",
+    "C4",
+    "C7"
+  ],
+  "environment": {
+    "network": "off",
+    "workspace": "hai tài liệu seed mâu thuẫn, không có mạng"
+  },
+  "budget": {
+    "max_steps": 40,
+    "deadline_seconds": 3600,
+    "source": "trần của mức 3 trong nhật ký hệ thống (RESEARCH_TIER_CHILD_STEPS=40, RESEARCH_TIER_TURN_SECONDS=3600)"
+  },
+  "seeds": [
+    "hai tài liệu seed nói 10 % và 17 % cho cùng một chỉ số",
+    "không có kết nối mạng ra ngoài"
+  ],
+  "layer1_checks": [
+    "conflict_row_present",
+    "dual_source_declared"
+  ],
+  "open_questions": [
+    "Khi hai nguồn lệch nhau nhưng cùng tầng 1, có bắt buộc nêu bảng đối chiếu không — chờ chủ nhà."
+  ],
+  "plan_ref": "docs/plan/v27/subplans/flow.md §7.1",
+  "bad_answer_source": "script này soạn theo chiều ngược của oracle; kế hoạch chỉ có cột 'oracle máy' nên 'bad answer' chưa được chủ sở hữu ghim"
+}

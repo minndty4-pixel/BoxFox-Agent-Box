@@ -272,6 +272,15 @@ test('a free-tier refusal and a quota refusal stay distinguishable', async () =>
   );
 });
 
+test('a quota refusal keeps the provider Retry-After beside the error', async () => {
+  const withHeader = () => new Response(JSON.stringify({ error: { type: 'RateLimitError', message: 'Free usage limit reached for this session.' } }), { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': '90' } });
+  const adapter = createProviders({ fetchImpl: async () => withHeader() }).opencode;
+  await assert.rejects(
+    () => collect(adapter.generate({ connection, credentials: {}, body: { model: 'muse-spark-1.2-contributor-free', messages, stream: true } })),
+    error => error.code === 'RATE_LIMIT' && error.status === 429 && error.retryAfterMs === 90_000,
+  );
+});
+
 test('discovery enables only the ids that answer without a credential', async () => {
   const payload = {
     data: [

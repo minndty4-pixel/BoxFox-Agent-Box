@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Activity, Square } from 'lucide-react'
 import { api } from '../../lib/providerApi'
+import { routable } from '../../lib/routeOptions'
 import { streamRouterGenerate, type RouterTokenUsage } from '../../lib/routerStream'
 import { useProviderStore } from '../../store/providerStore'
 import type { ProviderConnection, RouterRequestMeta } from '../../types/provider'
@@ -23,8 +24,12 @@ export function InferenceTest({ connection }: { connection: ProviderConnection }
   const [latency, setLatency] = useState<number | null>(null)
   const active = useRef<AbortController | null>(null)
   const running = status === 'running'
-  const ready = connection.enabled && connection.authState === 'ready' && connection.discoveryState === 'ready' && (connection.providerId !== 'antigravity' || connection.projectState === 'ready')
   const selected = models.some(model => model.id === modelId) ? modelId : models[0]?.id ?? ''
+  // Panel này gửi thẳng `connectionId` + `modelId` tới `/v1/router/generate`, và router khẳng định
+  // lại đích bằng `validTarget`, nên nút Test phải theo ĐÚNG luật đó (vòng 29): connection dò hỏng
+  // mà model là thứ người dùng gõ tay thì vẫn là đích hợp lệ — đứng khoá nút lại, vì đây chính là
+  // chỗ để kiểm chứng model gõ tay; còn dò hỏng với model `live` thì router sẽ từ chối.
+  const ready = routable(connection, connection.models.find(model => model.id === selected))
   useEffect(() => () => { active.current?.abort(); active.current = null }, [])
 
   const test = async () => {

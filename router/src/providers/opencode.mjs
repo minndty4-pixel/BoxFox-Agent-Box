@@ -34,7 +34,7 @@
 // items, and move tool-result images into their own user turn.
 
 import { createHash, randomUUID } from 'node:crypto';
-import { EFFORT_LEVELS, modelRecord, normalizeFinishReason, parseJson, providerError, sseEvents } from './common.mjs';
+import { EFFORT_LEVELS, modelRecord, normalizeFinishReason, parseJson, parseRetryAfter, providerError, sseEvents } from './common.mjs';
 import { RouterError } from '../errors.mjs';
 
 const BASE_URL = 'https://opencode.ai';
@@ -543,7 +543,12 @@ async function* aggregate(events) {
   yield { type: 'finish', finishReason };
 }
 
-function opencodeError(status, statusText, errorText) {
+/**
+ * Phân loại lỗi của OpenCode Free. Giữ nguyên tên và câu chữ của từng nhánh;
+ * `retryAfterMs` được gắn ở lớp ngoài (`opencodeError`) nên mọi nhánh đều mang
+ * theo header `retry-after` khi provider có gửi nó.
+ */
+function classifyOpencodeError(status, statusText, errorText) {
   let parsed = null;
   try { parsed = JSON.parse(errorText); } catch { /* not JSON */ }
   const detail = parsed?.error?.message || parsed?.message || null;
@@ -572,6 +577,12 @@ function opencodeError(status, statusText, errorText) {
   }
   if (type === 'FreeTierError') return new RouterError('AUTH', message, 403, false);
   return new RouterError('PROVIDER_ERROR', message, status, status >= 500);
+}
+
+function opencodeError(status, statusText, errorText, retryAfterMs = null) {
+  const error = classifyOpencodeError(status, statusText, errorText);
+  if (Number.isFinite(retryAfterMs)) error.retryAfterMs = retryAfterMs;
+  return error;
 }
 
 export function createOpenCodeAdapter({ fetchImpl }) {
@@ -681,7 +692,7 @@ export function createOpenCodeAdapter({ fetchImpl }) {
 
       if (!response.ok) {
         const errorText = await response.text().catch(() => '');
-        throw opencodeError(response.status, response.statusText, errorText);
+        throw opencodeError(response.status, response.statusText, errorText, parseRetryAfter(response.headers?.get?.('retry-after')));
       }
 
       if (!isResponses) {

@@ -39,4 +39,16 @@ describe('Provider inference verification', () => {
     act(() => root.render(<InferenceTest connection={{ ...connection, discoveryState: 'pending' }} />))
     expect(host.querySelector<HTMLButtonElement>('button')?.disabled).toBe(true)
   })
+  it('allows verifying a hand-typed model on a connection whose discovery failed', () => {
+    // `validTarget` của router mở đúng một cửa cho connection dò hỏng: model `source === 'custom'`.
+    // Panel này là chỗ duy nhất kiểm chứng model gõ tay, nên nút Test phải bật ở đúng cửa đó.
+    const degraded: ProviderConnection = { ...connection, discoveryState: 'degraded', models: [{ ...connection.models[0], source: 'custom' }] }
+    act(() => root.render(<InferenceTest connection={degraded} />))
+    expect(host.querySelector<HTMLButtonElement>('button')?.disabled).toBe(false)
+  })
+  it('keeps inference locked when discovery failed and the model was not typed by hand', () => {
+    const failed: ProviderConnection = { ...connection, discoveryState: 'failed', models: [{ ...connection.models[0], source: 'live' }] }
+    act(() => root.render(<InferenceTest connection={failed} />))
+    expect(host.querySelector<HTMLButtonElement>('button')?.disabled).toBe(true)
+  })
 })

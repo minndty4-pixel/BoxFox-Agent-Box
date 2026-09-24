@@ -21,6 +21,8 @@ import {
 import { useHarnessStore, AVAILABLE_MODELS } from '../../store/harnessStore'
 import { useSkillsStore } from '../../store/skillsStore'
 import { useRouterStore } from '../../store/routerStore'
+import { useProviderStore } from '../../store/providerStore'
+import { routerChatOptions } from '../../lib/routeOptions'
 import { useRuntimeInfoStore } from '../../store/runtimeInfoStore'
 
 export interface NodeDetails {
@@ -76,6 +78,10 @@ export function HarnessFlowVisualizer() {
   const skills = useSkillsStore((s) => s.skills)
   const activeSkills = useMemo(() => skills.filter((sk) => sk.enabled), [skills])
   const routerRoutes = useRouterStore((s) => s.routes)
+  // Danh sách option của composer (một dòng mỗi provider+model) — dùng để dịch id `provider:…`
+  // thành nhãn đọc được; snapshot chưa nạp thì để nguyên id thô (không tự gọi mạng ở đây).
+  const providerSnapshot = useProviderStore((s) => s.snapshot)
+  const liveRouteOptions = useMemo(() => routerChatOptions(providerSnapshot), [providerSnapshot])
 
   /**
    * Danh sách công cụ theo vai trò là dữ liệu thật của engine
@@ -137,7 +143,11 @@ export function HarnessFlowVisualizer() {
   // Lấy model name hiển thị đẹp
   const getModelDisplayName = (modelId: string) => {
     const found = allAvailableModels.find((m) => m.id === modelId)
-    return found ? found.name : modelId
+    if (found) return found.name
+    // Vòng 29 — id dạng `provider:<providerId>:<modelId>` (chọn model theo nhà cung cấp) không có
+    // trong danh sách trên: tra nhãn thật từ đúng hàm dựng danh sách option của composer.
+    const live = liveRouteOptions.find((option) => option.value === modelId)
+    return live ? live.label : modelId
   }
 
   const activeHarness = useMemo(() => {

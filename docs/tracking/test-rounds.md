@@ -2132,3 +2132,578 @@ giao diện; danh sách lỗi đầy đủ ở `bug-register.md` §6.34 — BUG-
 - **Một ca kiểm dễ chập chờn đã được siết**: `blocked_session()` ở `test_plan_approval_ledger.py` chờ `awaiting_decision` đúng **5 s**;
   khi bộ kiểm chạy song song trên máy đang tải, lượt gieo có lần chưa kịp tới trạng thái đó nên ca đỏ rồi xanh khi chạy lại (thấy trong log
   của worker khác; vòng kiểm thử **không** tái hiện được). Trần nay là **30 s**; đường xanh vẫn thoát ở vòng lặp đầu nên không chậm thêm.
+
+## Vòng 27 — đợt 1: lớp đọc nguồn sống lại (2026-09-23)
+
+- Phạm vi: A-1 (giải nén `Content-Encoding`), A-2 (`reading.body_check`), A-3 (thang đọc dự phòng),
+  A-5 (`file_read` có `offset`/`limit` trong box), A-9 (ba công tắc + khối `limits.web`),
+  A-10 (bàn giao bảng: HTML/JATS/PDF). Đo trên host, model/khoá của phần sống ghi ở mục dưới.
+- **Số đo trước/sau** (đều trên host qua `web_fetch`; "trước" = dump thô chưa giải nén): bài
+  `nhandan.vn/…post900643` 17 421 ký tự rác (junk 0,550) → **cùng URL nay 9 103**, junk 0,0000, `ok`
+  (số lấy từ đầu đọc: đường trực tiếp của bài này nay trả 404); `nhandan.vn/` (trang chủ) **18 832**,
+  junk 0,0000; bài `baochinhphu.vn/…102250115105914411.htm` 46 692 (junk 0,517) → **8 079**,
+  junk 0,0000, `readTier: html` (giải nén tại chỗ, **không** cần đầu đọc); `vanban.chinhphu.vn/`
+  (trang chủ) **942 → 31 792**; `vietnamplus.vn/` 37 798 → **16 455**, junk 0,0000;
+  `thuvienphapluat.vn` (403, thân bài rỗng) → xem "chỗ lệch kỳ vọng" dưới: **281** ký tự *trang chặn
+  bot*, `error-page`; PDF arXiv `1706.03762v7` `%PDF-1.4…` + junk 0,517 → **46 128** ký tự,
+  `pdf-table` (**10** bảng, 15 trang), **không** còn nhị phân thô; HTML arXiv **9 bảng** có nhãn
+  (HTML có 10 thẻ `<table>`); `vbpl.vn/…ItemID=1` → `verdict: wrong-page`; `moh.gov.vn`
+  (165–259 byte) → ném timeout, không ra `ok`.
+- **Bộ đơn vị mới** `backend/tests/unit/test_web_reading.py`: 34 ca, không ca nào cần mạng
+  (thay `urllib.request.build_opener`), phủ: gzip/có tiêu đề giả/deflate hai biến thể/brotli là
+  lỗi tường minh/bom nén bị chặn/`IncompleteRead` giữ `partial`/công tắc `WEB_DECODE=off` trả lại
+  đúng rác cũ/junk ratio/thin–error-page–wrong-page/thang đọc/đầu đọc chỉ được nhận khi **tốt hơn**
+  và **không** lách SSRF/`WEB_READER=thin` = đúng hành vi `2add905`/bảng HTML + JATS + tầng PDF
+  (PDF viết tay trong test, không cần tệp ngoài).
+- **Lệnh và kết quả**: `./.venv/bin/python -m pytest backend/tests/unit/test_web_reading.py
+  backend/tests/unit/test_web_tools.py -q -p no:randomly` ⇒ **67 passed**; `test_runtime_info.py`
+  ⇒ **12 passed** (khối `limits.web` được ghim bằng so khớp từ điển chính xác, cộng một ca mới:
+  giá trị lạ `chặt-vừa-thôi` ⇒ mức mặc định **kèm đúng một** notice `WEB_READER_MODE_UNKNOWN`).
+- **A-5 (box)**: `./.venv/bin/python -m pytest backend/tests/unit/test_worker_file_read.py
+  backend/tests/unit/test_file_tools.py -q -p no:randomly` ⇒ **15 passed**; tệp 100 000 ký tự đọc
+  bằng 4 lời gọi ghép lại **bằng đúng** bản gốc; `offset` âm/`'abc'`/`None` kẹp về 0; nhánh base64
+  căn offset xuống bội 3 và nói ra bằng `offsetAlignedTo: 3`.
+- **Hai ca đỏ cũ nay xanh theo đúng thiết kế**: lỗi gốc được **giữ nguyên** khi đầu đọc không cứu
+  được (`HTTP 404` vẫn là `HTTP 404`, không đổi thành `WEB_FETCH_EMPTY`) — đúng câu A-3 "đầu đọc
+  timeout ⇒ lỗi gốc được giữ".
+- Ghi chú kỹ thuật: `pdfplumber 0.11.10` + `pypdfium2 5.13.0` nay là phụ thuộc host
+  (`backend/requirements.txt`); PDF **không** dựng được ⇒ trả `''` + `pdfNote` nói rõ, **không**
+  trả nhị phân thô. Ba trang gzip đo lại sau khi sửa đều ra chữ Việt có dấu, không còn mảnh
+  replacement.
+- Giao thức test model + khoá: `docs/plan/v27/research-quality-tests.md` §2. Bộ ca chất lượng
+  research (`RQ1–RQ8` + sáu tiêu chí + oracle): cùng tài liệu, §3.
+- **Chốt đợt 1 — đo lại toàn bộ bằng `scripts/probe-reading.py` (2026-09-23, lần 6): 11/11 đạt ngưỡng.**
+  Mỗi dòng là một lời gọi `web_fetch` thật trên host; cột "ký tự" là `textChars` = độ dài văn bản
+  bóc được **trước** khi cắt trần (`maxChars: 20000` của lượt đo — bốn dòng vượt trần nên model chỉ
+  nhận 20 000 ký tự đầu):
+
+  | Nguồn | giây | ký tự | junk | verdict | `readTier` | reader |
+  |---|---|---|---|---|---|---|
+  | `nhandan.vn` | 1,30 | 18 832 | 0,0 | `ok` | `html` | — |
+  | `vanban.chinhphu.vn` (trang chủ) | 1,38 | 31 792 | 0,0 | `ok` | `html` | — |
+  | `vietnamplus.vn` | 1,19 | 16 455 | 0,0 | `ok` | `html` | — |
+  | `thuvienphapluat.vn/…Luat-Doanh-nghiep-2020…` | 11,66 | 281 | 0,0 | `error-page` | `reader-text` | `r.jina.ai` |
+  | `vbpl.vn/…vbpq-toanvan.aspx?ItemID=1` | 1,71 | 87 | 0,0 | `wrong-page` | `html` | — |
+  | `moh.gov.vn` | 15,44 | — | — | lỗi `WEB_FETCH_FAILED` (timeout) | — | — |
+  | `arxiv.org/pdf/1706.03762v7` | 2,53 | 46 128 | 0,0 | `ok` | `pdf-table` (**10** bảng, 15 trang) | — |
+  | `arxiv.org/html/1706.03762v7` | 0,08 | 45 814 | 0,0 | `ok` | `html` (**9** bảng có nhãn; HTML có 10 thẻ `<table>`) | — |
+  | Europe PMC `PMC7090843/fullTextXML` | 1,03 | 136 836 | 0,0 | `ok` | `jats` (**5** bảng) | — |
+  | `web_search` (firecrawl) | 0,13 | 5 kết quả | — | — | — | — |
+  | `web_search` (wikipedia) | 0,26 | 5 kết quả | — | — | — | — |
+
+- **Đo lại lần 7 trên cây sau ba lượt soát: 11/11 đạt ngưỡng — đo được 11/11 dòng, 0 dòng lỗi**
+  (`probe_reading_7.json`). Chênh so với lần 6: `vietnamplus.vn` 16 606 (lần 6: 16 455);
+  `vbpq-toanvan.aspx?ItemID=1` nay **`error-page`** thay vì `wrong-page` — dấu hiệu `'đang tải dữ
+  liệu'` đã sống (mục "soát mã" 2), tức trang được bắt bằng dấu hiệu tường minh chứ không bằng tiêu đề;
+  `thuvienphapluat.vn` 306 ký tự / 3,03 s (đầu đọc trả lời nhanh hơn, vẫn `error-page`);
+  `moh.gov.vn` 21 ký tự qua đầu đọc ⇒ **`thin`** (lần 6 ném timeout) — vẫn **không** ra `ok`, nhưng
+  đây là dạng "thân bài 21 ký tự" mà trần thời gian + chính sách lượt của đợt 5 (D-40) phải xử lý;
+  PDF arXiv 2,33 s với **0** lời gọi đầu đọc (tầng 3 trước tầng 4 — mục "soát mã" 4).
+- **Lưu ý về cách đếm của thước đo (bản sửa sau lượt soát mã):** một dòng NÉM LỖI bị tính là **hỏng** và
+  lượt chạy thoát mã 1. Con số "11/11" ở trên là **đo được tại thời điểm đo**, không phải một bất biến:
+  nếu lượt sau `moh.gov.vn` lại timeout thì thước đo in `10/11 … 1 dòng lỗi tính là hỏng` và thoát mã 1 —
+  đó là **đo đúng**, không phải hồi quy. Trước bản sửa, chính một lượt cắt hết đường ra vẫn in `9/11`.
+- **Bốn sửa đổi mà chính thước đo bắt được** (không nằm trong chữ của plan, đều có số đo trước/sau):
+  1. **`<form>` không còn bị bỏ nội dung.** Trang ASP.NET `vanban.chinhphu.vn/?pageid=27160&docid=207396`
+     bọc **toàn bộ thân bài** trong `<form id="form1">`, nên `_TextExtractor` bỏ hết: 81 697 byte HTML
+     ⇒ `html_to_text` trả **2 ký tự**; sau bản sửa ⇒ **5 053**. Trang chủ cùng host: **942 → 31 792**
+     (đúng cỡ 32 173 ký tự của lần đo đầu). `nav/footer/aside/svg/script/style` vẫn bị bỏ.
+  2. **Tên miền không phải slug.** Phép cắt chuỗi cũ lấy cả host khi đường dẫn chỉ là `/`, nên
+     `https://vanban.chinhphu.vn/` sinh token `['vanban', 'chinhphu']` rồi so với tiêu đề
+     "Hệ thống văn bản" ⇒ **mọi** trang của host đó ra `wrong-page` (báo sai). Nay chỉ lấy phần `path`;
+     ca đã đo của `vbpl.vn` (`vbpq-toanvan.aspx?ItemID=1` ⇒ `['vbpq','toanvan']`) vẫn **bị bắt** — nhưng
+     từ lượt đo 7 nó ra `error-page` bằng dấu hiệu tường minh `'đang tải dữ liệu'`, không còn bằng phép so
+     slug (mục "soát mã" 1), nên phép so slug nay là lưới thứ hai chứ không phải chốt duy nhất.
+  3. **Đầu đọc không được "rửa" trang sai thành `ok`.** Cửa hậu `reading.slug_clue` chỉ nhìn **tiêu đề**
+     (`Title:` hoặc dòng `#`): đo được `r.jina.ai` trả 26 522 ký tự *site chrome* cho
+     `vbpq-toanvan.aspx?ItemID=1` và không có dòng `Title:` nào. Lần chạy đầu cửa hậu vẫn lọt vì bản
+     chrome có chứa chính chuỗi URL đó trong liên kết ⇒ phép kiểm phải bỏ qua thân bài.
+  4. **Trang chặn bot là `error-page`, không phải `thin`.** Thêm dấu hiệu `'performing security verification'`
+     (`ERROR_MARKERS`) sau khi đo `thuvienphapluat.vn`; cùng lượt này hai sửa trước đó được xác nhận:
+     trần PDF riêng `MAX_PDF_BYTES = 8 MiB` (tải lại **đúng một lần**) và tầng JATS nhận **theo dấu hiệu
+     `table-wrap` trong thân bài** (Europe PMC trả `text/plain`, không phải `application/xml`).
+- **Nghiệm thu độc lập (`v27e1-testing`, 2026-09-23) — `OVERALL STATUS: PASSED` trên `2bfedd7`:** kiểm lại
+  bộ đơn vị **1272 passed, 1 deselected trong 217,41 s**; ca bị deselect đỏ y hệt trên cả ba SHA (chỉ Windows).
+  Ma trận công tắc (`auto`/`thin`/`off`/`decode=off`/`read-store=off`) đúng; đọc qua box (`docker exec`) nối
+  lại đúng **100 000 ký tự** với `offsetAlignedTo: 3`, **bốn** biến thể traversal bị từ chối và không rò; oracle
+  CLI thoát đúng 0/1/2. Bằng chứng: `/code/.generated_artifacts/v27e1/*` (`probe-2bfedd7.json`,
+  `switch-matrix.log`, `box_read_probe.json`, `unit-2bfedd7.log`, `oracle-out-rq1-pass.json`, …).
+- **Hai lỗi THẬT do lượt nghiệm thu tìm ra, sửa trong bản sửa SAU nghiệm thu (commit `8b0868b`, ngay sau
+  `2bfedd7` trên cùng nhánh — phép chấp nhận đứng ở `2bfedd7`; `8b0868b` chỉ sửa đúng hai nhánh ấy, sửa một
+  mục `[Low]`, thêm ba ca ghim và ba dòng tài liệu):**
+  1. `BOXFOX_WEB_DECODE=off` **nói dối trong payload**: `meta` được dựng TRƯỚC khi đọc header, nên một thân
+     bài gzip bị báo `contentEncoding: "identity"`. Nay đọc header/magic TRƯỚC; tắt giải nén vẫn báo
+     `gzip` + `decoded: False` — ca ghim trong `test_the_decode_switch_restores_the_old_behaviour`.
+  2. `BOXFOX_WEB_READER=thin` **không tái hiện `2add905`**: nhánh `thin` kiểm trước `direct_error` nên một
+     trang 403 vẫn tốn thêm một chuyến `r.jina.ai`. Nay nhánh `thin` gặp `direct_error` trả
+     `{'use_reader': False, 'reason': 'none'}` — ca mới `test_the_thin_switch_keeps_the_original_error_instead_of_a_reader_hop`.
+  3. Mục `[Low]` thứ ba sửa luôn: thân bài của **trang lỗi** cũng có thể nén, và `decode(errors='replace')`
+     trên byte gzip in mojibake vào chính câu báo lỗi. Nay giải nén trước — ca mới
+     `test_an_http_error_body_is_inflated_before_it_reaches_the_message`.
+  Sau ba sửa đổi và ba ca ghim (`8b0868b`): **1274 passed, 1 deselected trong 214,85 s**; `test_web_reading.py`
+  một mình **36 ca**; nhóm web (`test_web_reading.py` + `test_web_tools.py`) ⇒ **69 passed**.
+- **Chỗ lệch kỳ vọng của plan thì nói thẳng, không làm tròn:**
+  - `thuvienphapluat.vn`: A-3 kỳ vọng đầu đọc cứu được **≥ 20 000 ký tự**. Đo lại cùng ngày, muộn hơn:
+    `r.jina.ai` **không khoá** nhận đúng *trang chặn bot* 281 ký tự ⇒ ngưỡng ấy không còn đứng được, và
+    đó là thay đổi của dịch vụ bên ngoài chứ không phải của mã. Bất biến giữ được: **không bao giờ `ok`**
+    (`error-page`, `readerReason: unreachable`). Muốn đọc được trang này phải có khoá hoặc chân đọc khác
+    — việc của A-7 (đợt 2).
+  - `moh.gov.vn`: Ở lượt 5–6 trang này ném `WEB_FETCH_FAILED` sau 15,44 s (bảng lần 6 ở trên ghi đúng
+    trạng thái **của lượt 6**). Lượt 7 nó KHÔNG ném lỗi nữa mà qua đầu đọc trả **21 ký tự** ⇒ `thin`
+    (không bao giờ `ok`) — nên hai dòng không mâu thuẫn, chúng là hai lượt khác nhau. Chính sách trần thời
+    gian của lượt thuộc đợt 5 (D-40), không sửa ở đây.
+  - Europe PMC: bài `PMC3258128` dùng ở lần chạy trước **không có** `<table-wrap>` nào nên nhánh JATS
+    không chạy và tầng ra `html` — lỗi ở **mẫu đo**, không ở mã. Mẫu nay là `PMC7090843` (10 thẻ, 5 khối ngoài).
+- **Bộ đơn vị đầy đủ trên cây này**: `./.venv/bin/python -m pytest backend/tests/unit -q -p no:randomly
+  --deselect backend/tests/unit/test_terminal_tools.py::test_terminal_exec_echo` ⇒ **1274 passed, 1 deselected**
+  trong 214,85 s (mốc trước đợt 1: 1219) (mốc trước bốn sửa đổi: 1247 passed; tại `2bfedd7`: 1272 passed / 217,83 s,
+  lượt nghiệm thu độc lập đo lại 217,41 s). `test_web_reading.py` một mình **36 ca**;
+  `test_web_reading.py` + `test_web_tools.py` ⇒ **69 passed**; `test_runtime_info.py` ⇒ **12 passed**.
+  Ca deselected là `Write-Output` PowerShell trên Linux — đỏ có sẵn từ trước, đỏ y hệt trên `git archive HEAD` sạch.
+- **Lượt sống với model (giao thức và khoá: `docs/plan/v27/research-quality-tests.md` §2)**:
+  (i) job `b89d2e4b` — 3 lời gọi `web_fetch` (`nhandan.vn`, `vanban.chinhphu.vn`, PDF arXiv), **0 lỗi**,
+  model trả lời đúng cả ba con số, không bịa; (ii) job `d01e9ed8` (chỉ PDF, sau khi vá trần):
+  `readTier: pdf-table`, `tables: 10`, `pdfPages: 15`, 46 128 ký tự, junk 0,0, 0 lỗi.
+  Cả hai lượt đều `truncated: true` (18 832 / 32 173 / 40 563 ký tự ở lượt (i); 46 128 ở lượt (ii))
+  ⇒ phần bảng nằm ở đuôi **bị cắt** — đúng lý do tồn tại của A-4 (bộ đệm đọc + `read_source`) ở đợt 2.
+- **Soát mã đợt 1 (ba lượt song song: dọn mã · lõi `reading.py`/`web.py` · kiểm thử – tài liệu – thước
+  đo) tìm thêm sáu chỗ; cả sáu đã sửa ngay trong đợt:**
+  1. **Thước đo đếm "không đo được" thành "đạt ngưỡng".** Nhánh `WebError` của `measure_fetch`
+     (`scripts/probe-reading.py`) trả về sớm mà không đặt `problems`, nên một đích **không trả lời**
+     vẫn được tính là qua. Chứng minh bằng lượt chạy **cắt hết đường ra**
+     (`https_proxy=http://127.0.0.1:9`, `http_proxy=…`): trước khi sửa in **9/11 đạt ngưỡng**; sau khi
+     sửa in **0/11 đạt ngưỡng — đo được 0/11 dòng, 11 dòng lỗi tính là hỏng** và thoát mã **1**.
+  2. **Hai dấu hiệu lỗi tiếng Việt là chuỗi chết** (`ERROR_MARKERS` được so trên bản **bỏ dấu**):
+     thân bài 404 của `vbpl.vn` chỉ bị bắt nhờ mục `'404 error'`. Nay mỗi mục có cả hai cách viết, và
+     bảng tiêu đề chung (`GENERIC_TITLES`) sửa cùng lỗi.
+  3. **Slug percent-encode bị giải mã sai ⇒ trang THẬT ra `wrong-page`**, kèm **kênh `Title:` của đầu
+     đọc bị xoá** nên cửa hậu `slug_clue` bất động. Đo lại sống trên `vi.wikipedia.org`: bản cũ token
+     `['a3o','83m']` ⇒ `wrong_page=True`; bản nay `['bao','hiem']` ⇒ `False`; cả ba URL đo lại đều
+     `ok`. Nay slug được `unquote`, dòng `Title:` được giữ, và tiêu đề của bản đầu đọc đi trước khi
+     bản đó được nhận vào payload.
+  4. **PDF dựng lại được vẫn đi qua đầu đọc** (tầng 3 phải đứng TRƯỚC tầng 4). Đo lại sống
+     `arxiv.org/pdf/1706.03762v7`: **hai** lời gọi (bản cắt ở trần 2 MiB + lần tải lại theo trần PDF
+     8 MiB), **0 lời gọi đầu đọc**, `pdf-table`, **10 bảng**, 15 trang, 46 128 ký tự, 2,36 s.
+  5. **Bộ đơn vị sửa `os.environ` trực tiếp** (tự `pop` `BOXFOX_WEB_READER`) ⇒ lượt chạy hồi quy ghim
+     `thin` cho cả tiến trình bị hạ về mặc định ở các tệp chạy sau; nay dùng `monkeypatch`. Cùng lượt:
+     ghim thêm **`verdict: empty`** + **thứ hạng thang đọc**, và bỏ câu ghim tên lớp lỗi của thư viện
+     (`'PdfminerException'` — `requirements.txt` cho phép `pdfplumber>=0.11,<1`).
+  6. **Năm con số trong tài liệu không tái lập được** (xem "Số đo trước/sau" ở trên: số "trước" là của
+     **bài báo**, số "sau" là của **trang chủ** — hai URL khác nhau). Đã đo lại **cùng URL** và sửa cả
+     `docs/research/host-web-tools.md` lẫn tệp này.
+- **Ba lượt sống với model `muse-spark-1.3-contributor-free`** (mỗi lượt một khoá, cùng cây mã, cùng
+  bộ ca `backend/tests/integration/test_peer_mesh_chain.py -k song`, harness scratch cổng 3188):
+
+| Khoá | Giờ (UTC) | Kết quả | Phiên | Con | Biên nhận | Chờ | Lỗi |
+|---|---|---|---|---|---|---|---|
+| 1 `f8a5f4e8…` | 22:06 | **`1 passed, 2 deselected`** 26,41 s | `8b2c6d0888cb4630b357d4fe6b59849a` | 2 (`childSteps` 3, `childTokens` 1011) | 2/2 `injected` | 8 886 ms | không |
+| 2 `a43ff124…` | 22:03 | **`1 passed, 2 deselected`** 26,42 s | `75a8d0fd169b46ed8c7dc6e054b69819` | 2 (`childSteps` 3, `childTokens` 836) | 2/2 `injected` | 0 ms | không |
+| 3 `3d27b0b0…` | 22:05 | **`1 passed, 2 deselected`** 16,39 s | `e35a0f62e81c40d991c61c7841906ec5` | 2 (`childSteps` 4, `childTokens` 932) | 2/2 `injected` | 7 987 ms | không |
+
+  Cả ba khoá **không** có 429/403/400/500; hai con của mỗi lượt (`testing`, `review`) đều `completed`.
+- **Oracle chất lượng research nay đã có** (đợt 8, phần đầu): `scripts/eval/research_checks.py` — sáu
+  tiêu chí 0/1/2, ngưỡng **9/12**, **cảnh báo chứ không chặn** — cộng bộ ca của chính nó
+  `backend/tests/unit/test_research_checks.py` (**13 ca**, không cần mạng) ⇒ **13 passed**. Bốn đầu vào:
+  `--sources` (sổ nguồn JSONL), `--transcript` (nhật ký: nhận cả dòng `tool_end` của bảng `events` lẫn
+  dòng trần), `--answer`, `--rq`. Chạy **sống** `RQ1–RQ8` còn chờ đợt 3 (chưa có `sources.jsonl` thật)
+  — ghi ở `docs/plan/v27/research-quality-tests.md` §5.
+
+## Vòng 27 — đợt 2: bộ đệm đọc, tham chiếu học thuật, tìm kiếm gộp nhiều chân (2026-09-23, tối)
+
+- Phạm vi: A-4 (`ReadStore` + `read_source`), A-6 (`paper_citations` + chuỗi học thuật bốn chân +
+  `_retry`), A-7 (`web_search` nhiều truy vấn, khử trùng, `site`/`freshness`/`lang`/`exclude`, cache,
+  kể tên khoá thiếu). Cây mã: cùng nhánh `vorflux/v27-research-rework`, tiếp sau `8b0868b`.
+- **A-4 — ĐO ĐƯỢC (thước đo lần 8, `--only store`)**: `docs.python.org/3/whatsnew/3.13.html` ⇒
+  `stored=113936`, ghép **15 mẩu** ra `joined=113936` (**khớp từng ký tự**), `find='asyncio'` ⇒ **1**
+  vị trí khớp, **0,14 s**. Cùng trang, trước đợt 2 model chỉ thấy **8 000** ký tự (7 %). Trần **một
+  lời gọi** vẫn 8 000 / 20 000 ký tự: cái đổi là **số lượt gọi**, không phải kích thước mỗi lượt.
+- **Thước đo nay chạy CẢ nhóm `store` trong lượt đầy đủ.** Trước đó `wanted = args.only or
+  list(GROUPS)` mà `GROUPS` không có `'store'` ⇒ nhóm ấy **chưa bao giờ** được đo trong lượt đầy đủ
+  (“12/12 đạt ngưỡng” vẫn thiếu một nhóm). Đã sửa thành `[*GROUPS, 'store']`.
+- **A-7 — ĐO ĐƯỢC (keyless, hai truy vấn, `count=5`)**: `hồ sơ chuyển tuyến bảo hiểm y tế` +
+  `site:chinhphu.vn hồ sơ chuyển tuyến` ⇒ **10 kết quả**, `perQuery [5, 5]`, `deduped 0`,
+  `duplicateUrls 0`, `distinctNormalizedUrls 10`, `providers ['firecrawl']`, **0,85 s** (ngưỡng plan:
+  ≥ 6 kết quả, 0 URL trùng). Lượt lặp lại: **0,0009 s**, `cached: true`, `fetchedAt` y hệt (lượt đầu
+  0,42 s). Bằng chứng: `/var/tmp/v27/a7_live.json`, `/var/tmp/v27/a7_cache_live.py`.
+- **Chân keyless bị GIỚI HẠN NHỊP — nói thẳng**: đo lại muộn hơn cùng ngày (23:19 UTC), Firecrawl
+  không khoá **từ chối bằng 429** hai lượt liên tiếp; `perQuery` ghi rõ truy vấn nào hỏng và thông
+  điệp cuối **kể tên khoá thiếu**. Vì thế ngưỡng **cứng** của thước đo lần 8 là hình dạng mã (2 truy
+  vấn chạy, 0 URL trùng, lượt lặp ăn cache); con số “≥ 6 kết quả” được ghi là **số đo có ngày**, không
+  thành ngưỡng cứng — nếu lấy 6 làm ngưỡng cứng thì một thay đổi của dịch vụ miễn phí sẽ bị báo thành
+  “hồi quy” của mã. Lượt ấy in `11/12 đạt ngưỡng` và thoát mã **1**.
+- **Một lỗi THẬT do ca đơn vị bắt ngay khi viết**: `PAPER_CITATIONS_RESOLVE_MAX` được **dùng** ở nhánh
+  `backward` (`web.py:1332`) nhưng **thiếu trong danh sách import** ⇒ mọi lời gọi `backward` có tham
+  chiếu ném `NameError`. Không lượt sống nào chạm nhánh ấy (thước đo chỉ chạy `forward`), nên chỉ ca
+  đơn vị mới thấy — đúng lý do tồn tại của `test_web_papers.py`. Đã sửa (import) và ghim cả hai chiều.
+- **Bộ đơn vị mới**: `backend/tests/unit/test_web_read_store.py` (**20 ca**, A-4),
+  `backend/tests/unit/test_web_search_multi.py` (**22 ca**, A-7 — gồm ca mới: một chân bị từ chối
+  **không** được im lặng khi chân khác còn kết quả), `backend/tests/unit/test_web_papers.py`
+  (**20 ca**, A-6 — hai chiều, trần, tham số hỏng, `_retry` + `Retry-After`, chuỗi bốn chân, arXiv).
+  Nhóm web: `test_web_read_store.py` + `test_web_search_multi.py` + `test_web_papers.py` +
+  `test_web_tools.py` + `test_web_reading.py` ⇒ **131 passed in 1,84 s**; `test_web_search_multi.py`
+  một mình ⇒ **22 passed in 0,08 s**; `test_web_read_store.py` ⇒ **20 passed in 0,15 s**.
+- **Ba chỗ ghim số công cụ** lên **27** (`test_journal_tools.py:63`, `test_runtime_info.py:154`,
+  `:166`): `read_source` + `paper_citations` vào `ORCHESTRATOR_TOOLS` và nhóm `webResearch`.
+- **Bộ đơn vị đầy đủ** (cùng lệnh, từ gốc repo): trên cây đợt 2 **trước** tệp `test_web_papers.py` +
+  một ca mới + bản sửa import ⇒ **1315 passed, 1 deselected in 219,30 s** (`/var/tmp/v27/unit_run_6.log`);
+  trên cây **chốt đợt 2** ⇒ **1336 passed, 1 deselected in 215,02 s** (`/var/tmp/v27/unit_run_7.log`). Mốc đợt 1: **1274 passed**.
+- **Tài liệu sửa cùng lượt** (ba tệp): `docs/research/host-web-tools.md` §2 (ba chân học thuật +
+  Exa/Parallel), §3 (trần dữ liệu: ≤ 3 truy vấn, không phân trang; bộ đệm tìm kiếm 300 s; nhật ký
+  thêm `web.retry`), §4.4 (**sửa lời nói SAI** “bộ đệm đọc chưa có trong cây này” — nay đã có kèm số
+  đo), §4.8 (A-4 + A-6, gồm cả lỗi import ở trên), §4.9 (A-7, gồm số đo sống và cảnh báo giới hạn
+  nhịp của chân keyless); `docs/architecture/tools-and-skills.md` (Nhóm 6: `web_extract`/`max_results`
+  đã cũ ⇒ `web_fetch` + `read_source` + `paper_citations`, `web_search` nay có `queries`/`site`/
+  `freshness`/`lang`/`exclude`); tệp này.
+- **Hậu kiểm sau thi công (cùng ngày)**: một lượt soát dọn (`v27e2-simplify`) + một lượt soát mã
+  (`v27e2-review`, điểm rủi ro **3/10 — Low**, verdict *ship with mitigations*) trên đúng `8d1c676`.
+  Ba việc đã làm ở bản sửa SAU soát (`dc5306e`): (a) xoá lớp dò chữ ký `_call_provider` — bảy chân
+  không dùng bộ lọc nay cùng nhận `options: dict | None = None`, nên một `TypeError` thật bên trong
+  chân không còn bị nuốt; (b) **một lời gọi tìm kiếm = MỘT dòng `web.search`** (nhánh cache từng tự
+  ghi thêm một dòng thiếu `session_id`/`durationMs`) — có ca ghim mới; (c) **ngân sách ký tự cho
+  payload tìm kiếm** (`SEARCH_PAYLOAD_CHARS = 18 000`, cắt ở đuôi, nói ra bằng `dropped`): 3 chân ×
+  10 hàng × đoạn trích 400 ký tự = ~27 000 ký tự, vượt trần 24 000 của runtime nên JSON từng bị cắt
+  GIỮA CHỪNG. Kèm sửa tài liệu: `read_source` trả `matches: {term, offset}[]` (không phải `hits`),
+  hai chỗ còn ghi Nhóm 6 "4 tools", thông điệp ghim số công cụ trong test nói "26" trong khi khẳng
+  định 27. Thêm một ca ghim **biên** của luật gần trùng (cặp vừa qua ngưỡng vẫn gộp, URL bị gộp nằm
+  trong `alsoFrom` nên không mất dấu vết).
+- **Hai phát hiện ngoài phạm vi đợt này** (đã `surface`, ghi ở mục `Out-of-Scope Feedback` của PR #6):
+  `read_source`/`paper_citations` chưa nằm trong `READ_TOOLS` của `evidence_gate.py` nên mỗi lượt
+  research tốn thêm một phép dò box + một tệp bằng chứng; và `compression.TOOL_RESULT_SUMMARIES`
+  chưa có mục cho hai công cụ ấy. Cả hai bị kế hoạch cấm chạm ở đợt 1–2.
+- **Bộ đơn vị sau hậu kiểm**: **1339 passed, 1 deselected** trong 215,98 s (`/var/tmp/v27/unit_run_9.log`);
+  bản trước hậu kiểm (`8d1c676`): **1336 passed** trong 215,02 s; bản chỉ có soát dọn: 1337 passed.
+- **Bất biến giữ nguyên**: D-13/F7 (các chân chạy **tuần tự** trong một lời gọi, không công cụ song
+  song trong một step); nhật ký DEV **không** chứa truy vấn/URL (`web.retry` chỉ `attempt` + `code`);
+  `untrusted: true` + `note` vẫn có trong mọi payload; SSRF vẫn **ném** lỗi chứ không lùi về đầu đọc;
+  `exclude` **không** bật mặc định (#5991); Exa/Parallel chỉ chạy khi có khoá (#5978/#6020/#6023).
+
+### Vòng 27 — đợt 2, bản sửa SAU lượt nghiệm thu độc lập (2026-09-23/24)
+
+- **Lỗi THẬT thứ hai của đợt 2 (BUG A), do lượt nghiệm thu độc lập bắt được:**
+  `paper_citations(doi=…, direction="forward")` trả **HTTP 400**. OpenAlex nói đúng câu:
+  `'doi:10.7717/peerj.4375' is not a valid OpenAlex ID.` Nguyên nhân: nhánh `forward` nhét thẳng mã
+  định danh vào `filter=cites:…`, mà `filter` **chỉ nhận mã `W…`**; nhánh `backward` không dính vì DOI
+  đi trong **đường dẫn** (`works/doi:…` ⇒ 200). Ca đơn vị cũ **ghim sai hành vi** và bình luận còn
+  khẳng định sai rằng OpenAlex nhận `doi:…` trong `filter`.
+- **Cách vá:** `_openalex_citable_id(ident)` — mã `W…` đi thẳng; mã khác được giải bằng **một** lời gọi
+  42 byte (`select=id`) rồi lấy mã cuối; không giải được thì **báo lỗi**, không đoán. Nhánh `forward`
+  trả `work` là mã đã giải. Ca ghim mới (3 ca thay ca ghim cũ + 1 ca cho nhánh không giải được).
+  ĐO LẠI SAU KHI VÁ: `doi_only forward` ⇒ 200, `work W2741809807`, `total 1255`, 0,25 s.
+- **Số byte phụ thuộc bộ `select`:** hôm sau đo lại cùng URL với `per-page=2` là **4 895 byte** (không
+  phải 891) ⇒ đọc các số 891 / 33 226 / 2 967 là "nhỏ hơn một bậc", **không** phải hằng số.
+- **Sửa lại một số đã ghi sai:** thông điệp commit `dc5306e` ghi "nhóm web: 133 passed", đúng là **134**
+  ở `f12de93`; lượt nghiệm thu đo **139 passed** trên cây có bản sửa (5 tệp nhóm web).
+- **Giới hạn còn lại, nói thẳng:** ngân sách payload giữ hàng **đầu** vô điều kiện, nên MỘT URL khổng
+  lồ (đo được một hàng 31 298 ký tự) vẫn có thể đẩy payload qua trần runtime 24 000. Trần cho một hàng
+  chưa có luật riêng — việc của đợt sau.
+- **Cây đóng băng của lượt nghiệm thu là `f12de93`; hai SHA:** `f12de93` là bản lượt kiểm chạy trên đó
+  (một ca A-6 đỏ), còn **`0015d35`** là bản sửa sau nghiệm thu đã commit — theo luật
+  `/memory/knowledge/vorflux/when-you-edit-the-tree-after-dispatching-testing-agents.md`.
+- **Bộ đơn vị trên cây có bản sửa**: **1344 passed, 1 deselected in 216,63 s**
+  (`/var/tmp/v27/unit_run_10.log`); `f12de93` (chưa có bản sửa): **1339 passed, 1 deselected**.
+- **Ghi chú cho đúng sổ (lượt xác nhận cuối bắt được):** ba sửa một-dòng ở `web.py` (bình luận `perQuery`
+  và bình luận `TypeError`/chữ ký hai tham số, ghi chú `select` trong docstring `paper_citations`) **đã
+  không** vào `0015d35` — lệnh vá dừng ở mẫu không khớp nên chỉ hai sửa tài liệu `host-web-tools.md` được
+  ghi. Nay đã áp lại ở **`e60ec0e`** (sau `fd76b53`); cả ba là bình luận/docstring, **không** đổi hành
+  vi (nhóm web 5 tệp: **139 passed** trước và sau).
+- **Lượt xác nhận cuối trên cây đã commit (`fd76b53`): `OVERALL STATUS: PASSED`.** Đúng ca A-6 từng đỏ
+  nay xanh sống: `doi` + `forward` ⇒ 200, `work W2741809807`, `total 1255`, `count 3`; câu hỏi gửi đi là
+  `works/doi:…?select=id` rồi `works?filter=cites:W2741809807&select=PAPER_SELECT` — **không** có DOI
+  thô nào trong `filter`. Mã không giải được ⇒ ném lỗi ngay ở bước giải (`HTTP 404`), không dựng bộ lọc
+  từ mã xấu. Lượt ấy cũng dựng bản sạch bằng `git archive` và so **blob hash** với repo (khớp cả bốn tệp),
+  nên số đo thuộc về mã đã commit chứ không phải cây làm việc dở.
+
+## Vòng 27 — đợt 3 đến 8: sổ nguồn, hồ sơ `.research/`, bốn pha, ba mức, phản biện, nhịp tiến độ, steer, bộ ca R1–R12 (2026-09-24, rạng sáng)
+
+Ba commit: **`d0edca1`** (mã đợt 3–7 + test + giao diện + `deploy/`), **`a624933`** (đợt 8: bộ eval,
+12 fixture, runner ghi số), **`9abd191`** (tài liệu). Nền: **`a959c51`**.
+
+### Đợt 3 — sổ nguồn và thang nguồn (B-1, B-2)
+
+- Tệp mới `source_tiers.py`: năm tầng (0 chủ nhà cấp … 4 chưa kiểm), 13 host chính chủ, 11 báo chính
+  thống, 12 host tầng 4, 13 kênh xã hội chính chủ. Tiền tố `docs.` / `developer.` / `developers.` nay
+  khớp thật qua `_prefix_in` (BUG-107: bốn mục ấy **không bao giờ** khớp trước bản sửa).
+- Tệp mới `research_ledger.py`: luật thuần cho sổ — `MIN_EXCERPT_CHARS = 80`, dấu vân tay shingle 5 từ,
+  `JACCARD_MERGE = 0.85`, `MAX_LEDGER_ROWS = 400`; `assess_rows` sinh **bảy nhóm lỗi**.
+- ĐO SỐNG thang nguồn: `moh.gov.vn` ⇒ tầng **1** `nguồn chính chủ / chính thống`; `vnexpress.net` /
+  `baochinhphu.vn` / `thanhnien.vn` / `tuoitre.vn` ⇒ tầng **2**; `dantri.com.vn` / `vietnamnet.vn` ⇒
+  tầng **3** (lý do `default-unknown`).
+- ĐO SỐNG `assess_rows`: hai host **khác tầng** cùng đoạn trích ⇒ chỉ `research-origin-undeclared`
+  (không có `research-claim-single-source`); hai host **cùng tầng 3** + khai gốc ⇒ chỉ
+  `research-claim-single-source`; hai host cùng tầng 3 nhưng **đoạn trích khác** ⇒ **0 lỗi**.
+- Ba công cụ `source_add` / `source_list` / `source_verify`; `source_add` idempotent theo (URL chuẩn
+  hoá, đoạn trích) và ghi vào sổ của phiên **giữ brief** kèm mã nhánh (BUG-91, BUG-92, BUG-93).
+- Test: `test_source_tiers.py` **11**, `test_research_ledger.py` **12**, `test_source_add_tool.py` **6**,
+  `test_source_ledger_store.py` **6**, `test_research_header.py` **5**, `test_research_verify_source.py`
+  **7** — không ca nào cần mạng.
+
+### Đợt 4 — ba nhóm hồ sơ, cổng chất lượng, đường ghi (B-3a/B-3b/C-2)
+
+- `research_profiles.py`: chín hồ sơ, sáu nhóm việc, mười use-case TM-1…TM-10, bốn archetype C1–C4;
+  `test_research_profiles.py` **7**.
+- `research_quality.py`: **15 mã lỗi**, cổng `enforce|warn|off` (mặc định `enforce`), cổng đọc hồ sơ
+  theo mức (`critique_required(level)` đọc chính `DOSSIER_SECTIONS` — BUG-106).
+- Đường ghi: op `dossier_write` trong box (`worker.py`) + công cụ `dossier_write` **chỉ orchestrator**
+  (BUG-105 hoàn nguyên theo `ledger.md:194`); bảng `research_dossiers` khoá chính `(research_id, version)`.
+- Test: `test_research_quality.py` **25**, `test_research_gate_runtime.py` **12** (chạy thật đường
+  `submit` → `delegate_task` → con chạy → cha chốt), `test_dossier_write_tool.py` **16**,
+  `test_worker_dossier.py` **37**.
+- Giao diện (đợt 4/7): hàng đợi bước, nút dừng nhánh, thẻ mốc tiến độ (ba mặt này **đã giao**);
+  "hai mặt duyệt ngân sách" là **spec**, xem mục "Chỗ chưa đo được" ở cuối. Cả đợt: 126 tệp / 1130 ca
+  test giao diện.
+
+### Đợt 5 — ba mức, `research_brief`, skill `research-team`, SOP bốn pha
+
+- `limits.py`: bảng `RESEARCH_TIER_*` — nhánh 1/5/15, sóng 1/1/3, giây con 180/420/900, lượt
+  1 200/1 200/**3 600** (D-40), trần cứng 1 200/1 800/7 200, phản biện bật ở mức 3.
+- `research_brief` ghim brief vào cấu hình phiên, **chỉ hạ mức**, một việc một lượt (BUG-96, BUG-97);
+  `research_tier_limits` trả `branchCeiling` + `branchCeilingPerWave` (BUG-98: trước bản sửa mức 3 ra
+  `6` thay vì `15`).
+- Skill `research-team` (220 dòng) + sửa **36** tệp skill trong cây vendor sang tên tool thật (BUG-89):
+  quét lại cây vendor ⇒ **0** `web_extract`; cổng mới `test_skill_tool_names.py` **6**.
+- Test: `test_research_brief.py` **11** (bảy ca gốc + bốn ca ý kiến chủ nhà ba nhãn).
+
+### Đợt 6 — pha phản biện độc lập
+
+- Vai thứ 11 `research-review` — BUG-102 (`KeyError: 'research-review'`) từng làm nhánh phản biện
+  **không bao giờ** được sinh.
+- Sổ `research_verifications` + hai công cụ `research_critique` / `research_verify`; ba công cụ nay có
+  **cổng vai** (BUG-99); `source_verify` có **sàn thành công giả** (BUG-101).
+- Mục soi ý kiến chủ nhà ba nhãn (#6025): `OWNER_VIEW_LABELS`, `owner_view_findings`, schema
+  `ownerViews`, hướng dẫn `### Owner Views`.
+- Test: `test_research_critique.py` **7**, `test_research_review_role.py` **4**.
+
+### Đợt 7 — nhịp tiến độ, chỉ thị giữa lượt, hai mặt giao diện
+
+- `maybe_nudge_progress` (600 s, tối đa 12 dòng một lượt) + bảng `session_steers`
+  (`pending → injected | dropped`), `queue_owner_steer` / `drain_steers` / `cancel_child`; HTTP trả
+  **202** `{'status': 'steered'}` khi lượt đang chạy (`STEER_ENV = 'BOXFOX_STEER'`).
+- Test: `test_research_progress.py` **7**, `test_steer_queue.py` **9**, `test_runtime_info.py` **12**.
+
+### Đợt 8 — bộ ca R1–R12, 27 oracle máy, runner ghi số
+
+- `scripts/eval/research_checks.py`: **27 oracle thuần**; `scripts/eval/fixtures/R1.json` … `R12.json`
+  (chỉ R2 cần mạng); `rubric.py`, `fixtureset.py` (họ `Q|R`), `research_scores.py` (CLI ghi số).
+- `scripts/eval/benchmarks/tiers.json` + `tier-r1.md`: tầng `tier-r1`; mục `research-scores` vẫn
+  **blocked** — **chưa có benchmark research nào chạy** (F19). `scripts/eval/results/tier-r1-research/`
+  có `manifest.json` `measured: false` và **đúng một** dòng `scores.jsonl` sinh từ ví dụ dựng tay
+  (tên miền `.example`), không phải lượt thật.
+- Test: `test_research_checks.py` **79 ca**.
+- Hai lỗi thật của chính bộ đo đã vá: `milestone_ceiling_declared` so nhãn **có dấu** với dòng **đã bỏ
+  dấu** nên không bao giờ đạt (nay xanh, đã bỏ dấu `xfail`); `--plan --fixtures R1` in thừa khối chi phí
+  đường Q (tầng R = **0** lượt model).
+
+### Lỗi THẬT của đợt 3–8 đã vá
+
+Mười chín lỗi **BUG-90…BUG-108**, ghi ở `docs/tracking/bug-register.md` §6.36 (kèm căn và cách sửa).
+Nặng nhất:
+
+- **BUG-108 (im lặng, nặng):** `annotate_branch_answer` tìm **chủ sổ** từ phiên **CHA** ⇒ mọi nhánh bị
+  chú thích `research-lineage-missing` dù nhánh có để lại dòng (đo sống: `gate['rows'] == 0` trong khi
+  sổ cha có **1** hàng). Nay lấy phiên con rồi mới đi ngược; ca
+  `test_a_research_child_that_did_leave_a_row_keeps_its_row_out_of_the_notes` **đỏ trước / xanh sau**.
+- **BUG-94, BUG-95 (cổng ghi hồ sơ):** `NameError: RESEARCH_GATE_MODE_UNKNOWN_CODE` và `IndexError`
+  khi `dossier_versions()` rỗng ⇒ lần ghi hồ sơ **đầu tiên** có thể đổ.
+- **BUG-102:** `KeyError: 'research-review'` ⇒ nhánh phản biện không bao giờ được sinh.
+- **BUG-103:** `dossier_write.tables` mất bảng **âm thầm**.
+- **BUG-104:** cổng chất lượng thiếu luật `research-profile-field-missing` (#5989).
+- **BUG-107:** bốn mục `TIER1_SUFFIXES` không bao giờ khớp.
+- **BUG-90:** `origin-undeclared` đếm sai "nguồn độc lập".
+
+### Số đo của cả vòng (cây đã commit)
+
+- Bộ đơn vị đầy đủ: **1602 passed, 1 deselected in 256,05 s** (`test_terminal_exec_echo` deselected —
+  ca ấy đỏ y hệt trên mọi SHA: PowerShell trên Linux, không hồi quy).
+- Nhóm 17 tệp research/harness: **393 passed in 95,57 s**; 18 tệp research: **188 ca** (bảng ở trên).
+- `test_research_checks.py` + `test_eval_setup.py`: **135 passed**.
+- `run_eval.py --plan --fixtures R1 --tier tier-r1 --json` ⇒ `qualityTrackIncluded false`,
+  `modelCalls 0`, `costUsd [0, 0]`; `--list --fixtures R1` ⇒ tiêu đề
+  `Fixture research (tầng R, kế hoạch vòng 27 §8) — 1 ca tĩnh:`.
+
+### Chỗ chưa đo được, nói thẳng
+
+- **Chưa có benchmark research nào chạy** (F19): bộ ca `R1–R12` và 27 oracle đã có trong mã, nhưng
+  điểm của một lượt thật vẫn `blocked` — cần máy có model và box sinh `.research/**`.
+- **Nút duyệt ngân sách chỉ là spec**: không có mã nào đọc hay ghi `research-budget` — `grep` thấy
+  **hai dòng, cả hai là luật trong chính skill** (`vendor/hermes/skills/research/research-team/SKILL.md:137`,
+  `:199`), không dòng nào trong mã Python/TypeScript; trang `docs/architecture/research-agent.md` §5
+  ghi rõ phần nào đã có trong mã.
+- Mặt `unknown` của `researchTiers` trong `runtime-info` chưa có (bản hiện tại trả `overrides` + `tiers`).
+
+## Vòng 27 — hậu kỳ chất lượng: soát mã, soát eval, đơn giản hoá — rồi lượt kiểm thử độc lập `v27d` (2026-09-24, sáng)
+
+Ba commit hậu kỳ trên **`a037bea`**: **`2bcc02b`** (lõi research + đơn giản hoá, 16 tệp), **`1c9f624`** (bộ đo
+eval, 18 tệp), **`79df0a9`** (tài liệu, 4 tệp). Nguồn: lượt soát lõi (`v27d-review-core`, điểm rủi ro
+**5/10 — Medium**), lượt soát eval/giao diện/tài liệu (`v27d-review-eval`, **3/10 — Low**), lượt đơn giản hoá
+(`v27d-simplify`) — **mười hai lỗi thật** đã vá trong cùng ngày (bảng ở `docs/tracking/bug-register.md` §6.36).
+
+### Lượt kiểm thử độc lập `v27d`
+
+- Đóng băng `a037bea` để so; đo trên cây ĐÃ commit. Bộ đơn vị: **1602** (`a037bea`) → **1633** (hậu kỳ) →
+  **1638 passed, 1 deselected in 259,31 s** (sau bản vá dưới đây). Giao diện (**không** đổi trong bản vá):
+  126 tệp / 1130 ca qua, `tsc -b --noEmit` thoát 0.
+- Sáu việc ưu tiên của bản vá hậu kỳ đều đạt trên cây mới: lượt sau **nâng được mức** (bản cũ khoá phiên
+  vĩnh viễn); URL dính dấu `.` ở đuôi **đi qua cổng**; hai nhánh mở cùng nguồn ⇒ **một hàng**, cả hai nhánh
+  đọc được (`rows=1`, không còn `research-lineage-missing`); `BOXFOX_RESEARCH_GATE=warn` **không** còn notice
+  "giá trị lạ"; phòng sai ⇒ `DOSSIER_DIR_MISMATCH` (không `NameError`), `researchId` lạ ⇒ `RESEARCH_BRIEF_TAKEN`;
+  `--plan`/`--list` tách đúng họ Q/R (tầng R nói **0 lượt model**).
+- Đường **chỉ thị giữa lượt** chạy thật trên giao diện (harness scratch + Vite scratch, cổng chủ nhà không
+  bị chạm): lúc lượt đang chạy có dải "áp ở bước sau" và nút gửi "gửi cho lượt đang chạy"; gửi thì hộp "đã
+  xếp" hiện ra và hàng `session_steers` là `state=pending`; sang bước sau hàng thành `injected` và yêu cầu
+  tới model mang `[Chỉ thị giữa lượt của chủ nhà]`; lượt xong thì hộp và dải tự mất.
+- **Hai lỗi nặng còn mở ở `79df0a9`** (lượt ấy chỉ đọc, không sửa): **F-A** `DOSSIER_VERSION_TAKEN` lặp lại y hệt
+  khi phòng đã có tệp `v1` mà chỉ mục chưa biết — nay **BUG-109**; **F-G** guard trần lượt trong cùng lượt so
+  **ngược** (nâng đi qua, hạ bị từ chối) — nay **BUG-110**, do chính bản vá `2bcc02b` gây ra. Hai mục nhẹ:
+  **F-H** thẻ mốc thiếu trần đang chạy (**BUG-111**) và **F-I** chú thích nói phòng ở lại còn mã mở phòng mới
+  (**BUG-112**).
+
+### Bản vá sau lượt `v27d` (cùng ngày)
+
+- `limits.DOSSIER_VERSION_ATTEMPTS_MAX = 10` + vòng lặp thử bản kế khi box báo `DOSSIER_VERSION_TAKEN`
+  (bản cũ vẫn **không** bị ghi đè); hết ngân sách thì ném nguyên văn lỗi của box.
+- Guard trần lượt cùng lượt: `if stored and ceiling > stored: raise …` — **nâng bị từ chối, hạ được nhận**.
+- Thẻ mốc mang `ceilingSeconds` (trần **đang chạy**), tách khỏi `turnSeconds`/`softCeilingSeconds` (hạn mức
+  danh nghĩa của mức).
+- **Một việc = một phòng**: giữ `dossierDir` khi nó khớp khuôn `.research/<slug>-<yyyymmdd-hhmm>`, thay khi
+  không khớp (bản ghi cũ) — ca cũ chỉ xanh nhờ hai lời gọi rơi vào cùng một phút, nay ghìm đồng hồ.
+- Lượt đo lại trên `4843563` của chính lượt `v27d` tìm thêm **F-J** — hệ quả phụ của bản vá BUG-110: khối
+  "bỏ trống trần ⇒ giữ trần đã chốt" nằm SAU cổng cùng lượt, nên gọi lại brief trong cùng lượt mà bỏ trống
+  trần bị từ chối oan (nay **BUG-113**). Vá cùng ngày: hoist khối bảo tồn lên trước cổng.
+- Sáu ca mới (`test_research_brief.py` **17**, `test_dossier_write_tool.py` **20**); mỗi ca hành vi chứng minh
+  **đỏ trước / xanh sau** (đo: chạy lại trên đúng mã `4843563` thì ca F-J đỏ; trên `79df0a9` thì năm ca kia đỏ).
+- Bộ đơn vị đầy đủ sau lớp vá cuối: **1639 passed, 1 deselected** (`/var/tmp/v27/unit_after_fj.log`).
+
+### Vòng 28 — khuôn trả lời cuối hạ hết xuống GỢI Ý (D-44, ngoài plan vòng 27)
+
+- **Nguồn yêu cầu:** tin nhắn chủ nhà (2026-09-24, 06:47 UTC) — "chỉ là skill gợi ý agent trả lời, k nên
+  khóa cứng"; agent phải trả lời **tự nhiên như chat/code assistant** và **ngắn**, các phần đã làm chỉ là
+  gợi ý, **không được ép** agent theo khuôn. Lượt 24 (D-31/D-32) mới gỡ khuôn cứng ở tầng *văn bản người
+  dùng nhận*; lượt này gỡ nốt ba chỗ còn **RA LỆNH** ở tầng kỹ năng và prompt (**BUG-114**).
+- **Ba chỗ bị gỡ:** (1) kỹ năng `final-report` — "the evidence part **closes** the answer, and it is **the
+  most important part**", "**Never** print an empty part", "**Not optional**"; (2) `RECAP_CLOSER` — "**read**
+  the `final-report` skill… **re-capture every item**"; (3) `ANSWER_EVIDENCE_LINE` — "A turn with something
+  observable **closes** the answer with…". Ghim cũ trong `test_runtime_prompt.py` còn **khẳng định** hai câu
+  ra lệnh ấy, nên phép đo cũ *bảo vệ* chính chỗ sai.
+- **Đã sửa:** kỹ năng viết lại thành `3.0.0` ("ideas, not a form" — menu gợi ý, không thứ tự, không mục bắt
+  buộc); `RECAP_CLOSER` nói rõ "this is not the answer… write the answer your own way: natural and short";
+  `ANSWER_EVIDENCE_LINE` thành câu điều kiện ("you may close the answer with…"); `AGENT.md` §3.4 nói thẳng
+  "no part list, no order and no template is required". Đổi luôn **chiều ghim**: ca cũ khẳng định hai câu ra
+  lệnh, nay khẳng định chúng **vắng** và khẳng định câu gợi ý **có**.
+- **Số quyết định:** dùng **D-44** (không dùng D-33 — số ấy vòng 25 đã dùng cho quyết định khác; xem
+  `owner-decisions.md` §4.3). Mọi chỗ mới đã ghi D-44.
+- **Đo:** `test_runtime_prompt.py` **18 ca** xanh; nhóm ba tệp prompt (`test_runtime_prompt`,
+  `test_skill_commands`, `test_harness_runtime`) **232 passed**; bộ đơn vị đầy đủ **1640 passed, 1 deselected
+  in 264.47s, EXIT=0** (`/var/tmp/v28/unit_v28.log` — hơn lượt trước đúng **một ca**, chính là ca ghim chiều
+  ngược mới).
+- **Điều KHÔNG đổi (cố ý):** luật trung thực của kỹ năng — **không bịa ảnh**, **không dùng ảnh cũ**, nói rõ
+  việc chưa chạy — và dòng bằng chứng vẫn chỉ có ở **phiên chính**, vẫn chỉ **một** lần, vẫn nằm sau
+  `=== ANSWER LENGTH ===`.
+- **Bằng chứng SỐNG trên app thật (2026-09-24, 08:38 UTC):** một lượt THƯỜNG (không research, không công cụ)
+  trên harness scratch `3151`, phiên `ede6e940`, trả lời trong **8,5 s / 188 token** bằng **một đoạn văn**
+  tiếng Việt tự nhiên (*"Ừm cái này tôi gặp hoài, web tĩnh nhìn đơn giản vậy chứ lúc bàn giao hay dính lỗi
+  vặt lắm…"*) — **không** tiêu đề mục, **không** gạch đầu dòng, **không** dòng bằng chứng, **không** mục nào
+  của khuôn cũ. Ảnh: `/code/.generated_artifacts/images/v28-plain-turn-answer.png`.
+
+### Lượt research Y TẾ THẬT — sáu lần thử trên app thật (harness scratch `3151`, 2026-09-24)
+
+Đề bài của chủ nhà (nguyên văn rút gọn): *"Thử cho nó nghiên cứu thị trường, tìm gap, painpoint trong lĩnh
+vực y tế để phục vụ bài toán agent trong y tế… tôi thấy các ảnh bạn gửi hầu như chưa phải research thật
+của agent boxfox, nên cần kiểm nghiệm thật"*. Vì vậy lượt này chạy **trên app thật** (harness scratch cổng
+`3151` dựng từ cây vòng 28, dữ liệu riêng `/var/tmp/v27t/research1`, cờ `BOXFOX_RESEARCH_BRIEF=enforce`,
+`BOXFOX_RESEARCH_GATE=enforce`, `BOXFOX_RESEARCH_PROGRESS=on`), model `muse-spark-1.3-contributor-free` qua
+router `3101`. Không cổng nào của chủ nhà bị chạm.
+
+| Lần | Khoá | Sổ nguồn | Hồ sơ | Kết thúc lượt | Ghi chú đo được |
+|---|---|---|---|---|---|
+| 1 — `0d0fe166` | OpenCode Free | **13 hàng** (WHO tầng 1, World Bank ×2, Tuổi Trẻ ×2, Thanh Niên, Wikipedia ×2, `api.crossref.org` cho bài JAMA) | **không** (cổng từ chối 1 lần: 6 dòng sổ / 17 mục) | `failed` — `UPSTREAM_HTTP_502` ở bước 22 (13,8 phút) | 3 nhánh `research` con xong (9–13 bước); model tự nói *"Đủ 6 nguồn vào sổ — giờ tôi chốt 6 nỗi đau…"* |
+| 2 — `30003232` | OpenCode Free | **24 hàng** | **không** (không kịp ghi lần nào) | `failed` — `UPSTREAM_HTTP_502` ở bước 15 (13,7 phút) | Cùng bệnh với lần 1 ⇒ theo luật §2.3 của `docs/plan/v27/research-quality-tests.md` (**502 ⇒ thử lại 1 rồi CHUYỂN KHOÁ**) nên lần 3 đổi sang **key 1** |
+| 3 — `b5832e29` | **key 1** (`f8a5f4e8…`) | **9 hàng** (6 nguồn chính + 3 xác nhận WHO/World Bank) | **không** (cổng từ chối 2 lần: 6 dòng/11 mục rồi 8 dòng/13 mục) | `completed` **`partial`** — `DEADLINE_EXCEEDED` ở bước 30 (20,2 phút, 41 tool) | Lượt đầu **chạy hết trần 1200 s**; model gọi `research_brief` với `ceilingSeconds: 1200` ⇒ máy nới lượt `+600s` (`TURN_EXTENDED`, trần cứng của mức 2 là 1800 s) rồi tới được `dossier_write`; chẩn đoán cuối nêu đúng thứ cổng đòi (*"thiếu số hiệu/ngày hiệu lực văn bản, thiếu trường đối tượng hồ sơ health; hàng r9 trích 79 ký tự dưới sàn 80"*) |
+| 4 — `bc8d9125` | key 1 | **9 hàng** (4 nguồn) | **không** (cổng từ chối 1 lần: 7 dòng/7 mục) | `failed` — `UPSTREAM_HTTP_502` ở bước 21 (13,0 phút) | Đổi hồ sơ sang nhóm **thị trường** (`jobProfile: users`, usecase TM-3 "nỗi đau/gap người dùng") sau khi lần 1–3 cho thấy hồ sơ `health` (nhóm văn bản chính thống) đòi `docNumber`/`effectiveDate`/`validity` trên **mọi** hàng — thứ báo chí và Wikipedia không có. Hai lần tham số JSON hỏng, ba hàng `type: confirm` trên **cùng host** (`en.wikipedia.org`, `tuoitre.vn`) nên bộ đếm `independent` đứng ở 2 |
+| 5 — `6e274b19` | key 1 | **2 hàng** | **không** (không kịp ghi) | `failed` — `DEADLINE_EXCEEDED` ở đúng **600 s**, bước 2 (10,0 phút) | Model gọi `research_brief` với `ceilingSeconds: 600` (**bằng đúng hạn mức mặc định của phiên**) ⇒ **KHÔNG** có `TURN_EXTENDED`; rồi nó giao việc cho ba nhánh con (`wait: true`) và chết khi đang chờ nhánh thứ ba. Cả ba nhánh con nhận `RESEARCH_GATE_NOTE` với tiêu chí của **hồ sơ** (`research-shape-missing`, `research-lineage-missing`) — thứ nhánh con không có `dossier_write` để thoả |
+| 6 — `5e689d49` | key 1 | **0 hàng** (chỉ `web_fetch`, không gọi `source_add`) | **không** (không kịp ghi) | `failed` — `UPSTREAM_HTTP_502` ở bước 14 (8,5 phút) | Lượt này **có** được nới trần (`TURN_EXTENDED +600s` sau khi xin `ceilingSeconds: 1200`), nhưng nhà cung cấp cắt ở phút 8,5 khi model vẫn đang mở trang chủ sáu host — nó đọc mà **chưa** gọi `source_add` lần nào |
+
+**Năm điều đo được (giá trị thật của lượt kiểm nghiệm):**
+1. **Đọc nguồn là thật**: mọi hàng sổ đều có URL mở bằng `web_fetch`/`web_search` và một đoạn trích nguyên
+   văn 79–464 ký tự (một hàng 79 ký tự bị cổng bắt vì dưới sàn 80 — luật chạy đúng).
+2. **Sổ nguồn phân tầng thật**: `host` + `tier` do máy chấm (WHO `who.int` tầng 1, báo chính thống tầng 2,
+   Wikipedia/`api.crossref.org` tầng 3) và có bộ đếm `byTier`/`independent` cho từng hàng.
+3. **Cổng chất lượng chạy thật ở chế độ `enforce`**: `dossier_write` bị **TỪ CHỐI** ít nhất năm lần trên
+   năm lượt, kèm danh sách mục cần sửa (mã + cách khắc phục), và model **quay lại sửa** thay vì bịa (nó thêm
+   hàng `type=confirm`, kéo đoạn trích dài hơn, đổi sang "suy luận"). Đây là hành vi đúng của vòng 27 và là
+   thứ các lượt trước chỉ chứng minh bằng probe.
+4. **Hạn mức lượt là chỗ chặn THẬT của mức 2**: xin 600 s thì máy không nới (lượt 5 chết đúng giây thứ 600
+   khi đang chờ nhánh con), xin 1200 s thì được nới `+600 s` và lượt có thời gian viết hồ sơ (lượt 3 và 6).
+   Hợp đồng công cụ `research_brief` **không nói gì** về tham số `ceilingSeconds`, nên chuyện "xin bao nhiêu"
+   phụ thuộc hoàn toàn vào phán đoán của model.
+5. **Nhà cung cấp miễn phí cắt lượt ở phút 8,5–14** (bốn lần `UPSTREAM_HTTP_502`) — tức là **trước** khi một
+   lượt mức 2 kịp đóng hồ sơ; đây là lý do phần lớn lượt thật chết giữa đường dù mã chạy đúng. Hai lượt còn
+   lại chạm trần thời gian: lượt 3 ở 20,2 phút (đã tới `dossier_write`), lượt 5 ở đúng 600 s (chưa kịp làm gì
+   ngoài việc giao nhánh con).
+
+**Năm phát hiện mới từ các lượt này** (ngoài phạm vi plan vòng 27, đã `surface`): (a) bộ từ khoá tiêu đề hồ
+sơ không nhận tiêu đề tiếng Việt tự nhiên (*"Kết luận chính"*); (b) câu khắc phục *"Thêm nguồn khác nguồn tin
+gốc"* bị hiểu là "thêm trang nữa" trong khi luật thật là **khác host**; (c) lời gọi có tham số JSON hỏng bị
+thay bằng `{}` mà model chỉ nhận một câu *"Invalid tool arguments"* — không độ dài, không vị trí lỗi;
+(d) lượt mức 2 xin `ceilingSeconds` bằng hạn mức mặc định thì không được nới, dù bảng mức ghi mức 2 = 1200 s;
+(e) nhánh con nhận lời nhắc cổng với tiêu chí của hồ sơ mà nó không có quyền ghi.
+## Vòng 29 — vòng khoá trong một connection
+
+### Đợt 4 — kiểm OFFLINE phần research (chưa có lượt sống nào)
+
+- **Đợt này KHÔNG gọi nhà cung cấp nào.** Bằng chứng là unit test hai tầng probe provider GIẢ: tầng router
+  (`router/tests/**`, `createProviders({ fetchImpl })` — sở hữu của luồng router) và tầng harness
+  (`backend/tests/unit/test_router_keyring_probe.py`, mới, **2 ca**). Câu chốt nguyên văn: *"đợt 29 chỉ
+  chứng minh bằng unit test; nó KHÔNG chứng minh một lượt research thật giờ chạy xong — đợt này không gọi
+  nhà cung cấp nào."*
+- Giàn harness ghim hai hành vi: xoay khoá ở TRONG router ⇒ harness thấy **một** lời gọi HTTP và một câu trả
+  lời 200 (không phải sửa harness); hết sạch khoá (429 cho mọi lần thử) ⇒ **một** lỗi tạm thời đọc được
+  (`Router HTTP 429`, mã `RATE_LIMIT`, `UPSTREAM_HTTP_429`), lời khuyên thử lại bị chặn hai đầu
+  (`delay ∈ [2, 30] s`), và lời gọi trả về ngay (đo: cả hai ca trong 0,46 s).
+- **Bốn sửa nhỏ offline** (đo từ sáu lượt thật của vòng 28 — xem §"Lượt research Y TẾ THẬT" ở trên):
+  (a) bảng từ tiêu đề hồ sơ nhận tiêu đề Việt tự nhiên ("Kết luận chính" không còn bị
+  `research-shape-missing mục Phát hiện`); (b) câu khắc phục `research-claim-single-source` nay nói ra chữ
+  **host** thay vì "khác nguồn tin gốc"; (c) thông báo tham số công cụ hỏng mang thêm độ dài + vị trí lỗi
+  (`tool_arg_errors.py` + 7 ca — luồng chính của phiên); (d) `ceilingSeconds` được MÔ TẢ trong hợp đồng
+  `research_brief` (bỏ trống ⇒ giữ trần đã chốt; muốn nới thì phải xin dài hơn số giây lượt đang có).
+  Câu tài liệu lệch ở `scripts/eval/benchmarks/tier-r1.md:66` (còn nói ca `milestone_ceiling_declared`
+  "đang là `xfail`") đã sửa cho khớp §6.1 của cùng tệp.
+- **Số đo trên cây sửa của đợt này (nền `deda6e8`):** nhóm research **286 → 291 passed** (24,85 s; +5 ca:
+  4 ở `test_research_quality.py`, 1 ở `test_research_brief.py`); `test_research_checks.py` **83 passed**,
+  không còn `xfail` nào; giàn probe mới **2 passed in 0,46 s**. Bộ router (`cd router && npm test`)
+  **không chạy ở đây** — `router/**` đang được luồng router sửa song song và `router/node_modules` chưa cài
+  trên cây này.
+- **Chỗ chưa đo được, nói thẳng:** vẫn KHÔNG có lượt research thật nào ghi `.research/**`;
+  `scripts/eval/results/tier-r1-research/manifest.json` còn `measured: false`; `scores.jsonl` vẫn đúng **một**
+  dòng dựng tay; `R1–R12` chưa chạy trên dữ liệu thật (**C-7** còn mở, **F19** còn hiệu lực). Bốn câu giàn
+  probe KHÔNG trả lời: nhà cung cấp thật có cắt lượt ở phút 8,5–14 không; một lượt mức 2 có kịp đóng hồ sơ
+  trên khoá thật không; hạn mức theo phiên của provider miễn phí có luật gì; và phát hiện (e) (chú thích cổng
+  cho nhánh con) còn treo vì phải kiểm bằng một lượt thật.
+- Tài liệu handoff của phần này: `docs/handoff/research-verification.md` (giao thức chạy sống `R1 → R6 → R7 →
+  R3`, luật chuyển khoá, bước migrate một lần trên máy chủ nhà, và bảng "chưa làm được").
+### Hậu kỳ vòng 29 — bảy lỗ soát mã đã vá và lượt kiểm thử sống chạy lại (2026-09-24, chiều)
+
+- **Hai lượt soát mã độc lập trên `deda6e8..7d1c913`** — nửa router **3/10 Low**, nửa harness + giao diện
+  **4/10 Medium**; cả hai kết luận *ship with mitigations*. Lượt router kiểm riêng bằng sha256 rằng
+  `router/src/store.mjs` không đổi một byte, rằng vòng lặp khoá kết thúc được, và rằng 429 sau khi stream đã
+  bắt đầu thì không đổi khoá giữa dòng.
+- **Bảy lỗ đã vá:** router — làm mới token antigravity ghi nhầm khoá đầu của ring (F1), một dòng credential
+  không giải mã được làm đổ cả mặt Settings và chặn DELETE (F2), `PATCH {projectId}` trên ring rỗng hồi sinh
+  "khoá ma" (F3), `PATCH {apiKey}` không xoá cửa sổ nghỉ (F4), reset số token theo target thay vì theo lượt thử
+  (F5, nit); giao diện — tab Router mất đường nhập khoá cũ khi snapshot thiếu `keys` (P1, *phải sửa*), danh sách
+  model biến mất với connection `degraded` có model gõ tay (P2), luật dùng được của picker lệch luật router theo
+  **cả hai chiều** (P3). Mỗi lỗ một ca ghim; riêng P2/P3 có ca chứng minh đỏ ở cả hai chiều rồi khôi phục.
+- **Số đo trên cây đã commit (`261cd93`):** router `242 pass / 0 fail` (6,5 giây; trước vòng 217); frontend
+  `129 tệp / 1197 ca` + `tsc -b --noEmit` sạch; nhóm settings `14 tệp / 97 ca`; nửa backend không đổi sau
+  `41cbaf8` nên giữ mốc `1665 passed, 1 deselected` (275 giây).
+- **Lượt kiểm thử sống (provider GIẢ, chỉ loopback):** router scratch `3161` + stub `127.0.0.1:3171`,
+  `16/18` kịch bản xanh — xoay khoá trong MỘT request, `Retry-After` nâng rồi bị chặn ở 120 giây,
+  `cooling`/`exhausted` theo lời nhà cung cấp, 400/401/500 và 429 giữa dòng đều KHÔNG xoay, không secret thô
+  nào rời router, `409 KEYS_PRESENT`, trần 10 khoá, đủ năm route khoá. Hai ca đỏ là rác trạng thái của chính
+  bộ kịch bản (một lượt gọi toả ra hai connection cùng endpoint/model), không phải lỗi mã; chạy lại sạch trên
+  router mới `3163` (`/var/tmp/v29/post/check_park2.py`) cho **5/5 bất biến xanh**, gồm "cả ring nghỉ ⇒ lượt sau
+  tốn **0** lượt gọi".
+- **Bất thường mới ghi nhận, chưa sửa (ngoài phạm vi duyệt):** khi một lượt `provider + model` toả ra nhiều
+  connection, lỗi retryable (5xx) của connection đầu có thể bị thay bằng lỗi **cũ** của ring đang nghỉ ở
+  connection sau. Ghi ở `docs/handoff/v29-keyring-handoff.md` §8 kèm cách sửa gợi ý.
+- **Vẫn KHÔNG có lượt research thật nào** ghi `.research/**`; `manifest.json` còn `measured: false`; **C-7** và
+  **F19** giữ nguyên hiệu lực.

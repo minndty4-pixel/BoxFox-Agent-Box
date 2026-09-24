@@ -185,7 +185,7 @@ Returns: `title`, `content`, `description`, `duration`, `provider`, `published`,
 
 ## Workflow: Search then Extract
 
-DuckDuckGo returns titles, URLs, and snippets — not full page content. To get full page content, search first and then extract the most relevant URL with `web_extract`, browser tools, or curl.
+DuckDuckGo returns titles, URLs, and snippets — not full page content. To get full page content, search first and then extract the most relevant URL with `web_fetch`, browser tools, or curl.
 
 CLI example:
 
@@ -204,12 +204,12 @@ with DDGS() as ddgs:
         print(r["title"], "->", r["href"])
 ```
 
-Then extract the best URL with `web_extract` or another content-retrieval tool.
+Then extract the best URL with `web_fetch` or another content-retrieval tool.
 
 ## Limitations
 
 - **Rate limiting**: DuckDuckGo may throttle after many rapid requests. Add a short delay between searches if needed.
-- **No content extraction**: `ddgs` returns snippets, not full page content. Use `web_extract`, browser tools, or curl for the full article/page.
+- **No content extraction**: `ddgs` returns snippets, not full page content. Use `web_fetch`, browser tools, or curl for the full article/page.
 - **Results quality**: Generally good but less configurable than Firecrawl's search.
 - **Availability**: DuckDuckGo may block requests from some cloud IPs. If searches return empty, try different keywords or wait a few seconds.
 - **Field variability**: Return fields may vary between results or `ddgs` versions. Use `.get()` for optional fields to avoid `KeyError`.

@@ -108,6 +108,18 @@ def test_html_becomes_readable_text():
     assert links == ['https://example.com/x nguồn']
 
 
+def test_a_body_wrapped_in_a_form_is_still_read():
+    """ĐO ĐƯỢC 2026-09-23: trang ASP.NET của `vanban.chinhphu.vn` bọc TOÀN BỘ thân bài trong
+    `<form id="form1">`; khi `form` còn nằm trong danh sách bỏ thì một trang 81 KB trả về
+    đúng 2 ký tự — bản đọc thật biến mất mà không có lỗi nào."""
+    html = ('<html><body><form method="post" action="/?pageid=27160">'
+            '<div>Điều 1. Phạm vi điều chỉnh của Luật Khám bệnh, chữa bệnh.</div>'
+            '<input type="hidden" name="__VIEWSTATE" value="tSnAoQbT3Xtfc1cVvjyu" />'
+            '</form></body></html>')
+    _, text, _ = html_to_text(html)
+    assert 'Phạm vi điều chỉnh' in text
+
+
 def test_malformed_markup_still_yields_what_was_parsed():
     _, text, _ = html_to_text('<p>còn đọc được<div><span>')
     assert 'còn đọc được' in text
@@ -306,10 +318,14 @@ def test_a_failed_call_never_writes_the_query_or_the_url(tools, tmp_path, monkey
     assert secret not in raw, 'nội dung truy vấn không được vào nhật ký'
     assert 'so-benh-an-nguyen-van-a' not in raw, 'URL (kèm tham số) không được vào nhật ký'
     lines = [json.loads(line) for line in raw.splitlines()]
-    assert [line['event'] for line in lines] == ['web.error', 'web.error']
-    assert lines[0]['data']['queryChars'] == len(secret)
-    assert lines[1]['data']['host'] == 'example.com'
-    assert 'request failed' in lines[1]['message'] or 'HTTP 500' in lines[1]['message']
+    # A-7 thử lại một chân lỗi 500, nên có thêm dòng `web.retry` — cũng chỉ số đếm.
+    assert [line['event'] for line in lines if line['event'] != 'web.retry'] == ['web.error', 'web.error']
+    retries = [line for line in lines if line['event'] == 'web.retry']
+    assert retries and all(set(line['data']) <= {'attempt', 'code'} for line in retries)
+    errors = [line for line in lines if line['event'] == 'web.error']
+    assert errors[0]['data']['queryChars'] == len(secret)
+    assert errors[1]['data']['host'] == 'example.com'
+    assert 'request failed' in errors[1]['message'] or 'HTTP 500' in errors[1]['message']
 
 
 def test_the_provider_chain_survives_a_challenge_page(tools, monkeypatch):
@@ -320,11 +336,11 @@ def test_the_provider_chain_survives_a_challenge_page(tools, monkeypatch):
     """
     calls = []
 
-    def firecrawl(query, count):
+    def firecrawl(query, count, options=None):
         calls.append('firecrawl')
         json.loads('<html>Just a moment…</html>')  # giống hệt một trang chặn thật
 
-    def brave(query, count):
+    def brave(query, count, options=None):
         calls.append('brave')
         return [{'title': 'kết quả thật', 'url': 'https://example.com/ok', 'snippet': 'x', 'source': 'brave'}]
 

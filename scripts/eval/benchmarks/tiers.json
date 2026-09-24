@@ -174,6 +174,64 @@
           "blocked": "chỉ khi ngân sách cho phép"
         }
       ]
+    },
+    {
+      "id": "tier-r1",
+      "label": "Tầng R — bộ ca research R1–R12 chấm bằng oracle máy",
+      "window": "chạy được ngay, không cần ngân sách",
+      "costUsd": [
+        0,
+        0
+      ],
+      "modelCalls": 0,
+      "doneWhen": "mỗi ca R có dòng 5 số trong scripts/eval/results/tier-r1-research/scores.jsonl kèm ngày đo + lệnh + tệp log, và mọi oracle của ca đó chạy được offline",
+      "items": [
+        {
+          "id": "research-oracle-tests",
+          "name": "Ca kiểm của chính oracle (13 ca cũ + 1 ca mỗi oracle mới)",
+          "modelCalls": 0,
+          "costUsd": [
+            0,
+            0
+          ],
+          "network": "off",
+          "commands": [
+            "./.venv/bin/python -m pytest backend/tests/unit/test_research_checks.py -q -p no:randomly"
+          ],
+          "note": "Không gọi model, không mở mạng: oracle là hàm thuần trên phòng hồ sơ .research/** và bản ghi event của lượt."
+        },
+        {
+          "id": "research-fixture-plan",
+          "name": "Kế hoạch chạy cho 12 ca R1–R12 (không tiêu tiền)",
+          "modelCalls": 0,
+          "costUsd": [
+            0,
+            0
+          ],
+          "network": "off",
+          "commands": [
+            "./.venv/bin/python scripts/eval/run_eval.py --plan --fixtures R1 --tier tier-r1",
+            "./.venv/bin/python scripts/eval/run_eval.py --list"
+          ],
+          "note": "Plan in ra số ca và trần bước từ fixture; KHÔNG chạy gì. Runner thật vẫn dừng ở NotImplementedError (EXIT_NOT_IMPLEMENTED = 5), nên tier này không sinh lượt gọi model nào."
+        },
+        {
+          "id": "research-scores",
+          "name": "Năm số mỗi ca + tệp điểm thô",
+          "modelCalls": 0,
+          "costUsd": [
+            0,
+            0
+          ],
+          "network": "off",
+          "commands": [
+            "./.venv/bin/python scripts/eval/research_scores.py --help",
+            "python3 scripts/eval/research_scores.py --workspace <thư mục có .research/> --log <events.jsonl> --append"
+          ],
+          "blocked": "số ĐO ĐƯỢC của lượt chạy thật: cần một lượt research thật chạy trên máy có model (chưa chạy vòng này)",
+          "note": "Vòng này chỉ có MỘT ví dụ dựng tay trong scripts/eval/results/tier-r1-research/fixture-workspace/ — nhãn \"ví dụ dựng tay, không phải lượt thật\" ghi ngay trong README và trong trường source của scores.jsonl. Chưa có benchmark research nào chạy."
+        }
+      ]
     }
   ],
   "qualityFixtures": {

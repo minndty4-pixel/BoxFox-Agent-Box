@@ -68,9 +68,9 @@ def test_only_the_orchestrator_may_write_a_verification():
     assert {'severity', 'text'} <= set(props['issues']['items']['required'])
 
 
-def test_the_delegation_contract_offers_ten_roles_in_order():
+def test_the_delegation_contract_offers_eleven_roles_in_order():
     assert delegate_roles() == ['explore', 'plan', ROLE, 'design', 'build', 'debug', 'review',
-                                'simplify', 'testing', 'research']
+                                'simplify', 'testing', 'research', 'research-review']
     assert list(ROLES) == delegate_roles(), 'enum và ROLES phải là cùng một danh sách, cùng thứ tự'
     # Câu giải thích nằm ở MÔ TẢ CỦA CHÍNH THAM SỐ `role` (chỗ model đọc khi chọn vai), không phải
     # ở mô tả công cụ — nên bài này đọc đúng chỗ đó.

@@ -21,8 +21,8 @@
 - **Config changes:** In gateway: `/restart`. In CLI: exit and relaunch.
 - **Code changes:** Restart the CLI or gateway process
 
-### web_extract shows a stale page (result caching)
-`web_search`/`web_extract` cache results for 20 minutes (PR #94618) — a
+### web_fetch shows a stale page (result caching)
+`web_search`/`web_fetch` cache results for 20 minutes (PR #94618) — a
 repeat fetch of the same URL within the TTL is served from cache, which
 can look like "my website changes aren't showing up."
 

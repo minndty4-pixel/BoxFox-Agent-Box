@@ -79,7 +79,16 @@ function event(seq: number) {
   return { seq, type: 'thinking', data: { text: `bước ${seq}` }, created: seq }
 }
 
-function seedRun(run: Partial<{ id: string | null; status: string; events: ReturnType<typeof event>[]; error: string | null }>) {
+function seedRun(
+  run: Partial<{
+    id: string | null
+    status: string
+    events: ReturnType<typeof event>[]
+    error: string | null
+    /** Chỉ thị vừa xếp hàng cho lượt đang chạy (C-5) — dòng xác nhận trong hộp soạn tin. */
+    steerNotice: { text: string; at: number; steerId: string | null } | null
+  }>,
+) {
   useHarnessChatStore.setState({
     sessions: {
       [CHAT_ID]: { id: 'sess-1', status: 'idle', events: [], error: null, ...run },
@@ -379,31 +388,105 @@ describe('ChatPanel — trạng thái nạp phiên (§D-U4)', () => {
 })
 
 /**
- * Phiên đang chờ người dùng quyết định vẫn là một lượt chạy đang sống: harness
- * giữ lượt đó (`runtime.start()` → `SESSION_BUSY` → 409) và chỉ nhận lệnh điều
- * khiển. UI phải xử lý `awaiting_decision` y như `running` — nút Stop còn đó,
- * prompt thường bị từ chối tại chỗ (bản nháp còn nguyên), `/stop` vẫn gửi được.
+ * Chỉ thị GIỮA LƯỢT (vòng 27 / C-5) — harness nay nhận câu gõ vào trong lúc lượt đang chạy
+ * (`running`, kể cả `awaiting_decision`), xếp vào hàng đợi `session_steers` và main đọc ở BƯỚC KẾ.
+ * Vì vậy UI phải:
+ *  1. còn nút Stop (đường thoát lượt), và KHÔNG còn từ chối prompt thường tại chỗ;
+ *  2. nói rõ câu này đi đâu — nhãn nút "Gửi cho lượt đang chạy" + dòng chú thích "áp dụng ở
+ *     bước kế tiếp" dưới ô nhập;
+ *  3. `/stop` vẫn đi thẳng tới harness;
+ *  4. lượt CHƯA mở xong (`starting`) vẫn khoá nút gửi và giữ nguyên bản nháp;
+ *  5. chỉ thị đã xếp hàng ⇒ có dòng xác nhận kèm nguyên văn, ngay trong hộp soạn tin.
  */
-describe('ChatPanel — phiên đang chờ quyết định tính là đang chạy', () => {
-  it('hiện nút Stop, giữ bản nháp khi Enter, và vẫn gửi được `/stop`', async () => {
-    // Kiểu tham số tường minh: `mock.calls` không có kiểu thì `call[0]`/`call[1]`
-    // là tuple rỗng và tsc báo TS2493.
+describe('ChatPanel — chỉ thị giữa lượt (C-5)', () => {
+  /** Phiên thật trong lúc chạy: mọi vòng poll đều trả đúng trạng thái đang sống. */
+  function mockLiveSession(status: string) {
+    agentApiMock.mockImplementation(async (path: string) => {
+      if (String(path).includes('/sessions')) return { id: 'sess-1', status, events: [] }
+      return {}
+    })
+  }
+
+  it('lượt đang chạy: còn nút Stop, gửi được chỉ thị, và nói rõ "áp dụng ở bước kế tiếp"', async () => {
     const harnessSend = vi.fn(async (_chatId: string, _prompt: string) => undefined)
     const harnessStop = vi.fn(async () => {})
     useHarnessChatStore.setState({ send: harnessSend, stop: harnessStop })
+    mockLiveSession('running')
+    seedRun({ status: 'running', events: [event(1)] })
+
+    const host = render(<ChatPanel />)
+
+    // 1. nút Stop vẫn ở nguyên chỗ (đường thoát lượt không bị lấy mất)
+    expect(host.querySelector('button[title="Stop / Interrupt agent action (Esc)"]')).toBeTruthy()
+
+    // 2. nút Gửi còn, và nhãn nói đúng câu này đi đâu
+    const sendButton = host.querySelector('[data-testid="composer-send"]') as HTMLButtonElement
+    expect(sendButton).toBeTruthy()
+    expect(sendButton.getAttribute('title')).toBe('Send to the running turn')
+    expect(host.querySelector('[data-testid="composer-steer-hint"]')?.textContent).toContain('applies at the next step')
+
+    // 3. Enter với prompt thường ĐI tới harness (không còn bị từ chối tại chỗ)
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    act(() => {
+      typeInto(textarea, 'dừng nhánh luật, hạ các nhánh còn lại xuống mức 2')
+    })
+    act(() => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(harnessSend).toHaveBeenCalledTimes(1)
+    expect(harnessSend.mock.calls[0][1]).toBe('dừng nhánh luật, hạ các nhánh còn lại xuống mức 2')
+  })
+
+  it('phiên đang chờ quyết định cũng nhận chỉ thị, và `/stop` vẫn gửi được', async () => {
+    const harnessSend = vi.fn(async (_chatId: string, _prompt: string) => undefined)
+    const harnessStop = vi.fn(async () => {})
+    useHarnessChatStore.setState({ send: harnessSend, stop: harnessStop })
+    mockLiveSession('awaiting_decision')
     seedRun({ status: 'awaiting_decision', events: [event(1)] })
 
     const host = render(<ChatPanel />)
 
-    // 1. lượt bị chặn vẫn có nút Stop ngay trên thanh soạn tin (không phải gõ `/stop`)
-    const stopButton = host.querySelector('button[title="Stop / Interrupt agent action (Esc)"]') as HTMLButtonElement
-    expect(stopButton).toBeTruthy()
+    expect(host.querySelector('button[title="Stop / Interrupt agent action (Esc)"]')).toBeTruthy()
+    expect(host.querySelector('[data-testid="composer-send"]')).toBeTruthy()
 
-    // 2. Enter với prompt thường: từ chối tại chỗ, không gửi, bản nháp còn nguyên
     const textarea = host.querySelector('textarea') as HTMLTextAreaElement
-    expect(textarea).toBeTruthy()
     act(() => {
-      typeInto(textarea, 'Làm tiếp việc khác')
+      typeInto(textarea, 'hạ xuống mức 2')
+    })
+    act(() => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(harnessSend.mock.calls.map((call) => call[1])).toEqual(['hạ xuống mức 2'])
+
+    act(() => {
+      typeInto(textarea, '/stop')
+    })
+    act(() => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    expect(harnessSend.mock.calls.map((call) => call[1])).toEqual(['hạ xuống mức 2', '/stop'])
+  })
+
+  it('lượt CHƯA mở xong (`starting`) thì vẫn khoá: không gửi, bản nháp còn nguyên', async () => {
+    const harnessSend = vi.fn(async (_chatId: string, _prompt: string) => undefined)
+    useHarnessChatStore.setState({ send: harnessSend })
+    mockLiveSession('starting')
+    seedRun({ status: 'starting', events: [event(1)] })
+
+    const host = render(<ChatPanel />)
+
+    expect(host.querySelector('[data-testid="composer-send"]')).toBeNull()
+    expect(host.querySelector('[data-testid="composer-steer-hint"]')).toBeNull()
+
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    act(() => {
+      typeInto(textarea, 'việc khác')
     })
     act(() => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
@@ -412,16 +495,23 @@ describe('ChatPanel — phiên đang chờ quyết định tính là đang chạ
       await Promise.resolve()
     })
     expect(harnessSend).not.toHaveBeenCalled()
-    expect(textarea.value).toBe('Làm tiếp việc khác')
+    expect(textarea.value).toBe('việc khác')
+  })
 
-    // 3. `/stop` là lệnh điều khiển nên vẫn gửi được trong lúc bị chặn
-    act(() => {
-      typeInto(textarea, '/stop')
-    })
-    act(() => {
-      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
-    })
-    expect(harnessSend.mock.calls.map((call) => [call[0], call[1]])).toEqual([[CHAT_ID, '/stop']])
+  it('chỉ thị đã xếp hàng ⇒ dòng xác nhận kèm nguyên văn nằm ngay trong hộp soạn tin', () => {
+    const notice = { text: 'dừng nhánh luật, hạ các nhánh còn lại xuống mức 2', at: Date.now(), steerId: 'steer-7' }
+    mockLiveSession('running')
+    seedRun({ status: 'running', events: [event(1)], steerNotice: notice })
+
+    const host = render(<ChatPanel />)
+
+    const queued = host.querySelector('[data-testid="composer-steer-queued"]')
+    expect(queued).toBeTruthy()
+    expect(queued?.textContent).toContain('queued · applies at the next step')
+    expect(queued?.textContent).toContain('dừng nhánh luật, hạ các nhánh còn lại xuống mức 2')
+    // Dòng này nằm TRONG hộp soạn tin, không phải một khối quanh câu trả lời.
+    expect(host.querySelector('[data-testid="chat-input-bar"]')?.contains(queued ?? null)).toBe(true)
+    expect(queued?.closest('[data-final-answer]')).toBeNull()
   })
 })
 

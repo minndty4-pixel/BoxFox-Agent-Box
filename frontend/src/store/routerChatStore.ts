@@ -10,6 +10,9 @@ import {
 
 export type RouterChatSelection =
   | { kind: 'model'; connectionId: string; modelId: string }
+  // Vòng 29: chọn theo nhà cung cấp — router tự chọn connection trong nhóm của provider rồi
+  // failover khi khoá hết hạn mức. Ghim `model:` vẫn là đường cũ, nằm trong `pins` của dòng.
+  | { kind: 'provider'; providerId: string; modelId: string }
   | { kind: 'alias'; aliasId: string }
 
 export type RouterChatTurnStatus = 'streaming' | 'completed' | 'failed' | 'cancelled'
@@ -68,10 +71,10 @@ function updateTurn(
   return turns.map((turn) => (turn.id === turnId ? updater(turn) : turn))
 }
 
-function selectionBody(selection: RouterChatSelection): Pick<RouterGenerateBody, 'connectionId' | 'modelId' | 'aliasId'> {
-  return selection.kind === 'alias'
-    ? { aliasId: selection.aliasId }
-    : { connectionId: selection.connectionId, modelId: selection.modelId }
+function selectionBody(selection: RouterChatSelection): Pick<RouterGenerateBody, 'connectionId' | 'providerId' | 'modelId' | 'aliasId'> {
+  if (selection.kind === 'alias') return { aliasId: selection.aliasId }
+  if (selection.kind === 'provider') return { providerId: selection.providerId, modelId: selection.modelId }
+  return { connectionId: selection.connectionId, modelId: selection.modelId }
 }
 
 function isAbortError(error: unknown) {

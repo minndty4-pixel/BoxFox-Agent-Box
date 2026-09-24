@@ -29,11 +29,12 @@ Every new or modernised skill — bundled, optional, or contributed — meets al
    and dilute attention when many skills load. State the capability, not the implementation; no
    marketing words ("powerful", "comprehensive", "seamless", "advanced"); don't repeat the name.
    Check: `len(re.search(r'^description: (.*)$', text, re.M).group(1)) <= 60`.
-2. **Prose references native Hermes tools or the MCP servers the skill expects, in backticks**
-   (`terminal`, `web_extract`, `read_file`, `patch`, `search_files`, `vision_analyze`,
-   `browser_navigate`, `delegate_task`). Never name shell utilities the agent has wrapped: `grep` →
-   `search_files`, `cat`/`head`/`tail` → `read_file`, `sed`/`awk` → `patch`, `find`/`ls` →
-   `search_files target='files'`. MCP dependencies are named with setup in `## Prerequisites`.
+2. **Prose references native harness tools or the MCP servers the skill expects, in backticks**
+   (`terminal_exec`, `web_fetch`, `file_read`, `file_edit_block`, `codebase_grep`,
+   `computer_screen_capture`, `browser_use`, `delegate_task`). Never name shell utilities the agent
+   has wrapped: `grep` → `codebase_grep`, `cat`/`head`/`tail` → `file_read`, `sed`/`awk` →
+   `file_edit_block`, `find`/`ls` → `codebase_glob`. MCP dependencies are named with setup in
+   `## Prerequisites`.
    Third-party CLIs and pipelines are fine inside script files, not as the headline surface.
 3. **`platforms:` gating is audited against actual script imports.** POSIX-only primitives
    (`fcntl`, `termios`, `os.setsid`, `os.kill(pid, 0)`, `/proc`, hardcoded `/tmp`, `signal.SIGKILL`,

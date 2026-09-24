@@ -46,11 +46,17 @@ from .limits import (ANSWER_LENGTH_HINT, ANSWER_LENGTH_WARN_CODE, ANSWER_MAX_CHA
                      PLAN_VERIFY_SUMMARY_CHARS,
                      ROUTER_BODY_BUDGET, STEP_BUDGET_NOTICE_CODE, STEPS_CLAMP_NOTICE_CODE,
                      TRUNCATED_OUTPUT_MAX_TOKENS, TRUNCATED_OUTPUT_NOTICE_CODE, TURN_INDEX_DRIFT_CODE,
+                     READ_STORE_MAX_ENTRIES, WEB_READER_DEFAULT_MODE, WEB_READER_ENV,
+                     WEB_READER_MODES, WEB_READER_MODE_UNKNOWN_CODE,
+                     WEB_READ_STORE_DEFAULT_MODE, WEB_READ_STORE_ENV, WEB_READ_STORE_MODES,
+                     WEB_READ_STORE_MODE_UNKNOWN_CODE,
+                     RESEARCH_PROGRESS_NUDGE_SECONDS, RESEARCH_HARD_CEILING_NOTICE_CODE,
                      WRAP_UP_MAX_TOKENS,
                      WRAP_UP_READ_TOOL_CALLS, WRAP_UP_STEPS_RESERVED, WRAP_UP_TIMEOUT_SECONDS)
-from . import plan_quality
+from . import plan_quality, research_runtime
 from .plan_quality import check_plan_quality
 from .roles import ROLES, allowed_tools
+from .limits import OWNER_STEER_PREFIX, RESEARCH_NUDGE_PREFIX
 from . import evidence_gate, journal, plan_eval, plan_header, plan_registry, session_journal
 from .tool_contracts import schemas_for
 from .tool_groups import TOOL_GROUPS
@@ -60,7 +66,7 @@ from ..skills.commands import CommandRegistry, ROLE_SKILLS, EXTERNAL
 from ..skills.lifecycle import SkillLoader
 from ..skills.runtime_commands import RuntimeCommands
 from ..observability.system_log import system_log
-from ..vendor.hermes.tool_arguments import _parse_tool_arguments
+from .tool_arg_errors import parse_tool_arguments
 
 TOOL_USE_ENFORCEMENT_GUIDANCE = """# Tool-Use Enforcement
 You MUST use your available tools or delegate to specialist subagents to make tangible progress — NEVER simply describe what you would do or promise future actions without executing them now.
@@ -99,6 +105,8 @@ CORE MULTI-AGENT DELEGATION PROTOCOL:
    - Phase 1 (Explore): Delegate to role='explore' to survey files, symbols, dependency trees, and existing architecture.
      * `write_plan` refuses a plan that leans on outside facts without a Sources / Citations section naming where each fact came from; that answer must come from a real tool call of this session (`web_search`/`web_fetch` host-side, or `role='research'`), never from memory.
      * Hand every external-knowledge question (a library's real API, a standard, a version, a web page) to role='research'. It reaches the browser AND the host-side `web_search`/`web_fetch` tools; you hold those two tools as well, so answer a quick fact yourself and delegate the deep survey. The sandbox network can be OFF — the host tools are not affected — so a research answer may still honestly say "could not verify". Accept that over a guessed source.
+     * Open a research job with `research_brief` BEFORE the first `delegate_task(role='research')`: it fixes the tier (1, 2 or 3), the job profile, the dossier folder and the branch/wave budget, and the owner gets to see the cost before the work runs. A job without a brief is reported (`RESEARCH_BRIEF_MISSING`) with the tier it assumed. Do not raise the tier mid-job.`research_brief` keeps one job per turn: a new question is a new turn.
+     * The dossier is MAIN's file: a research branch reports ledger rows up with `source_add` and answers with its findings — it never writes the dossier. Write it with `dossier_write` after the gate passes, then, at level 3, delegate `role='research-review'` and record its verdict with `research_verify`. When the owner stated an opinion or an assumption, list it in `ownerViews` at brief time: the dossier must then carry the three-label critique section (support / contradict / unsure), each label with a source.
    - Phase 2 (Plan & Design):
      * Delegate to role='plan' to construct ordered milestones, risks, and acceptance criteria.
      * A written plan is NOT finished work. Right after `write_plan`, delegate role='plan-review' on the file it just wrote (read-only critic: it checks every path, command and criterion you claimed) and then record its verdict with `plan_verify(identity, version, verdict, issues, summary)`. That verdict is bound to the exact version: after you write the next version, critique that one too.
@@ -448,6 +456,110 @@ def router_refusal(status, content):
     return refusal
 
 
+def _routable_model(connection, model):
+    """`(connection, model)` mà router THẬT SỰ định tuyến được — bản Python của `validTarget`.
+
+    Router là nơi duy nhất quyết định target nào chạy được (`router/src/service.mjs`,
+    `validTarget`), nên đây là bản sao duy nhất phía harness và hai bên phải nói cùng một
+    câu về "connection dùng được". Lệch nhau thì metadata gộp lại hứa một cửa sổ mà target
+    thật không phục vụ được.
+    """
+    if not isinstance(connection, dict) or not isinstance(model, dict):
+        return False
+    if not connection.get('enabled') or connection.get('authState') != 'ready':
+        return False
+    if connection.get('providerId') == 'antigravity' and connection.get('projectState') != 'ready':
+        return False
+    if not model.get('enabled') or model.get('health') == 'unavailable':
+        return False
+    if connection.get('discoveryState') == 'ready':
+        return True
+    # `degraded` là hình dạng khác của CÙNG một lần dò hỏng: router giữ lại id người dùng
+    # tự khai (`source: 'custom'`) để nó vẫn định tuyến được.
+    return model.get('source') == 'custom' and connection.get('discoveryState') in {'failed', 'degraded'}
+
+
+def provider_model_index(snapshot):
+    """`{(providerId, modelId): [record, ...]}` — mọi hàng model DÙNG ĐƯỢC của mỗi provider.
+
+    Đọc MỘT snapshot rồi nhóm theo (provider, model): hai nơi cần cùng câu trả lời
+    (`provider_model_metadata` cho một phiên, `provider_metadata_map` cho vòng sửa lúc khởi
+    động) không phải lọc hai lần theo hai cách.
+    """
+    index = {}
+    for connection in (snapshot or {}).get('connections', []) or []:
+        provider_id = connection.get('providerId') if isinstance(connection, dict) else None
+        if not provider_id:
+            continue
+        for model in connection.get('models', []) or []:
+            if not isinstance(model, dict) or not model.get('id'):
+                continue
+            if not _routable_model(connection, model):
+                continue
+            index.setdefault((provider_id, model['id']), []).append(model)
+    return index
+
+
+def aggregate_model_metadata(rows):
+    """Gộp record model của MỌI connection dùng được của một provider thành MỘT record.
+
+    Route `{providerId, modelId}` không nói trước target nào sẽ chạy lượt: router tự chọn
+    connection (thứ tự `connectionOrder`, có `roundRobin`, và failover khi lỗi còn retryable
+    mà chưa có output). Vì thế con số hứa cho phiên phải đúng với *mọi* target có thể nhận
+    lượt:
+
+    - `contextWindow`: **min** của các số công bố, `contextWindowSource` của chính hàng cho
+      số min. Hứa số của target rộng nhất thì lượt chết vì tràn ngữ cảnh ngay sau khi router
+      chuyển sang target hẹp hơn; hứa số nhỏ nhất chỉ khiến việc nén transcript sớm hơn một
+      chút. Không hàng nào công bố số ⇒ bỏ hẳn trường (người gọi rơi về sàn `fallback`, đúng
+      như khi router không có dòng nào cho model).
+    - `thinkingLevels`: **giao** các danh sách công bố (so khớp hoa/thường, giữ cách viết
+      của hàng đầu). Một hàng không công bố mức nào — hoặc giao rỗng — ⇒ bỏ hẳn trường: gửi
+      một mức cho target chưa công bố mức là đoán bừa, và `resolve_thinking_level` sẽ ném
+      `THINKING_LEVEL_UNSUPPORTED`.
+    - `thinkingType`: một target tắt thinking không được kéo cả nhóm về `none`, nên chỉ trả
+      `'none'` khi MỌI hàng nói `none`; còn lại lấy cách gọi của hàng đầu tiên có kiểu thật.
+    - `id`, `name`, `defaultThinking`: hàng đầu (chỉ để hiển thị).
+
+    Không hàng nào dùng được ⇒ `None`: người gọi rơi về đường cũ (số đã khai, hoặc sàn).
+    """
+    usable = [row for row in rows or [] if isinstance(row, dict)]
+    if not usable:
+        return None
+    first = usable[0]
+    context_window, context_source = None, None
+    for row in usable:
+        try:
+            value = int(row.get('contextWindow'))
+        except (TypeError, ValueError):
+            continue
+        if value <= 0:
+            continue
+        if context_window is None or value < context_window:
+            context_window, context_source = value, row.get('contextWindowSource')
+    published = []
+    for row in usable:
+        levels = row.get('thinkingLevels')
+        levels = [str(item).strip() for item in levels if str(item).strip()] if isinstance(levels, list) else []
+        if not levels:
+            published = []
+            break
+        published.append(levels)
+    shared = published[0] if published else []
+    for levels in published[1:]:
+        shared = [level for level in shared if any(candidate.lower() == level.lower() for candidate in levels)]
+    thinking_types = [row.get('thinkingType') for row in usable if row.get('thinkingType') not in (None, 'none')]
+    aggregate = {'id': first.get('id'), 'name': first.get('name'),
+                 'defaultThinking': first.get('defaultThinking'),
+                 'thinkingType': thinking_types[0] if thinking_types else (first.get('thinkingType') or 'none')}
+    if context_window is not None:
+        aggregate['contextWindow'] = context_window
+        aggregate['contextWindowSource'] = context_source
+    if shared:
+        aggregate['thinkingLevels'] = shared
+    return aggregate
+
+
 class RouterClient:
     def __init__(self, url='http://127.0.0.1:3101'):
         self.url = url.rstrip('/')
@@ -501,6 +613,38 @@ class RouterClient:
                 if model.get('id') == model_id:
                     return model
         return None
+
+    async def provider_model_metadata(self, provider_id, model_id):
+        """Record GỘP cho route `{providerId, modelId}` — xem `aggregate_model_metadata`.
+
+        Router trả lời được hai câu hỏi khác nhau: "record của connection này" là
+        `model_metadata()`, còn "record cho cả nhóm connection của provider" là hàm này.
+        Phiên route provider không biết trước connection nào phục vụ lượt, nên chỉ hàm này
+        mới nói đúng điều phiên được hứa. Trả `None` khi không có hàng nào dùng được —
+        người gọi giữ hành vi cũ thay vì hứa một con số không cơ sở.
+        """
+        if not provider_id or not model_id:
+            return None
+        snapshot = await self.snapshot()
+        if not snapshot:
+            return None
+        return aggregate_model_metadata(provider_model_index(snapshot).get((provider_id, model_id), []))
+
+    async def provider_metadata_map(self):
+        """`{(providerId, modelId): record gộp}` từ MỘT lần đọc snapshot.
+
+        Cho vòng sửa cửa sổ ngữ cảnh lúc khởi động: nhiều phiên route provider cần cùng
+        một câu trả lời, và mỗi phiên đọc một snapshot là N lời gọi router.
+        """
+        snapshot = await self.snapshot()
+        if not snapshot:
+            return {}
+        result = {}
+        for key, rows in provider_model_index(snapshot).items():
+            aggregate = aggregate_model_metadata(rows)
+            if aggregate:
+                result[key] = aggregate
+        return result
 
     async def complete(self, messages, tools, route, on_thought=None, on_content=None, max_tokens=4096):
         messages, dropped = bound_inline_media(messages)
@@ -641,6 +785,13 @@ def route_for(value):
         return {'connectionId': connection, 'modelId': model}
     if value.startswith('alias:'):
         return {'aliasId': value[6:]}
+    # Dạng `provider:<providerId>:<modelId>` là route NỘI BỘ harness ↔ router (chế độ
+    # single-model, và picker): router tự chọn connection trong nhóm của provider rồi
+    # failover khi khoá hết hạn mức. Thiếu nhánh này thì chuỗi rơi xuống `{'model': ...}`
+    # và router trả `404 MODEL_NOT_FOUND`.
+    if value.startswith('provider:'):
+        _, provider, model = value.split(':', 2)
+        return {'providerId': provider, 'modelId': model}
     return {'model': value}
 
 
@@ -775,14 +926,14 @@ def diagnosis_prompt(reason, steps_left=None, out_of_time=False):
     return f'{head} {DIAGNOSIS_PROMPT} This turn is stopping because: {reason}.'
 
 
-# --- Vòng 24 (D-31/D-32): dạng câu trả lời KHÔNG còn nằm ở prompt --------------------------------
+# --- Vòng 24 (D-31/D-32), Vòng 28 (D-44): dạng câu trả lời KHÔNG còn nằm ở prompt ----------------
 # Cổng bằng chứng vẫn không được thêm tiêu chí nào về cấu trúc hay ngôn ngữ của câu trả lời
-# (D-18/D-20/D-24 nguyên hiệu lực). Vòng 24 dồn cả dạng câu trả lời vào kỹ năng `final-report`
-# (nơi duy nhất giữ menu phần, luật mở đầu bằng một đoạn văn xuôi, luật ảnh khép câu trả lời);
-# model tự mở kỹ năng khi bước tổng kết nhắc. Prompt chỉ còn MỘT dòng bằng chứng cứng, và chỉ
-# phiên chính nhận dòng đó.
-ANSWER_EVIDENCE_LINE = ('A turn with something observable closes the answer with the finished-state '
-                        'captures, one label per image - never a fabricated image.')
+# (D-18/D-20/D-24 nguyên hiệu lực). Vòng 24 dồn cả dạng câu trả lời vào kỹ năng `final-report`;
+# vòng 28 hạ nốt chỗ ấy xuống thành **gợi ý** — chủ nhà chốt 2026-09-24: "chỉ là skill gợi ý agent
+# trả lời, không nên khoá cứng như vậy… agent vẫn trả lời tự nhiên như ChatGPT/Claude và trả lời
+# ngắn" (D-44). Prompt chỉ còn MỘT dòng nhắc MỀM về ảnh bằng chứng, và chỉ phiên chính nhận dòng đó.
+ANSWER_EVIDENCE_LINE = ('If this turn really has something to show, you may close the answer with the '
+                        'finished-state captures, one label per image - never a fabricated image.')
 
 
 EMPTY_ANSWER_INSTRUCTION = ('You produced no answer and no tool call. Answer in plain text now, '
@@ -1094,13 +1245,13 @@ RECAP_MAX_LINES = 20
 RECAP_MAX_ITEMS = 6
 RECAP_REQUEST_CHARS = 240
 RECAP_COMMAND_CHARS = 160
-RECAP_HEADER = ('TURN RECAP (machine list of this turn - raw material for your final report, '
+RECAP_HEADER = ('TURN RECAP (machine list of this turn - raw material if it helps, '
                 'NOT text to send to the owner)')
-RECAP_CLOSER = ("This is not the answer and must not be pasted into it. Before you write the answer, "
-                "read the `final-report` skill with `skill_view` - it holds the answer shape and the "
-                "evidence rules; skip it only when this turn needs neither. If the owner handed over "
-                "work, go through the owner's request above and re-capture every item that is now "
-                "finished, one labelled image per item.")
+RECAP_CLOSER = ("This is not the answer and must not be pasted into it. The `final-report` skill holds "
+                "an optional menu of ideas for the answer (`skill_view`) - read it if that helps, then "
+                "write the answer your own way: natural and short, the way you would say it to the "
+                "owner in chat. If the turn finished work worth showing, the finished-state captures "
+                "with one label per image are welcome; never fabricate an image.")
 
 
 def turn_recap(calls, owner_prompt=None):
@@ -1162,6 +1313,9 @@ def turn_prompt_excerpt(messages, limit=RECAP_REQUEST_CHARS):
     một chuyên gia là DỮ LIỆU tới kèm trong lượt, không phải việc chủ giao, nên nó không được đội
     lốt "owner request" của bản nhắc việc. Hết message của chủ (chỉ còn kết quả bạn) ⇒ `''`: chỗ
     gọi nói thẳng là không thấy, không gán nhãn chủ cho thứ khác.
+    Vòng 27 (D-43, #5969) bỏ qua thêm HAI tiền tố của đường research: `OWNER_STEER_PREFIX` (chỉ
+    thị giữa lượt) và `RESEARCH_NUDGE_PREFIX` (nhịp báo tiến độ). Cả hai đều không phải việc chủ
+    giao ở lượt này — thứ nhất là một điều chỉnh giữa lượt, thứ hai do máy bơm.
     """
     for message in reversed(list(messages or [])):
         if message.get('role') != 'user':
@@ -1170,7 +1324,8 @@ def turn_prompt_excerpt(messages, limit=RECAP_REQUEST_CHARS):
         if isinstance(content, list):
             content = ' '.join(part.get('text', '') for part in content if isinstance(part, dict))
         text = ' '.join(str(content or '').split())
-        if not text or text.startswith(PEER_DELIVERY_PREFIX):
+        if not text or text.startswith((PEER_DELIVERY_PREFIX, OWNER_STEER_PREFIX,
+                                        RESEARCH_NUDGE_PREFIX)):
             continue
         return text[:limit]
     return ''
@@ -1268,6 +1423,10 @@ class HarnessRuntime(RuntimeCommands):
         # ngay lúc sinh con; cặp đó đã nằm trong event `turn_start`/`turn_end` nhưng không
         # nằm trong RAM, nên `delegate` cần bản đọc nhanh này.
         self.active_step = {}
+        # Vòng 27 (đợt 7): trạng thái nhịp báo tiến độ của lượt (một mục mỗi phiên), và số lần
+        # đã nới trần lượt cho một việc research mức 3 (D-40 — tối đa MỘT lần mỗi lượt).
+        self.progress_state = {}
+        self.research_extensions = {}
         # sessionId -> đã gọi op `session_ensure` trong box (A1). Thư mục phiên sinh ở LẦN GHI đầu
         # tiên của phiên, nhưng một tiến trình harness chỉ trả MỘT `docker exec` cho việc đó; lượt
         # sau đọc lại set này. Không nhớ khi box chưa trả lời — hỏng thì lượt kế thử lại.
@@ -1338,7 +1497,9 @@ class HarnessRuntime(RuntimeCommands):
 
         - đọc snapshot router MỘT lần (`model_metadata_map`), rồi tính lại đúng cặp
           `(số, nguồn)` bằng chính `resolve_context_window` — không có quy tắc thứ hai;
-        - bỏ qua phiên không có `route.connectionId`/`route.modelId` (không có gì để đối chiếu);
+        - bỏ qua phiên không có `route.connectionId`/`route.providerId`/`route.modelId` (không
+          có gì để đối chiếu); phiên route provider (`{providerId, modelId}`) lấy record GỘP
+          của cả nhóm connection — cùng luật `aggregate_model_metadata` như lúc tạo phiên;
         - cửa sổ người dùng TỰ KHAI (`manual`) chỉ bị sửa khi nó NHỎ HƠN con số router công
           bố cho đúng model đó, và mỗi lần sửa phát một event `context_window_healed`
           `{from, to, modelId, source}`. Lý do, đo sống 2026-09-21: 12 phiên còn kẹt ở
@@ -1360,15 +1521,27 @@ class HarnessRuntime(RuntimeCommands):
         metadata_map = await self.client.model_metadata_map()
         if not metadata_map:
             return 0
+        # Phiên route provider không có `connectionId` để tra bản đồ trên: chúng cần record GỘP
+        # của cả nhóm connection. Chỉ đọc snapshot thứ hai khi thật sự có phiên như vậy — đường
+        # thường giữ đúng một lời gọi router như trước.
+        provider_map = None
         healed = 0
         for sid, config in configurations.items():
             if not isinstance(config, dict):
                 continue
             route = config.get('route') if isinstance(config.get('route'), dict) else {}
             connection_id, model_id = route.get('connectionId'), route.get('modelId')
-            if not connection_id or not model_id:
+            provider_id = route.get('providerId')
+            if not model_id or not (connection_id or provider_id):
                 continue
-            metadata = metadata_map.get((connection_id, model_id))
+            if connection_id:
+                metadata = metadata_map.get((connection_id, model_id))
+            else:
+                if provider_map is None:
+                    lookup = getattr(self.client, 'provider_metadata_map', None)
+                    provider_map = await lookup() if callable(lookup) else {}
+                    provider_map = provider_map if isinstance(provider_map, dict) else {}
+                metadata = provider_map.get((provider_id, model_id))
             number, source = resolve_context_window(model_id, None, metadata)
             current, declared = config.get('contextWindow'), config.get('contextWindowSource')
             if current == number and declared == source:
@@ -1405,7 +1578,7 @@ class HarnessRuntime(RuntimeCommands):
                 s['model'] = single_model
             route = route_for(single_model)
         else:
-            route = {k: values[k] for k in ('connectionId', 'modelId', 'aliasId', 'thinkingLevel') if isinstance(values.get(k), str)}
+            route = {k: values[k] for k in ('connectionId', 'providerId', 'modelId', 'aliasId', 'thinkingLevel') if isinstance(values.get(k), str)}
             if values.get('model') and values['model'] not in {'default', 'inherit'}:
                 route = route_for(values['model'])
 
@@ -1560,11 +1733,16 @@ class HarnessRuntime(RuntimeCommands):
         stored = session['config'].get('modelMetadata')
         if isinstance(stored, dict) and stored.get('id') == model_id:
             return None
-        lookup = getattr(self.client, 'model_metadata', None)
+        # Route provider không có `connectionId`: record phải là bản GỘP của mọi connection
+        # dùng được của provider (cùng luật với lúc tạo phiên), vì lượt này có thể chạy trên
+        # bất kỳ target nào của nhóm.
+        provider_id = route.get('providerId')
+        lookup = getattr(self.client, 'provider_model_metadata' if provider_id else 'model_metadata', None)
         if not callable(lookup):
             return None
         try:
-            record = await lookup(route.get('connectionId'), model_id)
+            record = await (lookup(provider_id, model_id) if provider_id
+                            else lookup(route.get('connectionId'), model_id))
         except Exception:
             return None
         return record if isinstance(record, dict) else None
@@ -2297,7 +2475,7 @@ class HarnessRuntime(RuntimeCommands):
                                 if read_calls >= WRAP_UP_READ_TOOL_CALLS:
                                     break
                                 name = (call.get('function') or {}).get('name') or ''
-                                args, parse_error = _parse_tool_arguments((call.get('function') or {}).get('arguments'))
+                                args, parse_error = parse_tool_arguments((call.get('function') or {}).get('arguments'))
                                 read_ok = False
                                 if parse_error or name not in READ_TOOL_NAMES:
                                     result = {'is_error': True, 'error': parse_error or 'not a read tool'}
@@ -2419,6 +2597,38 @@ class HarnessRuntime(RuntimeCommands):
         """`BOXFOX_PLAN_SOURCES_GATE` = `enforce|warn|off`, đọc MỖI LƯỢT (cùng khuôn hai cổng kia)."""
         return mode_from_env(PLAN_SOURCES_ENV, PLAN_SOURCES_MODES, PLAN_SOURCES_DEFAULT_MODE)
 
+    # --- Công tắc lớp đọc web (vòng 27, A-9) ---------------------------------------------------
+    def web_reader_mode(self):
+        """`BOXFOX_WEB_READER` = `auto|thin|off`, đọc MỖI LƯỢT (cùng khuôn hai cổng vòng 25).
+
+        `auto` = luật mới của thang đọc; `thin` = ĐÚNG hành vi `2add905` (chỉ khi thân bài < 200
+        ký tự) — công tắc hồi quy; `off` = không bao giờ gọi đầu đọc.
+        """
+        return mode_from_env(WEB_READER_ENV, WEB_READER_MODES, WEB_READER_DEFAULT_MODE)
+
+    def web_read_store_mode(self):
+        """`BOXFOX_WEB_READ_STORE` = `on|off` cho bộ đệm đọc (A-4), đọc MỖI LƯỢT."""
+        return mode_from_env(WEB_READ_STORE_ENV, WEB_READ_STORE_MODES, WEB_READ_STORE_DEFAULT_MODE)
+
+    def web_switch_notices(self, sid):
+        """Nói RA một lần khi một công tắc lớp đọc bị đặt giá trị lạ.
+
+        Gọi ở route web (chỉ khi phiên thật sự đọc nguồn) nên một máy đặt sai biến mà không ai đọc
+        web thì không sinh nhiễu; còn khi có đọc thì không có chuyện hạ cấp trong im lặng.
+        """
+        for env, modes, default, code, event in (
+                (WEB_READER_ENV, WEB_READER_MODES, WEB_READER_DEFAULT_MODE,
+                 WEB_READER_MODE_UNKNOWN_CODE, 'web.reader.mode_unknown'),
+                (WEB_READ_STORE_ENV, WEB_READ_STORE_MODES, WEB_READ_STORE_DEFAULT_MODE,
+                 WEB_READ_STORE_MODE_UNKNOWN_CODE, 'web.read_store.mode_unknown')):
+            unknown = mode_from_env(env, modes, default)[1]
+            if unknown is None or self._notice_seen(sid, code):
+                continue
+            self.store.emit(sid, 'notice', {
+                'code': code, 'value': unknown, 'partial': False,
+                'message': (f'{code}: {env}={unknown!r} là giá trị lạ — dùng {default!r} cho phiên này')})
+            system_log.write(event, level='warn', session_id=sid, code=code, value=unknown)
+
     def plan_sources_evidence(self, sid):
         """Bằng chứng nguồn của lượt: chỉ KẾT QUẢ CÔNG CỤ của cây phiên, không văn bản model tự viết.
 
@@ -2468,6 +2678,95 @@ class HarnessRuntime(RuntimeCommands):
             for item in list(value)[:200]:
                 found.extend(HarnessRuntime.source_strings(item, depth + 1))
         return found
+
+    # --- Vòng 27 (đợt 3–8): sổ nguồn, ba mức, nhịp tiến độ --------------------------------
+
+    async def queue_owner_steer(self, sid, text):
+        """Cửa duy nhất xếp chỉ thị giữa lượt — `submit` của phiên gốc gọi nó khi lượt đang chạy."""
+        return await research_runtime.queue_owner_steer(self, sid, text)
+
+    async def research_ledger_tool(self, session, name, args):
+        """Ba công cụ sổ nguồn đi qua MỘT cửa: luật nằm ở `research_runtime`, không chép lại."""
+        if name == 'source_add':
+            return research_runtime.source_add(self, session, args)
+        if name == 'source_list':
+            return research_runtime.source_list(self, session, args)
+        return await research_runtime.source_verify(self, session, args)
+
+    def current_turn_seconds(self, sid):
+        """Độ dài ĐANG có của lượt (giây), hoặc hạn mặc định khi chưa mở ngân sách."""
+        budget = self.run_budget.get(sid)
+        when = budget.when() if budget is not None else None
+        if when is None:
+            return float(DEADLINE_DEFAULT_SECONDS)
+        started = self.turn_started_at.get(sid)
+        if started is None:
+            return max(0.0, when - time.time())
+        return max(0.0, when - started)
+
+    async def extend_research_budget(self, sid, tier, ceiling):
+        """Nới trần LƯỢT cho một việc research (D-40) — tối đa MỘT lần, không quá trần cứng của mức.
+
+        Khác `extend_turn_budget`: phần nới này **không** đụng bộ đếm `PLAN_TURN_EXTENSIONS_MAX`
+        (đó là luật của vòng lặp kế hoạch), và trần của nó là `hardCeilingSeconds` — 30 phút cho
+        mức 1–2, 120 phút cho mức 3. Chạm trần cứng thì báo cho chủ nhà: vượt nữa phải là một lượt
+        mới, không phải một lần nới ngầm.
+        """
+        limits = research_runtime.research_tier_limits(tier)
+        hard = float(limits['hardCeilingSeconds'])
+        budget = self.run_budget.get(sid)
+        when = budget.when() if budget is not None else None
+        if when is None:
+            return None
+        if int(self.research_extensions.get(sid, 0)) >= 1:
+            return None
+        base = self.turn_started_at.get(sid)
+        if base is None:
+            base = when - float(DEADLINE_DEFAULT_SECONDS)
+        new_when = max(when, min(base + float(ceiling), base + hard, time.time() + hard))
+        if new_when <= when:
+            return None
+        try:
+            budget.reschedule(new_when)
+        except RuntimeError:  # pragma: no cover - ngân sách đã đóng giữa hai bước
+            return None
+        self.research_extensions[sid] = 1
+        gain = round(new_when - when, 1)
+        self.store.emit(sid, 'notice', {
+            'code': TURN_EXTENDED_CODE, 'tier': int(tier), 'partial': False, 'seconds': gain,
+            'message': (f'{TURN_EXTENDED_CODE}: +{round(gain)}s cho lượt research mức {int(tier)} '
+                        f'(trần cứng của mức: {int(hard)}s)')})
+        system_log.write('research.turn.extended', level='info', session_id=sid, code=TURN_EXTENDED_CODE,
+                         tier=int(tier), seconds=gain, hardCeiling=int(hard))
+        if float(ceiling) >= hard:
+            self.store.emit(sid, 'notice', {
+                'code': RESEARCH_HARD_CEILING_NOTICE_CODE, 'tier': int(tier), 'partial': False,
+                'message': (f'{RESEARCH_HARD_CEILING_NOTICE_CODE}: việc này xin trần {int(ceiling)}s nhưng '
+                            f'trần CỨNG của mức {int(tier)} là {int(hard)}s — phần vượt phải là một lượt '
+                            f'mới, hoặc chủ nhà nâng phạm vi việc')})
+            system_log.write('research.ceiling.touched_hard', level='warn', session_id=sid,
+                             code=RESEARCH_HARD_CEILING_NOTICE_CODE, tier=int(tier),
+                             asked=int(ceiling), hard=int(hard))
+        return {'seconds': gain, 'newDeadline': new_when, 'hardCeiling': int(hard),
+                'ceiling': int(ceiling), 'tier': int(tier)}
+
+    def maybe_nudge_progress(self, sid, messages):
+        """Nhịp báo tiến độ (#5969): mỗi 600 s bơm MỘT câu nhắc, `RESEARCH_PROGRESS_MAX_PER_TURN` lần.
+
+        Câu nhắc **không** phát event và **không** sinh hàng `D:` — nó là một mục `user` trong
+        transcript, không phải một sự kiện của phiên: đếm nó thành lượt hay vẽ nó thành một dải
+        trạng thái đều sai. Trạng thái nhịp sống theo từng phiên và tự đặt lại khi sang lượt mới.
+        """
+        turn = self.active_turn.get(sid) or 0
+        state = self.progress_state.get(sid)
+        if not isinstance(state, dict) or state.get('turn') != turn:
+            self.progress_state[sid] = {'turn': turn, 'count': 0,
+                                        'due': time.time() + RESEARCH_PROGRESS_NUDGE_SECONDS}
+            return False
+        minutes = research_runtime.nudge_due(self, sid)
+        if minutes is None:
+            return False
+        return research_runtime.inject_progress_nudge(self, sid, messages, minutes)
 
     def extend_turn_budget(self, sid, reason):
         """Nới hạn chót của LƯỢT đang chạy đúng MỘT lần, cho một sự kiện có thật (D-35).
@@ -3022,6 +3321,11 @@ class HarnessRuntime(RuntimeCommands):
                     # sau khi nén (khối ký ức đã dựng lại) và trước `step`, tức trước khi model
                     # của bước này được gọi.
                     self.drain_peer_deliveries(sid, messages)
+                    # Vòng 27 (đợt 7, D-43): chỉ thị giữa lượt của chủ nhà vào transcript NGAY
+                    # trước bước kế tiếp (mỗi chỉ thị đúng MỘT lần), rồi tới nhịp báo tiến độ
+                    # nếu đã tới hạn và còn quota của lượt (#5969).
+                    research_runtime.drain_steers(self, sid, messages)
+                    self.maybe_nudge_progress(sid, messages)
                     self.store.emit(sid, 'step', {'turn': turn_no, 'iteration': step + 1, 'contextEstimate': estimate_tokens(messages, tools)})
                     # The router callback hands over the text accumulated so far (that is the shape
                     # every provider adapter can satisfy). Events must carry only the NEW part:
@@ -3340,7 +3644,7 @@ class HarnessRuntime(RuntimeCommands):
                         raise ValueError('Tool-call batch exceeds limit')
                     for call in calls:
                         fn = call['function']
-                        args, error = _parse_tool_arguments(fn.get('arguments'))
+                        args, error = parse_tool_arguments(fn.get('arguments'))
                         name = fn.get('name', '')
                         self.store.emit(sid, 'tool_start', {'id': call['id'], 'name': name, 'args': args})
                         tools_run += 1
@@ -3464,6 +3768,8 @@ class HarnessRuntime(RuntimeCommands):
                 self.settle(record, record['defaultChoice'], 'cancelled', 'session_cancelled', None)
             self.active_messages.pop(sid, None)
             self.active_step.pop(sid, None)
+            self.progress_state.pop(sid, None)
+            self.research_extensions.pop(sid, None)
             await self.executor.cleanup(sid)
             # T7 — lượt này đóng thì con của CHÍNH NÓ không được sống tiếp. Con đã xong trước đó
             # thì hàm này không thấy hàng `started` nào, nên đây là no-op ở lượt thường. Dọn con
@@ -3499,7 +3805,8 @@ class HarnessRuntime(RuntimeCommands):
             return await self.await_children(session, args)
         if name == 'delegate_task':
             return await self.delegate(session, args)
-        if name in {'web_search', 'web_fetch'}:
+        if name in {'web_search', 'web_fetch', 'read_source', 'paper_citations'}:
+            self.web_switch_notices(sid)
             return await self.web.run(name, args, sid)
         if name == 'browser_use' and session['role'] == 'research' and args.get('action') not in {'navigate', 'snapshot', 'screenshot'}:
             raise PermissionError('Research browser access is read-only navigation/snapshot')
@@ -3507,6 +3814,18 @@ class HarnessRuntime(RuntimeCommands):
             return await self.write_plan(session, args)
         if name == 'plan_verify':
             return await self.plan_verify(session, args)
+        if name in {'source_add', 'source_list', 'source_verify'}:
+            return await self.research_ledger_tool(session, name, args)
+        if name == 'dossier_write':
+            return await research_runtime.dossier_write(self, session, args)
+        if name == 'research_brief':
+            return await research_runtime.research_brief(self, session, args)
+        if name == 'research_verify':
+            return await research_runtime.research_verify(self, session, args)
+        if name == 'research_status':
+            return research_runtime.research_status(self, session, args)
+        if name == 'cancel_child':
+            return await research_runtime.cancel_child(self, session, args)
         if name == 'journal_write':
             return await self.journal_write(sid, args)
         if name == 'journal_brief':
@@ -4987,13 +5306,24 @@ class HarnessRuntime(RuntimeCommands):
                              f' (limit {CHILDREN_PER_TURN_MAX}) — finish or await them first')
         # Slot mua TRƯỚC khi sinh phiên con: hết chỗ thì chỉ có một lỗi tool, không có hàng
         # `sessions` mồ côi nằm ở `idle` mà không ai chạy.
+        # Vòng 27 (đợt 5, D-40/D-41): cổng mềm thiếu brief + trần nhánh theo mức, rồi hai hệ số
+        # của con research (bước, giây). Chưa có brief ⇒ cả ba đều là no-op, hành vi y như trước.
+        research_runtime.missing_brief_gate(self, session, role)
+        research_runtime.branch_limit_check(self, session, role)
+        tier = int(research_runtime.research_config(session).get('tier') or 0)
+        child_steps = min(CHILD_MAX_STEPS, config['maxSteps'])
+        child_deadline = min(CHILD_DEADLINE_SECONDS, config['deadlineSeconds'])
+        if role == 'research' and tier:
+            tier_limits = research_runtime.research_tier_limits(tier)
+            child_steps = min(child_steps, tier_limits['childSteps'])
+            child_deadline = min(child_deadline, tier_limits['childSeconds'])
         await self.acquire_child_slot(parent_id)
         try:
             child_route = route_for(configured.get('model')) or config['route']
             child = self.create({**child_route,
                 'skills': sorted(set(config['skills']) & ROLE_SKILLS[role]),
-                'maxSteps': min(CHILD_MAX_STEPS, config['maxSteps']),
-                'deadlineSeconds': min(CHILD_DEADLINE_SECONDS, config['deadlineSeconds']),
+                'maxSteps': child_steps,
+                'deadlineSeconds': child_deadline,
                 'contextWindow': config['contextWindow'],
                 'contextWindowSource': config.get('contextWindowSource'),
                 'instructions': configured.get('systemPromptAppended', '')},
@@ -5147,5 +5477,18 @@ class HarnessRuntime(RuntimeCommands):
             system_log.write('child.delivery_failed', level='warn', session_id=child['id'],
                              parent=parent_id, message=str(exc)[:300])
             result['deliveries'] = []
+        # Vòng 27 (đợt 4, A5) — tầng CON của cổng chất lượng: CHÚ THÍCH tất định cho nhánh research.
+        # Chỉ đọc: không viết lại câu trả lời của con (I2/D-18), không đổi `status` (I3). Hỏng thì
+        # ghi lại rồi đi tiếp — đường đóng lượt con không bao giờ bị chặn vì một chú thích.
+        if role == 'research':
+            try:
+                result['researchGate'] = research_runtime.annotate_branch_answer(
+                    self, session, child['id'], answer_text, tools_run)
+                self.store.emit(session['id'], 'notice', {
+                    'code': research_runtime.RESEARCH_GATE_NOTE_CODE, 'partial': False,
+                    'message': result['researchGate'].get('notice') or ''})
+            except Exception as exc:  # pragma: no cover - phòng vệ
+                system_log.write('research.gate.annotate_failed', level='warn', session_id=child['id'],
+                                 message=str(exc)[:300])
         self.store.emit(session['id'], 'child', result)
         return result

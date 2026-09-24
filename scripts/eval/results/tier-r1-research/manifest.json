@@ -1,0 +1,130 @@
+{
+  "manifestVersion": "eval-manifest-v1",
+  "benchmark": {
+    "name": "tier-r1-research",
+    "version": "2026-09-24"
+  },
+  "createdAt": "2026-09-24",
+  "fixtures": [
+    "R1",
+    "R2",
+    "R3",
+    "R4",
+    "R5",
+    "R6",
+    "R7",
+    "R8",
+    "R9",
+    "R10",
+    "R11",
+    "R12"
+  ],
+  "counts": {
+    "cases": 12,
+    "offline": 11,
+    "online": 1,
+    "oracles": 27,
+    "scoreLines": 1
+  },
+  "pins": {
+    "repo": {
+      "commit": "a959c5165b940e0f988e1828c0575c6702d6dbfa",
+      "commitShort": "a959c51",
+      "dirty": true,
+      "dirtyFileCount": 137,
+      "note": "137 tệp chưa commit trong cây làm việc — số liệu này gắn với cây đang chạy, không chỉ với commit"
+    },
+    "oracle": {
+      "path": "scripts/eval/research_checks.py",
+      "sha256": "6908c2e33111ba330a41860fda10e33ef5e6795364a9413464276bebe708ada6",
+      "kind": "sha256-của-tệp-nguồn"
+    },
+    "rubric": {
+      "path": "scripts/eval/rubric.py",
+      "sha256": "4c56cfcc45d65a9ddbb9f1a219f4edc6f09cfb56ae745edd0231820c6279e95f",
+      "kind": "sha256-của-tệp-nguồn"
+    },
+    "fixtureset": {
+      "path": "scripts/eval/fixtureset.py",
+      "sha256": "e9bf52252bba59504abdaaa726812aac4a64c2a704323278d00c390c9a57a641",
+      "kind": "sha256-của-tệp-nguồn"
+    },
+    "fixtures": {
+      "dir": "scripts/eval/fixtures",
+      "count": 12,
+      "sha256ByFile": {
+        "R1.json": "9fdbe292d31978042802378f48d24096bcbd961f95ff56c683e94f688a586a62",
+        "R2.json": "6324de0f7564eda89e9cd0626e7d21daf6cb9b30a195cfecdea5af1c8cb3c8d9",
+        "R3.json": "34261d9ec22414d32ec04c1b35979a6b11d3a7ac227c85403541007a7d08c913",
+        "R4.json": "e657ecb5593b0009a2615ab41217d047cc63b9d516992ba0358192510a521ee9",
+        "R5.json": "f89d66812006d61c8d5872d59103cae8ec2d73b8513f59b6ab0cc2b92c4957f5",
+        "R6.json": "ce9274f64ee865a5a1ae9d81405ecd5f206282fada765b983b6d5a2542bb134e",
+        "R7.json": "a869b4ab2345d5a42820383d9a9d4d60c5939e9d08d27f79613eefe7e7b59d66",
+        "R8.json": "023b9f4a08e03d89aac43fdd336fac759a54d3fb6ee789e1e1f8a7dbcd3e32d9",
+        "R9.json": "ca8f452b5de2de16d59500a6ab164e84d5f604a2be55ea10080fc340405994dc",
+        "R10.json": "99e22b50d435ce6310bee082ed3dc77724235c151c0b2e053faa5f2a4b0cca5c",
+        "R11.json": "8a6bc9d279f53f6379cdf91595ae451c31ade77bda1c2571c6479f012da106ae",
+        "R12.json": "fd17c614ac954c8e521206abb608797b38af9407c7365cb35303b976976b76a7"
+      }
+    },
+    "scores": {
+      "file": "scores.jsonl",
+      "lines": 1,
+      "kind": "ví dụ dựng tay (không phải lượt thật)"
+    },
+    "provider": null,
+    "model": null,
+    "seed": null,
+    "temperature": null,
+    "maxSteps": null,
+    "deadlineSeconds": null,
+    "network": "off (R2 cần mạng khi chạy thật; cả 12 ca đều chưa chạy)",
+    "prompts": {
+      "judge": {
+        "path": null,
+        "version": null,
+        "sha256": null,
+        "missing": "không dùng giám khảo LLM: tầng này chấm bằng oracle máy"
+      }
+    },
+    "runtime": {
+      "python": "3.12.3",
+      "system": "Linux",
+      "release": "7.0.0-1010-aws"
+    }
+  },
+  "cost": {
+    "tokensIn": null,
+    "tokensOut": null,
+    "wallTimeMs": null,
+    "steps": null,
+    "retries": null,
+    "source": "không có lượt gọi model nào — oracle là hàm thuần, chạy offline",
+    "missing": [
+      "tokensIn",
+      "tokensOut",
+      "wallTimeMs",
+      "steps",
+      "retries"
+    ]
+  },
+  "missingPins": [
+    "provider",
+    "model",
+    "seed",
+    "temperature",
+    "maxSteps",
+    "deadlineSeconds",
+    "image"
+  ],
+  "notes": [
+    "CHƯA CHẠY LƯỢT THẬT NÀO. Dòng duy nhất trong scores.jsonl là ví dụ dựng tay trên fixture-workspace/ (tên miền .example), không phải kết quả research.",
+    "Vì chưa có lượt thật nên provider/model/seed/temperature để null — đây là \"không có lượt gọi model\", không phải \"quên đo\".",
+    "Số ca: 12 ca (11 offline, R2 online) chấm bằng 27 hàm oracle thuần trong scripts/eval/research_checks.py; không ca nào cần giám khảo LLM.",
+    "Runner thật vẫn dừng ở EXIT_NOT_IMPLEMENTED (mã 5): chưa có gì tự sinh phòng hồ sơ .research/ cho một ca R.",
+    "Ca kiểm của oracle nằm ở backend/tests/unit/test_research_checks.py; ca milestone_ceiling_declared đã hết xfail (lỗi so nhãn đã vá), và hai chỗ lệch còn lại của bộ đo — khối chi phí đường Q trong kế hoạch tầng R, bảng --list không lọc theo --fixture — cũng đã vá (xem scripts/eval/benchmarks/tier-r1.md §6)."
+  ],
+  "measured": false,
+  "kind": "research-oracle",
+  "source": "docs/plan/v27/subplans/flow.md §7.1-§7.3 (C-7) + docs/plan/v27/research-rework.md §5"
+}

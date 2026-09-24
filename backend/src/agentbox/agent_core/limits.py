@@ -300,3 +300,188 @@ ANSWER_LENGTH_HINT = (
     f'Keep the final answer under {ANSWER_WARN_CHARS:,} characters. If the content is longer, '
     'write it to a file in the workspace and quote the path instead of pasting it into the answer.'
 )
+
+# --------------------------------------------------------------------------------------------
+# Vòng 27 (đợt 1, A-9) — ba công tắc của lớp đọc web (Phạm vi A)
+# --------------------------------------------------------------------------------------------
+# `WEB_READER` là thang đọc dự phòng: `auto` = luật mới (PDF / non-2xx / rác / thiếu chữ),
+# `thin` = ĐÚNG hành vi commit `2add905` (chỉ khi thân bài < 200 ký tự — công tắc hồi quy),
+# `off` = không bao giờ gọi đầu đọc. Giá trị lạ ⇒ rơi về mặc định KÈM notice.
+WEB_READER_ENV = 'BOXFOX_WEB_READER'
+WEB_READER_MODES = ('auto', 'thin', 'off')
+WEB_READER_DEFAULT_MODE = 'auto'
+# Bộ đệm đọc (`ReadStore`) sống trong bộ nhớ tiến trình: hoặc lưu, hoặc không — không có mức
+# giữa nào có nghĩa, nên chỉ hai giá trị (ghi rõ lý do thay vì bịa ra giá trị thứ ba).
+WEB_READ_STORE_ENV = 'BOXFOX_WEB_READ_STORE'
+WEB_READ_STORE_MODES = ('on', 'off')
+WEB_READ_STORE_DEFAULT_MODE = 'on'
+# Công tắc lùi cho việc giải nén `Content-Encoding`: thay đổi này chạm MỌI lượt đọc, nên phải có
+# đường về `2add905` bằng một biến môi trường thay vì một bản revert.
+WEB_DECODE_ENV = 'BOXFOX_WEB_DECODE'
+WEB_DECODE_MODES = ('on', 'off')
+WEB_DECODE_DEFAULT_MODE = 'on'
+# Hai mã notice cho giá trị lạ của công tắc lớp đọc (cùng khuôn hai cổng vòng 25).
+WEB_READER_MODE_UNKNOWN_CODE = 'WEB_READER_MODE_UNKNOWN'
+WEB_READ_STORE_MODE_UNKNOWN_CODE = 'WEB_READ_STORE_MODE_UNKNOWN'
+# Trần của bộ đệm đọc (A-4 dựng `ReadStore` theo đúng con số này); đợt 1 chỉ phơi ra cho giao diện.
+READ_STORE_MAX_ENTRIES = 24
+# ĐO ĐƯỢC 2026-09-23: trang dài nhất đã đo là `docs.python.org/3/whatsnew/3.13.html`
+# (113 936 ký tự) — trần 400 000 ký tự/một bản chứa được nó và cả một bài báo dài, còn trần
+# tổng 4 000 000 ký tự là 24 bản đầy (≈ 16 MB nếu là tiếng Việt UTF-8) trong bộ nhớ tiến trình.
+READ_STORE_ENTRY_MAX_CHARS = 400_000
+READ_STORE_MAX_CHARS = 4_000_000
+# `offset` của `read_source`/`web_fetch`: kẹp trần để một con số sai không thành phép cắt im lặng.
+READ_OFFSET_MAX = 5_000_000
+# `find` nhận tối đa bốn từ khoá một lời gọi (nhiều hơn thì mỗi từ chỉ còn một mẩu vụn).
+READ_FIND_MAX_TERMS = 4
+# --- Vòng 27 (đợt 2, A-6/A-7) — nguồn học thuật và lớp tìm kiếm -------------------------------
+# OpenAlex 'polite pool': `mailto` là địa chỉ liên hệ, KHÔNG phải khoá. Mặc định là một địa chỉ
+# trung tính của dự án — không lấy địa chỉ cá nhân của ai (đo 2026-09-23: Crossref 429 rồi 200 khi
+# có `mailto`; OpenAlex trả lời nhanh hơn cùng lúc).
+OPENALEX_MAILTO_ENV = 'BOXFOX_OPENALEX_MAILTO'
+OPENALEX_MAILTO_DEFAULT = 'boxfox-agent@example.invalid'
+# `paper_citations`: `limit` là số hàng trả về (1–25); một lời gọi `backward` phân giải tối đa 50
+# mã tham chiếu trong MỘT request `filter=openalex_id:…` (đo: 54 tham chiếu cho W2741809807).
+PAPER_CITATIONS_LIMIT_MAX = 25
+PAPER_CITATIONS_RESOLVE_MAX = 50
+# Lớp tìm kiếm (A-7): một cache trong tiến trình là chỗ duy nhất chống đốt chân keyless (đo: cùng
+# truy vấn tốn ~0,7 s mỗi lần), và `web_search` chạy tối đa ba truy vấn TUẦN TỰ (D-13/F7: không
+# tool song song trong một bước).
+SEARCH_CACHE_TTL_SECONDS = 300
+SEARCH_CACHE_MAX_ENTRIES = 16
+SEARCH_QUERY_MAX = 3
+# Ngân sách ký tự cho CÁC HÀNG của một lời gọi `web_search`.
+# VÌ SAO CÓ: `queries` cho phép 3 chân × `count` 10 hàng, mỗi hàng tới ~900 ký tự (tiêu đề 400 +
+# đoạn trích 400 + URL + khung JSON) ⇒ ~27 000 ký tự, mà runtime cắt kết quả công cụ ở 24 000
+# (giữ 20 000) ⇒ JSON bị cắt GIỮA CHỪNG và các hàng cuối biến mất im lặng. Ngân sách này giữ
+# payload dưới trần ấy và nói ra số hàng bị bỏ (`dropped`).
+SEARCH_PAYLOAD_CHARS = 18_000
+SEARCH_RETRY_ATTEMPTS = 2
+
+
+def _web_switch(name, modes, default):
+    """Giá trị công tắc trong `modes`, hoặc `default` khi biến trống/giá trị lạ."""
+    raw = (os.environ.get(name) or '').strip().lower()
+    return raw if raw in modes else default
+
+
+def web_reader_mode():
+    """Mức đang áp của thang đọc (`BOXFOX_WEB_READER`)."""
+    return _web_switch(WEB_READER_ENV, WEB_READER_MODES, WEB_READER_DEFAULT_MODE)
+
+
+def web_read_store_mode():
+    """`on`/`off` cho bộ đệm đọc (`BOXFOX_WEB_READ_STORE`)."""
+    return _web_switch(WEB_READ_STORE_ENV, WEB_READ_STORE_MODES, WEB_READ_STORE_DEFAULT_MODE)
+
+
+def web_decode_mode():
+    """`on`/`off` cho việc giải nén thân bài (`BOXFOX_WEB_DECODE`)."""
+    return _web_switch(WEB_DECODE_ENV, WEB_DECODE_MODES, WEB_DECODE_DEFAULT_MODE)
+
+
+# --- Vòng 27 (đợt 3–8) — sổ nguồn, ba mức, bốn pha, can thiệp giữa lượt ----------------------
+# Một chỗ duy nhất để rà soát (hợp đồng `/var/tmp/v27/iface.md` §2): mọi hằng của đợt 3–8 ở đây.
+
+# Ba mức việc research. Mức 2 là MẶC ĐỊNH (mơ hồ ⇒ 2), mức 3 là mức đắt nhất.
+RESEARCH_TIERS = (1, 2, 3)
+RESEARCH_TIER_DEFAULT = 2
+RESEARCH_TIER_BRANCHES = {1: 1, 2: 5, 3: 15}        # trần nhánh cho CẢ VIỆC (mức 3 ≤ 3 sóng)
+RESEARCH_TIER_WAVE_SIZE = {1: 1, 2: 5, 3: 5}        # số nhánh mỗi sóng (D-41)
+RESEARCH_TIER_WAVES = {1: 1, 2: 1, 3: 3}            # số sóng
+RESEARCH_TIER_CHILD_STEPS = {1: 20, 2: 40, 3: 40}   # bước tối đa của một nhánh con
+RESEARCH_TIER_CHILD_SECONDS = {1: 180, 2: 420, 3: 900}   # trần thời gian một nhánh con
+RESEARCH_TIER_TURN_SECONDS = {1: 1200, 2: 1200, 3: 3600}  # D-40: mức 3 = 3 600 s cho cả lượt
+RESEARCH_TIER_HARD_CEILING_SECONDS = {1: 1200, 2: 1800, 3: 7200}  # trần cứng 30'/120'
+RESEARCH_TIER_CRITIQUE = {1: False, 2: False, 3: True}   # #6024: chỉ mức 3 bắt buộc phản biện
+RESEARCH_TURN_EXTENSION_SECONDS_TIER3 = 1800         # một lần chủ nhà nới trần ở mức 3
+
+# Nhịp báo tiến độ (#5969).
+RESEARCH_PROGRESS_ENV = 'BOXFOX_RESEARCH_PROGRESS'
+RESEARCH_PROGRESS_MODES = ('on', 'off')
+RESEARCH_PROGRESS_DEFAULT_MODE = 'on'
+RESEARCH_PROGRESS_NUDGE_SECONDS = 600
+RESEARCH_PROGRESS_MAX_PER_TURN = 12
+
+# Brief bắt buộc trước khi chạy (#5964): `warn` là mặc định — chạy được ngay, nhưng có tiếng nói.
+RESEARCH_BRIEF_ENV = 'BOXFOX_RESEARCH_BRIEF'
+RESEARCH_BRIEF_MODES = ('enforce', 'warn', 'off')
+RESEARCH_BRIEF_DEFAULT_MODE = 'warn'
+
+# Cổng chất lượng hồ sơ (`research_quality`).
+RESEARCH_GATE_ENV = 'BOXFOX_RESEARCH_GATE'
+RESEARCH_GATE_MODES = ('enforce', 'warn', 'off')
+RESEARCH_GATE_DEFAULT_MODE = 'enforce'
+RESEARCH_QUALITY_PREFIX = 'RESEARCH_QUALITY_REJECTED'
+RESEARCH_MIN_EXCERPT_CHARS = 80
+RESEARCH_MAX_ROWS_PER_DOSSIER = 400
+RESEARCH_BRIEF_MISSING_CODE = 'RESEARCH_BRIEF_MISSING'
+RESEARCH_GATE_NOTE_CODE = 'RESEARCH_GATE_NOTE'
+RESEARCH_GATE_MODE_UNKNOWN_CODE = 'RESEARCH_GATE_MODE_UNKNOWN'
+RESEARCH_BRIEF_MODE_UNKNOWN_CODE = 'RESEARCH_BRIEF_MODE_UNKNOWN'
+RESEARCH_TIER_INVALID_CODE = 'RESEARCH_TIER_INVALID'
+RESEARCH_LEVEL_INVALID_CODE = 'RESEARCH_LEVEL_INVALID'
+RESEARCH_PROFILE_INVALID_CODE = 'RESEARCH_PROFILE_INVALID'
+RESEARCH_BRIEF_TAKEN_CODE = 'RESEARCH_BRIEF_TAKEN'
+DOSSIER_DIR_MISMATCH_CODE = 'DOSSIER_DIR_MISMATCH'
+
+# Pha phản biện độc lập (#5968, #6024): `revise` chặn MỘT vòng cho mỗi version.
+RESEARCH_REVIEW_MIN_ANSWER_CHARS = 400
+RESEARCH_VERIFY_REVISE_MAX = 1
+RESEARCH_VERIFY_MAX_ISSUES = 30
+RESEARCH_VERIFY_ISSUE_CHARS = 400
+RESEARCH_VERIFY_SUMMARY_CHARS = 800
+RESEARCH_VERIFY_NO_CRITIC_CODE = 'RESEARCH_VERIFY_NO_CRITIC'
+RESEARCH_VERIFY_VERDICT_MISSING_CODE = 'RESEARCH_VERIFY_VERDICT_MISSING'
+RESEARCH_VERIFY_VERDICT_MISMATCH_CODE = 'RESEARCH_VERIFY_VERDICT_MISMATCH'
+RESEARCH_VERIFY_VERSION_MISSING_CODE = 'RESEARCH_VERIFY_VERSION_MISSING'
+RESEARCH_VERIFY_UNKNOWN_CODE = 'RESEARCH_VERIFY_UNKNOWN'
+RESEARCH_CRITIQUE_MISSING_CODE = 'RESEARCH_CRITIQUE_MISSING'
+RESEARCH_CRITIQUE_LABEL = 'chưa đạt phản biện'
+# #6025 — soi ý kiến chủ nhà: `research_brief` nhận `ownerViews` (ý kiến/giả định/khẳng định của
+# chủ nhà nói trong yêu cầu), và hồ sơ phải có mục riêng đủ ba nhãn, mỗi nhãn kèm nguồn.
+RESEARCH_OWNER_VIEWS_CODE = 'RESEARCH_OWNER_VIEWS'
+RESEARCH_OWNER_VIEWS_MAX = 12
+RESEARCH_OWNER_VIEW_CHARS = 300
+
+# Mã của đường research (đợt 3–8): bốn thông điệp nêu ĐÚNG cách sửa (#5970, #5982, D-40).
+RESEARCH_TIER_DEFAULTED_CODE = 'RESEARCH_TIER_DEFAULTED'
+RESEARCH_CEILING_CLAMPED_CODE = 'RESEARCH_CEILING_CLAMPED'
+RESEARCH_BRIEF_UPDATED_CODE = 'RESEARCH_BRIEF_UPDATED'
+RESEARCH_BRIEF_RAISE_REFUSED_CODE = 'RESEARCH_BRIEF_RAISE_REFUSED'
+RESEARCH_BRANCH_LIMIT_CODE = 'RESEARCH_BRANCH_LIMIT'
+RESEARCH_HARD_CEILING_NOTICE_CODE = 'RESEARCH_HARD_CEILING'
+
+# Chỉ thị giữa lượt (#5981) + nhịp tiến độ (#5969).
+STEER_ENV = 'BOXFOX_STEER'
+STEER_MODES = ('on', 'off')
+STEER_DEFAULT_MODE = 'on'
+STEER_MAX_PENDING = 5
+STEER_DRAIN_MAX = 3
+STEER_TEXT_MAX_CHARS = 4000
+OWNER_STEER_PREFIX = '[Chỉ thị giữa lượt của chủ nhà]'
+RESEARCH_NUDGE_PREFIX = '[Nhịp tiến độ:'
+STEER_MODE_UNKNOWN_CODE = 'STEER_MODE_UNKNOWN'
+OWNER_STEER_EVENT_CODE = 'OWNER_STEER'
+
+# Phòng hồ sơ trong workspace (.research) — hình dạng khớp `deploy/docker/research_files.py`.
+DOSSIER_ROOM = '.research'
+RESEARCH_SLUG_RE = r'^[a-z0-9]+(-[a-z0-9]+)*$'
+DOSSIER_MAX_BYTES = 262_144
+# Số lần thử ghi một bản hồ sơ: số bản tính từ CHỈ MỤC, mà tệp `v<N>` trong phòng có thể nhiều
+# hơn chỉ mục (ghi hỏng giữa chừng, phòng dựng bằng tay) — op của box từ chối bản đã có, nên
+# phải thử bản kế tiếp trong ngân sách này thay vì chết ở bản đã chiếm.
+DOSSIER_VERSION_ATTEMPTS_MAX = 10
+RESEARCH_FILENAME_RE = r'^v([1-9][0-9]{0,9})-([a-z0-9]+(-[a-z0-9]+)*)\.md$'
+
+# Sổ nguồn (`research_ledger`).
+SOURCE_ROW_PREFIX = 'r'
+SOURCE_EXCERPT_MAX_CHARS = 2000
+SOURCE_CLAIM_MAX_CHARS = 400
+SOURCE_ORIGIN_MAX_CHARS = 120
+SOURCE_UNIT_MERGE_JACCARD = 0.85
+SOURCE_ROW_LIMIT_DEFAULT = 50
+SOURCE_ROW_LIMIT_MAX = 200
+SOURCE_SPOT_TARGETS = ('vanban.chinhphu.vn', 'vbpl.vn', 'moh.gov.vn', 'thuvienphapluat.vn')
+SOURCE_FAKE_SUCCESS_TITLE_MARKERS = ('Trang chủ', 'Warning: This page maybe not yet fully loaded')
+SOURCE_FAKE_SUCCESS_MIN_CHARS = 300

@@ -93,3 +93,67 @@ def test_the_path_guard_still_refuses_to_leave_the_workspace(tmp_path):
         assert 'Path Traversal Denied' in str(exc)
     else:  # pragma: no cover - chỉ chạy khi cổng bị nới
         raise AssertionError('đường dẫn ra ngoài workspace phải bị từ chối')
+
+
+def test_a_long_file_is_read_in_chunks_that_rebuild_it(tmp_path):
+    """A-5: tệp 100 000 ký tự đọc bằng 4 lời gọi ⇒ ghép lại phải bằng ĐÚNG tệp gốc."""
+
+    root = _box(tmp_path)
+    long_text = ('Báo cáo dài — vòng 27 đọc từng mẩu. ' * 4000)[:100_000]
+    assert len(long_text) == 100_000, 'khối dựng ca phải đúng 100 000 ký tự'
+    (root / 'bao-cao-dai.md').write_text(long_text, encoding='utf-8')
+
+    payloads = [worker.execute('file_read', {'path': 'bao-cao-dai.md', 'offset': offset, 'limit': 25_000},
+                               'session-1')
+                for offset in (0, 25_000, 50_000, 75_000)]
+
+    assert [len(payload['content']) for payload in payloads] == [25_000] * 4
+    assert ''.join(payload['content'] for payload in payloads) == long_text, 'ghép 4 mẩu phải bằng đúng tệp'
+    assert [payload['nextOffset'] for payload in payloads] == [25_000, 50_000, 75_000, None], \
+        'nextOffset là chỗ đọc tiếp; mẩu chạm cuối tệp phải trả None'
+    assert [payload['truncated'] for payload in payloads] == [True, True, True, False]
+    assert {payload['sizeChars'] for payload in payloads} == {100_000}, 'sizeChars nói độ dài THẬT của tệp'
+
+
+def test_reading_past_the_end_is_not_reported_as_missing(tmp_path):
+    """Đọc quá cuối tệp là ĐÃ HẾT, không phải "thiếu": payload phải nói đúng như vậy."""
+
+    root = _box(tmp_path)
+    (root / 'ngan.md').write_text(MARKDOWN, encoding='utf-8')
+
+    payload = worker.execute('file_read', {'path': 'ngan.md', 'offset': 999_999, 'limit': 25_000}, 'session-1')
+
+    assert payload['content'] == ''
+    assert payload['truncated'] is False and payload['nextOffset'] is None
+    assert payload['sizeChars'] == len(MARKDOWN)
+
+
+def test_the_base64_path_aligns_its_offset(tmp_path):
+    """Base64 chỉ thẳng hàng theo bội số 3 byte: `offset=1` phải căn về 0 và NÓI RÕ ra payload."""
+
+    root = _box(tmp_path)
+    (root / '.uploaded_artifacts').mkdir(parents=True, exist_ok=True)
+    raw = (PNG_1KIB + bytes(range(256))) * 100
+    (root / '.uploaded_artifacts' / 'to.png').write_bytes(raw)
+
+    payload = worker.execute('file_read', {'path': '.uploaded_artifacts/to.png', 'offset': 1}, 'session-1')
+
+    assert payload['offsetAlignedTo'] == 3, 'mô hình phải biết offset đã bị kéo xuống'
+    assert payload['bytesRead'] == 22_500 and payload['nextOffset'] == 22_500
+    assert base64.b64decode(payload['content']) == raw[:22_500], 'mẩu giải mã phải bắt đầu từ byte 0'
+    assert payload['truncated'] is True and payload['sizeBytes'] == len(raw)
+    plain = worker.execute('file_read', {'path': '.uploaded_artifacts/to.png'}, 'session-1')
+    assert 'offsetAlignedTo' not in plain, 'offset 0 thì không có gì phải căn'
+
+
+def test_a_negative_or_junk_offset_clamps_to_zero(tmp_path):
+    """`offset` âm hoặc không phải số không được làm chết lượt, cũng không được cắt bậy."""
+
+    root = _box(tmp_path)
+    (root / 'bao-cao.md').write_text(MARKDOWN, encoding='utf-8')
+
+    for offset in (-5, 'abc', None):
+        payload = worker.execute('file_read', {'path': 'bao-cao.md', 'offset': offset, 'limit': 'abc'},
+                                 'session-1')
+        assert payload['content'] == MARKDOWN, f'offset {offset!r} phải kẹp về 0'
+        assert payload['truncated'] is False and payload['nextOffset'] is None

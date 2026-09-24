@@ -96,8 +96,8 @@ knows what actually ran.
 
 Give **every** reviewer the **complete diff** (not fragments — cross-file
 issues hide in the gaps) plus the absolute repo path so they can search the
-wider codebase. Each reviewer gets `terminal`, `file`, and `search`
-toolsets (so they can `git`, `read_file`, and `search_files`/grep).
+wider codebase. Each reviewer needs read and search access to the tree
+(so they can run `git`, use `file_read`, and search with `codebase_grep`).
 
 Tell each reviewer to:
 - Search the existing codebase for evidence (don't reason from the diff alone).

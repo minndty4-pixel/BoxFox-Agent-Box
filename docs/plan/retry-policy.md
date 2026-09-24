@@ -11,7 +11,7 @@
 
 | Tầng | Đã có gì | Vấn đề |
 |---|---|---|
-| Router (`router/src/engine.mjs`) | Vòng lặp qua các target; `retryable = 429 hoặc ≥ 500`; cooldown 5 s–5 phút sau 2 lần 429 liên tiếp | Chạy đúng, nhưng khi hết lượt thì **ném lỗi thô** ra harness |
+| Router (`router/src/engine.mjs`) | Vòng lặp qua các target, và **trong mỗi target một vòng khoá** (vòng 29); `retryable = 429 hoặc ≥ 500`; một 429 park **đúng khoá vừa gọi** rồi thử khoá kế tiếp ngay trong request đó — 30 s khi provider không gửi `Retry-After`, chỉ nâng theo header, trần **120 s** | Chạy đúng, nhưng khi hết lượt thì **ném lỗi thô** ra harness. Nay lỗi thô ấy là lỗi **thật** của provider: cả ring đang nghỉ thì chính lỗi 429 đó đi ra (giữ nguyên `code`/`message`/`status`/`retryAfterMs`), và lượt rơi vào lúc cả ring nghỉ **không tốn một lần gọi provider nào** vì phép kiểm nghỉ nằm trước lời gọi adapter |
 | Harness `RouterClient.complete()` | Khi nhánh stream lỗi, **thử lại ngay bằng một POST không stream** (`except Exception:`) | Một lần 429 thành **hai** lần gọi provider, cách nhau 0 s — làm nhà cung cấp đang giới hạn bị gọi dồn thêm |
 | Harness, vòng lặp bước (`runtime.py`) | Đúng **một** lần thử lại, `asyncio.sleep(1.5)`, `is_transient` quyết định | Không backoff, không jitter, không tôn trọng `Retry-After`, **429 không được thử lại**, không nói cho người dùng biết đã thử mấy lần |
 | Mã lỗi tới tay harness | Chỉ còn chuỗi `Router HTTP 429: <message>` | `code` của router (`RATE_LIMIT`), cờ `retryable` và `retryAfterMs` **bị mất**, nên harness không thể quyết định đúng |
@@ -30,7 +30,8 @@ không hề thử lại.
    403/404, quyền công cụ) thì gọi lại y hệt cũng hỏng y hệt. Lỗi *quá chậm* (hết hạn, timeout)
    thì đã tiêu hết cửa sổ của lượt — thử lại bắt đầu từ số 0, chỉ tốn thời gian.
 3. **Chờ có trần hai lần.** Mỗi lần chờ bị chặn bởi `RATE_LIMIT_MAX_SECONDS = 30` (dù router
-   báo cooldown 5 phút) và cả lượt bị chặn bởi `RETRY_BUDGET_SECONDS = 60`. Một lần chờ nữa chỉ
+   báo cooldown tới 120 s — trần của router, xem vòng 29) và cả lượt bị chặn bởi
+   `RETRY_BUDGET_SECONDS = 60`. Một lần chờ nữa chỉ
    được phép nếu còn ít nhất `MIN_RETRY_WINDOW_SECONDS = 5` giây của hạn lượt — thà báo lỗi còn
    hơn ngủ qua hạn rồi chết bằng `DEADLINE` mà không có câu trả lời nào.
 4. **Tôn trọng `Retry-After`.** Router đã đọc `retryAfterMs` từ provider; harness nay giữ lại
