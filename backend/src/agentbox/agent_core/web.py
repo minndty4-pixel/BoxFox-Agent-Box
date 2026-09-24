@@ -835,10 +835,39 @@ def _now() -> str:
 
 
 def _openalex_work_id(work_id: str, doi: str) -> str:
-    """Mã dùng được trong URL OpenAlex: `W…` (nhận cả URL đầy đủ), hoặc `doi:10…` khi chỉ có DOI."""
+    """Mã dùng được trong URL OpenAlex: `W…` (nhận cả URL đầy đủ), hoặc `doi:10…` khi chỉ có DOI.
+
+    Một DOI dán vào `workId` (trần, `doi:…` hay `https://doi.org/…`) cũng thành `doi:…`: nếu để nó
+    rơi vào nhánh cắt đuôi đường dẫn thì `10.7717/peerj.4375` biến thành `peerj.4375` và lời gọi sau
+    đó hỏng im lặng.
+    """
     if work_id:
-        return work_id.rstrip('/').rsplit('/', 1)[-1]   # 'W1' → 'W1'; 'https://openalex.org/W1/' → 'W1'
+        cleaned = str(work_id).strip()
+        low = cleaned.lower()
+        if low.startswith('doi:'):
+            return cleaned
+        if 'doi.org/' in low:
+            return f'doi:{cleaned.split("doi.org/", 1)[1]}'
+        if cleaned.startswith('10.'):
+            return f'doi:{cleaned}'
+        return cleaned.rstrip('/').rsplit('/', 1)[-1]   # 'W1' → 'W1'; 'https://openalex.org/W1/' → 'W1'
     return f'doi:{doi}'
+
+
+def _openalex_citable_id(ident: str) -> str:
+    """Mã dùng được trong `filter=cites:` — OpenAlex CHỈ nhận `W…` ở đây.
+
+    ĐO ĐƯỢC 2026-09-23: `filter=cites:doi:10.7717/peerj.4375` trả HTTP 400 với lời nhắn
+    "'doi:10.7717/peerj.4375' is not a valid OpenAlex ID", còn đường dẫn `works/doi:…` trả 200 kèm
+    `id:` — nên khi chỉ có DOI thì phải giải thành `W…` trước (một lời gọi thêm, `select=id`, 42 byte).
+    """
+    if ident.startswith('W'):
+        return ident
+    payload = _openalex_json({'select': 'id'}, ident)
+    resolved = str(payload.get('id') or '').rstrip('/').rsplit('/', 1)[-1]
+    if not resolved:
+        raise WebError('WEB_SEARCH_UNAVAILABLE', f'openalex could not resolve {ident} to a work id')
+    return resolved
 
 
 def _openalex_json(params: dict, work_id: str | None = None) -> dict:
@@ -1314,6 +1343,8 @@ class WebTools:
         ĐO ĐƯỢC 2026-09-23: `referenced_works` sống qua `select` (n=54 cho `W2741809807`) và
         `filter=cites:W2741809807&per-page=2` trả `count=1255` trong 891 byte ⇒ cả hai chiều chạy
         được KHÔNG cần khoá. KHÔNG dùng `cited_by_api_url`: khoá đó không có trong bản trả về.
+        `filter=cites:` chỉ nhận mã `W…` — chỉ có DOI thì giải trước qua `works/doi:…` (xem
+        `_openalex_citable_id`), không đẩy `doi:…` thẳng vào `filter`.
         """
         work_id = str(args.get('workId') or '').strip()
         doi = str(args.get('doi') or '').strip()
@@ -1342,9 +1373,12 @@ class WebTools:
                     'direction': direction, 'total': len(references), 'count': len(rows),
                     'results': rows, 'source': 'openalex', 'untrusted': True,
                     'note': UNTRUSTED_NOTE, 'fetchedAt': _now()}
-        payload = _openalex_json({'filter': f'cites:{ident}', 'select': PAPER_SELECT, 'per-page': limit})
+        # `filter=cites:` chỉ nhận `W…`: khi chỉ có DOI thì phải giải thành `W…` trước, nếu không
+        # OpenAlex trả HTTP 400 (BUG đo được 2026-09-23 — xem `_openalex_citable_id`).
+        cite_id = _openalex_citable_id(ident)
+        payload = _openalex_json({'filter': f'cites:{cite_id}', 'select': PAPER_SELECT, 'per-page': limit})
         rows = [_paper_row(item, 'openalex') for item in (payload.get('results') or [])][:limit]
-        return {'work': ident, 'direction': direction,
+        return {'work': cite_id, 'direction': direction,
                 'total': (payload.get('meta') or {}).get('count') or len(rows), 'count': len(rows),
                 'results': rows, 'source': 'openalex', 'untrusted': True, 'note': UNTRUSTED_NOTE,
                 'fetchedAt': _now()}

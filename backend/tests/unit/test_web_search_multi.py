@@ -87,6 +87,41 @@ def test_a_refused_leg_is_named_in_per_query_instead_of_disappearing(tools, monk
     assert result['perQuery'][1]['count'] == 0 and 'HTTP 429' in result['perQuery'][1]['error']
 
 
+def test_a_real_type_error_inside_a_leg_is_named_and_not_probed_away(tools, monkeypatch):
+    """Chân ném `TypeError` THẬT ⇒ gọi đúng MỘT lần và tên lỗi nói ra `TypeError`.
+
+    Lớp dò chữ ký cũ (`_call_provider`) đoán "chân này không nhận options" rồi gọi lại hai tham số —
+    vừa khiến mỗi chân bị gọi hai lần, vừa giấu lỗi thật sau một phép đoán. Nay mọi chân nhận cùng ba
+    tham số (`(query, count, options=None)`), nên lỗi thật đi thẳng ra ngoài.
+    """
+    calls: list[str] = []
+
+    def broken(query, count, options=None):
+        calls.append(query)
+        raise TypeError("'NoneType' object is not subscriptable")
+
+    _chain(monkeypatch, broken)
+    with pytest.raises(WebError) as caught:
+        tools.search({'query': 'một'})
+    message = str(caught.value)
+    assert calls == ['một'], 'chân hỏng bị gọi đúng MỘT lần, không dò chữ ký'
+    assert 'unreadable answer (TypeError)' in message and 'option' not in message.lower()
+
+
+def test_a_leg_that_raises_still_lets_the_next_leg_answer(tools, monkeypatch):
+    """Chân đầu ném lỗi thật thì rơi tiếp: chân sau vẫn có lượt, kết quả không bị mất."""
+
+    def broken(query, count, options=None):
+        raise TypeError('chân hỏng')
+
+    def good(query, count, options=None):
+        return [_row('https://example.com/ok')]
+
+    monkeypatch.setattr(web_module, 'GENERAL_PROVIDERS', (broken, good))
+    result = tools.search({'query': 'một'})
+    assert result['count'] == 1 and result['results'][0]['url'] == 'https://example.com/ok'
+
+
 def test_the_query_list_is_capped_and_de_duplicated(tools, monkeypatch):
     seen: list[str] = []
 

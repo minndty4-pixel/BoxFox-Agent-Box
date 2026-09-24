@@ -96,12 +96,48 @@ def test_the_limit_is_capped_by_the_constant_instead_of_the_argument(tools, open
     assert query['per-page'] == [str(limits_module.PAPER_CITATIONS_LIMIT_MAX)]
 
 
-def test_a_doi_alone_is_enough_and_travels_inside_the_openalex_path(tools, openalex):
-    tools.paper_citations({'doi': '10.1000/xyz', 'direction': 'forward'})
-    query = urllib.parse.parse_qs(urllib.parse.urlsplit(openalex[0]).query)
-    # Không có `W…` thì OpenAlex nhận thẳng `doi:…` làm mã trong `filter` (đo được 2026-09-23).
-    assert query['filter'] == ['cites:doi:10.1000/xyz']
-    assert 'works/' not in urllib.parse.urlsplit(openalex[0]).path.replace('/works', '')
+def test_a_doi_alone_is_resolved_to_a_work_id_before_the_cites_filter(tools, openalex):
+    result = tools.paper_citations({'doi': '10.1000/xyz', 'direction': 'forward'})
+    # ĐO ĐƯỢC 2026-09-23: `filter=cites:doi:…` bị OpenAlex trả HTTP 400 ("… is not a valid OpenAlex
+    # ID"), còn đường dẫn `works/doi:…` trả 200 kèm `id:` ⇒ DOI phải giải thành `W…` rồi mới lọc.
+    first = urllib.parse.urlsplit(openalex[0])
+    assert urllib.parse.unquote(first.path).endswith('/works/doi:10.1000/xyz')
+    assert 'filter' not in urllib.parse.parse_qs(first.query)          # bước giải chỉ hỏi `id`
+    second = urllib.parse.parse_qs(urllib.parse.urlsplit(openalex[1]).query)
+    assert second['filter'] == [f'cites:{WORK}']                       # KHÔNG phải `cites:doi:…`
+    assert result['work'] == WORK and result['total'] == 1255
+    assert len(openalex) == 2                                          # đúng MỘT lời gọi thêm
+
+
+def test_a_doi_alone_still_travels_inside_the_path_for_the_backward_direction(tools, openalex):
+    result = tools.paper_citations({'doi': '10.1000/xyz', 'direction': 'backward'})
+    first = urllib.parse.urlsplit(openalex[0])
+    assert urllib.parse.unquote(first.path).endswith('/works/doi:10.1000/xyz')
+    assert result['work'] == 'doi:10.1000/xyz' and result['total'] == 3
+    assert len(openalex) == 2                                          # đọc bài rồi giải tham chiếu
+
+
+def test_a_doi_pasted_into_workid_is_not_mangled_into_a_path_tail(tools, openalex):
+    tools.paper_citations({'workId': 'https://doi.org/10.1000/xyz', 'direction': 'backward'})
+    first = urllib.parse.urlsplit(openalex[0])
+    # Cắt đuôi đường dẫn sẽ cho `peerj.4375`-kiểu rác; DOI phải được nhận ra nguyên vẹn.
+    assert urllib.parse.unquote(first.path).endswith('/works/doi:10.1000/xyz')
+
+
+def test_a_doi_openalex_cannot_resolve_is_reported_instead_of_guessed(tools, monkeypatch):
+    """Bước giải trả về rỗng ⇒ nói thẳng, KHÔNG nhét `doi:…` vào `filter=cites:` (đó là lỗi 400 cũ)."""
+    calls = []
+
+    def fake(url, **kwargs):
+        calls.append(url)
+        return 200, 'application/json', json.dumps({'id': None, 'display_name': 'không rõ'}), url
+
+    monkeypatch.setattr(web_module, 'http_request', fake)
+    with pytest.raises(WebError) as caught:
+        tools.paper_citations({'doi': '10.1000/khong-co', 'direction': 'forward'})
+    assert caught.value.code == 'WEB_SEARCH_UNAVAILABLE'
+    assert 'could not resolve' in str(caught.value)
+    assert len(calls) == 1 and 'filter=' not in calls[0]
 
 
 def test_a_full_openalex_url_is_accepted_where_an_id_is_expected(tools, openalex):

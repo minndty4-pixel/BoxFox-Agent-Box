@@ -2376,3 +2376,28 @@ giao diện; danh sách lỗi đầy đủ ở `bug-register.md` §6.34 — BUG-
   song trong một step); nhật ký DEV **không** chứa truy vấn/URL (`web.retry` chỉ `attempt` + `code`);
   `untrusted: true` + `note` vẫn có trong mọi payload; SSRF vẫn **ném** lỗi chứ không lùi về đầu đọc;
   `exclude` **không** bật mặc định (#5991); Exa/Parallel chỉ chạy khi có khoá (#5978/#6020/#6023).
+
+### Vòng 27 — đợt 2, bản sửa SAU lượt nghiệm thu độc lập (2026-09-23/24)
+
+- **Lỗi THẬT thứ hai của đợt 2 (BUG A), do lượt nghiệm thu độc lập bắt được:**
+  `paper_citations(doi=…, direction="forward")` trả **HTTP 400**. OpenAlex nói đúng câu:
+  `'doi:10.7717/peerj.4375' is not a valid OpenAlex ID.` Nguyên nhân: nhánh `forward` nhét thẳng mã
+  định danh vào `filter=cites:…`, mà `filter` **chỉ nhận mã `W…`**; nhánh `backward` không dính vì DOI
+  đi trong **đường dẫn** (`works/doi:…` ⇒ 200). Ca đơn vị cũ **ghim sai hành vi** và bình luận còn
+  khẳng định sai rằng OpenAlex nhận `doi:…` trong `filter`.
+- **Cách vá:** `_openalex_citable_id(ident)` — mã `W…` đi thẳng; mã khác được giải bằng **một** lời gọi
+  42 byte (`select=id`) rồi lấy mã cuối; không giải được thì **báo lỗi**, không đoán. Nhánh `forward`
+  trả `work` là mã đã giải. Ca ghim mới (3 ca thay ca ghim cũ + 1 ca cho nhánh không giải được).
+  ĐO LẠI SAU KHI VÁ: `doi_only forward` ⇒ 200, `work W2741809807`, `total 1255`, 0,25 s.
+- **Số byte phụ thuộc bộ `select`:** hôm sau đo lại cùng URL với `per-page=2` là **4 895 byte** (không
+  phải 891) ⇒ đọc các số 891 / 33 226 / 2 967 là "nhỏ hơn một bậc", **không** phải hằng số.
+- **Sửa lại một số đã ghi sai:** thông điệp commit `dc5306e` ghi "nhóm web: 133 passed", đúng là **134**
+  ở `f12de93`; lượt nghiệm thu đo **139 passed** trên cây có bản sửa (5 tệp nhóm web).
+- **Giới hạn còn lại, nói thẳng:** ngân sách payload giữ hàng **đầu** vô điều kiện, nên MỘT URL khổng
+  lồ (đo được một hàng 31 298 ký tự) vẫn có thể đẩy payload qua trần runtime 24 000. Trần cho một hàng
+  chưa có luật riêng — việc của đợt sau.
+- **Cây đóng băng của lượt nghiệm thu là `f12de93`; hai SHA:** `f12de93` là bản lượt kiểm chạy trên đó
+  (một ca A-6 đỏ), còn **`<SHA bản sửa>`** là bản sửa sau nghiệm thu đã commit — theo luật
+  `/memory/knowledge/vorflux/when-you-edit-the-tree-after-dispatching-testing-agents.md`.
+- **Bộ đơn vị trên cây có bản sửa**: **1344 passed, 1 deselected in 216,63 s**
+  (`/var/tmp/v27/unit_run_10.log`); `f12de93` (chưa có bản sửa): **1339 passed, 1 deselected**.

