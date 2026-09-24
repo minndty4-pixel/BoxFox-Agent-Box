@@ -3,13 +3,16 @@ import asyncio
 import base64
 import json
 import re
+import subprocess
 import unicodedata
 from pathlib import Path
 import httpx
 from ..observability.system_log import system_log
 from ..vendor.hermes.computer_backend import image_dimensions_from_bytes
 
-WORKER = Path(__file__).with_name('worker.py').read_text(encoding='utf-8')
+WORKER_PATH = Path(__file__).with_name('worker.py')
+WORKER = WORKER_PATH.read_text(encoding='utf-8')
+CONTAINER_WORKER_PATH = '/tmp/boxfox-worker.py'
 
 # Khoá `target` mà box THẬT SỰ đọc (`deploy/docker/capture.py: resolve_window` / `resolve_tab`).
 # Khoá lạ KHÔNG được gửi xuống: box trả `_invalid` cho target nó không hiểu, nên gửi bừa một khoá
@@ -119,6 +122,19 @@ class SandboxExecutor:
         self.recordings = {}
         # Physical desktop shared by sessions: media/input/browser serialize per action.
         self.visual_lock = asyncio.Lock()
+        self._worker_synced = False
+
+    def _sync_worker(self):
+        """Đồng bộ worker.py vào container qua docker cp để tránh truyền mã nguồn qua CLI args."""
+        try:
+            res = subprocess.run(
+                ['docker', 'cp', str(WORKER_PATH), f'{self.container}:{CONTAINER_WORKER_PATH}'],
+                capture_output=True, timeout=10
+            )
+            if res.returncode == 0:
+                self._worker_synced = True
+        except Exception:
+            pass
 
     async def request(self, path, body=None):
         async with httpx.AsyncClient(timeout=40, trust_env=False) as client:
@@ -167,7 +183,7 @@ class SandboxExecutor:
             **note,
         )
 
-    async def _execute(self, name, args, session, turn=None, step=None, tool_call_id=None):
+    async def _execute(self, name, args, session, turn=None, step=None, tool_call_id=None, retry=False):
         # `turn`/`step`/`tool_call_id` đi cùng yêu cầu (P1.4): hai route capture/ghi hình nhận
         # `step`/`toolCallId` (`deploy/docker/ide-proxy.py:284`), worker nhận cả ba trong payload.
         if name == 'inspect_element':
@@ -218,8 +234,10 @@ class SandboxExecutor:
                 return data
             raise ValueError('Unknown recording action')
         # Worker executes inside Docker; no interpolation of model text into the host shell.
+        if not self._worker_synced:
+            self._sync_worker()
         proc = await asyncio.create_subprocess_exec('docker', 'exec', '-i', '--user', 'agent',
-            '--workdir', '/home/agent/workspace', self.container, '/opt/pw-driver/bin/python3', '-c', WORKER,
+            '--workdir', '/home/agent/workspace', self.container, '/opt/pw-driver/bin/python3', CONTAINER_WORKER_PATH,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         try:
             payload = {'name': name, 'args': args, 'session': session, 'turn': turn, 'step': step,
@@ -233,7 +251,12 @@ class SandboxExecutor:
                 await self._execute('__cancel', {}, session)
             raise
         if proc.returncode:
-            raise RuntimeError('Sandbox unavailable: ' + err.decode(errors='replace')[:500])
+            err_msg = err.decode(errors='replace')
+            if not retry and (CONTAINER_WORKER_PATH in err_msg or 'No such file' in err_msg or "can't open file" in err_msg):
+                self._worker_synced = False
+                self._sync_worker()
+                return await self._execute(name, args, session, turn=turn, step=step, tool_call_id=tool_call_id, retry=True)
+            raise RuntimeError('Sandbox unavailable: ' + err_msg[:500])
         return json.loads(out)
 
     async def cleanup(self, session):

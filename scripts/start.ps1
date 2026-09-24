@@ -78,6 +78,10 @@ if ($DockerRunning) {
         }
         
         docker compose up -d --build
+        $WorkerSrc = Join-Path $RootDir "backend\src\agentbox\sandbox\worker.py"
+        if (Test-Path $WorkerSrc) {
+            docker cp $WorkerSrc agentbox-box:/tmp/boxfox-worker.py 2>$null
+        }
         Write-Host "  -> [OK] Sandbox LIVE: IDE on http://localhost:8080 | VNC on localhost:5900 | API on :8081" -ForegroundColor Green
     } catch {
         Write-Host "  -> [WARN] Could not start Docker container: $_" -ForegroundColor Yellow
