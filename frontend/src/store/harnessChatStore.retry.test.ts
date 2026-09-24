@@ -91,6 +91,33 @@ describe('send — mức thinking', () => {
     expect(turnCalls()[0].body.route.thinkingLevel).toBe('medium')
   })
 
+  // Vòng 29 — tuyến provider: mức gửi đi phải hợp lệ với MỌI connection trong nhóm (danh sách
+  // mức đi kèm là giao mức của nhóm), hoặc không gửi mức nào để router tự quyết.
+  it('tuyến provider không gửi mức nào khi chưa biết giao mức của nhóm', async () => {
+    useHarnessChatStore.setState({ sessions: { [CHAT]: { id: 'sid-1', status: 'idle', events: [], error: null } } })
+
+    await useHarnessChatStore.getState().send(CHAT, 'hỏi', { kind: 'provider', providerId: 'opencode', modelId: 'm1' }, null, 'x')
+
+    expect(turnCalls()[0].body.route).toEqual({ providerId: 'opencode', modelId: 'm1' })
+  })
+
+  it('tuyến provider gửi mức chung đã biết của nhóm', async () => {
+    useHarnessChatStore.setState({ sessions: { [CHAT]: { id: 'sid-1', status: 'idle', events: [], error: null } } })
+
+    await useHarnessChatStore.getState().send(CHAT, 'hỏi', { kind: 'provider', providerId: 'opencode', modelId: 'm1' }, null, 'x', ['low', 'medium'])
+
+    expect(turnCalls()[0].body.route).toEqual({ providerId: 'opencode', modelId: 'm1', thinkingLevel: 'medium' })
+  })
+
+  it('tuyến provider kéo mức toàn cục về mức nhóm công bố', async () => {
+    useHarnessChatStore.setState({ sessions: { [CHAT]: { id: 'sid-1', status: 'idle', events: [], error: null } } })
+
+    await useHarnessChatStore.getState().send(CHAT, 'hỏi', { kind: 'provider', providerId: 'opencode', modelId: 'm1' },
+      null, 'OpenCode Free', ['max', 'high', 'low'])
+
+    expect(turnCalls()[0].body.route).toEqual({ providerId: 'opencode', modelId: 'm1', thinkingLevel: 'low' })
+  })
+
   it('tuyến alias không gửi mức nào khi chưa biết mức chung của các đích', async () => {
     useHarnessChatStore.setState({ sessions: { [CHAT]: { id: 'sid-1', status: 'idle', events: [], error: null } } })
 

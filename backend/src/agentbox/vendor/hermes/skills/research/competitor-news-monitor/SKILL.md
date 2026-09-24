@@ -23,7 +23,7 @@ Track a declared company set and report only material, new developments with pri
 - "Track funding, partnerships, executive moves, and incidents."
 - A cron tick fires for an existing competitor watch (steps 3-6).
 
-Don't use for: one-off company research (use `web_search`/`web_extract` directly) or plain feed reading (`blogwatcher`).
+Don't use for: one-off company research (use `web_search`/`web_fetch` directly) or plain feed reading (`blogwatcher`).
 
 ## Procedure — Setup (foreground, once)
 
@@ -42,7 +42,7 @@ For each company include, where available:
 5. reputable trade and financial press
 6. job postings as weak supporting evidence
 
-Use `rss-feeds` (optional) or `blogwatcher` (optional, stateful) for feeds, `reddit-reading` for community discussion, and `web_search`/`web_extract` for pages. Write the watch contract (watchlist, categories, materiality threshold, last cutoff) to a state file under `~/.hermes/competitor-watches/<watch-slug>.json`, then create the job:
+Use `rss-feeds` (optional) or `blogwatcher` (optional, stateful) for feeds, `reddit-reading` for community discussion, and `web_search`/`web_fetch` for pages. Write the watch contract (watchlist, categories, materiality threshold, last cutoff) to a state file under `~/.hermes/competitor-watches/<watch-slug>.json`, then create the job:
 
 ```
 cronjob(action="create",

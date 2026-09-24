@@ -1,8 +1,8 @@
 /** Original BoxFox chat presentation; independent native-router turns. */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Copy, LoaderCircle, RotateCcw, Sparkles } from 'lucide-react'
-import type { ProviderConnection, ProviderSnapshot } from '../../types/provider'
-import { useRouterChatStore, type RouterChatSelection, type RouterChatTurn } from '../../store/routerChatStore'
+import type { ProviderSnapshot } from '../../types/provider'
+import { useRouterChatStore, type RouterChatTurn } from '../../store/routerChatStore'
 import { useProviderStore } from '../../store/providerStore'
 import { useUiStore } from '../../store/uiStore'
 import { useT } from '../../i18n/context'
@@ -10,47 +10,9 @@ import { MarkdownRenderer } from '../chat/MarkdownRenderer'
 import { ProviderIcon } from '../providers/ProviderIcon'
 import { MediaLightboxModal } from '../chat/MediaLightboxModal'
 import { ChatInputBar } from './ChatInputBar'
-
-function selectionKey(s: RouterChatSelection | null) { return !s ? '' : s.kind === 'alias' ? `alias:${s.aliasId}` : `model:${s.connectionId}:${s.modelId}` }
-function eligible(c: ProviderConnection) { return c.enabled && c.authState === 'ready' && c.discoveryState === 'ready' && (c.providerId !== 'antigravity' || c.projectState === 'ready') }
-
-/** Một dòng trong bảng chọn model của composer. */
-export interface RouterChatOption {
-  value: string
-  label: string
-  providerId: string
-  thinkingLevels?: string[]
-  selection: RouterChatSelection
-}
-
-export function routerChatOptions(snapshot: ProviderSnapshot): RouterChatOption[] {
-  // A live inventory alone does not prove inference works. Preserve models
-  // pending their first probe, but never offer a model known unavailable.
-  const models = snapshot.connections.filter(eligible).flatMap(c => c.models.filter(m => m.enabled && m.health !== 'unavailable').map(m => ({ value: `model:${c.id}:${m.id}`, label: `${c.name} · ${m.name}`, providerId: c.providerId, thinkingLevels: m.thinkingLevels, selection: { kind: 'model', connectionId: c.id, modelId: m.id } as RouterChatSelection })))
-  const aliases = snapshot.aliases.filter(a => a.enabled && a.targets.some(t => models.some(m => m.selection.kind === 'model' && m.selection.connectionId === t.connectionId && m.selection.modelId === t.modelId))).map(a => ({ value: `alias:${a.id}`, label: a.name, providerId: snapshot.connections.find(c => c.id === a.targets[0]?.connectionId)?.providerId ?? 'router', thinkingLevels: aliasThinkingLevels(a, models), selection: { kind: 'alias', aliasId: a.id } as RouterChatSelection }))
-  return [...aliases, ...models]
-}
-
-/**
- * Mức thinking dùng chung cho mọi đích của một alias: chỉ khi **mọi** đích đều
- * công bố mức thì giao của chúng mới là mức an toàn; đích nào chưa công bố thì
- * để trống, và composer sẽ không gửi mức nào (router dùng mức mặc định).
- */
-function aliasThinkingLevels(
-  alias: ProviderSnapshot['aliases'][number],
-  models: RouterChatOption[],
-): string[] | undefined {
-  const lists: string[][] = []
-  for (const target of alias.targets) {
-    const model = models.find(m => m.selection.kind === 'model' && m.selection.connectionId === target.connectionId && m.selection.modelId === target.modelId)
-    const levels = model?.thinkingLevels
-    if (!levels || levels.length === 0) return undefined
-    lists.push(levels)
-  }
-  if (lists.length === 0) return undefined
-  const shared = lists[0].filter(level => lists.every(list => list.some(l => l.toLowerCase() === level.toLowerCase())))
-  return shared.length > 0 ? shared : undefined
-}
+// Vòng 29: danh sách option sống ở `lib/routeOptions.ts` (một hàm dùng chung cho cả picker lẫn
+// composer), để `HarnessModelPicker` import được mà không tạo vòng qua RouterTestChat.
+import { composerModels, findRouteOption, routerChatOptions, selectionKey } from '../../lib/routeOptions'
 function tokenLabel(t: RouterChatTurn | undefined) { return !t?.usage || (t.usage.prompt_tokens == null && t.usage.completion_tokens == null) ? 'Usage chưa có dữ liệu' : `${t.usage.prompt_tokens ?? '?'} in · ${t.usage.completion_tokens ?? '?'} out` }
 function RouterTurn({ turn, snapshot, busy, onOpenLightbox }: { turn: RouterChatTurn; snapshot: ProviderSnapshot | null; busy: boolean; onOpenLightbox?: (src: string) => void }) {
   const [copied, setCopied] = useState(false)
@@ -103,14 +65,14 @@ export function RouterTestChat() {
   const openSettings = useUiStore(s => s.openSettings)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const options = useMemo(() => snapshot ? routerChatOptions(snapshot) : [], [snapshot])
-  const selected = options.find(o => o.value === selectionKey(selection))
-  const routerModels = useMemo(() => options.map(option => ({ id: option.value, name: option.label, provider: option.providerId })), [options])
+  const selected = findRouteOption(options, selectionKey(selection))
+  const routerModels = useMemo(() => composerModels(options), [options])
   // A failed per-model probe is shown in Provider, but does not mean that the
   // router engine or another verified model is unavailable.
   const routerUnavailable = !snapshot && Boolean(error)
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
   useEffect(() => { void load().catch(() => { }) }, [load])
-  useEffect(() => { if (!snapshot || selected) return; const r = snapshot.defaultRoute, key = r.aliasId ? `alias:${r.aliasId}` : `model:${r.connectionId}:${r.modelId}`; const next = options.find(o => o.value === key)?.selection ?? options[0]?.selection ?? null; if (selectionKey(next) !== selectionKey(selection)) setSelection(next) }, [snapshot, options, selected, selection, setSelection])
+  useEffect(() => { if (!snapshot || selected) return; const r = snapshot.defaultRoute, key = r.aliasId ? `alias:${r.aliasId}` : `model:${r.connectionId}:${r.modelId}`; const next = findRouteOption(options, key)?.selection ?? options[0]?.selection ?? null; if (selectionKey(next) !== selectionKey(selection)) setSelection(next) }, [snapshot, options, selected, selection, setSelection])
   useEffect(() => { messagesEndRef.current?.scrollIntoView?.({ behavior: 'smooth' }) }, [turns.length])
   useEffect(() => { const onKey = (e: globalThis.KeyboardEvent) => { if (e.key === 'Escape' && isSending) stop() }; window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey) }, [isSending, stop])
   const openProvider = () => openSettings('provider' as Parameters<typeof openSettings>[0])
@@ -122,7 +84,7 @@ export function RouterTestChat() {
     <div className="min-h-0 flex-1 overflow-y-auto p-5 space-y-6 select-text">
       {turns.length === 0 ? <div className="flex h-full flex-col items-center justify-center p-8 text-center"><div className="max-w-sm space-y-2"><div className="mx-auto flex size-10 items-center justify-center rounded-xl bg-panel2 border border-line text-muted"><Sparkles className="size-5 text-brand" /></div><h3 className="text-sm font-semibold text-fg">{t('chat.empty.title')}</h3><p className="text-xs leading-relaxed text-muted">{t('chat.routerEmptyBody')}</p></div></div> : turns.map(turn => <RouterTurn key={turn.id} turn={turn} snapshot={snapshot} busy={isSending} onOpenLightbox={setLightboxSrc} />)}<div ref={messagesEndRef} />
     </div>
-    <ChatInputBar router={{ models: routerModels, activeModelId: selectionKey(selection), isBusy: isSending, onModelChange: id => setSelection(options.find(option => option.value === id)?.selection ?? null), onSend: (prompt, images) => { if (selected && !routerUnavailable && !loading) void send(prompt, undefined, images?.[0]) }, onStop: stop }} />
+    <ChatInputBar router={{ models: routerModels, activeModelId: selectionKey(selection), isBusy: isSending, onModelChange: id => setSelection(findRouteOption(options, id)?.selection ?? null), onSend: (prompt, images) => { if (selected && !routerUnavailable && !loading) void send(prompt, undefined, images?.[0]) }, onStop: stop }} />
     {lightboxSrc && <MediaLightboxModal type="image" src={lightboxSrc} caption="Ảnh người dùng đính kèm" onClose={() => setLightboxSrc(null)} />}
   </div>
 }

@@ -23,7 +23,7 @@ Monitor a concrete purchasable item and alert on a normalized all-in price or av
 - "Track ticket/listing availability."
 - A cron tick fires for an existing price watch (steps 4-6).
 
-Don't use for: one-off "what does this cost right now" lookups (use `web_search`/`web_extract` directly).
+Don't use for: one-off "what does this cost right now" lookups (use `web_search`/`web_fetch` directly).
 
 ## Procedure — Setup (foreground, once)
 
@@ -37,7 +37,7 @@ Specify currency, all-in vs pre-tax price, maximum price, availability/stock rul
 
 ### 3. Establish a live baseline, then schedule
 
-Fetch a bounded live result with `web_extract` or `browser_navigate` and record retrieval time, source price, fees/taxes, availability, and terms. Do not schedule until one foreground fetch works. Write the watch contract (item, condition, baseline observation) to a state file under `~/.hermes/price-watches/<watch-slug>.json`, then create the job:
+Fetch a bounded live result with `web_fetch` or `browser_navigate` and record retrieval time, source price, fees/taxes, availability, and terms. Do not schedule until one foreground fetch works. Write the watch contract (item, condition, baseline observation) to a state file under `~/.hermes/price-watches/<watch-slug>.json`, then create the job:
 
 ```
 cronjob(action="create",

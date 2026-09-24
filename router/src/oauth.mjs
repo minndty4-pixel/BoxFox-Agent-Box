@@ -246,7 +246,9 @@ export class OAuthManager {
         a.status = 'exchanging';
         const conn = this.service.connection(a.connectionId);
         this.service.cancelConnection(conn.id);
-        this.service.store.saveCredentials(conn.id, credentials);
+        // Khoá đầu của ring là đích ghi; connection chưa có ring thì ghi vào dòng
+        // của chính nó (xem `credentialRowId`).
+        this.service.saveCredential(conn, credentials);
         conn.credentialPresent = true;
         conn.authState = 'ready';
         conn.enabled = true;
@@ -295,7 +297,7 @@ export class OAuthManager {
     assert(c.revision === a.revision, 'Account changed during authorization. Start again.', 'STALE_RESULT', 409);
 
     this.service.cancelConnection(c.id);
-    this.service.store.saveCredentials(c.id, credentials);
+    this.service.saveCredential(c, credentials);
     c.credentialPresent = true;
     c.authState = 'ready';
     c.enabled = true;

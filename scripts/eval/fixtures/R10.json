@@ -1,0 +1,41 @@
+{
+  "id": "R10",
+  "case": "Sóng nhánh: 3–5 nhánh mỗi sóng, sóng sau khi sóng trước xong",
+  "level": 3,
+  "request": "Chia việc này thành nhiều nhánh nhưng đừng mở hết cùng lúc.",
+  "request_source": "nguyên văn bảng ca của kế hoạch (docs/plan/v27/research-rework.md §5)",
+  "oracle_pass": [
+    "Sóng đông nhất không quá 5 nhánh mở cùng lúc",
+    "Mức 2 chỉ mở một sóng; mức 3 không quá ba sóng"
+  ],
+  "bad_answer": [
+    "Mở toàn bộ nhánh cùng một lúc (một sóng 10 nhánh)",
+    "Mở sóng mới khi sóng trước chưa xong"
+  ],
+  "rubric_dimensions": [
+    "C1",
+    "C5",
+    "C8"
+  ],
+  "environment": {
+    "network": "off",
+    "workspace": "sạch, không có mạng"
+  },
+  "budget": {
+    "max_steps": 40,
+    "deadline_seconds": 3600,
+    "source": "trần của mức 3 trong nhật ký hệ thống (RESEARCH_TIER_CHILD_STEPS=40, RESEARCH_TIER_TURN_SECONDS=3600)"
+  },
+  "seeds": [
+    "việc mức 3 có nhiều nhánh (≥ 5)",
+    "không có kết nối mạng ra ngoài"
+  ],
+  "layer1_checks": [
+    "wave_branch_ceiling_respected"
+  ],
+  "open_questions": [
+    "Số nhánh mỗi sóng (3–5) và số sóng theo mức đã chốt (#6022/D-41); ca này kiểm trần, chưa kiểm thứ tự ưu tiên nhánh trong sóng."
+  ],
+  "plan_ref": "docs/plan/v27/research-rework.md §5",
+  "bad_answer_source": "script này soạn theo chiều ngược của oracle; kế hoạch chỉ có cột 'oracle máy' nên 'bad answer' chưa được chủ sở hữu ghim"
+}

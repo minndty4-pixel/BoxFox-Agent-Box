@@ -825,3 +825,51 @@ describe('HarnessStepView — R3 tách tóm tắt / chi tiết', () => {
     expect(expanded.querySelector('[data-capture-tile="true"]')).toBeTruthy()
   })
 })
+
+/**
+ * Vòng 27 / C-5 — can thiệp giữa lúc chạy. Harness phát event `user` với `{control:true, steer:true}`
+ * cho câu chủ nhà gõ trong lúc lượt đang chạy (nó KHÔNG đếm thêm lượt), và phát event `child` với
+ * `{cancelledBy:'owner'}` khi một nhánh bị dừng bằng `cancel_child`.
+ *
+ * Hai luật của giao diện:
+ *  1. chỉ thị nằm ĐÚNG chỗ nó được gửi trong mạch đọc (theo `seq`) kèm nhãn nhỏ "can thiệp";
+ *  2. nhánh bị chủ nhà dừng đọc là "chủ nhà dừng", không phải "lỗi".
+ */
+describe('HarnessStepView — C-5 can thiệp giữa lúc chạy', () => {
+  it('chỉ thị giữa lượt là bong bóng của chủ nhà ở đúng vị trí, kèm nhãn "can thiệp", không mở lượt mới', () => {
+    const events = [
+      ev('user', { text: 'Nhờ em nghiên cứu chuyển tuyến' }),
+      ev('tool_start', { id: 't1', name: 'web_search' }),
+      ev('user', { text: 'dừng nhánh luật, hạ các nhánh còn lại xuống mức 2', steer: true, control: true }),
+      ev('assistant', { text: 'Đã nhận chỉ thị giữa lượt', final: false }),
+    ]
+    const host = renderSession(events)
+
+    // Đúng MỘT lượt: chỉ thị không mở lượt mới (harness cũng không tăng `_turn_index`).
+    expect(host.querySelectorAll('[data-turn-user="true"]').length).toBe(1)
+
+    const steer = host.querySelector('[data-timeline="owner-steer"]')
+    expect(steer).toBeTruthy()
+    expect(steer?.textContent).toContain('dừng nhánh luật, hạ các nhánh còn lại xuống mức 2')
+    expect(steer?.querySelector('[data-testid="owner-steer-label"]')?.textContent).toBe('steering')
+
+    // ...và nó nằm ở ĐÚNG vị trí thời gian: giữa hàng tool và văn bản sau đó.
+    const activity = host.querySelector('[data-activity="true"]')
+    const order = [...(activity?.querySelectorAll('[data-timeline]') ?? [])].map((el) =>
+      el.getAttribute('data-timeline'),
+    )
+    expect(order).toEqual(['tool', 'owner-steer', 'assistant-text'])
+  })
+
+  it('nhánh bị chủ nhà dừng đọc là "chủ nhà dừng", không phải lỗi', () => {
+    const events = [
+      ev('user', { text: 'Nhờ em nghiên cứu chuyển tuyến' }),
+      ev('child', { sessionId: 'child-77', role: 'research', status: 'failed', reason: 'OWNER_CANCELLED', cancelledBy: 'owner', is_error: false }),
+    ]
+    const host = renderSession(events)
+
+    const chip = host.querySelector('[data-timeline="child"]')
+    expect(chip?.textContent).toContain('stopped by the owner')
+    expect(chip?.textContent).not.toContain('failed')
+  })
+})

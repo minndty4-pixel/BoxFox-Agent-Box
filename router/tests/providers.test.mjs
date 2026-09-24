@@ -7,7 +7,7 @@ import { createSafeFetch } from '../src/network.mjs';
 import { openAIToGeminiRequest } from '../src/vendor/9router/openai-to-gemini.mjs';
 import { cleanJSONSchemaForAntigravity } from '../src/vendor/9router/gemini.mjs';
 import { geminiChunkToEvents } from '../src/vendor/9router/gemini-to-openai.mjs';
-import { sseEvents } from '../src/providers/common.mjs';
+import { ensureOk, parseRetryAfter, sseEvents } from '../src/providers/common.mjs';
 async function collect(iterator) { const values = []; for await (const event of iterator) values.push(event); return values; }
 const json = (value, options = {}) => new Response(JSON.stringify(value), { ...options, headers: { 'Content-Type': 'application/json', ...(options.headers || {}) } });
 const messages = [{ role: 'user', content: 'Xin chào 🦊' }];
@@ -123,6 +123,19 @@ test('Antigravity quota prefers live user buckets and exposes weekly families an
   } });
   const quota = await adapter.quota({ connection: { projectId: 'project', models: [{ id: 'gemini-3.8-flash-medium', source: 'registry' }, { id: 'claude-sonnet-4-6', source: 'registry' }] }, credentials: { accessToken: 'token' } });
   assert.equal(quota.plan, 'Pro'); assert.equal(quota.models.find(value => value.modelId === 'gemini-3.8-flash-medium').remainingFraction, 0.25); assert.equal(quota.models.find(value => value.modelId === 'gemini-3.8-flash-medium').source, 'retrieveUserQuota'); assert.equal(quota.models.find(value => value.modelId === 'gemini-3.8-flash-medium').quotaFamily, 'gemini'); assert.equal(quota.weekly[0].id, 'gemini_weekly');
+});
+test('Retry-After is read as seconds or an HTTP-date, and reaches the provider error as milliseconds', async () => {
+  const failures = async response => ensureOk(response).then(() => null, error => error);
+  const seconds = await failures(new Response(JSON.stringify({ error: { message: 'slow down' } }), { status: 429, headers: { 'Retry-After': '90' } }));
+  assert.equal(seconds.code, 'RATE_LIMIT'); assert.equal(seconds.retryAfterMs, 90_000);
+  assert.equal(seconds.providerMessage, 'slow down', 'the provider’s own words travel beside the router’s wrapped sentence');
+  assert.equal(parseRetryAfter(' 45 '), 45_000, 'whitespace and a fractional value are still a number of seconds');
+  assert.equal(parseRetryAfter('2.5'), 2_500);
+  const date = await failures(new Response('slow down', { status: 429, headers: { 'Retry-After': new Date(Date.now() + 60_000).toUTCString() } }));
+  assert.ok(date.retryAfterMs > 50_000 && date.retryAfterMs <= 60_000, 'an HTTP-date becomes the wait until it');
+  const garbage = await failures(new Response('failure', { status: 429, headers: { 'Retry-After': 'soon' } }));
+  assert.equal(garbage.retryAfterMs, undefined, 'a value nobody can read is no value at all');
+  assert.equal(parseRetryAfter(null), null); assert.equal(parseRetryAfter(''), null);
 });
 for (const status of [400, 401, 403, 429]) test(`provider HTTP ${status} is never successful inference`, async () => {
   const adapter = createProviders({ fetchImpl: async () => new Response('failure', { status }) }).openai; await assert.rejects(collect(adapter.generate({ connection: { endpoint: 'https://example.test' }, credentials: { apiKey: 'test' }, body: { messages, stream: true } })), e => e.status === status);

@@ -54,8 +54,8 @@ BoxFox operates as an orchestrated multi-agent network with clearly defined resp
 - Avoid duplicate session creation. Track progress transparently via event streams and checkpoints.
 
 ### 3.4. Final Report
-- The shape of the final answer lives in the `final-report` skill, not in this file: open it with `skill_view` when the turn produced work or something to show. No part list and no order lives here.
-- The runtime appends ONE hard evidence line to the main session's prompt (child sessions do not carry it): a turn that has something to show closes its answer with the finished-state captures, one label per image, never a fabricated image. Treat that line as the rule.
+- **Answer naturally.** The `final-report` skill holds ideas for the answer, not a form: open it with `skill_view` when you want ideas, then write the answer your own way - short, like a colleague replying in chat. No part list, no order and no template is required.
+- The runtime appends ONE soft line to the main session's prompt (child sessions do not carry it): if the turn has something to show, you may close the answer with the finished-state captures, one label per image - never a fabricated image. It is a suggestion, not an obligation.
 - The answer itself carries markdown only: the text, the images and the links to the evidence files. No assistant-surface block, strip or badge wraps it, so never tell the owner to open an "Evidence" block.
 
 ### 3.5. Computer Use Agent (CUA) & Autonomous Element Selection

@@ -74,7 +74,7 @@ You MUST complete each phase before proceeding to the next.
 - Read stack traces completely
 - Note line numbers, file paths, error codes
 
-**Action:** Use `read_file` on the relevant source files. Use `search_files` to find the error string in the codebase.
+**Action:** Use `file_read` on the relevant source files. Use `codebase_grep` to find the error string in the codebase.
 
 ### 2. Build a Tight Feedback Loop
 
@@ -162,14 +162,14 @@ THEN investigate that specific component.
 - Keep tracing upstream until you find the source
 - Fix at the source, not at the symptom
 
-**Action:** Use `search_files` to trace references:
+**Action:** Use `codebase_grep` to trace references:
 
 ```python
 # Find where the function is called
-search_files("function_name(", path="src/", file_glob="*.py")
+codebase_grep(query="function_name(", path="src/")
 
 # Find where the variable is set
-search_files("variable_name\\s*=", path="src/", file_glob="*.py")
+codebase_grep(query="variable_name\\s*=", path="src/")
 ```
 
 ### Phase 1 Completion Checklist
@@ -202,10 +202,10 @@ Done when removing any remaining element makes the loop go green. A minimal repr
 - Locate similar working code in the same codebase
 - What works that's similar to what's broken?
 
-**Action:** Use `search_files` to find comparable patterns:
+**Action:** Use `codebase_grep` to find comparable patterns:
 
 ```python
-search_files("similar_pattern", path="src/", file_glob="*.py")
+codebase_grep(query="similar_pattern", path="src/")
 ```
 
 ### 2. Compare Against References
@@ -365,10 +365,10 @@ If you catch yourself thinking:
 
 Use these Hermes tools during Phase 1:
 
-- **`search_files`** — Find error strings, trace function calls, locate patterns
-- **`read_file`** — Read source code with line numbers for precise analysis
-- **`terminal`** — Run tests, check git history, reproduce bugs
-- **`web_search`/`web_extract`** — Research error messages, library docs
+- **`codebase_grep`** — Find error strings, trace function calls, locate patterns
+- **`file_read`** — Read source code with line numbers for precise analysis
+- **`terminal_exec`** — Run tests, check git history, reproduce bugs
+- **`web_search`/`web_fetch`** — Research error messages, library docs
 
 ### With delegate_task
 

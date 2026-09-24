@@ -34,6 +34,7 @@ import { useHarnessChatStore } from '../../store/harnessChatStore'
 import { useHarnessStore, AVAILABLE_MODELS } from '../../store/harnessStore'
 import { useProviderStore } from '../../store/providerStore'
 import { useRouterChatStore, type RouterChatSelection } from '../../store/routerChatStore'
+import { routable } from '../../lib/routeOptions'
 import type { ProviderSnapshot } from '../../types/provider'
 import { LabelDot } from '../LabelDot'
 import type { ContextChunk } from '../../types/context'
@@ -141,6 +142,23 @@ export function findRouterContextWindow(
   if (selection?.kind === 'model') {
     const found = readRouterWindow(modelOf(selection.connectionId, selection.modelId))
     if (found) return found
+  }
+  if (selection?.kind === 'provider') {
+    // Tuyến provider chạy trên BẤT KỲ connection dùng được nào của nhóm, nên số hiển thị phải là
+    // số NHỎ NHẤT của nhóm — đúng con số harness nén theo (`aggregate_model_metadata` phía harness
+    // lấy min cùng luật). Hứa số của target rộng nhất là hứa điều lượt không giữ được.
+    let smallest: RouterWindow | null = null
+    for (const connection of snapshot.connections) {
+      if (connection.providerId !== selection.providerId) continue
+      const model = connection.models.find((m) => m.id === selection.modelId)
+      // Cùng luật với router (`validTarget`): connection `degraded`/`failed` vẫn là một đích nếu
+      // model là thứ người dùng gõ tay. Bỏ nó đi là hứa cửa sổ RỘNG HƠN thứ harness nén theo.
+      if (!routable(connection, model)) continue
+      const found = readRouterWindow(model)
+      if (!found) continue
+      if (!smallest || found.tokens < smallest.tokens) smallest = found
+    }
+    if (smallest) return smallest
   }
   if (selection?.kind === 'alias') {
     const target = snapshot.aliases.find((a) => a.id === selection.aliasId)?.targets?.[0]

@@ -125,6 +125,14 @@ const vi = {
     // Lệnh điều khiển vẫn gửi được khi agent đang chạy (BUG-21) — nhãn nút Gửi
     // phải nói rõ vì sao nút còn bật dù đang bận.
     sendControlWhileBusy: 'Gửi lệnh điều khiển trong khi agent đang chạy',
+    // Vòng 27 / C-5 — lượt đang chạy vẫn nhận chỉ thị của chủ nhà (hàng đợi `session_steers`):
+    // nhãn nút Gửi phải nói rõ câu này đi đâu, khác hẳn "mở lượt mới".
+    sendSteer: 'Gửi cho lượt đang chạy',
+    // Dòng gợi ý dưới ô nhập khi lượt đang chạy: chỉ thị được đọc ở BƯỚC KẾ, không cắt ngang bước
+    // đang chạy và không mở lượt mới.
+    steerHint: 'áp dụng ở bước kế tiếp',
+    // Dòng xác nhận ngay sau khi chỉ thị đã vào hàng (harness trả 202 `{status:'steered'}`).
+    steerQueued: 'đã xếp hàng · sẽ áp ở bước kế',
     // Nhãn nút Gửi trong lúc tệp đang được đưa lên box (A5/A6): người dùng phải
     // biết vì sao lượt gửi chưa bắt đầu.
     uploadingAttachments: 'Đang tải tệp lên máy ảo…',
@@ -187,6 +195,12 @@ const vi = {
       done: 'Hoàn thành',
     },
     userLabel: 'Người dùng',
+    // Vòng 27 / C-5 — chủ nhà gõ chỉ thị giữa lúc lượt đang chạy: bong bóng của chỉ thị nằm ĐÚNG
+    // chỗ nó được gửi (theo `seq`), mang nhãn nhỏ này để không bị đọc nhầm là một lượt mới.
+    steerLabel: 'can thiệp',
+    // Vòng 27 / C-5 — nhánh bị chủ nhà dừng bằng `cancel_child`: sổ con vẫn là `failed`, nhưng câu
+    // hiện ra phải nói đúng việc đã xảy ra, không gọi đó là "lỗi".
+    childStoppedByOwner: 'chủ nhà dừng',
     agentLabel: 'Agent',
     systemLabel: 'Hệ thống',
     // Đợt 22 / T4 + T15 — bảng Sub-agents theo từng lượt và đường ống peer.

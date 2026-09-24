@@ -47,6 +47,8 @@ afterEach(() => {
 })
 
 const send = async () => useHarnessChatStore.getState().send(CHAT, 'hello', null)
+const sendWith = async (selection: Parameters<ReturnType<typeof useHarnessChatStore.getState>['send']>[2]) =>
+  useHarnessChatStore.getState().send(CHAT, 'hello', selection)
 
 describe('openSession — đường gửi mang chỉ dẫn', () => {
   it('carries the owner directives and the harness id, and books the session', async () => {
@@ -93,6 +95,30 @@ describe('openSession — đường gửi mang chỉ dẫn', () => {
     expect(record?.instructionsChars).toBe(0)
     expect(record?.directivesSkipped).toContain('Harness engine unavailable')
     expect(useOwnerSettingsStore.getState().loadError).toContain('Harness engine unavailable')
+  })
+
+  // Vòng 29 — tuyến `{providerId, modelId}`: một phiên ghim cả nhóm connection, router tự chạy
+  // luân phiên và tự chuyển khoá khi hết hạn mức. Phiên cũ vẫn gửi cặp `{connectionId, modelId}`.
+  it('gửi providerId + modelId và KHÔNG gửi connectionId', async () => {
+    await sendWith({ kind: 'provider', providerId: 'opencode', modelId: 'muse-spark-1.3-contributor-free' })
+
+    expect(sessionBody()).toMatchObject({ providerId: 'opencode', modelId: 'muse-spark-1.3-contributor-free' })
+    expect(sessionBody()).not.toHaveProperty('connectionId')
+  })
+
+  it('chế độ một-model ghi tuyến provider vào model/singleModel', async () => {
+    useHarnessStore.setState({ activeType: 'model' })
+
+    await sendWith({ kind: 'provider', providerId: 'opencode', modelId: 'm1' })
+
+    expect(sessionBody()).toMatchObject({ model: 'provider:opencode:m1', singleModel: 'provider:opencode:m1' })
+  })
+
+  it('phiên ghim một connection vẫn gửi đúng cặp cũ, không thêm providerId', async () => {
+    await sendWith({ kind: 'model', connectionId: 'c1', modelId: 'm1' })
+
+    expect(sessionBody()).toMatchObject({ connectionId: 'c1', modelId: 'm1' })
+    expect(sessionBody()).not.toHaveProperty('providerId')
   })
 
   it('reads the directives once and reuses them for later sessions', async () => {

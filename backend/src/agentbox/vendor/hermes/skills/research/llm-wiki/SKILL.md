@@ -259,8 +259,9 @@ a `_meta/topic-map.md` that groups pages by theme for faster navigation.
 When the user provides a source (URL, file, paste), integrate it into the wiki:
 
 ① **Capture the raw source:**
-   - URL → use `web_extract` to get markdown, save to `raw/articles/`
-   - PDF → use `web_extract` (handles PDFs), save to `raw/papers/`
+   - URL → use `web_fetch` to get markdown, save to `raw/articles/`
+   - PDF → not readable by the harness fetch tool (`web_fetch` returns text for HTML/JSON);
+     ask for a text/HTML copy of the paper, or record `chưa mở được bản gốc`
    - Pasted text → save to appropriate `raw/` subdirectory
    - Name the file descriptively: `raw/articles/karpathy-llm-wiki-2026.md`
    - **Add raw frontmatter** (`source_url`, `ingested`, `sha256` of the body).

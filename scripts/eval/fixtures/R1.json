@@ -1,0 +1,45 @@
+{
+  "id": "R1",
+  "case": "mức 1: một dữ kiện, nguồn chính thống",
+  "level": 1,
+  "request": "Năm 2024, mức đóng bảo hiểm y tế hộ gia đình là bao nhiêu?",
+  "request_source": "nguyên văn bảng ca của kế hoạch (docs/plan/v27/subplans/flow.md §7.1)",
+  "oracle_pass": [
+    "Hồ sơ `.research/<việc>/v1-<việc>.md` mở đầu bằng khối `<!-- boxfox-research … -->` đủ bảy khoá",
+    "Sổ nguồn có ít nhất một hàng mang URL của bản gốc chính thống đã mở",
+    "Header ghi `Level: 1`"
+  ],
+  "bad_answer": [
+    "Trả lời bằng con số không có nguồn nào mở, hoặc nguồn chỉ là một câu chép lại",
+    "Không ghi mức vào header (việc nhỏ mà không chốt mức, hồ sơ thiếu khối máy đọc)"
+  ],
+  "rubric_dimensions": [
+    "C1",
+    "C2",
+    "C3",
+    "C6"
+  ],
+  "environment": {
+    "network": "off",
+    "workspace": "có tài liệu seed, không có mạng"
+  },
+  "budget": {
+    "max_steps": 20,
+    "deadline_seconds": 1200,
+    "source": "trần của mức 1 trong nhật ký hệ thống (RESEARCH_TIER_CHILD_STEPS=20, RESEARCH_TIER_TURN_SECONDS=1200)"
+  },
+  "seeds": [
+    "một tài liệu seed trong workspace (bản gốc cổng nhà nước) đã tải sẵn",
+    "không có kết nối mạng ra ngoài"
+  ],
+  "layer1_checks": [
+    "dossier_frontmatter_present",
+    "sources_opened",
+    "tier_recorded"
+  ],
+  "open_questions": [
+    "Ngưỡng \"nguồn chính thống\" cho văn bản pháp luật cấp tỉnh chưa chốt — ca này dùng bản gốc cổng nhà nước."
+  ],
+  "plan_ref": "docs/plan/v27/subplans/flow.md §7.1",
+  "bad_answer_source": "script này soạn theo chiều ngược của oracle; kế hoạch chỉ có cột 'oracle máy' nên 'bad answer' chưa được chủ sở hữu ghim"
+}

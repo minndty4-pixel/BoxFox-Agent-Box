@@ -17,18 +17,19 @@ import {
   Save,
   Server,
   ShieldCheck,
-  SlidersHorizontal,
   Trash2,
   X,
 } from 'lucide-react'
 import { api } from '../../lib/providerApi'
-import { useProviderStore, type ModelProbeResult } from '../../store/providerStore'
+import { routable } from '../../lib/routeOptions'
+import { run, useProviderStore } from '../../store/providerStore'
 import type {
   OAuthAttempt,
   ProviderConnection,
   ProviderDefault,
   ProviderDefinition,
   ProviderId,
+  ProviderModel,
   ProviderSnapshot,
   RouteTarget,
   RouterAlias,
@@ -39,11 +40,11 @@ import { Pill } from '../providers/ProviderStatus'
 import { InferenceTest } from '../providers/InferenceTest'
 import { OAuthConnectModal } from '../providers/OAuthConnectModal'
 import { ModelManagerModal } from './ModelManagerModal'
-import { CustomModelForm } from './CustomModelForm'
+import { ConnectionKeyRing, deleteBlockedReason, keyRingSize } from './ConnectionKeyRing'
+import { ModelToggleList, ProviderModelList } from './ProviderModelList'
 import { ProviderRail, type ProviderRailGroup } from './ProviderRail'
 
 type ProviderTab = 'api' | 'router'
-function run(action: Promise<unknown>) { void action.catch(error => useProviderStore.setState({ error: error instanceof Error ? error.message : 'Router request failed.' })) }
 type RouterSection = 'accounts' | 'models' | 'routing' | 'quota' | 'usage' | 'access'
 
 const field = 'w-full rounded-lg border border-line bg-panel2 px-3 py-2 text-xs text-fg outline-hidden transition focus:border-brand focus:ring-2 focus:ring-brand/15'
@@ -57,16 +58,38 @@ function providerFor(snapshot: ProviderSnapshot, id: string) {
 
 function publicTargets(snapshot: ProviderSnapshot) {
   const direct = snapshot.connections.flatMap((connection) =>
-    connection.enabled && connection.authState === 'ready' && connection.discoveryState === 'ready' && (connection.providerId !== 'antigravity' || connection.projectState === 'ready')
-      ? connection.models.filter((model) => model.enabled).map((model) => ({
-          id: `${connection.id}/${model.id}`,
-          label: `${connection.name} / ${model.name}`,
-          connectionId: connection.id,
-          modelId: model.id,
-        }))
-      : [],
+    connection.models.filter((model) => routable(connection, model)).map((model) => ({
+      id: `${connection.id}/${model.id}`,
+      label: `${connection.name} / ${model.name}`,
+      connectionId: connection.id,
+      modelId: model.id,
+    })),
   )
   return direct
+}
+
+/** The model a user types by hand: on, healthy, and marked as theirs. Asked of a connection with
+ *  no row of its own, because `routable` answers "may this connection serve a model the provider
+ *  never listed" in its last clause — the same clause the router routes with. */
+const typedByHand: ProviderModel = { id: '', name: '', enabled: true, source: 'custom', capabilities: { streaming: 'unknown', tools: 'unknown', vision: 'unknown' } }
+
+/**
+ * The connections the provider level model list speaks for — one block per provider, one row per
+ * model, merged across these connections.
+ *
+ * Both clauses call `routable`, the router's own rule, so this list can neither promise a target
+ * the router would refuse nor drop one it takes:
+ * - a model the router would route if it were switched ON (`enabled: true`): the rows stay put
+ *   when the last one is switched off — this block holds the checkbox that switches it back on;
+ * - a model typed by hand (`typedByHand`): a connection whose discovery failed or degraded routes
+ *   exactly those, so its rows belong here; they used to disappear, and with a single connection
+ *   the whole block with them (round 29 review). The same clause keeps a connection whose
+ *   discovered list is still EMPTY listed, because `Add model` and `Manage models` live here.
+ */
+function modelListConnections(connections: ProviderConnection[]) {
+  return connections.filter((connection) =>
+    connection.models.some((model) => routable(connection, { ...model, enabled: true })) || routable(connection, typedByHand),
+  )
 }
 
 function PublicStatus({ snapshot }: { snapshot: ProviderSnapshot }) {
@@ -200,6 +223,9 @@ function ApiPanel({ snapshot, busy }: { snapshot: ProviderSnapshot; busy: boolea
 
   const chosen = definitions.find((provider) => provider.id === providerId) ?? definitions[0]
   const connections = snapshot.connections.filter((connection) => connection.providerId === chosen?.id)
+  // The provider level model list speaks for the connections the router can reach — see
+  // `modelListConnections` for why `discoveryState === 'ready'` alone is too narrow.
+  const listedConnections = modelListConnections(connections)
   const groups: ProviderRailGroup[] = [
     { id: 'free', label: 'Free Tier', providers: definitions.filter((provider) => providerCategoryValueV2(provider) === 'free') },
     { id: 'api-keys', label: 'API keys', providers: definitions.filter((provider) => providerCategoryValueV2(provider) !== 'free') },
@@ -244,6 +270,9 @@ function ApiPanel({ snapshot, busy }: { snapshot: ProviderSnapshot; busy: boolea
 
           <section className="space-y-3">
             {connections.length === 0 ? <Empty text="No API connection configured yet." /> : connections.map((connection) => <ConnectionCard key={connection.id} snapshot={snapshot} connection={connection} />)}
+            {/* One row per model for the whole provider: two keys of the same provider must
+                not show the same model twice (round 29). */}
+            <ProviderModelList connections={listedConnections} />
           </section>
         </div>
       </div>
@@ -287,6 +316,9 @@ function ConnectionCard({ snapshot, connection }: { snapshot: ProviderSnapshot; 
   const request = useProviderStore((state) => state.request)
   const busy = useProviderStore((state) => state.busy)
   const provider = providerFor(snapshot, connection.providerId)
+  // Defensive read, in one place: `keys` absent means the router has not decorated this
+  // connection, and the card keeps the legacy single-key behaviour it had before round 29.
+  const keyRing = Array.isArray(connection.keys) ? connection.keys : null
   const [name, setName] = useState(connection.name)
   const [endpoint, setEndpoint] = useState(connection.endpoint ?? '')
   const [key, setKey] = useState('')
@@ -374,7 +406,7 @@ function ConnectionCard({ snapshot, connection }: { snapshot: ProviderSnapshot; 
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <button type="button" disabled={busy || !connection.credentialPresent} onClick={() => run(refresh())} className={secondary}><RefreshCw className="size-3.5" />Retry</button>
             <button type="button" onClick={() => setManagerOpen(true)} className={secondary}><Plus className="size-3.5" />Add model by hand</button>
-            <button type="button" onClick={() => { setEditOpen(true); setFocusRequest((current) => current + 1) }} className={secondary}><KeyRound className="size-3.5" />Edit endpoint &amp; key</button>
+            <button type="button" onClick={() => { setEditOpen(true); setFocusRequest((current) => current + 1) }} className={secondary}><KeyRound className="size-3.5" />{keyRing ? 'Edit name & endpoint' : 'Edit endpoint & key'}</button>
           </div>
         </div>
       ) : connection.error ? (
@@ -385,7 +417,9 @@ function ConnectionCard({ snapshot, connection }: { snapshot: ProviderSnapshot; 
         <p className="mt-1.5 text-[11px] text-muted">{handTyped.length} model(s) added by hand — tested one by one.</p>
       )}
 
-      {!connection.credentialPresent ? (
+      {keyRing ? (
+        <ConnectionKeyRing connection={connection} />
+      ) : !connection.credentialPresent ? (
         <p className="mt-2 text-[11px] leading-4 text-muted">No API key saved on this connection. Add one in Edit, then Refresh models.</p>
       ) : connection.authState !== 'ready' ? (
         <p className="mt-2 text-[11px] leading-4 text-amber-700 dark:text-amber-300">Key saved on host; the provider refused it (auth {connection.authState}). Refresh models to retry, or replace the key in Edit.</p>
@@ -403,9 +437,11 @@ function ConnectionCard({ snapshot, connection }: { snapshot: ProviderSnapshot; 
       {editOpen && (
         <div id={editId} className="mt-2 rounded-lg border border-line bg-panel2/40 p-3">
           <p className="text-[10px] font-mono uppercase text-muted">Connection</p>
-          <div className="mt-2 grid gap-3 md:grid-cols-3">
+          <div className={`mt-2 grid gap-3 ${keyRing ? 'md:grid-cols-2' : 'md:grid-cols-3'}`}>
             <label className="text-xs font-semibold">Name<input value={name} onChange={(event) => setName(event.target.value)} className={`${field} mt-1.5`} /></label>
-            <label className="text-xs font-semibold">Replace API key<input ref={keyRef} type="password" autoComplete="off" value={key} onChange={(event) => setKey(event.target.value)} placeholder={connection.credentialPresent ? 'Saved on host' : 'Paste key'} className={`${field} mt-1.5 font-mono`} /></label>
+            {/* With a key ring the key input is not here at all: keys are added, replaced and
+                removed in the ring block at the top of the card. */}
+            {!keyRing && <label className="text-xs font-semibold">Replace API key<input ref={keyRef} type="password" autoComplete="off" value={key} onChange={(event) => setKey(event.target.value)} placeholder={connection.credentialPresent ? 'Saved on host' : 'Paste key'} className={`${field} mt-1.5 font-mono`} /></label>}
             {connection.providerId === 'custom' ? (
               <label className="text-xs font-semibold">Base URL
                 <input ref={endpointRef} value={endpoint} onChange={(event) => setEndpoint(event.target.value)} className={`${field} mt-1.5 font-mono`} />
@@ -413,14 +449,18 @@ function ConnectionCard({ snapshot, connection }: { snapshot: ProviderSnapshot; 
               </label>
             ) : <div />}
           </div>
-          <div className="mt-3 flex flex-wrap gap-2">
+          <div className="mt-3 flex flex-wrap items-center gap-2">
             <button type="button" disabled={busy} onClick={() => run(save())} className={secondary}><Save className="size-3.5" />Save</button>
-            <button type="button" disabled={busy} onClick={() => run(remove())} className={`${secondary} text-red-600 dark:text-red-300`}><Trash2 className="size-3.5" />Delete</button>
+            {/* Two layers say the same thing: this disabled button and the router's own
+                `409 KEYS_PRESENT` for anyone calling the API directly. */}
+            <button type="button" disabled={busy || keyRingSize(connection) > 0} onClick={() => run(remove())} className={`${secondary} text-red-600 dark:text-red-300`}><Trash2 className="size-3.5" />Delete</button>
+            {deleteBlockedReason(connection) && <p className="text-[10px] leading-4 text-muted">{deleteBlockedReason(connection)}</p>}
           </div>
         </div>
       )}
 
-      {/* The model block and the inference sandbox stay gated on a saved key the provider accepted. */}
+      {/* The inference sandbox stays gated on a saved key the provider accepted; the model
+          list itself is one provider-level block, not one list per connection. */}
       {connection.credentialPresent && connection.authState === 'ready' && (
         <>
           <div className="mt-2 border-t border-line/60 pt-2">
@@ -430,7 +470,6 @@ function ConnectionCard({ snapshot, connection }: { snapshot: ProviderSnapshot; 
             </button>
             {inferenceOpen && <div id={inferenceId} className="mt-1"><InferenceTest key={connection.revision} connection={connection} /></div>}
           </div>
-          <ModelToggleList connection={connection} />
         </>
       )}
 
@@ -555,6 +594,8 @@ function RouterProviderDetailV2({ snapshot, provider, busy, request, load, onBac
   const providerConfig = snapshot.providerConfigs?.find((value) => value.id === provider.id) ?? { id: provider.id, roundRobin: false, connectionOrder: [] }
   const rank = new Map(providerConfig.connectionOrder.map((id, index) => [id, index]))
   const connections = [...rawConnections].sort((a, b) => (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER))
+  // The provider level model list covers the same connections as the API tab's, by the same rule.
+  const listedConnections = modelListConnections(connections)
 
   useEffect(() => { setName(provider.name); setProjectId(''); setApiKey(''); setEndpoint(provider.defaultEndpoint ?? ''); setAttempt(null) }, [provider.id, provider.name, provider.defaultEndpoint])
   useEffect(() => {
@@ -686,6 +727,8 @@ function RouterProviderDetailV2({ snapshot, provider, busy, request, load, onBac
           </div>
         ))
       )}
+      {/* One row per model for the whole provider, the same block the API tab renders. */}
+      <ProviderModelList connections={listedConnections} />
     </section>
   </div>
 }
@@ -757,6 +800,9 @@ function OAuthOrApiConnectionCard({
   const [apiKey, setApiKey] = useState('')
   const [showKeyInput, setShowKeyInput] = useState(false)
   const isOAuth = provider.authMethod === 'oauth' || provider.authModes?.includes('oauth')
+  // Same defensive read as the API card: no `keys` means the legacy single-key shape.
+  const keyRing = Array.isArray(connection.keys) ? connection.keys : null
+  const ringId = useId()
 
   useEffect(() => setName(connection.name), [connection.name])
 
@@ -826,8 +872,10 @@ function OAuthOrApiConnectionCard({
         </div>
       </div>
 
-      {showKeyInput && (
-        <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto]">
+      {/* One OAuth access token is not a ring, and a connection whose snapshot carries no `keys`
+          array is the legacy single-key shape. Both branches keep today's single input. */}
+      {showKeyInput && (isOAuth || !keyRing) && (
+        <div id={ringId} className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto]">
           <label className="text-xs font-semibold">
             {isOAuth ? 'Update session token / API key' : 'Update API key'}
             <input
@@ -860,6 +908,12 @@ function OAuthOrApiConnectionCard({
         </div>
       )}
 
+      {showKeyInput && !isOAuth && keyRing && (
+        <div id={ringId}>
+          <ConnectionKeyRing connection={connection} />
+        </div>
+      )}
+
       <div className="mt-4 flex flex-wrap gap-2">
         {isOAuth && (
           <button
@@ -874,11 +928,13 @@ function OAuthOrApiConnectionCard({
         )}
         <button
           type="button"
+          aria-expanded={showKeyInput}
+          aria-controls={ringId}
           onClick={() => setShowKeyInput((val) => !val)}
           className={secondary}
         >
           <KeyRound className="size-3.5" />
-          {connection.credentialPresent ? 'Update key/token' : 'Set key/token'}
+          {keyRing && !isOAuth ? (showKeyInput ? 'Hide keys' : 'Show keys') : connection.credentialPresent ? 'Update key/token' : 'Set key/token'}
         </button>
         <button
           type="button"
@@ -899,7 +955,7 @@ function OAuthOrApiConnectionCard({
         </button>
         <button
           type="button"
-          disabled={busy}
+          disabled={busy || keyRingSize(connection) > 0}
           onClick={() => run(request(`/api/router/connections/${encodeURIComponent(connection.id)}`, 'DELETE'))}
           className={`${secondary} text-red-600 dark:text-red-300`}
         >
@@ -907,13 +963,13 @@ function OAuthOrApiConnectionCard({
           Delete
         </button>
       </div>
+      {deleteBlockedReason(connection) && <p className="mt-2 text-[10px] leading-4 text-muted">{deleteBlockedReason(connection)}</p>}
 
       {connection.error && <p className="mt-3 text-xs text-red-600 dark:text-red-300">{connection.error}</p>}
 
       {connection.credentialPresent && connection.authState === 'ready' ? (
         <>
           <InferenceTest key={connection.revision} connection={connection} />
-          {connection.models.length > 0 && <ModelToggleList connection={connection} />}
         </>
       ) : (
         <div className="mt-4 rounded-xl border border-dashed border-line/70 bg-panel2/30 p-4 text-center text-xs text-muted space-y-1">
@@ -1263,7 +1319,6 @@ function AntigravityAccount({ connection, onConnect }: { connection: ProviderCon
       {connection.credentialPresent && connection.authState === 'ready' ? (
         <>
           <InferenceTest key={connection.revision} connection={connection} />
-          {connection.models.length > 0 && <ModelToggleList connection={connection} />}
         </>
       ) : (
         <div className="mt-4 rounded-xl border border-dashed border-line/70 bg-panel2/30 p-4 text-center text-xs text-muted space-y-1">
@@ -1290,149 +1345,6 @@ function _LegacyModelsSection({ snapshot }: { snapshot: ProviderSnapshot }) {
   const busy = useProviderStore((state) => state.busy)
   const models = snapshot.connections.filter((connection) => connection.models.length > 0)
   return <div className="space-y-4"><div><h2 className="text-sm font-semibold">Model inventory</h2><p className="mt-1 text-xs text-muted">Live discovery is the source of truth for availability. Enable only models BoxFox may route to.</p></div>{models.length === 0 ? <Empty text="Discover models from a connected provider first." /> : models.map((connection) => <article key={connection.id} className="rounded-xl border border-line bg-panel p-4"><div className="flex items-center justify-between gap-3"><div className="flex items-center gap-2"><ProviderIcon providerId={connection.providerId} className="size-7" /><span className="text-xs font-semibold">{connection.name}</span></div><button type="button" disabled={busy || !connection.credentialPresent} onClick={() => run(request(`/api/router/connections/${encodeURIComponent(connection.id)}/models/refresh`, 'POST'))} className={secondary}><RefreshCw className="size-3.5" />Refresh</button></div><ModelToggleList connection={connection} /></article>)}</div>
-}
-
-function modelLatencyTone(model: ProviderConnection['models'][number]) {
-  if (model.health === 'ready') return 'text-emerald-400'
-  if (['unavailable', 'failed'].includes(model.health ?? '')) return 'text-rose-400'
-  if (model.health === 'rate_limited' || model.health === 'slow') return 'text-amber-400'
-  return 'text-muted'
-}
-
-/** The compact row prints only the number, so the title carries the status word and
- *  the reason: a failed probe must never be signalled by colour alone. */
-function latencyTitle(model: ProviderConnection['models'][number]) {
-  if (!model.lastProbe) return 'Not tested yet — Test probes this model once'
-  const status = model.lastProbe.status === 'passed' ? 'Passed' : 'Failed'
-  const health = model.health && model.health !== 'unknown' ? ` · ${model.health}` : ''
-  const http = Number.isFinite(model.lastProbe.httpStatus) ? ` · HTTP ${model.lastProbe.httpStatus}` : ''
-  const reason = model.lastProbe.error ? ` · ${model.lastProbe.error}` : ''
-  return `${status}${health}${http} · ${model.lastProbe.latencyMs} ms${reason}`
-}
-
-function ModelToggleList({ connection }: { connection: ProviderConnection }) {
-  const request = useProviderStore((state) => state.request)
-  const probeModel = useProviderStore((state) => state.probeModel)
-  const busy = useProviderStore((state) => state.busy)
-  const [showManagerModal, setShowManagerModal] = useState(false)
-  const [selectedModelForModal, setSelectedModelForModal] = useState<string | undefined>(undefined)
-  const [addModelOpen, setAddModelOpen] = useState(false)
-  const [probing, setProbing] = useState<string[]>([])
-  const [probeResults, setProbeResults] = useState<Record<string, ModelProbeResult>>({})
-  const addModelId = useId()
-  const controllers = useRef<Set<AbortController>>(new Set())
-
-  // A probe can outlive the card (the state reload can unmount it), so every probe
-  // owns an AbortController that is aborted when this list goes away.
-  useEffect(() => () => { controllers.current.forEach((controller) => controller.abort()); controllers.current.clear() }, [])
-
-  const enabled = connection.models.filter((model) => model.enabled).map((model) => model.id)
-  const verified = connection.models.filter((model) => model.health === 'ready')
-  // Prices are per model, so the card says how many of them carry one before the
-  // user opens Manage models — a blank cost column is otherwise a surprise.
-  const priced = connection.models.filter((model) => model.pricing != null).length
-  const patchEnabled = (next: string[]) => request(`/api/router/connections/${encodeURIComponent(connection.id)}`, 'PATCH', { enabledModelIds: next })
-  const toggle = (modelId: string) => patchEnabled(enabled.includes(modelId) ? enabled.filter((id) => id !== modelId) : [...enabled, modelId])
-  const disable = (modelId: string) => patchEnabled(enabled.filter((id) => id !== modelId))
-  const copyModel = (modelId: string) => navigator.clipboard?.writeText(modelId) ?? Promise.resolve()
-  const testModel = async (modelId: string) => {
-    const controller = new AbortController()
-    controllers.current.add(controller)
-    setProbing((current) => (current.includes(modelId) ? current : [...current, modelId]))
-    try {
-      const result = await probeModel(connection.id, modelId, controller.signal)
-      setProbeResults((current) => ({ ...current, [modelId]: result }))
-    } finally {
-      controllers.current.delete(controller)
-      setProbing((current) => current.filter((id) => id !== modelId))
-    }
-  }
-  const openManager = (modelId?: string) => {
-    setSelectedModelForModal(modelId)
-    setShowManagerModal(true)
-  }
-
-  const capabilityChips = (model: ProviderConnection['models'][number]) => {
-    const vision = model.capabilities.vision
-    const reasoning = model.capabilities.reasoning
-    const isFree = model.id.includes(':free') || model.id === 'openrouter/free'
-    return (
-      <>
-        {isFree && <span className="shrink-0 rounded border border-emerald-500/20 bg-emerald-500/10 px-1 font-mono text-[9px] text-emerald-400">free</span>}
-        {model.source === 'custom' && <span className="shrink-0 rounded border border-brand/20 bg-brand/10 px-1 font-mono text-[9px] text-brand">custom</span>}
-        <span className={`shrink-0 rounded border px-1 font-mono text-[9px] ${vision === 'verified' ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-400' : 'border-line bg-panel text-muted'}`}>
-          {vision === 'verified' ? 'vision' : `vision ${vision}`}
-        </span>
-        {(reasoning === 'verified' || reasoning === 'reported') && <span className="hidden shrink-0 rounded border border-brand/20 bg-brand/10 px-1 font-mono text-[9px] text-brand lg:inline">reasoning</span>}
-      </>
-    )
-  }
-
-  return (
-    <div className="mt-2 rounded-lg border border-line/60 bg-panel2/30 p-2">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <p className="text-[10px] font-mono uppercase text-muted">Models</p>
-          <span className="rounded-full border border-line bg-panel px-2 py-0.5 font-mono text-[10px] text-muted">{enabled.length} / {connection.models.length} active</span>
-          {verified.length > 0 && <span className="hidden items-center gap-1 font-mono text-[10px] text-emerald-400 sm:flex"><span className="size-1.5 rounded-full bg-emerald-400" />{verified.length} verified ready</span>}<span className="hidden items-center gap-1 font-mono text-[10px] text-muted sm:flex" title="Models that carry a price — reported by the provider, published in its model list, or set by you. Manage models sets the rest.">Prices {priced} / {connection.models.length} models</span>
-        </div>
-        <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-          {enabled.length > 0 && <button type="button" disabled={busy} onClick={() => run(patchEnabled([]))} className="rounded px-2 py-1 text-[11px] text-muted transition hover:text-rose-400 disabled:opacity-50">Disable all</button>}
-          <button type="button" aria-expanded={addModelOpen} aria-controls={addModelId} onClick={() => setAddModelOpen((current) => !current)} className="inline-flex items-center gap-1 rounded-lg border border-line bg-panel px-2 py-1 text-[11px] font-medium text-fg transition hover:bg-panel2"><Plus className="size-3" />Add model</button>
-          <button type="button" onClick={() => openManager()} className="inline-flex items-center gap-1.5 rounded-lg border border-brand/40 bg-brand/15 px-2.5 py-1 text-[11px] font-semibold text-brand transition hover:bg-brand/25"><SlidersHorizontal className="size-3.5" />Manage models</button>
-        </div>
-      </div>
-
-      {addModelOpen && (
-        <div id={addModelId} className="mt-2 rounded-lg border border-dashed border-line/70 bg-panel2/40 p-2.5">
-          {/* The same form the model manager uses, with its own declare-then-probe Test. */}
-          <CustomModelForm connection={connection} onCancel={() => setAddModelOpen(false)} />
-        </div>
-      )}
-
-      <p role="status" className="sr-only">{probing.length > 0 ? `Testing ${probing.join(', ')}…` : ''}</p>
-
-      {connection.models.length === 0 ? (
-        <p className="px-1 py-3 text-[11px] text-muted">No models discovered yet. Refresh models or add a model by hand.</p>
-      ) : (
-        <div className="mt-2 max-h-72 divide-y divide-line/10 overflow-y-auto pr-1">
-          {connection.models.map((model) => {
-            const result = probeResults[model.id]
-            const isProbing = probing.includes(model.id)
-            return (
-              <div key={model.id}>
-                <div className="flex min-h-[28px] flex-wrap items-center gap-2 py-0.5 text-[11px]">
-                  <input type="checkbox" disabled={busy} checked={model.enabled} onChange={() => run(toggle(model.id))} aria-label={`Enable ${model.id}`} className="size-3 shrink-0 accent-blue-500" />
-                  <span className="min-w-0 max-w-[16rem] truncate font-medium text-fg" title={model.name}>{model.name}</span>
-                  <span className="hidden min-w-0 max-w-[14rem] truncate font-mono text-[10px] text-muted md:inline" title={model.id}>{model.id}</span>
-                  {capabilityChips(model)}
-                  {model.thinkingLevels && model.thinkingLevels.length > 0 && <span className="hidden shrink-0 font-mono text-[9px] text-muted xl:inline">{model.thinkingLevels.join(' · ')}</span>}
-                  <span className={`ml-auto shrink-0 font-mono text-[10px] ${modelLatencyTone(model)}`} title={latencyTitle(model)}>{isProbing ? 'Testing…' : model.lastProbe ? `${model.lastProbe.latencyMs} ms` : 'Untested'}</span>
-                  <button type="button" aria-busy={isProbing} disabled={busy || isProbing} onClick={() => run(testModel(model.id))} className="shrink-0 rounded border border-line bg-panel px-1.5 py-0.5 text-[10px] font-medium text-fg transition hover:bg-panel2 hover:text-brand disabled:opacity-50">{isProbing ? 'Testing…' : 'Test'}</button>
-                  <button type="button" aria-label={`Copy ${model.id}`} title="Copy model ID" onClick={() => run(copyModel(model.id))} className="shrink-0 rounded p-1 text-muted transition hover:bg-panel2 hover:text-fg"><Copy className="size-3" /></button>
-                  <button type="button" aria-label={`Manage ${model.id}`} title="Manage this model" onClick={() => openManager(model.id)} className="shrink-0 rounded p-1 text-muted transition hover:bg-panel2 hover:text-fg"><SlidersHorizontal className="size-3" /></button>
-                  <button type="button" title="Remove from active models" onClick={() => run(disable(model.id))} className="shrink-0 rounded p-1 text-muted transition hover:bg-panel2 hover:text-rose-400"><X className="size-3" /></button>
-                </div>
-                {result && (
-                  <p className={`pb-1 pl-5 font-mono text-[10px] ${result.status === 'passed' ? 'text-emerald-400' : 'text-rose-400'}`}>
-                    {result.status === 'passed' ? `Answered BOXFOX_OK · ${result.latencyMs} ms` : `HTTP ${result.httpStatus} · ${result.code} · ${result.message}`}
-                  </p>
-                )}
-              </div>
-            )
-          })}
-        </div>
-      )}
-
-      {showManagerModal && (
-        <ModelManagerModal
-          connection={connection}
-          initialSelectedModelId={selectedModelForModal}
-          onClose={() => setShowManagerModal(false)}
-        />
-      )}
-    </div>
-  )
 }
 
 function ModelsSection({ snapshot }: { snapshot: ProviderSnapshot }) {

@@ -49,7 +49,7 @@ Use when the user asks for:
 
 Do NOT use this skill for:
 
-- general web research → `web_search` / `web_extract`
+- general web research → `web_search` / `web_fetch`
 - domain/infrastructure OSINT → `domain-intel` skill
 - academic literature → `arxiv` skill
 - social-media profile discovery → `sherlock` skill (optional)

@@ -5,12 +5,46 @@ export function baseUrl(value) {
   return String(value || '').replace(/\/+$/, '');
 }
 
-export function providerError(status, retryable = status === 429 || status >= 500, detail = null) {
+/**
+ * `Retry-After` (RFC 9110) là số giây hoặc một HTTP-date. Trả về số mili giây,
+ * hoặc `null` khi header vắng mặt / không đọc được — im lặng bỏ qua một giá trị
+ * rác an toàn hơn là đoán một cửa sổ nghỉ. Đây là đường DUY NHẤT đọc header này
+ * dùng chung cho mọi adapter (antigravity đã tự gieo `retryAfterMs`).
+ */
+export function parseRetryAfter(value) {
+  if (value === undefined || value === null) return null;
+  const text = String(value).trim();
+  if (!text) return null;
+  if (/^\d+(?:\.\d+)?$/.test(text)) {
+    const seconds = Number(text);
+    return Number.isFinite(seconds) ? Math.round(seconds * 1000) : null;
+  }
+  const at = Date.parse(text);
+  return Number.isFinite(at) ? Math.max(at - Date.now(), 0) : null;
+}
+
+/**
+ * Mọi adapter đi qua đây khi provider trả lỗi. `retryAfterMs` (đọc từ header
+ * `retry-after`) được gắn NGUYÊN vào lỗi khi nó là một số hữu hạn: engine đọc
+ * nó để quyết định khoá nghỉ bao lâu, và một lỗi 429 thật đi ra tới harness vẫn
+ * mang theo con số ấy trong envelope (`errors.mjs:55`). Không có header thì
+ * trường vắng mặt và luật mặc định của ring áp dụng.
+ */
+export function providerError(status, retryable = status === 429 || status >= 500, detail = null, retryAfterMs = null) {
   const msgSuffix = detail ? `: ${detail.slice(0, 300)}` : '';
-  if (status === 401 || status === 403) return new RouterError('AUTH', `Provider authentication failed${msgSuffix}. Reconnect or replace the credential.`, status, false);
-  if (status === 404) return new RouterError('MODEL_NOT_FOUND', `The provider no longer exposes this model${msgSuffix}. Refreshing model inventory may resolve it.`, 404, true);
-  if (status === 429) return new RouterError('RATE_LIMIT', `Provider rate limit or quota reached${msgSuffix}. Try again later.`, status, true);
-  return new RouterError('UNAVAILABLE', detail ? `Provider error (${status}): ${detail.slice(0, 300)}` : 'Provider is unavailable or returned an invalid response.', status || 502, retryable);
+  let error;
+  if (status === 401 || status === 403) error = new RouterError('AUTH', `Provider authentication failed${msgSuffix}. Reconnect or replace the credential.`, status, false);
+  else if (status === 404) error = new RouterError('MODEL_NOT_FOUND', `The provider no longer exposes this model${msgSuffix}. Refreshing model inventory may resolve it.`, 404, true);
+  else if (status === 429) error = new RouterError('RATE_LIMIT', `Provider rate limit or quota reached${msgSuffix}. Try again later.`, status, true);
+  else error = new RouterError('UNAVAILABLE', detail ? `Provider error (${status}): ${detail.slice(0, 300)}` : 'Provider is unavailable or returned an invalid response.', status || 502, retryable);
+  if (Number.isFinite(retryAfterMs)) error.retryAfterMs = retryAfterMs;
+  // Lời của chính nhà cung cấp, giữ BÊN CẠNH câu chuẩn của router. Vòng khoá đọc
+  // trường này (`keyring.mjs` → `classifyState`): câu chuẩn luôn chứa chữ "quota"
+  // ("Provider rate limit or quota reached…"), nên phân loại trên cả câu sẽ biến mọi
+  // 429 thành `exhausted` và trạng thái `cooling` (cùng số đếm ngược) không bao giờ
+  // hiện ra với họ adapter này.
+  if (typeof detail === 'string' && detail) error.providerMessage = detail.slice(0, 300);
+  return error;
 }
 
 export async function ensureOk(response) {
@@ -25,7 +59,7 @@ export async function ensureOk(response) {
         detail = text;
       }
     } catch {}
-    throw providerError(response.status, undefined, detail);
+    throw providerError(response.status, undefined, detail, parseRetryAfter(response.headers?.get?.('retry-after')));
   }
   return response;
 }

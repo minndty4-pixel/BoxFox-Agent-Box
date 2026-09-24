@@ -19,6 +19,13 @@ export XDG_CONFIG_HOME=/home/agent/.config
 export XDG_CACHE_HOME=/home/agent/.cache
 export XDG_DATA_HOME=/home/agent/.local/share
 
+# Cùng cái bẫy gosu ở trên, nhưng cho các script kỹ năng của vendor: chúng suy thư mục
+# riêng bằng `os.environ.get('HERMES_HOME') or Path.home()/'.hermes'`. Với HOME=/root thì
+# thư mục đó là /root/.hermes — agent không đọc/ghi được — nên sổ nguồn dự phòng của
+# `skills/research/grounded-citations/scripts/sources.py` sẽ nổ ngay khi chạy.
+# Ghim tường minh để không phụ thuộc vào HOME của tiến trình gọi.
+export HERMES_HOME=/home/agent/.hermes
+
 echo "[box-services] Xvnc :99 (${BOX_SCREEN:-1280x800x24})..."
 # Xvnc (TigerVNC) = X server + VNC server trong MỘT tiến trình, thay cả Xvfb lẫn
 # x11vnc. Điểm cốt lõi: RandR của nó mở tới 32768x32768 và nó nhận

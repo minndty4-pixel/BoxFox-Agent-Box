@@ -59,7 +59,7 @@ blind-opt-out even if the scan is inconclusive - see the posture section above).
 `search.by` supports) - different vectors surface different listings for the same person; dedupe found
 URLs.
 
-1. `web_extract` on the broker `search.url` (fast HTML -> markdown). Look for `search.match_signal`.
+1. `web_fetch` on the broker `search.url` (fast HTML -> markdown). Look for `search.match_signal`.
    Build per-vector URLs from `search.url_patterns` and heed `search.url_format_quirks` (see below).
 1b. **`site:` search-engine probe (cheap, do it early and in parallel).** `web_search` with
    `site:<broker-domain> "First Last"` (add a city/ZIP or a unique phone/address to cut namesake
@@ -78,7 +78,7 @@ URLs.
    burn attempts - `pdd.py record <subject> <broker> blocked` and move on (a re-scan with a stealth
    backend can pick it up later).
 3b. **Operator-browser path (the reliable unblock for anti-bot sites).** Cloudflare/DataDome key on
-   datacenter IPs + headless fingerprints, so `web_extract`, the proxyless agent browser, and even a
+   datacenter IPs + headless fingerprints, so `web_fetch`, the proxyless agent browser, and even a
    cloud browser often fail - but the **operator's own everyday browser (residential IP, real
    fingerprint) sails straight through**. For any `blocked` site, hand the operator a paste-ready
    search URL (built from `search.url_patterns`), give them the identity anchors to judge by (current
@@ -268,7 +268,7 @@ run stalling in Phase 2.
 
 - **Phase 1 (scan, read-only):** a cloud stealth browser (Browserbase) or the `scrapling` skill is
   ideal. On a residential IP with a real fingerprint it passes managed challenges (Cloudflare
-  Turnstile, hCaptcha checkbox) and reads anti-bot people-search pages that `web_extract` and the
+  Turnstile, hCaptcha checkbox) and reads anti-bot people-search pages that `web_fetch` and the
   proxyless agent browser cannot. This is what the skill's `browser_backend` setting governs
   (`auto` picks Browserbase when `BROWSERBASE_API_KEY` is present - now also read from
   `$HERMES_HOME/.env`, not just the shell env, so `doctor`/`setup --auto` detect the key Hermes

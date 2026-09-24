@@ -130,7 +130,43 @@ def test_command_child_plan_idempotency_and_skill_snapshot(registry):
     asyncio.run(run())
 
 
-def test_busy_controls_never_start_second_model_call(registry):
+def test_busy_controls_never_start_second_model_call(registry, monkeypatch):
+    """Lượt đang chạy: lệnh điều khiển vẫn chạy, và lời nhắn của chủ nhà KHÔNG mở lượt thứ hai.
+
+    Vòng 27 (đợt 7, D-43) đổi kết cục của lời nhắn giữa lượt từ `SESSION_BUSY` thành một chỉ thị
+    chờ bơm — nhưng bất biến cũ giữ nguyên: đúng MỘT lượt model sống tại một thời điểm. Tắt công
+    tắc (`BOXFOX_STEER=off`) phải trả về đúng hành vi cũ.
+    """
+    async def run():
+        started, finish = asyncio.Event(), asyncio.Event()
+        calls = {'n': 0}
+        class Waiting(Model):
+            async def complete(self, *args, **kwargs):
+                calls['n'] += 1
+                started.set(); await finish.wait()
+                return await super().complete(*args, **kwargs)
+        runtime = HarnessRuntime(registry.store, Executor(), Waiting(), registry.catalog)
+        sid = runtime.create({'skills': []})['id']
+        await runtime.submit(sid, 'hello')
+        await started.wait()
+        assert calls['n'] == 1
+        assert (await runtime.submit(sid, '/status'))['status'] == 'running'
+        steered = await runtime.submit(sid, 'đổi hướng: chỉ đọc tầng 1')
+        assert steered['status'] == 'steered' and steered['steerId']
+        assert steered['pending'] == 1
+        assert calls['n'] == 1, 'chỉ thị không được mở lượt model thứ hai'
+        assert runtime.store.pending_steer_count(sid) == 1
+        monkeypatch.setenv('BOXFOX_STEER', 'off')
+        with pytest.raises(ValueError, match='SESSION_BUSY'):
+            await runtime.submit(sid, '/plan task')
+        assert calls['n'] == 1
+        await runtime.submit(sid, '/stop')
+        assert runtime.store.get(sid)['status'] == 'cancelled'
+    asyncio.run(run())
+
+
+def test_a_child_session_still_refuses_a_message_mid_turn(registry):
+    """Con không nói chuyện với chủ nhà (#5961): con đang chạy thì lời nhắn vẫn là `SESSION_BUSY`."""
     async def run():
         started, finish = asyncio.Event(), asyncio.Event()
         class Waiting(Model):
@@ -139,13 +175,13 @@ def test_busy_controls_never_start_second_model_call(registry):
                 return await super().complete(*args, **kwargs)
         runtime = HarnessRuntime(registry.store, Executor(), Waiting(), registry.catalog)
         sid = runtime.create({'skills': []})['id']
-        await runtime.submit(sid, 'hello')
+        child = runtime.create({'skills': []}, parent_id=sid, role='research')
+        await runtime.submit(child['id'], 'việc con')
         await started.wait()
-        assert (await runtime.submit(sid, '/status'))['status'] == 'running'
-        with pytest.raises(ValueError, match='BUSY'):
-            await runtime.submit(sid, '/plan task')
-        await runtime.submit(sid, '/stop')
-        assert runtime.store.get(sid)['status'] == 'cancelled'
+        with pytest.raises(ValueError, match='SESSION_BUSY'):
+            await runtime.submit(child['id'], 'nói thêm')
+        assert runtime.store.pending_steer_count(child['id']) == 0
+        await runtime.submit(child['id'], '/stop')
     asyncio.run(run())
 
 

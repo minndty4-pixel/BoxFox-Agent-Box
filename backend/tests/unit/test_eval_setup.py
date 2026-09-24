@@ -745,3 +745,30 @@ def test_scoreboard_refuses_rows_without_scores(tmp_path):
     (results / 'scores.jsonl').write_text('{"id": "x"}\n', encoding='utf-8')
     with pytest.raises(ValueError):
         scoreboard.build_document(scoreboard.read_results(results), benchmark='broken')
+
+
+def test_a_mixed_selection_prices_only_the_quality_fixtures():
+    """Bộ chọn có cả Q lẫn R: khối chi phí chỉ tính ca Q, ca R nằm ở khối riêng, 0 lượt model.
+
+    Trước bản sửa, `--plan --fixtures Q1 --fixtures R1` in "2 fixture chất lượng × 3 cấu hình …
+    18 lượt model" — bịa ngân sách cho một tầng chỉ có một ca Q (vòng 27, đợt 8).
+    """
+    fixtures = {code: item for code, item in fixtureset.load_research_fixtures().items()}
+    fixtures.update(fixtureset.load_fixtures())
+    tiers = run_eval.load_tiers()
+    plan = run_eval.build_plan(fixtures={code: fixtures[code] for code in ('Q1', 'R1')},
+                               config_count=3, repeat=1, tiers=tiers)
+    assert plan['estimate']['fixtures'] == 1, 'chỉ ca họ Q được nhân vào ngân sách'
+    assert plan['modelCalls'] == 9, 'một ca Q × 3 cấu hình × 1 lần lặp'
+    assert [row['id'] for row in plan['fixtures']] == ['Q1']
+    assert [row['id'] for row in plan['researchFixtures']] == ['R1']
+
+
+def test_the_quality_table_never_lists_a_research_row(capsys):
+    """`--list` có cả hai họ: mỗi mã chỉ hiện MỘT lần, dưới đúng tiêu đề của họ nó."""
+    assert run_eval.main(['--list', '--fixtures', 'Q1', '--fixtures', 'R1']) == run_eval.EXIT_OK
+    out = capsys.readouterr().out
+    quality_block, _, rest = out.partition('Fixture research')
+    assert 'Q1' in quality_block and '| R1 |' not in quality_block
+    assert '| R1 |' in rest
+    assert out.count('| R1 |') == 1, 'R1 không được lặp ở hai bảng'

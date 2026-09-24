@@ -1,0 +1,48 @@
+{
+  "id": "R4",
+  "case": "mức 3: đuổi trích dẫn lùi + tiến + bão hoà",
+  "level": 3,
+  "request": "Dựng bức tranh tài liệu về chủ đề này: bài nào dựa trên bài nào, ai trích dẫn ai, và khi nào thì dừng.",
+  "request_source": "nguyên văn bảng ca của kế hoạch (docs/plan/v27/subplans/flow.md §7.1)",
+  "oracle_pass": [
+    "Nhật ký có ít nhất một vòng lùi và một vòng tiến trên đồ thị trích dẫn",
+    "Hồ sơ hoặc nhật ký ghi dấu hiệu bão hoà (dừng khi vòng mới không thêm bài nào)",
+    "Có tệp `conflicts.md` (hoặc mục Mâu thuẫn trong hồ sơ)",
+    "Có dấu vết phản biện: mục Phản biện, `Critique:` khác none, hoặc `review.md`"
+  ],
+  "bad_answer": [
+    "Đuổi trích dẫn một chiều rồi dừng, không ghi lý do dừng",
+    "Hết trần bài mà im lặng, không ghi đã bão hoà hay còn thiếu"
+  ],
+  "rubric_dimensions": [
+    "C2",
+    "C3",
+    "C4",
+    "C6",
+    "C8"
+  ],
+  "environment": {
+    "network": "off",
+    "workspace": "thư viện seed OpenAlex trong box, không có mạng"
+  },
+  "budget": {
+    "max_steps": 40,
+    "deadline_seconds": 3600,
+    "source": "trần của mức 3 trong nhật ký hệ thống (RESEARCH_TIER_CHILD_STEPS=40, RESEARCH_TIER_TURN_SECONDS=3600)"
+  },
+  "seeds": [
+    "thư viện seed OpenAlex (JSON) đã tải sẵn trong box",
+    "không có kết nối mạng ra ngoài; `paper_citations` đọc từ thư viện seed"
+  ],
+  "layer1_checks": [
+    "citation_chase_logged",
+    "saturation_logged",
+    "conflicts_file_exists",
+    "critique_file_exists"
+  ],
+  "open_questions": [
+    "Số vòng bão hoà (3 vòng liên tiếp không thêm bài mới — #6008) cần ca chạy thật để đo, ca này chỉ kiểm dấu vết."
+  ],
+  "plan_ref": "docs/plan/v27/subplans/flow.md §7.1",
+  "bad_answer_source": "script này soạn theo chiều ngược của oracle; kế hoạch chỉ có cột 'oracle máy' nên 'bad answer' chưa được chủ sở hữu ghim"
+}

@@ -16,7 +16,7 @@ metadata:
 Reads any RSS 2.0, RSS 1.0/RDF, Atom, or JSON Feed URL into a clean, date-sorted list of
 entries, and discovers the feed behind an ordinary page URL (`<link rel="alternate">` or
 the usual `/feed`, `/rss.xml`, `/atom.xml` paths). Standard library only, nothing to
-install. It does not fetch full article bodies — pass an entry's link to `web_extract` for
+install. It does not fetch full article bodies — pass an entry's link to `web_fetch` for
 that.
 
 ## When to Use
@@ -69,7 +69,7 @@ between several advertised feeds (comments feed vs posts feed, per-category feed
 check". For a cron digest persist the last-seen `published` value and pass it as
 `--since` next run.
 
-③ For full text, hand the entry `link` to `web_extract`; feed summaries are frequently
+③ For full text, hand the entry `link` to `web_fetch`; feed summaries are frequently
 truncated or the first paragraph only.
 
 ④ Cite the entry `link`, not the feed URL, when the result feeds a report

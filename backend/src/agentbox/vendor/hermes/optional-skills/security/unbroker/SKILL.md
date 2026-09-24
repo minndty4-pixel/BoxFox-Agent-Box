@@ -27,7 +27,7 @@ person controls.
 The Python CLI (`scripts/pdd.py`) owns the deterministic state - config, dossiers + consent, the
 broker database, tier planning, the ledger, drafts, reports, **email sending (SMTP), verification-link
 polling (IMAP), and the autonomous action queue (`next`)**. You (the agent) do the scanning and
-form-driving with native tools: `web_extract` and `browser_navigate` for searching and web forms, and
+form-driving with native tools: `web_fetch` and `browser_navigate` for searching and web forms, and
 `cronjob` for recurring re-scans.
 
 ## Autonomy contract
@@ -139,13 +139,13 @@ For anything past a couple of brokers, run this as **map → reduce → act**, n
 - **Phase 1 - DISCOVER (read-only, parallel, idempotent).** Crawl *every* broker first and record a
   verdict for each (`found` / `not_found` / `indirect_exposure` / `blocked`). Scanning has no side
   effects, so it is safe to parallelize and retry. Getting the full exposure map *before* acting is
-  what unlocks cluster dedup and prioritization below. **Default: the parent drives `web_extract`
+  what unlocks cluster dedup and prioritization below. **Default: the parent drives `web_fetch`
   probes directly** - most people-search sites render name/phone/address results as static HTML that
-  `web_extract` reads in seconds. Escalate to `browser_*` only for the few JS-only sites, and to
+  `web_fetch` reads in seconds. Escalate to `browser_*` only for the few JS-only sites, and to
   `delegate_task` subagents only for genuinely *reasoning*-heavy work (large-scale namesake/relative
   disambiguation). **Do NOT hand a browser-toolset subagent a big list of brokers to crawl** - in the
   field this timed out repeatedly (600s, ~5-6 brokers each, no summary) because browser navigation is
-  heavy; the ledger writes that survived came at 10x the cost of parent `web_extract`. A `blocked`
+  heavy; the ledger writes that survived came at 10x the cost of parent `web_fetch`. A `blocked`
   (DataDome/Cloudflare/`antibot`) site is *not* a subagent job either: record `blocked` and requeue it
   for a stealth/cloud browser (Browserbase) pass. Subagent reports are self-reports - the parent
   re-fetches key URLs to confirm a `found` before trusting it (this cuts both ways: it caught a real
@@ -223,7 +223,7 @@ recording `found` and before any deletion.
    `delegate_task` subagent per `batch`, in parallel, passing that batch's ready-made `brief`** - do
    not scan all brokers yourself sequentially. For `scan_inline`: scan the few brokers yourself.
    Either way, each broker gets **every** `search_vectors` entry via the `references/methods.md`
-   ladder (`web_extract` → `site:` probe → `browser_navigate` → `scrapling`), a 404 is INCONCLUSIVE
+   ladder (`web_fetch` → `site:` probe → `browser_navigate` → `scrapling`), a 404 is INCONCLUSIVE
    (not `not_found`), `blocked` is recorded when `antibot` is set and no stealth browser is available,
    and subject vs namesake/relative is confirmed before recording:
    `$PDD record <subject> <broker> <found|not_found|indirect_exposure|blocked> --found <bool> --evidence '{"listing_urls":[...]}'`.

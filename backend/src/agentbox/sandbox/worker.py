@@ -80,6 +80,22 @@ PLAN_SLUG = re.compile(r'^[a-z0-9]+(-[a-z0-9]+)*$')
 PLAN_ROOM = '.plans'
 PLAN_MAX_BYTES = 1048576
 
+# Vòng 27 / C-2: hồ sơ nghiên cứu là ĐẦU RA của một lượt research nên nó phải là TỆP trong
+# workspace, không phải một câu trả lời bị cắt ở 8 000 ký tự. `.research/<việc>/` là phòng riêng:
+# hồ sơ + sổ nguồn + bảng + biên bản phản biện, hồ sơ mang số version `v<N>-<việc>.md`.
+DOSSIER_ROOM = '.research'
+DOSSIER_MAX_BYTES = 262144
+# Trần 61 ký tự cho tên phòng (không phải 41): hợp đồng chốt phòng là `.research/<việc>/`, nhưng
+# harness dựng phòng bằng `dossier_dir_for()` = `<slug>-<yyyymmdd-hhmm>` (slug ≤ 40 + 1 + 13 = 54)
+# rồi trả nguyên văn về cho model qua `dossierDir` — hẹp hơn thì chính phòng THẬT của harness bị từ
+# chối. Rộng hơn vẫn là MỘT đốt đường dẫn: không `..`, không `/`, đúng bảng ký tự.
+DOSSIER_PATH_RE = re.compile(r'^\.research/[a-z0-9][a-z0-9._-]{0,60}/[a-zA-Z0-9][a-zA-Z0-9._-]{0,60}\.md$')
+# Tên bảng đi thẳng vào đường dẫn (`tables/<tên>.md`) nên phải kiểm như một ĐOẠN đường dẫn: không
+# `..`, không dấu `/`, không rỗng — cùng khuôn đoạn tên tệp của DOSSIER_PATH_RE.
+DOSSIER_TABLE_NAME_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9._-]{0,60}$')
+# Số version đọc từ tiền tố `v<N>-` của TÊN tệp hồ sơ, không đọc từ nội dung.
+DOSSIER_VERSION_RE = re.compile(r'^v([1-9][0-9]{0,9})-')
+
 
 def path(value):
     resolved = (ROOT / value).resolve()
@@ -100,7 +116,22 @@ BINARY_SNIFF_BYTES = 8192
 BINARY_READ_CHARS = 30000
 
 
-def read_file_payload(target):
+def read_int_arg(value, default):
+    """Số nguyên KHÔNG ÂM từ `args` của model: `None`/`'abc'`/số âm/kiểu lạ ⇒ mặc định (A-5).
+
+    `offset`/`limit` đến từ model nên không tin được: một chuỗi lạ lọt vào `text[offset:...]` là
+    `TypeError` giữa lượt — đúng kiểu chết mà thông báo không nói được vì sao.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        return default
+    try:
+        number = int(value)
+    except ValueError:
+        return default
+    return number if number >= 0 else default
+
+
+def read_file_payload(target, offset=0, limit=BINARY_READ_CHARS):
     """Nội dung một tệp cho `file_read`: văn bản như cũ, nhị phân thì base64 (A8).
 
     Tệp nhị phân trả `encoding: 'base64'` để mô hình biết nó đang cầm một mẩu đã mã hoá chứ
@@ -112,25 +143,45 @@ def read_file_payload(target):
     Nhánh văn bản giữ nguyên hành vi cũ (30 000 ký tự đầu); chỉ thêm một đường lui: tệp có đuôi
     văn bản nhưng không giải mã được UTF-8 (ảnh chụp lưu sai tên, tệp nén đổi đuôi) đi tiếp
     bằng đường base64 thay vì làm lượt chết `UnicodeDecodeError`.
+
+    A-5 (vòng 27): `offset`/`limit` chia một tệp dài thành nhiều mẩu đọc tiếp nhau; `nextOffset`
+    là chỗ đọc tiếp (`None` khi mẩu này đã chạm cuối tệp — KHÔNG phải khi đọc hỏng). Nhánh base64
+    làm tròn `offset` XUỐNG bội số 3 để khung giải mã thẳng hàng và nói rõ bằng `offsetAlignedTo`
+    (không làm tròn thì mẩu giải ra lệch khung); `bytesRead` vẫn là số byte của CHÍNH lời gọi này,
+    `nextOffset` mới là vị trí cộng dồn. `offset` quá cuối tệp trả `content: ''` +
+    `truncated: False`: tệp đã hết, không phải dữ liệu bị thiếu.
     """
+    offset = read_int_arg(offset, 0)
+    limit = read_int_arg(limit, BINARY_READ_CHARS)
     binary = target.suffix.lower() in BINARY_EXTENSIONS
     if not binary:
         with open(target, 'rb') as handle:
             binary = b'\x00' in handle.read(BINARY_SNIFF_BYTES)
     if not binary:
         try:
-            return {'content': target.read_text(encoding='utf-8')[:BINARY_READ_CHARS]}
+            text = target.read_text(encoding='utf-8')
         except UnicodeDecodeError:
             # Tệp đuôi chữ nhưng không giải mã được UTF-8 (ảnh lưu sai tên, tệp nén đổi đuôi): rơi
             # xuống đường base64 ngay dưới đây thay vì làm lượt chết `UnicodeDecodeError`.
             pass
+        else:
+            chunk = text[offset:offset + limit]
+            end = offset + len(chunk)
+            return {'content': chunk, 'truncated': end < len(text), 'sizeChars': len(text),
+                    'nextOffset': end if end < len(text) else None}
     # 30 000 ký tự base64 ≈ 22 500 byte thật; đọc đúng ngần ấy rồi mã hoá.
     size = target.stat().st_size
+    aligned = offset - offset % 3
     with open(target, 'rb') as handle:
+        handle.seek(aligned)
         raw = handle.read(BINARY_READ_CHARS * 3 // 4)
-    return {'content': base64.b64encode(raw).decode('ascii')[:BINARY_READ_CHARS],
-            'encoding': 'base64', 'truncated': len(raw) < size, 'bytesRead': len(raw),
-            'sizeBytes': size}
+    end = aligned + len(raw)
+    payload = {'content': base64.b64encode(raw).decode('ascii')[:BINARY_READ_CHARS],
+               'encoding': 'base64', 'truncated': end < size, 'bytesRead': len(raw),
+               'sizeBytes': size, 'nextOffset': end if end < size else None}
+    if aligned != offset:
+        payload['offsetAlignedTo'] = 3
+    return payload
 
 
 def process_marker(session):
@@ -511,6 +562,182 @@ def write_plan(args):
             'bytes': size}
 
 
+def dossier_version(target):
+    """Số version đọc từ tiền tố `v<N>-` của tên tệp hồ sơ; tên không đánh số ⇒ `0`.
+
+    Hợp đồng §4 đặt tên hồ sơ là `v<N>-<slug>.md`; `0` là câu trả lời THẬT cho một tệp không mang
+    số version (regex vẫn nhận, ví dụ một tệp nháp) — không bịa ra `1` cho một tệp chưa từng có số.
+    """
+    match = DOSSIER_VERSION_RE.match(target.name)
+    return int(match.group(1)) if match else 0
+
+
+def dossier_row_dict(entry):
+    """Một hàng của `rows` thành dict: dữ liệu đến từ model nên phải chịu được thứ không phải dict.
+
+    Mỗi dòng của `sources.jsonl` phải là MỘT ĐỐI TƯỢNG JSON (hợp đồng §4), nên `None` thành `{}`
+    chứ không thành dòng `null` — bên đọc `json.loads` từng dòng sẽ vấp ngay ở dòng đó.
+    """
+    if isinstance(entry, dict):
+        return entry
+    if entry is None:
+        return {}
+    return {'claim': str(entry)}
+
+
+def dossier_row_field(row, keys, default):
+    """Một trường của hàng sổ nguồn, KHÔNG BAO GIỜ ném: thiếu khoá hoặc khoá rỗng ⇒ `default`."""
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, ''):
+            return str(value).strip()
+    return default
+
+
+def dossier_host(url):
+    """Host của một URL cho `sources.md`; URL lạ ⇒ `''` (không ném)."""
+    match = re.match(r'^[a-zA-Z][a-zA-Z0-9+.-]*://([^/?#]+)', str(url or '').strip())
+    return match.group(1).lower() if match else ''
+
+
+def dossier_sources_jsonl(rows):
+    """`sources.jsonl` — bản MÁY đọc: một đối tượng JSON mỗi dòng, giữ NGUYÊN khoá hàng gửi vào.
+
+    `ensure_ascii=False` để đoạn trích tiếng Việt còn đọc được trong tệp; giá trị `None` giữ nguyên
+    thành `null` — JSON vẫn hợp lệ, nên KHÔNG bỏ khoá nào (bỏ khoá là sửa dữ liệu của chủ nhà).
+    `default=str` chỉ để một giá trị lạ không giết cả lần ghi.
+    """
+    return ''.join(json.dumps(dossier_row_dict(entry), ensure_ascii=False, default=str) + '\n'
+                   for entry in rows)
+
+
+def dossier_sources_markdown(rows):
+    """`sources.md` — bản NGƯỜI đọc của sổ nguồn: mỗi hàng một dòng có tầng, host, khẳng định, URL
+    và ngày, dưới dòng đó là đoạn trích NGUYÊN VĂN (người kiểm đọc lại được đúng câu đã lấy)."""
+    lines = ['# Nguồn', '']
+    if not rows:
+        return '\n'.join(lines + ['(chưa có nguồn nào)']) + '\n'
+    for entry in rows:
+        row = dossier_row_dict(entry)
+        url = dossier_row_field(row, ('url',), '—')
+        lines.append('- [%s] %s — %s · %s · %s' % (
+            dossier_row_field(row, ('tier',), '—'),
+            dossier_row_field(row, ('host',), '') or dossier_host(url) or '—',
+            dossier_row_field(row, ('claim',), '(không có khẳng định)'),
+            url,
+            dossier_row_field(row, ('fetchedAt', 'date', 'at'), '—')))
+        excerpt = dossier_row_field(row, ('excerpt', 'quote'), '')
+        if excerpt:
+            lines.append('  > ' + excerpt)
+    return '\n'.join(lines) + '\n'
+
+
+def write_dossier_file(target, content):
+    """Ghi MỘT tệp hồ sơ qua tên TẠM cùng thư mục rồi `os.replace` vào chỗ.
+
+    Hồ sơ gồm nhiều tệp và người đọc ngoài (panel Tệp) có thể mở đúng lúc: một tệp dở dang do
+    tiến trình chết giữa lúc ghi là thứ không được để lại, nên ghi ra tên tạm rồi thay thế.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(target.name + '.' + uuid.uuid4().hex[:8] + '.tmp')
+    try:
+        temporary.write_text(content, encoding='utf-8')
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return target
+
+
+def dossier_table_writes(folder, tables):
+    """Cặp `(đường dẫn, nội dung)` cho từng `tables/<tên>.md` — nhận CẢ HAI hình dạng đang lưu hành.
+
+    Lược đồ công bố là DANH SÁCH `[{'name': …, 'markdown': …}]`, nhưng đường gửi thật của harness
+    chỉ chuyển tiếp được dạng MAPPING `{tên: markdown}` (mọi hình dạng khác bị đổi thành `{}` trước
+    khi tới đây). Cả hai đều là dữ liệu thật của chủ nhà, nên op nhận cả hai thay vì để một hình
+    dạng lạ giết CẢ lần ghi hồ sơ; rỗng (`None`, `''`, `{}`, `[]`) nghĩa là không có bảng nào.
+    """
+    if isinstance(tables, dict):
+        items = [{'name': name, 'markdown': body} for name, body in tables.items()]
+    elif isinstance(tables, list):
+        items = tables
+    else:
+        items = [] if tables in (None, '') else [tables]
+    writes = []
+    for entry in items:
+        table = entry if isinstance(entry, dict) else {}
+        name = str(table.get('name') or '').strip()
+        if not DOSSIER_TABLE_NAME_RE.fullmatch(name):
+            raise ValueError('DOSSIER_TABLE_INVALID: name must be one file name, e.g. gia-theo-quy')
+        body = table.get('markdown')
+        if not isinstance(body, str):
+            raise ValueError('DOSSIER_TABLE_INVALID: markdown must be a string')
+        writes.append((folder + '/tables/' + name + '.md', body))
+    return writes
+
+
+def dossier_write_payload(args):
+    """Ghi TRỌN một hồ sơ nghiên cứu vào `.research/<việc>/` (C-2, vòng 27).
+
+    Một lời gọi ghi CẢ BỘ tệp của hồ sơ chứ không chỉ tệp markdown — hồ sơ là đầu ra thật của một
+    lượt research, và nó phải sống sót qua trần câu trả lời của con (8 000 ký tự):
+
+    - tệp hồ sơ tại `path` (`markdown` đã kèm khối `<!-- boxfox-research … -->` do harness dựng);
+    - `sources.jsonl` (một đối tượng JSON mỗi hàng của `rows`) + `sources.md` (bản người đọc);
+    - `tables/<tên>.md` cho từng mục của `tables`; `review.md` khi `review` không rỗng.
+
+    Ghi là TẤT CẢ hoặc KHÔNG GÌ: mọi nội dung được dựng trước, mọi kích thước bị kiểm trước (trần
+    `DOSSIER_MAX_BYTES` cho TỪNG tệp), tệp hồ sơ đã tồn tại thì từ chối khi chưa cho phép ghi đè
+    (`overwrite`) — nên một lời gọi hỏng không để lại hồ sơ nửa vời. Chỉ ghi trong `.research/`:
+    mọi đường dẫn đi qua `path()` (cổng chặn thoát workspace) và `path` của hồ sơ phải khớp
+    `DOSSIER_PATH_RE`.
+
+    `worker.py` đi nguyên văn vào box theo `executor.py` nên thêm op này KHÔNG cần dựng lại box và
+    `deploy/docker/` không phải đổi gì.
+    """
+    relative = str(args.get('path') or '').strip()
+    # Cổng cũ chạy TRƯỚC: `../../etc/passwd` phải nhận đúng câu 'Path Traversal Denied' của
+    # `path()`, không phải một câu về regex — người đọc lỗi cần biết mình vừa đụng cổng nào.
+    target = path(relative)
+    relative = target.relative_to(ROOT).as_posix()
+    if not DOSSIER_PATH_RE.fullmatch(relative):
+        raise ValueError('DOSSIER_PATH_INVALID: .research/<việc>/<tên>.md')
+    content = args.get('markdown')
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError('Dossier markdown must not be empty')
+    rows = args.get('rows')
+    if not isinstance(rows, list):
+        rows = [] if rows in (None, '') else [rows]
+    folder = relative.rsplit('/', 1)[0]
+    writes = [(relative, content),
+              (folder + '/sources.jsonl', dossier_sources_jsonl(rows)),
+              (folder + '/sources.md', dossier_sources_markdown(rows))]
+    writes.extend(dossier_table_writes(folder, args.get('tables')))
+    review = args.get('review')
+    if isinstance(review, str) and review.strip():
+        writes.append((folder + '/review.md', review))
+    # Kiểm HẾT mọi kích thước trước khi ghi BẤT KỲ tệp nào: một tệp quá trần phải chặn cả hồ sơ,
+    # không được để lại nửa bộ tệp rồi mới báo hỏng.
+    for item, text in writes:
+        if len(text.encode('utf-8')) > DOSSIER_MAX_BYTES:
+            raise ValueError('DOSSIER_TOO_LARGE: %s exceeds %d bytes' % (item, DOSSIER_MAX_BYTES))
+    # Số version là CỦA TỆP HỒ SƠ: `sources.jsonl`/`sources.md` là tệp của cả thư mục việc nên bản
+    # v2 ghi lại chúng (chủ ý), còn hồ sơ cùng tên đã có nghĩa là số đó đã dùng rồi.
+    if not args.get('overwrite') and target.is_file():
+        raise ValueError('DOSSIER_VERSION_TAKEN: %s already exists; write the next version' % relative)
+    files = []
+    for item, text in writes:
+        write_dossier_file(path(item), text)
+        files.append(item)
+    encoded = content.encode('utf-8')
+    return {'content': 'Written ' + relative, 'relativePath': relative,
+            'version': dossier_version(target), 'slug': relative.split('/')[1],
+            'title': str(args.get('title') or '')[:120], 'bytes': len(encoded),
+            # Khoá tên `sha1` theo hợp đồng đã chốt, giá trị lấy từ CHÍNH hàm băm của mô-đun
+            # (`sha256_of`) — cùng đơn vị với mảnh bằng chứng của mọi lần ghi khác.
+            'sha1': sha256_of(encoded), 'files': files,
+            'writtenAt': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
+
+
 try:  # pragma: no cover - đường dẫn chỉ tồn tại khi worker chạy TRONG box
     sys.path.insert(0, '/usr/local/bin')
     import session_ops as _session_ops
@@ -563,13 +790,15 @@ def execute(name, args, session, turn=None, step=None, tool_call_id=None):
             marker.unlink(missing_ok=True)
         return {'content': 'Session subprocess cleanup complete'}
     if name == 'file_read':
-        return read_file_payload(path(args['path']))
+        return read_file_payload(path(args['path']), args.get('offset'), args.get('limit'))
     if name == 'file_write':
         target = path(args['path'])
         target, evidence = write_text(target, args['content'], capture=capture)
         return {'content': 'Written ' + target.relative_to(ROOT).as_posix(), **evidence}
     if name == 'write_plan':
         return write_plan(args)
+    if name == 'dossier_write':
+        return dossier_write_payload(args)
     if name == 'file_edit_block':
         target = path(args['path'])
         content = target.read_text(encoding='utf-8')

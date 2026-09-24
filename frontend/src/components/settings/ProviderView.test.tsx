@@ -3,7 +3,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ProviderView } from './ProviderView'
 import { useProviderStore } from '../../store/providerStore'
-import type { ProviderConnection, ProviderModel, ProviderSnapshot, RouterUsage } from '../../types/provider'
+import type { ConnectionKey, ProviderConnection, ProviderModel, ProviderSnapshot, RouterUsage } from '../../types/provider'
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 const snapshot: ProviderSnapshot = {
@@ -27,6 +27,13 @@ beforeEach(() => {
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals() })
 async function render(tab: 'api' | 'router') { await act(async () => root.render(<ProviderView initialTab={tab} />)) }
 
+/** The same render with another snapshot — the page reads the store, not the fetch reply. */
+async function renderPage(page: ProviderSnapshot, tab: 'api' | 'router') {
+  useProviderStore.setState({ snapshot: page, error: null, busy: false, loading: false })
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(page), { headers: { 'content-type': 'application/json' } })))
+  await render(tab)
+}
+
 function setValue(input: HTMLInputElement, value: string) {
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value)
   input.dispatchEvent(new Event('input', { bubbles: true }))
@@ -44,6 +51,10 @@ function connection(over: Partial<ProviderConnection> & { id: string; providerId
   }
 }
 
+function connectionKey(over: Partial<ConnectionKey> & { id: string }): ConnectionKey {
+  return { label: over.id, prefix: 'sk-or-', state: 'ready', cooldownUntil: null, resetAt: null, lastErrorCode: null, lastErrorMessage: null, lastUsedAt: null, ...over }
+}
+
 const twoProviderSnapshot: ProviderSnapshot = {
   ...snapshot,
   connections: [
@@ -52,8 +63,43 @@ const twoProviderSnapshot: ProviderSnapshot = {
   ],
 }
 
+/** One provider, two connections that both failed to list models and both carry a model typed
+ *  by hand: the first kept a key the provider accepted (the router routes that model), the
+ *  second has no accepted key (the router routes nothing there). */
+const handTypedSnapshot: ProviderSnapshot = {
+  ...snapshot,
+  connections: [
+    connection({
+      id: 'openrouter-hand', providerId: 'openrouter', name: 'OpenRouter by hand', discoveryState: 'failed',
+      models: [model('muse-spark-1.3-contributor-free', { source: 'custom' })],
+    }),
+    connection({
+      id: 'openrouter-refused', providerId: 'openrouter', name: 'OpenRouter refused', discoveryState: 'failed',
+      authState: 'required', credentialPresent: false,
+      models: [model('ghost-model', { source: 'custom' })],
+    }),
+  ],
+}
+
 const railRows = () => [...document.querySelectorAll<HTMLButtonElement>('[data-provider-row]')]
 const selectedRows = () => railRows().filter((row) => row.getAttribute('aria-current') === 'true').map((row) => row.getAttribute('data-provider-row'))
+const buttonIn = (scope: HTMLElement, text: string) => [...scope.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent?.trim() === text)
+
+/** The Router tab with one `openrouter` connection, its card open — the non-OAuth card that
+ *  owns the key ring. `keys` absent is the legacy snapshot the pre-round-29 router serves. */
+async function renderRouterCard(row: ProviderConnection) {
+  const page: ProviderSnapshot = { ...snapshot, connections: [row] }
+  const calls: Array<{ url: string; method: string; body: unknown }> = []
+  const fetchMock = vi.fn(async (url: string, init: RequestInit = {}) => {
+    calls.push({ url: String(url), method: init.method ?? 'GET', body: init.body ? JSON.parse(String(init.body)) : null })
+    return new Response(JSON.stringify(page), { headers: { 'content-type': 'application/json' } })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  useProviderStore.setState({ snapshot: page, error: null, busy: false, loading: false })
+  await render('router')
+  act(() => host.querySelector<HTMLButtonElement>('[data-provider-row="openrouter"]')!.click())
+  return calls
+}
 
 function usageRow(over: Partial<RouterUsage> & { id: string }): RouterUsage {
   return {
@@ -239,6 +285,73 @@ describe('Provider UI', () => {
     expect(selectedRows()).toEqual(['openrouter'])
     expect(host.textContent).toContain('Free Tier · discovery: openai-compat')
     expect(host.textContent).toContain('Add connection')
+  })
+  it('keeps the single-key input on the router tab when the snapshot carries no key ring', async () => {
+    // The owner's live router is still the build without key rings: the connection has a
+    // credential and no `keys` array. That card must keep the one input that router honours.
+    const calls = await renderRouterCard(connection({ id: 'openrouter-key', providerId: 'openrouter', name: 'OpenRouter key' }))
+    // The tab also holds the provider's own `Add connection` form, which has a key field of its
+    // own; every assertion below is scoped to the connection card.
+    const card = () => buttonIn(host, 'Update key/token')!.closest<HTMLElement>('article')!
+    expect(card().textContent).not.toContain('Keys on this connection')
+    expect(card().textContent).not.toContain('No key on this connection yet.')
+    expect(card().querySelector('input[type="password"]')).toBeNull()
+
+    act(() => buttonIn(card(), 'Update key/token')!.click())
+    expect(card().textContent).toContain('Update API key')
+    const field = card().querySelector<HTMLInputElement>('input[type="password"]')!
+    act(() => setValue(field, 'sk-or-v1-legacy'))
+    await act(async () => buttonIn(card(), 'Save')!.click())
+
+    const patched = calls.filter((call) => call.method === 'PATCH')
+    expect(patched.map((call) => call.url)).toEqual(['/api/router/connections/openrouter-key'])
+    expect(patched[0].body).toEqual({ apiKey: 'sk-or-v1-legacy' })
+    expect(card().querySelector('input[type="password"]')).toBeNull()
+  })
+  it('mounts the key ring on the router tab and drops the duplicate single-key input', async () => {
+    await renderRouterCard(connection({
+      id: 'openrouter-key', providerId: 'openrouter', name: 'OpenRouter key',
+      keys: [connectionKey({ id: 'key-1', label: 'Key 1' })],
+    }))
+    act(() => buttonIn(host, 'Show keys')!.click())
+    const card = buttonIn(host, 'Hide keys')!.closest<HTMLElement>('article')!
+
+    expect(card.textContent).toContain('Keys on this connection')
+    expect(card.textContent).toContain('1 keys')
+    expect(card.textContent).not.toContain('Update API key')
+    expect(card.textContent).not.toContain('No key on this connection yet.')
+    expect(card.querySelector('input[type="password"]')).toBeNull()
+  })
+  it("keeps a failed listing's hand-typed models in the provider model list", async () => {
+    // The router routes a model the user typed by hand even when the connection could not list
+    // its models (`validTarget` in router/src/service.mjs); `routable` answers with that rule.
+    // Asking `discoveryState === 'ready'` alone dropped this connection's row, its Test button
+    // and its toggle entirely (round 29 review).
+    await renderPage(handTypedSnapshot, 'api')
+    expect(host.textContent).toContain('One row per model · served by 1 connection.')
+    expect(host.querySelector('input[aria-label="Enable muse-spark-1.3-contributor-free"]')).not.toBeNull()
+    expect(host.textContent).toContain('muse-spark-1.3-contributor-free')
+    // A connection the router cannot reach contributes nothing — not even the block's empty
+    // state, because the block is the list itself, not a placeholder for missing connections.
+    expect(host.querySelector('input[aria-label="Enable ghost-model"]')).toBeNull()
+    expect(host.textContent).not.toContain('ghost-model')
+  })
+  it('renders the same model list on the router tab for a failed listing', async () => {
+    // The router tab computes its own connection list; the two tabs must agree on who is in it.
+    await renderPage(handTypedSnapshot, 'router')
+    act(() => host.querySelector<HTMLButtonElement>('[data-provider-row="openrouter"]')!.click())
+    expect(host.textContent).toContain('One row per model · served by 1 connection.')
+    expect(host.querySelector('input[aria-label="Enable muse-spark-1.3-contributor-free"]')).not.toBeNull()
+    expect(host.querySelector('input[aria-label="Enable ghost-model"]')).toBeNull()
+  })
+  it('offers a failed listing\u2019s hand-typed model as a routing target and no unreachable one', async () => {
+    // The same rule feeds the Routing and alias pickers: a target offered there must be one the
+    // router accepts, and one it accepts must not be missing.
+    await renderPage(handTypedSnapshot, 'router')
+    act(() => [...host.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Routing')!.click())
+    const options = [...host.querySelectorAll('option')].map((option) => option.textContent)
+    expect(options).toContain('OpenRouter by hand / muse-spark-1.3-contributor-free')
+    expect(options.some((label) => label?.includes('ghost-model'))).toBe(false)
   })
   it('labels every cost cell with its provenance and says when no price is known', async () => {
     await renderUsage()

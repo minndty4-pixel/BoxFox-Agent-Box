@@ -14,8 +14,11 @@ from aiohttp import ClientSession
 from aiohttp.test_utils import TestServer
 
 from agentbox.agent_core import failures, limits
+from agentbox.agent_core import web as web_module
 from agentbox.agent_core import runtime as runtime_module
 from agentbox.agent_core import tool_groups as tool_groups_module
+from agentbox.agent_core import (research_profiles, research_quality, research_runtime,
+                                 source_tiers)
 from agentbox.agent_core.roles import ORCHESTRATOR_TOOLS, ROLES
 from agentbox.agent_core.runtime import HarnessRuntime
 from agentbox.api.server import create_app
@@ -138,19 +141,20 @@ def test_the_turn_offers_the_model_exactly_the_narrowed_set(tmp_path):
     narrowed = asyncio.run(run('narrow.db', {'tools': ['file_read', 'sudo_rm_rf']}))
     assert narrowed == ['file_read']
     full = asyncio.run(run('full.db', {}))
-    assert sorted(full) == sorted(ORCHESTRATOR_TOOLS), 'thiếu trường thì lượt vẫn thấy đủ 25 công cụ'
+    assert sorted(full) == sorted(ORCHESTRATOR_TOOLS), 'thiếu trường thì lượt vẫn thấy đủ 35 công cụ'
 
 
-def test_the_eight_groups_cover_the_orchestrator_exactly():
+def test_the_eleven_groups_cover_the_orchestrator_exactly():
     groups = tool_groups_module.TOOL_GROUPS
     assert [g['key'] for g in groups] == ['repositoryReading', 'skills', 'filesTerminal',
                                           'screenBrowser', 'webResearch', 'delegationPlans',
-                                          'peerMesh', 'questionsApprovals'], \
-        'đúng thứ tự bảng Nút vặn của runtime (T8 thêm nhóm thứ tám: mesh agent con)'
+                                          'researchLedger', 'researchDossiers', 'peerMesh',
+                                          'questionsApprovals'], \
+        'đúng thứ tự bảng Nút vặn của runtime (vòng 27 đợt 3–8 chèn hai nhóm research NGAY SAU delegationPlans)'
     assert all(set(g) == {'key', 'tools', 'alwaysOn'} for g in groups)
     assert all(g['tools'] for g in groups)
     union = [tool for g in groups for tool in g['tools']]
-    assert len(union) == len(set(union)) == 25, 'tám nhóm không chồng nhau, tổng 25 công cụ'
+    assert len(union) == len(set(union)) == 35, 'mười một nhóm không chồng nhau, tổng 35 công cụ'
     assert set(union) == set(ORCHESTRATOR_TOOLS)
 
     assert [g['key'] for g in groups if g['alwaysOn']] == ['questionsApprovals']
@@ -158,11 +162,11 @@ def test_the_eight_groups_cover_the_orchestrator_exactly():
     assert set(questions['tools']) == {'ask_user', 'request_approval'}
 
 
-def test_the_route_answers_the_same_eight_groups(tmp_path):
+def test_the_route_answers_the_same_eleven_groups(tmp_path):
     info = runtime_info(tmp_path)
     assert info['toolGroups'] == tool_groups_module.tool_groups()
     assert info['tools'] == sorted(ORCHESTRATOR_TOOLS)
-    assert len(info['tools']) == 25
+    assert len(info['tools']) == 35
 
 
 def test_every_role_row_equals_the_roles_definition(tmp_path):
@@ -253,6 +257,64 @@ def test_the_limits_are_the_numbers_the_runtime_applies(tmp_path):
             'planReviewMinAnswerChars': limits.PLAN_REVIEW_MIN_ANSWER_CHARS,
             'planVerifyReviseMax': limits.PLAN_VERIFY_REVISE_MAX,
             'planTurnExtensionSeconds': limits.PLAN_TURN_EXTENSION_SECONDS,
+            # Vòng 27 (đợt 4, A5): cổng chất lượng research đi cùng luật — mức đọc qua chính hàm
+            # engine dùng, và giá trị thô khi env đặt sai phải hiện ra chứ không bị nuốt.
+            'researchGate': {'mode': research_quality.gate_mode(None)[0],
+                             'modes': list(limits.RESEARCH_GATE_MODES),
+                             'default': limits.RESEARCH_GATE_DEFAULT_MODE,
+                             # `gate_mode()` trả `None` khi giá trị hợp lệ (cùng hợp đồng `_mode`).
+                             'unknown': research_quality.gate_mode(None)[1]},
+            'researchTiers': {'overrides': source_tiers.overrides_summary(),
+                              'tiers': {str(key): value for key, value in source_tiers.TIERS.items()}},
+        },
+        # Vòng 27 (đợt 5–8) — khối `research` đi cùng luật: bốn công tắc và hạn mức theo mức đọc qua
+        # CHÍNH hàm engine dùng, nên bảng Nút vặn không thể hứa một mức engine không áp.
+        'research': {
+            'briefMode': research_runtime.brief_mode(None)[0],
+            'briefModes': list(limits.RESEARCH_BRIEF_MODES),
+            'briefDefault': limits.RESEARCH_BRIEF_DEFAULT_MODE,
+            'gateMode': research_quality.gate_mode(None)[0],
+            'gateModes': list(limits.RESEARCH_GATE_MODES),
+            'gateDefault': limits.RESEARCH_GATE_DEFAULT_MODE,
+            'progressMode': research_runtime.research_progress_mode(None)[0],
+            'progressModes': list(limits.RESEARCH_PROGRESS_MODES),
+            'progressDefault': limits.RESEARCH_PROGRESS_DEFAULT_MODE,
+            'progressNudgeSeconds': limits.RESEARCH_PROGRESS_NUDGE_SECONDS,
+            'steerMode': research_runtime.steer_mode(None)[0],
+            'steerModes': list(limits.STEER_MODES),
+            'steerDefault': limits.STEER_DEFAULT_MODE,
+            'steerMaxPending': limits.STEER_MAX_PENDING,
+            'steerTextMaxChars': limits.STEER_TEXT_MAX_CHARS,
+            'tiers': list(limits.RESEARCH_TIERS),
+            'tierDefault': limits.RESEARCH_TIER_DEFAULT,
+            'tierLimits': {str(tier): research_runtime.research_tier_limits(tier)
+                           for tier in limits.RESEARCH_TIERS},
+            'profiles': research_profiles.describe(),
+            'sourceTiers': {'tiers': {str(key): value for key, value in source_tiers.TIERS.items()},
+                            'tierLabels': {str(key): value
+                                           for key, value in source_tiers.TIER_LABELS.items()},
+                            'typeLabels': dict(source_tiers.TYPE_LABELS),
+                            'overrides': source_tiers.overrides_summary()},
+            'reviewMinAnswerChars': limits.RESEARCH_REVIEW_MIN_ANSWER_CHARS,
+            'verifyReviseMax': limits.RESEARCH_VERIFY_REVISE_MAX,
+            'maxRowsPerDossier': limits.RESEARCH_MAX_ROWS_PER_DOSSIER,
+            'maxDossierBytes': limits.DOSSIER_MAX_BYTES,
+            'childStepsByTier': {str(key): value for key, value in limits.RESEARCH_TIER_CHILD_STEPS.items()},
+            'childSecondsByTier': {str(key): value for key, value in limits.RESEARCH_TIER_CHILD_SECONDS.items()},
+            'hardCeilingSecondsByTier': {str(key): value
+                                         for key, value in limits.RESEARCH_TIER_HARD_CEILING_SECONDS.items()},
+        },
+        # Vòng 27 (đợt 1, A-9) — khối `web` đi cùng luật: hai mức đọc qua CHÍNH hàm engine dùng,
+        # nên giao diện không thể hứa một thứ engine không áp.
+        'web': {
+            'readerMode': HarnessRuntime.web_reader_mode(None)[0],
+            'readerModes': list(limits.WEB_READER_MODES),
+            'readerDefault': limits.WEB_READER_DEFAULT_MODE,
+            'readStoreMode': HarnessRuntime.web_read_store_mode(None)[0],
+            'readStoreModes': list(limits.WEB_READ_STORE_MODES),
+            'readStoreDefault': limits.WEB_READ_STORE_DEFAULT_MODE,
+            'textHardChars': web_module.MAX_TEXT_HARD,
+            'storeMaxEntries': limits.READ_STORE_MAX_ENTRIES,
         },
     }
     assert info['limits']['instructionsChars'] == limits.INSTRUCTIONS_MAX_CHARS
@@ -268,4 +330,32 @@ def test_the_limits_are_the_numbers_the_runtime_applies(tmp_path):
     # Vai trò con bị chặn chặt hơn ở `delegate()`; hai hằng đó là thứ hàm đó dùng.
     source = inspect.getsource(runtime_module.HarnessRuntime.delegate)
     assert 'min(CHILD_MAX_STEPS' in source and 'min(CHILD_DEADLINE_SECONDS' in source
+    store.close()
+
+
+def test_a_mis_set_reading_switch_keeps_the_default_and_says_so_once(tmp_path, monkeypatch):
+    """A-9 — giá trị lạ của công tắc lớp đọc không được hạ cấp trong im lặng.
+
+    ĐO ĐƯỢC: `BOXFOX_WEB_READER=chặt-vừa-thôi` ⇒ mức đang áp là `auto`, và phiên nhận ĐÚNG MỘT
+    notice `WEB_READER_MODE_UNKNOWN`; lời gọi thứ hai không sinh notice thứ hai.
+    """
+    monkeypatch.setenv(limits.WEB_READER_ENV, 'chặt-vừa-thôi')
+    monkeypatch.setenv(limits.WEB_READ_STORE_ENV, 'chắc-có-lẽ')
+    store, runtime = make_runtime(tmp_path, 'web-switch.db')
+    sid = runtime.create({'skills': []})['id']
+
+    assert runtime.web_reader_mode() == (limits.WEB_READER_DEFAULT_MODE, 'chặt-vừa-thôi')
+    assert runtime.web_read_store_mode() == (limits.WEB_READ_STORE_DEFAULT_MODE, 'chắc-có-lẽ')
+    runtime.web_switch_notices(sid)
+    runtime.web_switch_notices(sid)
+
+    notices = [e['data'] for e in store.events(sid) if e['type'] == 'notice']
+    codes = [row['code'] for row in notices]
+    assert codes == [limits.WEB_READER_MODE_UNKNOWN_CODE, limits.WEB_READ_STORE_MODE_UNKNOWN_CODE]
+    assert notices[0]['value'] == 'chặt-vừa-thôi' and notices[0]['partial'] is False
+    assert 'auto' in notices[0]['message']
+
+    # Route web gọi đúng chỗ này: một máy đặt sai biến phải nói ra khi phiên thật sự đọc nguồn.
+    source = inspect.getsource(runtime_module.HarnessRuntime.dispatch)
+    assert 'self.web_switch_notices(sid)' in source
     store.close()

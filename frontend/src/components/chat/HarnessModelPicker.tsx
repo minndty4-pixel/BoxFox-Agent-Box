@@ -17,19 +17,45 @@ import {
   Settings,
   Plus,
   ChevronDown,
+  ChevronRight,
   X,
   Brain,
+  Pin,
+  KeyRound,
 } from 'lucide-react'
 import { useHarnessStore, AVAILABLE_MODELS } from '../../store/harnessStore'
 import { useUiStore } from '../../store/uiStore'
 import { useProviderStore } from '../../store/providerStore'
 import { ProviderIcon } from '../providers/ProviderIcon'
+import { composerModels, routerChatOptions, type RouterComposerModel } from '../../lib/routeOptions'
+import type { ProviderSnapshot } from '../../types/provider'
 
-export interface RouterSingleModel {
-  id: string
-  name: string
-  provider: string
-  thinkingLevels?: string[]
+/**
+ * Model cho picker/composer. `id`/`name`/`provider` là tên trường đang dùng ở hai đầu; `pins` là
+ * các connection riêng lẻ của cùng một model (nhóm ≥ 2 connection) — xem `lib/routeOptions.ts`.
+ */
+export type RouterSingleModel = RouterComposerModel
+
+/** Danh sách mức rỗng nghĩa là "không gửi mức nào" ⇒ bỏ trường, thay vì gửi mảng rỗng. */
+function withPublishedLevels(model: RouterSingleModel): RouterSingleModel {
+  return {
+    ...model,
+    thinkingLevels: model.thinkingLevels && model.thinkingLevels.length > 0 ? model.thinkingLevels : undefined,
+    pins: model.pins?.map((pin) => ({
+      ...pin,
+      thinkingLevels: pin.thinkingLevels && pin.thinkingLevels.length > 0 ? pin.thinkingLevels : undefined,
+    })),
+  }
+}
+
+/** Trạng thái THẬT của connection sau một hàng ghim — id ghim là `model:<connectionId>:<modelId>`. */
+function pinState(id: string, snapshot: ProviderSnapshot | null | undefined) {
+  const connectionId = id.startsWith('model:') ? id.slice('model:'.length).split(':')[0] : ''
+  const connection = snapshot?.connections.find((c) => c.id === connectionId)
+  if (!connection) return null
+  if (connection.inferenceState === 'ready') return { label: 'ready', tone: 'ready' as const }
+  if (connection.inferenceState === 'failed') return { label: 'failed', tone: 'failed' as const }
+  return { label: 'untested', tone: 'idle' as const }
 }
 
 interface HarnessModelPickerProps {
@@ -63,45 +89,43 @@ export function HarnessModelPicker({ routerModels, activeRouterModelId, onRouter
     if (!snapshot) void loadProviders().catch(() => {})
   }, [snapshot, loadProviders])
 
-  const liveModels: RouterSingleModel[] = useMemo(() => {
-    if (!snapshot?.connections) return []
-    return snapshot.connections
-      .filter(c => c.enabled && c.authState === 'ready' && c.discoveryState === 'ready'
-        && (c.providerId !== 'antigravity' || c.projectState === 'ready'))
-      .flatMap(c =>
-        c.models
-          .filter(m => m.enabled && m.health !== 'unavailable')
-          .map(m => ({
-            id: `model:${c.id}:${m.id}`,
-            name: `${c.name} · ${m.name}`,
-            provider: c.providerId,
-            // Một mức công bố vẫn là một mức **thật**: giữ lại để composer kéo mức
-            // đang chọn về đúng nó (model chỉ có `high` không nhận `medium`).
-            thinkingLevels: m.thinkingLevels && m.thinkingLevels.length > 0 ? m.thinkingLevels : undefined,
-          }))
-      )
-  }, [snapshot])
+  /**
+   * Vòng 29 — MỘT dòng cho mỗi (provider, model): danh sách option sống ở `lib/routeOptions.ts`
+   * (đúng hàm composer dùng). Picker KHÔNG tự dựng danh sách thứ hai — bản cũ dựng một dòng cho
+   * mỗi connection, nên bốn connection opencode cùng model hiện thành bốn dòng giống nhau.
+   */
+  const liveOptions = useMemo(() => composerModels(routerChatOptions(snapshot)), [snapshot])
 
   // Khi có live models từ provider → ưu tiên hiển thị, ngược lại fallback
   // về danh sách tĩnh AVAILABLE_MODELS.
-  const hasLive = liveModels.length > 0 || (routerModels && routerModels.length > 0)
+  const hasLive = liveOptions.length > 0 || (routerModels && routerModels.length > 0)
   const effectiveModels = routerModels && routerModels.length > 0
-    ? routerModels.map(m => ({
-        ...m,
-        thinkingLevels: m.thinkingLevels && m.thinkingLevels.length > 0 ? m.thinkingLevels : undefined,
-      }))
-    : liveModels.length > 0 ? liveModels : null
+    ? routerModels.map(withPublishedLevels)
+    : liveOptions.length > 0 ? liveOptions.map(withPublishedLevels) : null
+
+  /** Nhánh ghim của nhóm nào đang mở; nhóm đang ghim thì luôn mở sẵn (xem `pinsOpen`). */
+  const [openPins, setOpenPins] = useState<string | null>(null)
+
+  /** Tra model theo id — TÌM CẢ trong `pins`: phiên ghim có id `model:<connectionId>:<modelId>`. */
+  const modelById = useMemo(() => {
+    const byId = new Map<string, RouterSingleModel>()
+    for (const model of effectiveModels ?? []) {
+      byId.set(model.id, model)
+      for (const pin of model.pins ?? []) if (!byId.has(pin.id)) byId.set(pin.id, pin)
+    }
+    return byId
+  }, [effectiveModels])
 
   // Đổi model: nếu mức thinking đang chọn không có trong danh sách model công bố
   // (ví dụ `medium` trong khi DeepSeek Pro chỉ có `max/high/low`) thì kéo về mức
   // gần nhất ngay, để nhãn trên composer khớp đúng mức sẽ gửi.
   useEffect(() => {
-    const target = effectiveModels?.find((model) => model.id === (activeRouterModelId || activeModelId))
+    const target = modelById.get(activeRouterModelId || activeModelId)
     if (!target?.thinkingLevels?.length) return
     if (thinkingLevelIsPublished(target.thinkingLevels, thinkingLevel)) return
     const next = resolveThinkingLevel(target.thinkingLevels, thinkingLevel)
     if (next && next !== thinkingLevel) setThinkingLevel(next)
-  }, [effectiveModels, activeRouterModelId, activeModelId, thinkingLevel, setThinkingLevel])
+  }, [modelById, activeRouterModelId, activeModelId, thinkingLevel, setThinkingLevel])
 
   // Current active entity
   const currentHarness = useMemo(
@@ -112,11 +136,28 @@ export function HarnessModelPicker({ routerModels, activeRouterModelId, onRouter
     () => AVAILABLE_MODELS.find((m) => m.id === activeModelId) ?? AVAILABLE_MODELS[0],
     [activeModelId],
   )
-  const currentRouterModel = effectiveModels?.find((model) => model.id === activeRouterModelId) ?? effectiveModels?.[0] ?? null
+  const activeRouterId = activeRouterModelId || activeModelId
+  /** Hàng cha của connection đang ghim (nếu lượt này đang ghim một connection). */
+  const pinnedModel = useMemo(
+    () => (effectiveModels ?? []).find((model) => model.pins?.some((pin) => pin.id === activeRouterId)) ?? null,
+    [effectiveModels, activeRouterId],
+  )
+  const pinnedConnection = pinnedModel?.pins?.find((pin) => pin.id === activeRouterId) ?? null
+  const currentRouterModel = modelById.get(activeRouterId)
+    ?? effectiveModels?.find((model) => model.id === activeModelId)
+    ?? effectiveModels?.[0] ?? null
   const selectedModelName = currentRouterModel?.name ?? currentModel?.name ?? ''
   const selectedModelProvider = currentRouterModel?.provider ?? currentModel?.provider ?? ''
 
   const displayModelName = useMemo(() => {
+    // Ghim một connection: chip phải nói rõ đang ghim cái nào — nhãn hàng cha là cả nhóm, không
+    // nói được điều đó (mockup 03: `pinned: OpenCode Free (key 2) · muse-spark-1.3-c…`).
+    if (pinnedConnection && pinnedModel) {
+      const parts = pinnedModel.name.split('·')
+      const modelName = (parts.length > 1 ? parts.slice(1).join('·').trim() : pinnedModel.name).trim()
+      const short = modelName.length > 16 ? modelName.slice(0, 14) + '…' : modelName
+      return `pinned: ${pinnedConnection.name} · ${short}`
+    }
     if (!selectedModelName) return ''
     const parts = selectedModelName.split('·')
     const rawName = parts.length > 1 ? parts.slice(1).join('·').trim() : selectedModelName
@@ -132,11 +173,11 @@ export function HarnessModelPicker({ routerModels, activeRouterModelId, onRouter
       return cleaned.length > 18 ? cleaned.slice(0, 16) + '…' : cleaned
     }
     return selectedModelName.split(' ')[0]
-  }, [selectedModelName])
+  }, [pinnedConnection, pinnedModel, selectedModelName])
 
   const activeThinkingModel = useMemo(() => {
     if (activeType !== 'model') return null
-    const target = effectiveModels?.find((m) => m.id === (activeRouterModelId || activeModelId))
+    const target = modelById.get(activeRouterId)
     if (target?.thinkingLevels && target.thinkingLevels.length > 1) {
       return {
         id: target.id,
@@ -146,7 +187,7 @@ export function HarnessModelPicker({ routerModels, activeRouterModelId, onRouter
       }
     }
     return null
-  }, [activeType, effectiveModels, activeRouterModelId, activeModelId])
+  }, [activeType, modelById, activeRouterId])
 
   const subagentCount = currentHarness?.subagents?.filter((s) => s.enabled).length ?? 1
 
@@ -373,13 +414,26 @@ export function HarnessModelPicker({ routerModels, activeRouterModelId, onRouter
                     <div className="p-6 text-center text-xs text-muted">No models found</div>
                   ) : (
                     filteredRouterModels.map((model) => {
-                      const isSelected = activeType === 'model' && (activeRouterModelId === model.id || activeModelId === model.id)
-                      const hasThinking = Boolean(model.thinkingLevels && model.thinkingLevels.length > 1)
+                      const pins = model.pins ?? []
+                      // `activeRouterId` chứ không phải prop: đường ChatInputBar truyền
+                      // `activeRouterModelId`, còn chỗ gọi khác chỉ đặt id qua store — cả hai đều
+                      // phải nhận ra hàng đang chạy để không bày dấu tích sai chỗ.
+                      const pinned = pins.find((pin) => pin.id === activeRouterId) ?? null
+                      const isSelected = activeType === 'model'
+                        && (activeRouterId === model.id || activeModelId === model.id || Boolean(pinned))
+                      const rowHasThinking = Boolean(model.thinkingLevels && model.thinkingLevels.length > 1)
+                      // Hàng đang ghim: mức hiện trên hàng phải là mức của CONNECTION đang chạy, không
+                      // phải giao của cả nhóm — mức nào gửi đi phải khớp đúng thứ đang thấy.
+                      const selectedLevels = pinned ? pinned.thinkingLevels : model.thinkingLevels
+                      const hasThinking = Boolean(selectedLevels && selectedLevels.length > 1)
+                      const pinsOpen = openPins === model.id || Boolean(pinned)
                       return (
                         <div
                           key={model.id}
                           role="button"
                           tabIndex={0}
+                          aria-pressed={isSelected}
+                          data-component-id={`model-row-${model.id}`}
                           onKeyDown={(e) => {
                             if (e.key === 'Enter' || e.key === ' ') {
                               onRouterModelChange?.(model.id)
@@ -389,7 +443,7 @@ export function HarnessModelPicker({ routerModels, activeRouterModelId, onRouter
                           onClick={() => {
                             onRouterModelChange?.(model.id)
                             setActiveModel(model.id)
-                            if (!hasThinking) {
+                            if (!rowHasThinking) {
                               setOpen(false)
                             }
                           }}
@@ -405,18 +459,153 @@ export function HarnessModelPicker({ routerModels, activeRouterModelId, onRouter
                                 <ProviderIcon providerId={model.provider} className="size-4" />
                                 <span className="font-semibold text-xs text-fg truncate">{model.name}</span>
                               </div>
-                              <div className="flex items-center gap-2 text-[10px] text-zinc-500 font-mono">
-                                <span className="flex items-center gap-1">
+                              {/* `flex-wrap` + `whitespace-nowrap`: hàng phụ có thể dài (nhiều connection,
+                                  nhiều khoá, thêm cảnh báo model gõ tay) — các mảnh phải xuống dòng
+                                  NGUYÊN VẸN, không bị bóp cho tới khi chữ gãy giữa từ. Khe hở `1.5` (không phải `2`) để
+                                  hàng phụ của nhóm bình thường VẪN vừa một dòng: đo trong bảng chọn thật,
+                                  một dòng cần 231.5px trong 235px. */}
+                              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-zinc-500 font-mono">
+                                <span className="flex items-center gap-1 whitespace-nowrap">
                                   <span className={`size-1.5 rounded-full inline-block ${isSelected ? 'bg-emerald-500' : 'bg-zinc-600'}`} />
                                   Live Provider
                                 </span>
+                                {/* Số connection KHÔNG vào nhãn (nhãn bị `displayModelName` cắt theo `·`);
+                                    đây là chỗ duy nhất nói dòng này gộp mấy connection. */}
+                                {model.connections && model.connections > 1 && (
+                                  <>
+                                    <span>·</span>
+                                    <span className="whitespace-nowrap">{model.connections} connections</span>
+                                  </>
+                                )}
+                                {/* Số khoá cũng nói được điều mà tên connection không nói: cả nhóm
+                                    đang có mấy khoá để router xoay khi một khoá hết hạn mức. */}
+                                {model.keys && model.keys > 1 && (
+                                  <>
+                                    <span>·</span>
+                                    <span className="whitespace-nowrap">{model.keys} keys</span>
+                                  </>
+                                )}
+                                {/* Connection dò hỏng nhưng model gõ tay: router VẪN định tuyến (nhánh
+                                    `custom` của `validTarget`), nên hàng phải nói ra thay vì gộp im
+                                    lặng với connection đã dò được danh sách. */}
+                                {(model.handTyped ?? 0) > 0 && (
+                                  <>
+                                    <span>·</span>
+                                    <span
+                                      className="whitespace-nowrap text-amber-400"
+                                      title={`Model discovery did not complete on ${model.handTyped} of these connections, so only the models typed by hand are routable there. The router still routes them.`}
+                                    >
+                                      {model.handTyped} hand-typed
+                                    </span>
+                                  </>
+                                )}
                               </div>
+                              {pinned && (
+                                <div className="flex items-center gap-1 text-[10px] text-brand font-mono">
+                                  <Pin className="size-2.5" />
+                                  <span>pinned · {pinned.name}</span>
+                                </div>
+                              )}
                             </div>
+
+                            {/* Chỉ hiện khi nhóm có ≥ 2 connection: ghim một connection là việc vô nghĩa
+                                khi cả nhóm chỉ có một. */}
+                            {pins.length > 1 && (
+                              <button
+                                type="button"
+                                aria-expanded={pinsOpen}
+                                aria-label={pinsOpen ? 'Collapse the connection list' : 'Pin one connection for this model'}
+                                title="Pin one connection"
+                                data-component-id={`model-row-pin-toggle-${model.id}`}
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  setOpenPins(pinsOpen && openPins === model.id ? null : model.id)
+                                }}
+                                className={`ml-2 flex size-5 shrink-0 items-center justify-center rounded-md transition cursor-pointer ${
+                                  pinsOpen ? 'bg-brand/10 text-brand' : 'text-muted hover:bg-panel2 hover:text-fg'
+                                }`}
+                              >
+                                <ChevronRight className={`size-3 transition ${pinsOpen ? 'rotate-90' : ''}`} />
+                              </button>
+                            )}
 
                             {isSelected && (
                               <Check className="size-4 shrink-0 text-brand ml-2" />
                             )}
                           </div>
+
+                          {/* Nhánh ghim: một hàng con cho mỗi connection của nhóm — chỗ DUY NHẤT còn hiện
+                              tên connection. Bấm hàng con ⇒ route `model:<connectionId>:<modelId>` (đường
+                              cũ), router thôi chạy luân phiên. */}
+                          {pinsOpen && (
+                            <div
+                              className="mt-1.5 rounded-md border border-line/50 bg-panel/70 p-1"
+                              data-component-id={`pin-menu-${model.id}`}
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <div className="flex select-none items-center gap-1.5 px-1.5 pb-1 pt-0.5">
+                                <Pin className="size-2.5 text-brand" />
+                                <span className="text-[10px] font-semibold text-zinc-200">Pin this connection</span>
+                                <span className="min-w-0 flex-1" />
+                                {pinned ? (
+                                  <button
+                                    type="button"
+                                    aria-label={`Unpin the connection in use and go back to rotating across all ${pins.length} connections`}
+                                    data-component-id={`pin-row-${pinned.id}-unpin`}
+                                    onClick={() => {
+                                      onRouterModelChange?.(model.id)
+                                      setActiveModel(model.id)
+                                    }}
+                                    className="text-[10px] font-medium text-brand hover:underline cursor-pointer"
+                                  >
+                                    Unpin
+                                  </button>
+                                ) : (
+                                  <span className="text-[9.5px] text-muted">this connection only</span>
+                                )}
+                              </div>
+                              {pins.map((pin) => {
+                                const isPinned = pinned?.id === pin.id
+                                const state = pinState(pin.id, snapshot)
+                                return (
+                                  <div
+                                    key={pin.id}
+                                    role="button"
+                                    tabIndex={0}
+                                    aria-pressed={isPinned}
+                                    data-component-id={`pin-row-${pin.id}`}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter' || e.key === ' ') {
+                                        onRouterModelChange?.(pin.id)
+                                        setActiveModel(pin.id)
+                                      }
+                                    }}
+                                    onClick={() => {
+                                      onRouterModelChange?.(pin.id)
+                                      setActiveModel(pin.id)
+                                      // Hàng con cũng giữ panel ở lại khi connection đó có mức thinking,
+                                      // để chọn mức ngay tại chỗ (cùng luật với hàng cha).
+                                      if (!(pin.thinkingLevels && pin.thinkingLevels.length > 1)) setOpen(false)
+                                    }}
+                                    className={`flex items-center gap-2 rounded-md px-2 py-1 cursor-pointer select-none ${
+                                      isPinned ? 'bg-brand/10 ring-1 ring-brand/30' : 'hover:bg-panel2/60'
+                                    }`}
+                                  >
+                                    {isPinned
+                                      ? <Pin className="size-2.5 shrink-0 text-brand" />
+                                      : <span className={`size-1.5 shrink-0 rounded-full inline-block ${state?.tone === 'failed' ? 'bg-rose-500' : 'bg-zinc-600'}`} />}
+                                    <span className="min-w-0 flex-1 truncate text-[11.5px] text-zinc-200">{pin.name}</span>
+                                    {state && (
+                                      <span className={`shrink-0 font-mono text-[9.5px] ${state.tone === 'ready' ? 'text-emerald-400' : state.tone === 'failed' ? 'text-amber-400' : 'text-zinc-500'}`}>
+                                        {state.label}
+                                      </span>
+                                    )}
+                                    {isPinned && <span className="shrink-0 font-mono text-[9.5px] text-brand">in use</span>}
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          )}
 
                           {/* Inline Thinking Selector cho model đang được chọn */}
                           {isSelected && hasThinking && (
@@ -429,7 +618,7 @@ export function HarnessModelPicker({ routerModels, activeRouterModelId, onRouter
                                 <span>Thinking:</span>
                               </span>
                               <div className="flex items-center gap-1 bg-panel p-0.5 rounded-md border border-line/50">
-                                {model.thinkingLevels!.map((lvl) => {
+                                {selectedLevels!.map((lvl) => {
                                   const isActive = thinkingLevel === lvl
                                   return (
                                     <button
@@ -548,6 +737,15 @@ export function HarnessModelPicker({ routerModels, activeRouterModelId, onRouter
                 )
               )}
             </div>
+
+            {/* Dòng nhắc của tab Single Models: chọn cả nhóm nghĩa là router tự chuyển khoá khi
+                một khoá hết hạn mức — điều mà danh sách một-dòng-mỗi-model mang lại. */}
+            {activeTab === 'model' && (
+              <div className="flex items-center gap-1.5 border-t border-line/70 px-3 py-1.5 text-[10px] text-muted">
+                <KeyRound className="size-2.5 text-zinc-500" />
+                <span>Auto-switch on quota — shared across the group.</span>
+              </div>
+            )}
 
             {/* Footer Actions (Manage & Create) */}
             <div className="flex items-center justify-between border-t border-line/70 bg-[#141720] px-3 py-2 text-xs">

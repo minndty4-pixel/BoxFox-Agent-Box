@@ -35,7 +35,7 @@ import type { ChatMessage, ReferencedFile } from '../../types/ui'
 import { useAgentStore } from '../../store/agentStore'
 import { useUiStore } from '../../store/uiStore'
 import { readingColumnClass } from '../../lib/readingColumn'
-import { useRouterChatStore, type RouterChatSelection, type RouterChatTurn } from '../../store/routerChatStore'
+import { useRouterChatStore, type RouterChatTurn } from '../../store/routerChatStore'
 import { useProviderStore } from '../../store/providerStore'
 import { useT } from '../../i18n/context'
 import { LabelDot } from '../LabelDot'
@@ -52,7 +52,7 @@ import { ProviderIcon } from '../providers/ProviderIcon'
 import { useHarnessStore } from '../../store/harnessStore'
 import { useHarnessChatStore } from '../../store/harnessChatStore'
 import { resolveThinkingLevel } from '../../lib/harnessThinking'
-import { routerChatOptions } from './RouterTestChat'
+import { composerModels, findRouteOption, routerChatOptions, routable, selectionKey } from '../../lib/routeOptions'
 
 type ChatGroup =
   | { kind: 'single'; message: ChatMessage }
@@ -194,10 +194,13 @@ export function ChatPanel() {
   const harnessBusy =
     harnessRun?.status === 'running' ||
     harnessRun?.status === 'starting' ||
-    // Phiên đang chờ người dùng quyết định vẫn là một lượt chạy đang sống: ô soạn
-    // tin phải khoá (một prompt thường sẽ bị harness trả 409 SESSION_BUSY) nhưng
-    // nút Stop và các lệnh điều khiển vẫn phải dùng được.
+    // Phiên đang chờ người dùng quyết định vẫn là một lượt chạy đang sống: nút Stop và các lệnh
+    // điều khiển vẫn phải dùng được. Từ vòng 27 (C-5) ô soạn tin KHÔNG còn bị khoá ở trạng thái
+    // này — câu gõ vào được xếp hàng cho lượt đang chạy (`canSteer` bên dưới).
     harnessRun?.status === 'awaiting_decision'
+  // Vòng 27 / C-5 — lượt đang chạy nhận chỉ thị giữa lượt: nhận ở `running`/`awaiting_decision`
+  // và áp ở BƯỚC KẾ. Riêng `starting` (lượt chưa mở xong, chưa có bước nào để áp) vẫn khoá nút gửi.
+  const harnessSteerable = harnessRun?.status === 'running' || harnessRun?.status === 'awaiting_decision'
 
   // Lỗi của lần gửi/dừng vừa rồi được giữ thêm một bản cục bộ: `refresh` được
   // gọi mỗi 1200ms ghi lại `sessions[id].error` (thành `null` khi phiên không
@@ -291,16 +294,17 @@ export function ChatPanel() {
 
   // Derive options from snapshot
   const routerOptions = useMemo(() => snapshot ? routerChatOptions(snapshot) : [], [snapshot])
-  const selKey = (s: RouterChatSelection | null) => !s ? '' : s.kind === 'alias' ? `alias:${s.aliasId}` : `model:${s.connectionId}:${s.modelId}`
-  const selected = routerOptions.find(o => o.value === selKey(selection))
+  // `findRouteOption` tra cả trong `pins`: một phiên ghim connection (route `model:<c>:<m>`) phải
+  // thấy đúng hàng con, không rơi về hàng cha của nhóm provider.
+  const selected = findRouteOption(routerOptions, selectionKey(selection))
 
   // Auto-select default route when provider loads
   useEffect(() => {
     if (!snapshot || selected) return
     const r = snapshot.defaultRoute
     const key = r.aliasId ? `alias:${r.aliasId}` : `model:${r.connectionId}:${r.modelId}`
-    const next = routerOptions.find(o => o.value === key)?.selection ?? routerOptions[0]?.selection ?? null
-    if (selKey(next) !== selKey(selection)) setSelection(next)
+    const next = findRouteOption(routerOptions, key)?.selection ?? routerOptions[0]?.selection ?? null
+    if (selectionKey(next) !== selectionKey(selection)) setSelection(next)
   }, [snapshot, routerOptions, selected, selection, setSelection])
 
   // Kiểm tra trạng thái connection của model đang chọn để cảnh báo người dùng nếu ping false
@@ -308,6 +312,18 @@ export function ChatPanel() {
     if (!snapshot || !selection) return null
     if (selection.kind === 'model') {
       return snapshot.connections.find(c => c.id === selection.connectionId) || null
+    }
+    if (selection.kind === 'provider') {
+      // Tuyến provider chạy trên BẤT KỲ connection dùng được nào của nhóm, nên chỉ cảnh báo khi
+      // MỌI connection dùng được đều hỏng ping — còn một đích sống là lượt vẫn chạy được. Nhãn
+      // nêu tên PROVIDER (tên connection trong nhóm chỉ là "key 1/2/3", không nói gì thêm).
+      // Cùng luật định tuyến với router (`validTarget`): connection dò hỏng vẫn là một đích nếu
+      // model là thứ người dùng gõ tay, nên đừng cảnh báo trong khi vẫn còn đích sống.
+      const usable = snapshot.connections.filter((c) => c.providerId === selection.providerId
+        && c.models.some((m) => m.id === selection.modelId && routable(c, m)))
+      if (usable.length === 0 || usable.some(c => c.inferenceState !== 'failed')) return null
+      const first = usable[0]
+      return { ...first, name: snapshot.providers?.find(p => p.id === selection.providerId)?.name ?? first.name }
     }
     if (selection.kind === 'alias') {
       const alias = snapshot.aliases.find(a => a.id === selection.aliasId)
@@ -360,19 +376,18 @@ export function ChatPanel() {
 
   // Build router adapter only when live models available
   const routerAdapter: RouterComposerAdapter | undefined = useMemo(() => {
-    const models = routerOptions.map(o => ({
-      id: o.value,
-      name: o.label,
-      provider: o.providerId,
-      thinkingLevels: o.thinkingLevels,
-    }))
+    const models = composerModels(routerOptions)
     return {
       models,
-      activeModelId: selKey(selection),
+      activeModelId: selectionKey(selection),
       isBusy: isGlobalBusy,
+      // Chỉ khi lượt harness thật đang chạy (không phải `starting`) mới có chỉ thị giữa lượt —
+      // nút Stop vẫn ở nguyên chỗ cũ, nút Gửi chỉ hiện thêm (C-5).
+      canSteer: usesHarnessChat(activeType) && harnessSteerable,
+      steerNotice: harnessRun?.steerNotice ?? null,
       connectionWarning,
       onModelChange: (id: string) => {
-        setSelection(routerOptions.find(o => o.value === id)?.selection ?? null)
+        setSelection(findRouteOption(routerOptions, id)?.selection ?? null)
         harnessClearError(chatId)
         setDismissedWarning(null)
       },
@@ -380,8 +395,8 @@ export function ChatPanel() {
         harnessClearError(chatId)
         if (connectionWarning) setDismissedWarning(connectionWarning)
         const thinkingLevel = useHarnessStore.getState().thinkingLevel
-        const baseLabel = selected?.label || (selection?.kind === 'model' ? selection.modelId : selection?.kind === 'alias' ? selection.aliasId : 'Gemini 3.7 Flash')
-        const activeOption = routerOptions.find(o => o.value === selKey(selection))
+        const baseLabel = selected?.label || (selection?.kind === 'model' || selection?.kind === 'provider' ? selection.modelId : selection?.kind === 'alias' ? selection.aliasId : 'Gemini 3.7 Flash')
+        const activeOption = findRouteOption(routerOptions, selectionKey(selection))
         const publishedLevels = activeOption?.thinkingLevels
         // Nhãn phải nói đúng mức sẽ gửi: model chỉ công bố một mức (`['high']`) cũng
         // có mức thật, và store kéo mức toàn cục về đúng nó trước khi gửi.
@@ -392,11 +407,12 @@ export function ChatPanel() {
         )
         const modelLabel = hasThinking && effectiveLevel ? `${baseLabel} (${effectiveLevel.charAt(0).toUpperCase() + effectiveLevel.slice(1)})` : baseLabel
         if (usesHarnessChat(activeType)) {
-          // Phiên đang chạy (kể cả đang chờ người dùng quyết định) không nhận
-          // prompt thường: `send` từ chối tại chỗ, nên trả `false` để composer
-          // giữ nguyên bản nháp thay vì xoá im lặng (BUG-17/F1).
+          // Lượt CHƯA mở xong (`starting`) không nhận prompt thường: `send` từ chối tại chỗ, nên
+          // trả `false` để composer giữ nguyên bản nháp thay vì xoá im lặng (BUG-17/F1).
+          // Lượt ĐANG chạy (`running`/`awaiting_decision`) thì nay gửi được: harness xếp chỉ thị
+          // vào hàng đợi và áp ở bước kế (vòng 27 / C-5) — không còn bị chặn tại đây.
           const status = useHarnessChatStore.getState().sessions[chatId]?.status
-          if (status === 'running' || status === 'starting' || status === 'awaiting_decision') {
+          if (status === 'starting') {
             return Promise.resolve(false)
           }
           // Trả về kết quả để composer biết lần gửi có thất bại không — khi
@@ -424,7 +440,7 @@ export function ChatPanel() {
       },
       onStop: handleStopAll,
     }
-  }, [routerOptions, selected, selection, isGlobalBusy, connectionWarning, setSelection, routerSend, activeType, harnessSend, handleStopAll, chatId, harnessClearError, captureRunError])
+  }, [routerOptions, selected, selection, isGlobalBusy, harnessSteerable, harnessRun?.steerNotice, connectionWarning, setSelection, routerSend, activeType, harnessSend, handleStopAll, chatId, harnessClearError, captureRunError])
 
   // Escape to stop streaming
   useEffect(() => {

@@ -1,4 +1,9 @@
 aiohttp>=3.9,<4
 httpx>=0.27,<1
 PyYAML>=6,<7
+# Vòng 27 (đợt 1, A-10) — thang đọc đầy đủ dựng lại PDF TẠI CHỖ (chủ nhà cho phép #6011):
+# `pdfplumber` lấy chữ + bảng, `pypdfium2` là engine render bên dưới nó. ĐO ĐƯỢC: ảnh trang
+# chụp PDF arXiv ra 10 bảng, còn `r.jina.ai` chỉ-chữ làm mất sạch bảng.
+pdfplumber>=0.11,<1
+pypdfium2>=5,<6
 pytest>=8,<9

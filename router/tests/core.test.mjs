@@ -70,7 +70,7 @@ test('round robin, ordered fallback, cooldown and key allowlist enforce actual e
   f.service.alias({ strategy: 'fallback' }, alias.id);
   const calls = []; f.adapter.generate = async function* ({ connection }) { calls.push(connection.id); if (connection.id === f.c.id) throw new RouterError('RATE_LIMIT', 'Limit', 429, true); yield { type: 'delta', delta: { content: 'fallback' } }; yield { type: 'finish', finishReason: 'stop' }; };
   assert.equal((await events(f.engine, input))[0].meta.connectionId, second.id); assert.deepEqual(calls, [f.c.id, second.id]); calls.length = 0;
-  await events(f.engine, input); assert.deepEqual(calls, [f.c.id, second.id]); f.service.patch(second.id, { enabled: false }); await assert.rejects(events(f.engine, input), e => e.status === 429);
+  await events(f.engine, input); assert.deepEqual(calls, [second.id], 'the parked key is skipped, so the next turn goes straight to the second connection'); f.service.patch(second.id, { enabled: false }); await assert.rejects(events(f.engine, input), e => e.status === 429 && e.message === 'Limit'); assert.deepEqual(calls, [second.id], 'and a fully parked ring costs no provider call at all');
 });
 test('provider account order and round robin select verified accounts only', async t => {
   const f = await fixture(t); const second = f.service.create({ providerId: 'custom', endpoint: f.c.endpoint, apiKey: 'second', name: 'second' }); await f.service.discover(second.id);

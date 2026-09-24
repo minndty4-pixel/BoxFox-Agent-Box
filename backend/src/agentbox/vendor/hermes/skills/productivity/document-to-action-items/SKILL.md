@@ -28,7 +28,7 @@ Don't use for: plain text extraction with no downstream structuring (load `pdf` 
 
 ### 1. Inventory the document set
 
-Use `read_file` for local files and `web_extract` for URLs to identify files, versions, dates, page counts, language, scan quality, and the requested output schema. Detect duplicate/revised copies before analysis. Done when the authoritative or latest version is known or ambiguity is stated.
+Use `read_file` for local files and `web_fetch` for URLs to identify files, versions, dates, page counts, language, scan quality, and the requested output schema. Detect duplicate/revised copies before analysis. Done when the authoritative or latest version is known or ambiguity is stated.
 
 ### 2. Extract with provenance
 

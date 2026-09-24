@@ -13,10 +13,17 @@ export const HARNESS_ROLES = [
   'simplify',
   'testing',
   'research',
+  // Vòng 27 (đợt 6): vai phản biện độc lập của việc nghiên cứu — chạy trên tệp hồ sơ và trả
+  // verdict `revise`/`pass`, cùng họ "soi" như `plan-review` nhưng soi hồ sơ, nên đứng CUỐI
+  // danh sách: các vai cũ giữ nguyên thứ tự đang được test ghim.
+  'research-review',
 ] as const
 
 /** Tên hiển thị cho vai có gạch nối — các vai một chữ vẫn dùng luật viết hoa chữ đầu. */
-const ROLE_NAMES: Record<string, string> = { 'plan-review': 'Plan Review' }
+const ROLE_NAMES: Record<string, string> = {
+  'plan-review': 'Plan Review',
+  'research-review': 'Research Review',
+}
 
 /**
  * `mainModel` chỉ có ĐÚNG hai dạng chạy được: `'default'` (router tự chọn) hoặc một định danh

@@ -19,6 +19,7 @@ const messages = {
   PROJECT_DISCOVERY: 'Could not establish the account project. Retry discovery.',
   UNAVAILABLE: 'Provider is unavailable or returned an invalid response.',
   CAPABILITY: 'This model does not support the requested operation.',
+  KEYS_PRESENT: 'Remove the keys on this connection first — deleting it would drop them.',
 };
 export function safeError(error) {
   if (error instanceof RouterError) return error;

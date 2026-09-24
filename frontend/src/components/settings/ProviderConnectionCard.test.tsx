@@ -7,7 +7,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ProviderView } from './ProviderView'
 import { useProviderStore } from '../../store/providerStore'
-import type { ProviderConnection, ProviderModel, ProviderSnapshot } from '../../types/provider'
+import type { ConnectionKey, ProviderConnection, ProviderModel, ProviderSnapshot } from '../../types/provider'
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -71,6 +71,34 @@ const customFailedSnapshot: ProviderSnapshot = {
 
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } })
 
+function ringKey(over: Partial<ConnectionKey> & { id: string }): ConnectionKey {
+  return { label: over.id, prefix: 'sk-or-', state: 'ready', cooldownUntil: null, resetAt: null, lastErrorCode: null, lastErrorMessage: null, lastUsedAt: null, ...over }
+}
+
+// Round 29: two connections of one provider on the same model — the provider level list
+// must show that model once, and toggle both.
+const twinSnapshot: ProviderSnapshot = {
+  ...snapshot,
+  connections: [
+    { ...connection, id: 'openrouter-key', name: 'OpenRouter key' },
+    { ...connection, id: 'openrouter-second', name: 'OpenRouter second', revision: 4, accountLabel: null },
+  ],
+}
+
+const ringSnapshot: ProviderSnapshot = {
+  ...snapshot,
+  connections: [{ ...connection, keys: [ringKey({ id: 'key-1', label: 'Key 1' })] }],
+}
+
+// The owner's own shape: one provider, two connection shells holding one and three keys.
+const mergeSnapshot: ProviderSnapshot = {
+  ...snapshot,
+  connections: [
+    { ...connection, id: 'openrouter-key', name: 'OpenCode Free', keys: [ringKey({ id: 'key-1', label: 'Key 1' })] },
+    { ...connection, id: 'openrouter-second', name: 'OpenCode Free (key 2)', revision: 4, accountLabel: null, keys: [ringKey({ id: 'key-2', label: 'Key 2' }), ringKey({ id: 'key-3', label: 'Key 3' }), ringKey({ id: 'key-4', label: 'Key 4' })] },
+  ],
+}
+
 let root: Root
 let host: HTMLDivElement
 beforeEach(() => {
@@ -105,6 +133,8 @@ describe('Provider connection card', () => {
     expect(host.textContent).not.toContain('BOXFOX_OK')
     expect(host.querySelector('input[type="password"]')).toBeNull()
     expect(host.textContent).not.toContain('Replace API key')
+    // A snapshot the router did not decorate with `keys` keeps today's single-key card.
+    expect(host.textContent).not.toContain('Keys on this connection')
     const edit = [...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim() === 'Edit')!
     expect(edit.getAttribute('aria-expanded')).toBe('false')
     act(() => edit.click())
@@ -296,5 +326,93 @@ describe('Provider connection card', () => {
     const endpoint = host.querySelector<HTMLInputElement>('input[placeholder="http://127.0.0.1:8000/v1"]')!
     act(() => setValue(endpoint, 'https://gateway.example.test/v1/'))
     expect(host.textContent).toContain('The router calls https://gateway.example.test/v1/models and https://gateway.example.test/v1/chat/completions.')
+  })
+
+  it('shows a model two connections serve once, and toggles it on both from the one checkbox', async () => {
+    const fetchMock = vi.fn(async () => json(twinSnapshot))
+    vi.stubGlobal('fetch', fetchMock)
+    useProviderStore.setState({ snapshot: twinSnapshot })
+    await render()
+
+    expect(host.querySelectorAll('input[aria-label="Enable gpt-5-mini"]')).toHaveLength(1)
+    expect(rowFor('gpt-5-mini').textContent).toContain('2 connections')
+
+    act(() => rowFor('gpt-5-mini').querySelector<HTMLInputElement>('input[type="checkbox"]')!.click())
+    await act(async () => undefined)
+
+    const first = patches(fetchMock, '/api/router/connections/openrouter-key')
+    const second = patches(fetchMock, '/api/router/connections/openrouter-second')
+    expect(first).toHaveLength(1)
+    expect(second).toHaveLength(1)
+    expect(JSON.parse(String((second[0][1] as RequestInit).body))).toEqual({ enabledModelIds: ['gpt-5', 'claude-sonnet-4.5', 'deepseek-v3.2', 'gpt-5-nano', 'gemini-2.5-pro', 'qwen3-max'] })
+  })
+
+  it('falls back to the empty ring when the last key is removed', async () => {
+    const emptied: ProviderSnapshot = {
+      ...ringSnapshot,
+      connections: [{ ...ringSnapshot.connections[0], revision: 2, credentialPresent: false, authState: 'required', keys: [] }],
+    }
+    // The first load must still be the state with the key in it: only the delete flips it.
+    let state = ringSnapshot
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit = {}) => {
+      if (init.method === 'DELETE') { state = emptied; return json(emptied.connections[0]) }
+      return json(state)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    useProviderStore.setState({ snapshot: ringSnapshot })
+    await render()
+
+    expect(host.textContent).toContain('Keys on this connection')
+    await act(async () => buttonIn(host, 'Remove key').click())
+
+    expect(fetchMock.mock.calls.some(call => call[0] === '/api/router/connections/openrouter-key/keys/key-1' && (call[1] as RequestInit).method === 'DELETE')).toBe(true)
+    expect(host.textContent).toContain('No key on this connection yet.')
+  })
+
+  it('merges the other connection\'s keys into this one and leaves that card able to be deleted', async () => {
+    const merged: ProviderSnapshot = {
+      ...mergeSnapshot,
+      connections: [
+        { ...mergeSnapshot.connections[0], revision: 5, credentialPresent: false, authState: 'required', keys: [] },
+        { ...mergeSnapshot.connections[1], revision: 2, keys: [...mergeSnapshot.connections[0].keys!, ...mergeSnapshot.connections[1].keys!] },
+      ],
+    }
+    let state = mergeSnapshot
+    const fetchMock = vi.fn(async (url: string, init: RequestInit = {}) => {
+      if (init.method === 'POST' && String(url).endsWith('/keys/import')) { state = merged; return json(merged.connections[1]) }
+      return json(state)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    useProviderStore.setState({ snapshot: mergeSnapshot })
+    await render()
+
+    // Both cards hold keys, so both offer a merge row. Drive the second card, whose only
+    // sibling with keys is the first.
+    const cards = [...host.querySelectorAll<HTMLElement>('article')]
+    expect(cards).toHaveLength(2)
+    expect(cards[1].querySelector('select[aria-label="Merge keys from"]')).not.toBeNull()
+    await act(async () => buttonIn(cards[1], 'Merge into this connection').click())
+
+    const importCall = fetchMock.mock.calls.find(call => String(call[0]).endsWith('/keys/import'))
+    expect(importCall![0]).toBe('/api/router/connections/openrouter-second/keys/import')
+    expect(JSON.parse(String((importCall![1] as RequestInit).body))).toEqual({ fromConnectionId: 'openrouter-key' })
+    // Nothing is deleted behind the owner's back: the source card says so and stays.
+    expect(fetchMock.mock.calls.some(call => (call[1] as RequestInit | undefined)?.method === 'DELETE')).toBe(false)
+    expect(cards[0].textContent).toContain('1 key moved to "OpenCode Free (key 2)". Delete this connection if you no longer need it.')
+    expect(cards[0].textContent).toContain('No key on this connection yet.')
+    act(() => buttonIn(cards[0], 'Edit').click())
+    expect(buttonIn(cards[0], 'Delete').disabled).toBe(false)
+  })
+
+  it('refuses to delete a connection that still holds keys before the router has to', async () => {
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit = {}) => json(ringSnapshot))
+    vi.stubGlobal('fetch', fetchMock)
+    useProviderStore.setState({ snapshot: ringSnapshot })
+    await render()
+
+    act(() => buttonIn(host, 'Edit').click())
+    expect(buttonIn(host, 'Delete').disabled).toBe(true)
+    expect(host.textContent).toContain('Remove the 1 key on this connection first — delete would drop it.')
+    expect(fetchMock.mock.calls.some(call => (call[1] as RequestInit | undefined)?.method === 'DELETE')).toBe(false)
   })
 })
