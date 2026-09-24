@@ -11,18 +11,17 @@
 // inventory still renders per connection and both variants share the same row body.
 import { useEffect, useId, useRef, useState } from 'react'
 import { Copy, Plus, SlidersHorizontal, X } from 'lucide-react'
-import { useProviderStore, type ModelProbeResult } from '../../store/providerStore'
+import { run, useProviderStore, type ModelProbeResult } from '../../store/providerStore'
 import type { ProviderConnection, ProviderModel } from '../../types/provider'
 import { CustomModelForm } from './CustomModelForm'
 import { ModelManagerModal } from './ModelManagerModal'
 
 export interface ProviderModelRow {
-  /** The row's model, taken from the first serving connection. */
+  /** The row's model, taken from the first serving connection — every serving connection
+   *  offers the same `model.id`, which is also the row's key. */
   model: ProviderModel
   /** Connections that offer this model, in the order the caller ranked them. */
   serving: ProviderConnection[]
-  /** Every model id inside `serving` that produced this row (normally the same id). */
-  modelIds: string[]
 }
 
 /** One row per `model.id`, keeping the first connection that offers it. */
@@ -31,21 +30,11 @@ export function dedupeByModel(connections: ProviderConnection[]): ProviderModelR
   for (const connection of connections) {
     for (const model of connection.models) {
       const existing = rows.get(model.id)
-      if (existing) {
-        existing.serving.push(connection)
-        if (!existing.modelIds.includes(model.id)) existing.modelIds.push(model.id)
-        continue
-      }
-      rows.set(model.id, { model, serving: [connection], modelIds: [model.id] })
+      if (existing) { existing.serving.push(connection); continue }
+      rows.set(model.id, { model, serving: [connection] })
     }
   }
   return [...rows.values()]
-}
-
-/** `run` as `ProviderView` defines it: a refused request is already in the store's `error`
- *  and shows in the page banner, so the row does not swallow it or repeat it. */
-function run(action: Promise<unknown>) {
-  void action.catch((error) => useProviderStore.setState({ error: error instanceof Error ? error.message : 'Router request failed.' }))
 }
 
 function modelLatencyTone(model: ProviderModel) {
@@ -87,7 +76,7 @@ function ModelListBody({ rows, connections, providerScoped = false }: { rows: Pr
   // owns an AbortController that is aborted when this list goes away.
   useEffect(() => () => { controllers.current.forEach((controller) => controller.abort()); controllers.current.clear() }, [])
 
-  const isEnabledOn = (row: ProviderModelRow, connection: ProviderConnection) => connection.models.some((model) => row.modelIds.includes(model.id) && model.enabled)
+  const isEnabledOn = (row: ProviderModelRow, connection: ProviderConnection) => connection.models.some((model) => model.id === row.model.id && model.enabled)
   const enabledCount = rows.filter((row) => row.serving.every((connection) => isEnabledOn(row, connection))).length
   const verified = rows.filter((row) => row.model.health === 'ready')
   // Prices are per model, so the block says how many of them carry one before the
@@ -112,7 +101,7 @@ function ModelListBody({ rows, connections, providerScoped = false }: { rows: Pr
     let done = 0
     for (const connection of row.serving) {
       const current = connection.models.filter((model) => model.enabled).map((model) => model.id)
-      const next = enabled ? [...current, ...row.modelIds.filter((id) => !current.includes(id))] : current.filter((id) => !row.modelIds.includes(id))
+      const next = enabled ? [...new Set([...current, row.model.id])] : current.filter((id) => id !== row.model.id)
       try {
         await request(`/api/router/connections/${encodeURIComponent(connection.id)}`, 'PATCH', { enabledModelIds: next })
         done += 1

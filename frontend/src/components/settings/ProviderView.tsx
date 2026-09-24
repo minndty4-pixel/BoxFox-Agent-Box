@@ -21,13 +21,15 @@ import {
   X,
 } from 'lucide-react'
 import { api } from '../../lib/providerApi'
-import { useProviderStore } from '../../store/providerStore'
+import { routable } from '../../lib/routeOptions'
+import { run, useProviderStore } from '../../store/providerStore'
 import type {
   OAuthAttempt,
   ProviderConnection,
   ProviderDefault,
   ProviderDefinition,
   ProviderId,
+  ProviderModel,
   ProviderSnapshot,
   RouteTarget,
   RouterAlias,
@@ -43,7 +45,6 @@ import { ModelToggleList, ProviderModelList } from './ProviderModelList'
 import { ProviderRail, type ProviderRailGroup } from './ProviderRail'
 
 type ProviderTab = 'api' | 'router'
-function run(action: Promise<unknown>) { void action.catch(error => useProviderStore.setState({ error: error instanceof Error ? error.message : 'Router request failed.' })) }
 type RouterSection = 'accounts' | 'models' | 'routing' | 'quota' | 'usage' | 'access'
 
 const field = 'w-full rounded-lg border border-line bg-panel2 px-3 py-2 text-xs text-fg outline-hidden transition focus:border-brand focus:ring-2 focus:ring-brand/15'
@@ -57,16 +58,38 @@ function providerFor(snapshot: ProviderSnapshot, id: string) {
 
 function publicTargets(snapshot: ProviderSnapshot) {
   const direct = snapshot.connections.flatMap((connection) =>
-    connection.enabled && connection.authState === 'ready' && connection.discoveryState === 'ready' && (connection.providerId !== 'antigravity' || connection.projectState === 'ready')
-      ? connection.models.filter((model) => model.enabled).map((model) => ({
-          id: `${connection.id}/${model.id}`,
-          label: `${connection.name} / ${model.name}`,
-          connectionId: connection.id,
-          modelId: model.id,
-        }))
-      : [],
+    connection.models.filter((model) => routable(connection, model)).map((model) => ({
+      id: `${connection.id}/${model.id}`,
+      label: `${connection.name} / ${model.name}`,
+      connectionId: connection.id,
+      modelId: model.id,
+    })),
   )
   return direct
+}
+
+/** The model a user types by hand: on, healthy, and marked as theirs. Asked of a connection with
+ *  no row of its own, because `routable` answers "may this connection serve a model the provider
+ *  never listed" in its last clause — the same clause the router routes with. */
+const typedByHand: ProviderModel = { id: '', name: '', enabled: true, source: 'custom', capabilities: { streaming: 'unknown', tools: 'unknown', vision: 'unknown' } }
+
+/**
+ * The connections the provider level model list speaks for — one block per provider, one row per
+ * model, merged across these connections.
+ *
+ * Both clauses call `routable`, the router's own rule, so this list can neither promise a target
+ * the router would refuse nor drop one it takes:
+ * - a model the router would route if it were switched ON (`enabled: true`): the rows stay put
+ *   when the last one is switched off — this block holds the checkbox that switches it back on;
+ * - a model typed by hand (`typedByHand`): a connection whose discovery failed or degraded routes
+ *   exactly those, so its rows belong here; they used to disappear, and with a single connection
+ *   the whole block with them (round 29 review). The same clause keeps a connection whose
+ *   discovered list is still EMPTY listed, because `Add model` and `Manage models` live here.
+ */
+function modelListConnections(connections: ProviderConnection[]) {
+  return connections.filter((connection) =>
+    connection.models.some((model) => routable(connection, { ...model, enabled: true })) || routable(connection, typedByHand),
+  )
 }
 
 function PublicStatus({ snapshot }: { snapshot: ProviderSnapshot }) {
@@ -200,9 +223,9 @@ function ApiPanel({ snapshot, busy }: { snapshot: ProviderSnapshot; busy: boolea
 
   const chosen = definitions.find((provider) => provider.id === providerId) ?? definitions[0]
   const connections = snapshot.connections.filter((connection) => connection.providerId === chosen?.id)
-  // The provider level model list speaks for the connections that can serve: enabled,
-  // credential accepted, models discovered.
-  const readyConnections = connections.filter((connection) => connection.enabled && connection.authState === 'ready' && connection.discoveryState === 'ready')
+  // The provider level model list speaks for the connections the router can reach — see
+  // `modelListConnections` for why `discoveryState === 'ready'` alone is too narrow.
+  const listedConnections = modelListConnections(connections)
   const groups: ProviderRailGroup[] = [
     { id: 'free', label: 'Free Tier', providers: definitions.filter((provider) => providerCategoryValueV2(provider) === 'free') },
     { id: 'api-keys', label: 'API keys', providers: definitions.filter((provider) => providerCategoryValueV2(provider) !== 'free') },
@@ -249,7 +272,7 @@ function ApiPanel({ snapshot, busy }: { snapshot: ProviderSnapshot; busy: boolea
             {connections.length === 0 ? <Empty text="No API connection configured yet." /> : connections.map((connection) => <ConnectionCard key={connection.id} snapshot={snapshot} connection={connection} />)}
             {/* One row per model for the whole provider: two keys of the same provider must
                 not show the same model twice (round 29). */}
-            <ProviderModelList connections={readyConnections} />
+            <ProviderModelList connections={listedConnections} />
           </section>
         </div>
       </div>
@@ -571,8 +594,8 @@ function RouterProviderDetailV2({ snapshot, provider, busy, request, load, onBac
   const providerConfig = snapshot.providerConfigs?.find((value) => value.id === provider.id) ?? { id: provider.id, roundRobin: false, connectionOrder: [] }
   const rank = new Map(providerConfig.connectionOrder.map((id, index) => [id, index]))
   const connections = [...rawConnections].sort((a, b) => (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER))
-  // The provider level model list covers only the connections that can serve.
-  const readyConnections = connections.filter((connection) => connection.enabled && connection.authState === 'ready' && connection.discoveryState === 'ready')
+  // The provider level model list covers the same connections as the API tab's, by the same rule.
+  const listedConnections = modelListConnections(connections)
 
   useEffect(() => { setName(provider.name); setProjectId(''); setApiKey(''); setEndpoint(provider.defaultEndpoint ?? ''); setAttempt(null) }, [provider.id, provider.name, provider.defaultEndpoint])
   useEffect(() => {
@@ -705,7 +728,7 @@ function RouterProviderDetailV2({ snapshot, provider, busy, request, load, onBac
         ))
       )}
       {/* One row per model for the whole provider, the same block the API tab renders. */}
-      <ProviderModelList connections={readyConnections} />
+      <ProviderModelList connections={listedConnections} />
     </section>
   </div>
 }
@@ -849,11 +872,12 @@ function OAuthOrApiConnectionCard({
         </div>
       </div>
 
-      {/* One OAuth access token is not a ring, so that branch keeps today's single input. */}
-      {showKeyInput && isOAuth && (
-        <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto]">
+      {/* One OAuth access token is not a ring, and a connection whose snapshot carries no `keys`
+          array is the legacy single-key shape. Both branches keep today's single input. */}
+      {showKeyInput && (isOAuth || !keyRing) && (
+        <div id={ringId} className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto]">
           <label className="text-xs font-semibold">
-            Update session token / API key
+            {isOAuth ? 'Update session token / API key' : 'Update API key'}
             <input
               type="password"
               autoComplete="off"
@@ -884,7 +908,7 @@ function OAuthOrApiConnectionCard({
         </div>
       )}
 
-      {showKeyInput && !isOAuth && (
+      {showKeyInput && !isOAuth && keyRing && (
         <div id={ringId}>
           <ConnectionKeyRing connection={connection} />
         </div>

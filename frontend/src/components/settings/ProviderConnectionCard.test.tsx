@@ -412,7 +412,7 @@ describe('Provider connection card', () => {
 
     act(() => buttonIn(host, 'Edit').click())
     expect(buttonIn(host, 'Delete').disabled).toBe(true)
-    expect(host.textContent).toContain('Remove the 1 key on this connection first — delete would drop them.')
+    expect(host.textContent).toContain('Remove the 1 key on this connection first — delete would drop it.')
     expect(fetchMock.mock.calls.some(call => (call[1] as RequestInit | undefined)?.method === 'DELETE')).toBe(false)
   })
 })

@@ -21,6 +21,12 @@ function errorMessage(error: unknown) {
   return 'Router request failed.'
 }
 
+/** The one place a background action reports a refusal: the message goes to this store's
+ *  `error`, which the Settings page draws in its banner — callers do not repeat it. */
+export function run(action: Promise<unknown>) {
+  void action.catch((error) => useProviderStore.setState({ error: errorMessage(error) }))
+}
+
 let loadRevision = 0
 let pendingRequests = 0
 

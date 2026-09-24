@@ -14,7 +14,7 @@
 // `ProviderView` keeps today's `Replace API key` input for it and never mounts this block.
 import { useEffect, useRef, useState } from 'react'
 import { KeyRound, Plus, RefreshCw, Save, Trash2 } from 'lucide-react'
-import { useProviderStore } from '../../store/providerStore'
+import { run, useProviderStore } from '../../store/providerStore'
 import type { ConnectionKey, ProviderConnection } from '../../types/provider'
 import { connectionKeyPath, connectionKeysImportPath, connectionKeysPath, connectionKeyTryPath } from '../../lib/routerKeyPaths'
 import { Pill } from '../providers/ProviderStatus'
@@ -56,7 +56,7 @@ const COPY = {
   merging: 'Merging…',
   mergeConfirm: (count: number, source: string) => `Move ${count} key${count === 1 ? '' : 's'} from "${source}" into this connection. The router moves them; the secret never leaves the server.`,
   moved: (count: number, target: string) => `${count} key${count === 1 ? '' : 's'} moved to "${target}". Delete this connection if you no longer need it.`,
-  deleteBlocked: (count: number) => `Remove the ${count} key${count === 1 ? '' : 's'} on this connection first — delete would drop them.`,
+  deleteBlocked: (count: number) => `Remove the ${count} key${count === 1 ? '' : 's'} on this connection first — delete would drop ${count === 1 ? 'it' : 'them'}.`,
   announceCooling: (label: string, at: string) => `${label} is cooling — it rejoins rotation at ${at}.`,
   announceExhausted: (label: string, at: string) => `${label} has no quota left${at ? ` — it reopens at ${at}` : ''}.`,
   announceError: (label: string) => `${label} failed: the provider refused the last call.`,
@@ -67,12 +67,6 @@ const field = 'w-full rounded-lg border border-line bg-panel2 px-3 py-2 text-xs 
 const secondary = 'inline-flex items-center justify-center gap-1.5 rounded-md border border-line bg-panel2 px-3 py-2 text-xs font-semibold text-fg transition hover:border-brand/60 hover:text-brand disabled:cursor-not-allowed disabled:opacity-50'
 const primary = 'inline-flex items-center justify-center gap-1.5 rounded-md bg-brand px-3 py-2 text-xs font-semibold text-brandfg transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50'
 const rowButton = 'inline-flex items-center gap-1 rounded border border-line bg-panel px-1.5 py-0.5 text-[10px] font-medium text-fg transition hover:bg-panel2 hover:text-brand disabled:cursor-not-allowed disabled:opacity-50'
-
-/** `run` as `ProviderView` defines it: a refused request is not swallowed here, its
- *  message is already in the store's `error` and shows in the page banner. */
-function run(action: Promise<unknown>) {
-  void action.catch((error) => useProviderStore.setState({ error: error instanceof Error ? error.message : 'Router request failed.' }))
-}
 
 /** What may leave this block for one key: at most six characters of the secret, always
  *  with the ellipsis so a short prefix cannot be mistaken for the whole value. */
@@ -158,10 +152,14 @@ export function ConnectionKeyRing({ connection }: { connection: ProviderConnecti
   const previousStates = useRef<Map<string, ConnectionKey['state']> | null>(null)
 
   // ONE interval for the whole ring, only while a cooldown is still in the future: every
-  // cooling key counts down on the same beat, and nothing ticks when nothing is cooling.
+  // cooling key counts down on the same beat. The beat checks the deadline itself, so the
+  // interval stops once the last cooldown expires instead of re-rendering forever.
   useEffect(() => {
     if (coolingUntil <= Date.now()) return
-    const timer = window.setInterval(() => setTick(Date.now()), 1000)
+    const timer = window.setInterval(() => {
+      if (coolingUntil <= Date.now()) { window.clearInterval(timer); return }
+      setTick(Date.now())
+    }, 1000)
     return () => window.clearInterval(timer)
   }, [coolingUntil])
 
@@ -196,9 +194,13 @@ export function ConnectionKeyRing({ connection }: { connection: ProviderConnecti
     try {
       // The secret is in the request body and nowhere else: no state keeps it after this.
       await request(editingId ? connectionKeyPath(connection.id, editingId) : connectionKeysPath(connection.id), editingId ? 'PATCH' : 'POST', body)
-      closeInput()
     } catch { /* the page banner carries the router's own message */ }
-    finally { setSending(false) }
+    finally {
+      // A failed save closes the form too: the banner is the only error surface, so the typed
+      // secret must not stay in state or in the password field.
+      setSending(false)
+      closeInput()
+    }
   }
   const removeKey = (keyId: string) => request(connectionKeyPath(connection.id, keyId), 'DELETE')
   // `Try now` is not gated on the global `busy` (a single key test must not freeze the
@@ -227,7 +229,9 @@ export function ConnectionKeyRing({ connection }: { connection: ProviderConnecti
           <span className="min-w-0 max-w-[14rem] truncate text-xs font-semibold text-fg" title={key.label}>{key.label}</span>
           {state === 'unknown'
             ? <span className="inline-flex rounded-full border border-line bg-panel2 px-2 py-0.5 text-[10px] font-semibold text-muted">{stateLabel(key)}</span>
-            : <Pill value={state}>{stateLabel(key)}</Pill>}
+            // `error` borrows the red tone of the shared pill (`failed` is red, `error` is not
+            // in its list); the visible label still comes from `stateLabel`.
+            : <Pill value={state === 'error' ? 'failed' : state}>{stateLabel(key)}</Pill>}
           {state === 'cooling' && (remaining > 0
             ? <span aria-hidden="true" className="font-mono text-[10px] text-muted">{remaining}s</span>
             : <span className="font-mono text-[10px] text-muted/60">{COPY.checking}</span>)}

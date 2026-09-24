@@ -107,6 +107,30 @@ describe('Connection key ring', () => {
     expect(host.querySelector<HTMLInputElement>('input[type="password"]')?.value ?? '').toBe('')
   })
 
+  it('closes the form after a refused save and leaves the message to the page banner', async () => {
+    const before = connection({ id: 'openrouter-key', providerId: 'openrouter', name: 'OpenRouter key', keys: [key({ id: 'key-1', label: 'Key 1' })] })
+    const message = 'Key rejected by the provider.'
+    const fetchMock = vi.fn(async (url: string, init: RequestInit = {}) => {
+      if (init.method === 'POST' && String(url).endsWith('/keys')) return json({ error: { code: 'AUTH', message, retryable: false } }, 403)
+      return json(snapshotWith([before]))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    useProviderStore.setState({ snapshot: snapshotWith([before]) })
+    await mount()
+
+    act(() => buttonIn(ringBlock(), 'Add key')!.click())
+    const field = ringBlock().querySelector<HTMLInputElement>('input[type="password"]')!
+    act(() => setValue(field, SECRET))
+    expect(field.value).toBe(SECRET)
+    await act(async () => buttonIn(ringBlock(), 'Save')!.click())
+
+    expect(fetchMock.mock.calls.some((call) => call[0] === `${ENDPOINT_KEY}/keys` && call[1]?.method === 'POST')).toBe(true)
+    // The banner says what the router said; the form is gone and the typed secret with it.
+    expect(host.textContent).toContain(message)
+    expect(ringBlock().textContent).not.toContain(SECRET)
+    expect(host.querySelector('input[type="password"]')).toBeNull()
+  })
+
   it('removes one key with DELETE and shows the empty ring again when it was the last', async () => {
     const before = connection({ id: 'openrouter-key', providerId: 'openrouter', name: 'OpenRouter key', keys: [key({ id: 'key-1', label: 'Key 1' })] })
     let state = snapshotWith([before])
