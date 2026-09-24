@@ -67,3 +67,36 @@ Không có lượt nào bị ghi là hỏng hạ tầng trong dữ liệu thô.
 - Chi phí thật chưa đo: thời gian tường
 - Chi phí thật chưa đo: số bước
 - Không có dòng điểm nào: bảng chất lượng chưa có số
+
+## Bộ ca research — hồ sơ `.research/` (vòng 27)
+
+Mục này **viết tay**, ngoài phần `scripts/eval/scoreboard.py` sinh (chạy lại scoreboard sẽ ghi đè cả tệp).
+
+| Hạng mục | Giá trị |
+|---|---|
+| Bộ ca | `R1–R12` — `scripts/eval/fixtures/R1.json … R12.json` (chỉ `R2` được đi mạng: `fixtureset.RESEARCH_ONLINE_ALLOWED`) |
+| Máy chấm | `scripts/eval/research_checks.py` — 27 oracle máy, thuần, offline, không cần model, không ra mạng |
+| Ca ↔ oracle | `scripts/eval/rubric.py` `RESEARCH_CHECKS` / `RESEARCH_CASE_CHECKS` — mỗi ca ghim 1–4 oracle (tổng đúng 27) |
+| Chỉ số chấm tay | `scripts/eval/rubric.py` `RESEARCH_CASE_NUMBERS` = `factual_accuracy` · `citation_precision` · `coverage` · `source_quality` · `efficiency` |
+| Điểm đo được | **chưa chạy** — hạng mục `research-scores` của tầng `tier-r1` là `blocked` trong `scripts/eval/benchmarks/tiers.json` |
+
+Lệnh chạy lại (ba lệnh của tầng `tier-r1`, thêm một lần sinh số từ một workspace có `.research/`):
+
+```bash
+./.venv/bin/python -m pytest backend/tests/unit/test_research_checks.py -q -p no:randomly
+./.venv/bin/python scripts/eval/run_eval.py --plan --fixtures R1 --tier tier-r1
+python3 scripts/eval/research_scores.py --help
+python3 scripts/eval/research_scores.py \
+    --workspace scripts/eval/results/tier-r1-research/fixture-workspace \
+    --case R1 --checks --append --source 'ví dụ dựng tay (không phải lượt thật)'
+```
+
+- `research_scores.py` chấm **offline**, không gọi model; số nào không đo được thì ghi `null` kèm lý do trong
+  `basis`, **không** ghi `0`.
+- `run_eval.py` hiện chỉ chạy được `--plan` (liệt kê kế hoạch); đường chạy thật còn dừng ở
+  `EXIT_NOT_IMPLEMENTED = 5`.
+- **CHƯA có benchmark research nào được chạy** — bảng điểm của lượt research thật **chưa đo** ở đâu trong
+  repo (bất biến F19). `scripts/eval/results/tier-r1-research/` hiện chỉ có `README.md`, `cases.jsonl`
+  (12 ca, **không phải** kết quả), `manifest.json`, `scores.jsonl` (một dòng ví dụ dựng tay) và
+  `fixture-workspace/`; muốn có số thật phải có một lượt research chạy trên máy có model.
+- Chi tiết bộ ca (bảng `R1–R12`, 27 hàm oracle, cách chấm từng ca): `scripts/eval/benchmarks/tier-r1.md`.

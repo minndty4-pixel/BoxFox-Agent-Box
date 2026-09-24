@@ -41,7 +41,7 @@ chạy đầy đủ, một lần lặp**, chưa gồm nhiều lần lặp.
 | **WebArena** | Web tự dựng, oracle theo DB | 5–6 container + website giả | ~800 ca | Hạ tầng nặng; token **500–1 500 USD** | 1–2 tuần dựng | Kiểm soát tốt, tái lập được; đắt công dựng |
 | **OSWorld** | Tác vụ trên Ubuntu thật, chấm bằng thực thi | Máy ảo + ảnh đĩa riêng | ~300–400 ca | Hạ tầng rất nặng; token **300–1 200 USD** | 2–4 tuần dựng | Gần BoxFox nhất nhưng là dự án riêng |
 | **τ-bench / τ²-bench** | Dùng công cụ + người dùng giả, oracle theo DB | Chỉ API + DB giả | ~150 ca/nhóm | **30–120 USD** | 2–6 giờ | Rất hợp để đo "làm đúng luật, hỏi đúng lúc" |
-| **GAIA** | Web + file, nhiều bước | Box có mạng, có tìm kiếm | ~450 ca | **200–800 USD** | 1–2 ngày | BoxFox **chưa có tool tìm kiếm** ⇒ phải thêm trước |
+| **GAIA** | Web + file, nhiều bước | Box có mạng, có tìm kiếm | ~450 ca | **200–800 USD** | 1–2 ngày | Công cụ tìm kiếm **có từ vòng 9** (`web_search`, xem `tool_contracts.py`); vướng còn lại là chưa có giám khảo chạy được và chưa cấp ngân sách |
 | **Terminal-Bench** | Tác vụ terminal có test | Docker từng tác vụ | ~100 ca | **100–400 USD** + CPU thật | 1–2 ngày | Hợp với `terminal_exec` của BoxFox |
 | **SWE-bench Verified** | Sửa repo thật, chạy test thật | Docker + mạng khi cài | 500 ca | **1–4 USD/ca ⇒ 500–2 000 USD**; **tập con 50 ca ≈ 50–200 USD** | 6–12 giờ cho 50 ca | Chuẩn công nghiệp nhưng đắt; nên chạy tập con |
 | **SWE-bench Lite** | Như trên, ít ca hơn | Docker | ~300 ca | **300–1 200 USD** | 3–8 giờ | Rẻ hơn Verified một chút, chất lượng lọc thấp hơn |
@@ -70,8 +70,9 @@ Con số trên chỉ để chọn hướng; khi chạy phải thay bằng số t
 ### Tầng 2 — 1–2 tuần (300–1 500 USD)
 
 1. **Terminal-Bench 50 ca** hoặc **SWE-bench Verified 50 ca** (50–200 USD cho tập con).
-2. **GAIA mức 1** (30 ca) — **chặn**: BoxFox chưa có công cụ tìm kiếm, phải bổ sung hoặc thay bằng
-   duyệt web trực tiếp.
+2. **GAIA mức 1** (30 ca) — **chặn vì hai lý do thật, không phải vì thiếu công cụ tìm kiếm**
+   (công cụ tìm kiếm có từ vòng 9): (a) chưa có giám khảo chạy được cho câu trả lời ngắn, (b) chưa cấp
+   ngân sách. Vòng này **không** tự mở lại GAIA.
 3. Lặp 3 lần để có trung bình và độ lệch; báo trung bình ± CI, không chọn lần đẹp nhất.
 
 ### Tầng 3 — 3–6 tuần (2 000–8 000 USD, chủ yếu là công dựng hạ tầng)

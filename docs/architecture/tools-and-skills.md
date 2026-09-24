@@ -35,18 +35,22 @@ BoxFox là môi trường **AI Computer tự lưu trữ (Self-Hosted AI Computer
 
 ---
 
-## 2. Danh Mục 42 Công Cụ Chuyên Dụng (7 Nhóm Trụ Cột)
+## 2. Danh Mục Công Cụ Chuyên Dụng (9 Nhóm Trụ Cột)
 
-Hệ thống công cụ được tổ chức thành 7 nhóm chuyên biệt:
+Trang này gom công cụ theo chín nhóm trụ cột cho dễ đọc; **nguồn sự thật** về việc nhóm nào bật cho
+vai nào là `backend/src/agentbox/agent_core/tool_groups.py` và `roles.py` (vòng 27: 35 công cụ
+orchestrator, 11 nhóm, trong đó nhóm 8 và nhóm 9 là của việc nghiên cứu).
 
 ```text
                     ┌─── Nhóm 1: Sandbox & VM Manipulation (6 tools)
                     ├─── Nhóm 2: Filesystem & Code Editing (6 tools)
                     ├─── Nhóm 3: Code Intelligence & AST LSP (5 tools)
 [BoxFox Tool Suite] ├─── Nhóm 4: Terminal & Ephemeral Execution (6 tools)
-   (42 Tools)       ├─── Nhóm 5: Computer Use & UI Testing (6 tools)
+   (ships 35)       ├─── Nhóm 5: Computer Use & UI Testing (6 tools)
                     ├─── Nhóm 6: Memory, History & Web Research (6 tools)
-                    └─── Nhóm 7: Orchestration & Governance (9 tools)
+                    ├─── Nhóm 7: Orchestration & Governance (9 tools)
+                    ├─── Nhóm 8: Research Source Ledger (3 tools)   ← vòng 27
+                    └─── Nhóm 9: Research Dossier (5 tools)         ← vòng 27
 ```
 
 ---
@@ -122,6 +126,9 @@ Hệ thống công cụ được tổ chức thành 7 nhóm chuyên biệt:
 
 ### Nhóm 6: Bộ Nhớ, Lịch Sử & Nghiên Cứu Tài Liệu (6 Tools)
 *Thừa hưởng từ Hermes `memory_tool.py`, `session_search_tool.py` và `web_tools.py`.*
+
+> **Ghi chú:** tên tham số lấy từ `backend/src/agentbox/agent_core/tool_contracts.py`; tài liệu cũ ghi
+> `max_results`/`web_extract` là sai (`web_extract` không tồn tại — tool thật là `web_fetch`).
 
 | Tên Tool | Đầu vào chính | Đầu ra | Mục đích chuyên dụng |
 | :--- | :--- | :--- | :--- |

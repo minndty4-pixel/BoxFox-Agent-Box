@@ -199,3 +199,27 @@ Ba hệ quả:
    `one_line`, số đi qua trần `MAX_ATTACHMENT_BYTES`, và cả danh sách được kiểm ở **cửa admission**
    (`RuntimeCommands.submit`) TRƯỚC khi ghi hàng `command_invocations`: một lượt sai là 400, không
    phải một hàng `running` mắc kẹt chặn luôn lần thử lại cùng `invocationId`.
+
+## 11. Phòng hồ sơ `.research` và mã dòng sổ nguồn `r<N>` (vòng 27)
+
+Đường research không kể chuyện vào chat rồi quên: kết quả đọng lại thành **hồ sơ** trong workspace, và mỗi
+câu trong hồ sơ trỏ về **một dòng sổ nguồn** do harness cấp số. Tên phòng, tên tệp và mã dòng là hợp đồng
+đóng băng ở `/var/tmp/v27/iface.md` §4 — frontend và backend đọc đúng những khuôn dưới đây.
+
+| Mã | Khuôn | Ai ép | Ghi chú |
+|---|---|---|---|
+| BOX-9 | `<workspace>/.research/<việc>/v<N>-<việc>.md` — phòng `.research`, `<việc>` khớp `^[a-z0-9]+(-[a-z0-9]+)*$`, `N` bắt đầu từ **1**, **không zero-pad** | `backend/src/agentbox/sandbox/worker.py` (`DOSSIER_ROOM`, `DOSSIER_PATH_RE`, `DOSSIER_VERSION_RE`), `agent_core/limits.py` (`DOSSIER_ROOM`, `RESEARCH_SLUG_RE`) | Ghi lại một phiên bản đã có ⇒ `DOSSIER_VERSION_TAKEN`: bản cũ là bằng chứng, muốn sửa thì viết `v2` |
+| BOX-9 | Sổ nguồn nằm cạnh hồ sơ: `<việc>/sources.jsonl` (máy đọc) + `<việc>/sources.md` (người đọc) ở **mức ≥ 2**; `tables/<tên>.md` + `review.md` ở **mức 3** | `worker.py` (`dossier_write_payload`, `dossier_sources_jsonl`, `dossier_sources_markdown`, `DOSSIER_TABLE_NAME_RE`) | `<tên>` là **một tên tệp**, không phải đường dẫn: `tables/gia-theo-quy.md` hợp lệ, `../x` là `DOSSIER_TABLE_INVALID` |
+| BOX-9 | Mở đầu mỗi tệp hồ sơ: khối comment `<!-- boxfox-research` … `-->` bảy khoá `Version / ResearchId / Profile / Level / Critique / Gate / Rows` | `agent_core/research_header.py` (`HEADER_KEYS`); harness **dựng sẵn** rồi mới giao `markdown` cho `dossier_write` | Comment HTML chứ không front matter YAML: chủ nhà mở tệp trong trình duyệt workspace và không thấy khối này (cùng lựa chọn với `.plans/`, ADR-0003) |
+| BOX-9 | Trần: **256 KiB mỗi tệp** (`DOSSIER_MAX_BYTES`), **400 dòng sổ mỗi hồ sơ** (`RESEARCH_MAX_ROWS_PER_DOSSIER`), đoạn trích **≥ 80** ký tự (`RESEARCH_MIN_EXCERPT_CHARS`) và cắt ở **2 000** (`SOURCE_EXCERPT_MAX_CHARS`) | `worker.py` (`DOSSIER_TOO_LARGE`), `agent_core/limits.py`, `agent_core/research_ledger.py` | Sàn 80 là điều kiện để một dòng được coi là **có bằng chứng**; 2 000 là chỗ harness **cắt**, không phải chỗ mô hình tự cắt |
+| BOX-9 | **Mã dòng do harness cấp**: `r1`, `r2`, … — `max(số đang có) + 1` của **phiên**, không zero-pad; kỹ năng dạy viết `[r<N>]` trong câu và `**Nguồn:**` ở cuối | `backend/src/agentbox/memory/session_store.py` (`next_source_row_id`, `source_add`), `agent_core/research_quality.py` (`pinned_row_ids` quét `\b(r\d{1,4})\b`) | Mã có trong hồ sơ mà sổ không có ⇒ `research-sources-unproven` (cổng `enforce` từ chối hồ sơ); ghi lại cùng `row_id` là **idempotent** — trả hàng cũ, không sinh dòng thứ hai |
+| BOX-9 | Mục bắt buộc theo mức: 1 = `Câu hỏi / Phát hiện / Nguồn`; 2 = + `Mâu thuẫn còn lại / Việc chưa làm`; 3 = + `Phản biện` | `agent_core/research_quality.py` (`DOSSIER_SECTIONS`, `missing_sections`, `SECTION_LABELS`) | Thiếu mục ⇒ `research-shape-missing`; tên mục khớp **không phân biệt hoa thường** và nhận cả biến thể tiếng Anh (`question`, `findings`, `sources`, `conflict`, `open`, `critique`) |
+
+Hai hệ quả:
+
+1. **Số là danh tính, không phải thứ tự trình bày.** Mã dòng đọc từ **mã lớn nhất** trong sổ của phiên, nên
+   đánh số lại một hàng là chuyện không có: hồ sơ cũ vẫn trỏ đúng hàng cũ, và cổng chất lượng chỉ cần đối
+   chiếu tập mã hai bên.
+2. **Hồ sơ là tệp khách của workspace.** Mọi lần ghi đi qua op hộp `dossier_write` với đường dẫn khớp
+   `DOSSIER_PATH_RE`, nên đường research không tự ý ghi ra ngoài `.research/` — giống `.plans/` (BOX-1) và
+   `.uploaded_artifacts/` (BOX-6).
