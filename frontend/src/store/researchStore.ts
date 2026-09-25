@@ -17,6 +17,7 @@ import {
   RESEARCH_MODE_OFF,
   type ResearchJob,
   type ResearchMode,
+  type ResearchPrompt,
 } from '../lib/researchMode'
 import {
   answerResearchPrompt,
@@ -59,6 +60,24 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+/**
+ * Lời hỏi `exit-choice` còn MỞ của bất kỳ run nào đang thấy.
+ *
+ * Luồng `/research off` bắt đầu ở SERVER: server tạo lời hỏi `exit-choice` rồi chỉ phát một sự kiện
+ * `research_prompt` — giao diện chưa từng thấy 409. Nên thẻ thoát phải suy từ lời hỏi còn mở trong
+ * dữ liệu đã tải (đây là đường thứ hai bên cạnh nhánh 409 của `setMode`).
+ */
+function exitChoiceFrom(jobs: readonly ResearchJob[], detail: ResearchJob | null): ResearchExitChoice | null {
+  const pools = detail ? [detail.prompts, ...jobs.map((job) => job.prompts)] : jobs.map((job) => job.prompts)
+  for (const prompts of pools) {
+    const prompt: ResearchPrompt | undefined = prompts.find(
+      (item) => item.status === 'open' && item.kind === 'exit-choice',
+    )
+    if (prompt) return { code: 'RESEARCH_EXIT_CHOICE_REQUIRED', prompt, message: prompt.note }
+  }
+  return null
+}
+
 export const useResearchStore = create<ResearchState>((set, get) => ({
   sessionId: '',
   mode: RESEARCH_MODE_OFF,
@@ -92,7 +111,9 @@ export const useResearchStore = create<ResearchState>((set, get) => ({
     try {
       const payload = await fetchResearchJobs(sessionId)
       const jobs = readJobs(payload)
-      set({ jobs, error: null, loading: false })
+      // F5: lời hỏi thoát do SERVER tạo (`/research off`) không đi qua nhánh 409 — suy nó từ lời hỏi
+      // còn mở trong dữ liệu vừa tải, và tự xoá khi đã được trả lời/đóng.
+      set({ jobs, error: null, loading: false, exitChoice: exitChoiceFrom(jobs, get().detail) })
       const foreground = activeJob(jobs, get().mode.activeRunId)
       if (foreground) void get().refreshDetail(foreground.researchId)
     } catch (error) {
@@ -104,8 +125,12 @@ export const useResearchStore = create<ResearchState>((set, get) => ({
     if (!researchId) return
     try {
       const payload = await fetchResearchJobDetail(researchId)
-      const detail = readJob(asRecord(payload).job ?? payload)
-      set({ detail, detailId: researchId, error: null })
+      // F2: tuyến chi tiết trả `evidence/dossier/reviews/branches/coverage/usedSeconds` ở CẤP TRÊN
+      // (ngoài `job`). Gộp thay vì chỉ đọc `job`, nếu không các tab Nguồn/Claim/Phản biện/Báo cáo
+      // rỗng sau mỗi lần tải chi tiết; khoá của `job` thắng khi trùng.
+      const envelope = asRecord(payload)
+      const detail = readJob({ ...envelope, ...asRecord(envelope.job) })
+      set({ detail, detailId: researchId, error: null, exitChoice: exitChoiceFrom(get().jobs, detail) })
     } catch (error) {
       set({ error: message(error) })
     }
@@ -114,6 +139,9 @@ export const useResearchStore = create<ResearchState>((set, get) => ({
   setMode: async (on, by) => {
     const sessionId = get().sessionId
     if (!sessionId) return 'error'
+    // F7: đang có lời hỏi thoát chưa chọn thì bấm nút lần nữa KHÔNG được gửi thêm một PUT không
+    // `prompt` — mỗi lần như vậy server lại tạo thêm một lời hỏi `exit-choice` mở mãi mãi.
+    if (!on && get().exitChoice) return 'exit-choice'
     try {
       const outcome = await setResearchMode(sessionId, { on, by })
       if (outcome.kind === 'exit-choice') {
@@ -131,18 +159,38 @@ export const useResearchStore = create<ResearchState>((set, get) => ({
 
   resolveExit: async (choice) => {
     const sessionId = get().sessionId
-    const active = get().exitChoice?.prompt.researchId || get().mode.activeRunId
+    const previous = get().exitChoice
+    const active = previous?.prompt.researchId || get().mode.activeRunId
     set({ exitChoice: null })
-    if (!sessionId) return
+    if (!sessionId) {
+      set({ exitChoice: previous })
+      return
+    }
     try {
-      const outcome = await setResearchMode(sessionId, { on: false, by: 'toggle', exitChoice: choice, activeRun: choice })
+      // F7: gửi kèm CHÍNH lời hỏi đã nhận để server dùng lại nó, không tạo lời hỏi mới.
+      const outcome = await setResearchMode(sessionId, {
+        on: false, by: 'toggle', exitChoice: choice, activeRun: choice,
+        ...(previous ? { prompt: previous.prompt } : {}),
+      })
       if (outcome.kind === 'ok') {
         set({ mode: readResearchMode({ researchMode: outcome.result.mode }) })
+        // Server KHÔNG tự đóng lời hỏi `exit-choice` sau khi đã chọn số phận run. Đóng nó ở đây, nếu
+        // không nó còn `open` mãi: badge "Phản biện" đếm dư, và F5 lại suy nó ra và bật thẻ thoát
+        // trở lại dù chế độ đã tắt. PHẢI đợi đóng xong rồi mới `refresh`, nếu không lần tải sau còn
+        // thấy lời hỏi mở và dựng lại thẻ. Lỗi (lời hỏi đã đóng từ trước) thì bỏ qua.
+        if (previous) {
+          try {
+            await dismissResearchPrompt(previous.prompt.promptId)
+          } catch {
+            /* lời hỏi đã đóng/dismissed — không sao */
+          }
+        }
       }
       if (active) void get().refreshDetail(active)
       void get().refresh()
     } catch (error) {
-      set({ error: message(error) })
+      // F8: PUT hỏng ⇒ trả lại lời hỏi cũ (không nuốt mất lựa chọn của người dùng).
+      set({ exitChoice: previous, error: message(error) })
     }
   },
 

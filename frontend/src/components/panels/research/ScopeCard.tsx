@@ -9,8 +9,12 @@
  * Hai danh sách LUÔN tách bạch: "Bạn đã xác nhận" lấy mục `status='confirmed'`, "Giả định của agent"
  * lấy mục `status='assumed'` (bảng 4.8). Mỗi lần sửa gửi kèm `revision` đang thấy để server từ chối
  * khi thẻ đã đổi dưới chân người dùng.
+ *
+ * F1: mỗi dòng có giá trị HIỂN THỊ (`value`) và giá trị THÔ để sửa (`editValue`) — ô sửa KHÔNG bao
+ * giờ nạp chữ đã định dạng rồi phân tích ngược. Dòng ngân sách đi qua `action:'budget'` (trần cứng
+ * được thực thi) chứ không nhét `budget.proposedSeconds` vào patch phạm vi.
  */
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Pencil } from 'lucide-react'
 import { useT, type TKey } from '../../../i18n/context'
 import { useResearchStore } from '../../../store/researchStore'
@@ -27,21 +31,55 @@ import {
 import { formatClock, formatMinutes } from './format'
 import { ResearchPromptCard } from './ResearchPromptCard'
 
-/** Một dòng sửa được: nhãn + giá trị + nút "Sửa" mở ô nhập ngay tại chỗ. */
+/** Tốc độ khảo sát hợp lệ của server (`research_evidence.TIME_VELOCITIES`). */
+const VELOCITIES = ['very-fast', 'fast', 'medium', 'slow'] as const
+const VELOCITY_KEY: Record<string, TKey> = {
+  'very-fast': 'research.velocityVeryFast',
+  fast: 'research.velocityFast',
+  medium: 'research.velocityMedium',
+  slow: 'research.velocitySlow',
+}
+/** Độ sâu hợp lệ (`scope.depth`). */
+const DEPTHS = ['quick', 'standard', 'deep'] as const
+const DEPTH_KEY: Record<string, TKey> = {
+  quick: 'research.depthQuick',
+  standard: 'research.depthStandard',
+  deep: 'research.depthDeep',
+}
+/** Mức của thẻ (`scope.tier`). */
+const TIERS = [1, 2, 3] as const
+
+const SELECT_CLASS =
+  'w-full rounded border border-line bg-bg px-1.5 py-0.5 text-[11px] text-fg outline-hidden focus:border-brand'
+
+/**
+ * Một dòng sửa được: nhãn + giá trị + nút "Sửa" mở ô nhập ngay tại chỗ.
+ *
+ * `value` là chữ NGƯỜI ĐỌC thấy; `editValue` là dữ liệu MÁY đọc được nạp vào ô sửa. Hai thứ này phải
+ * khác nhau: nếu nạp `value` vào ô sửa thì nhãn đã định dạng sẽ bị phân tích ngược thành giá trị rác.
+ */
 function EditableRow({
+  row,
   label,
   value,
+  editValue,
   multiline,
   onSave,
+  editor,
 }: {
+  /** Định danh dòng (`data-row`) để bài kiểm chọn đúng ô. */
+  row: string
   label: string
   value: string
+  editValue: string
   multiline?: boolean
   onSave: (next: string) => Promise<boolean>
+  /** Điều khiển tuỳ biến (chọn tốc độ/mức, số phút…) thay cho ô chữ. */
+  editor?: (draft: string, setDraft: (next: string) => void) => ReactNode
 }) {
   const t = useT()
   const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState(value)
+  const [draft, setDraft] = useState(editValue)
   const [busy, setBusy] = useState(false)
 
   async function save() {
@@ -52,11 +90,13 @@ function EditableRow({
   }
 
   return (
-    <div className="flex items-start gap-2 border-b border-line/60 py-1 last:border-b-0">
+    <div data-row={row} className="flex items-start gap-2 border-b border-line/60 py-1 last:border-b-0">
       <span className="w-28 shrink-0 text-muted">{label}</span>
       {editing ? (
         <div className="min-w-0 flex-1">
-          {multiline ? (
+          {editor ? (
+            editor(draft, setDraft)
+          ) : multiline ? (
             <textarea
               aria-label={label}
               rows={3}
@@ -85,7 +125,7 @@ function EditableRow({
             <button
               type="button"
               onClick={() => {
-                setDraft(value)
+                setDraft(editValue)
                 setEditing(false)
               }}
               className="rounded border border-line px-2 py-0.5 text-muted transition hover:text-fg cursor-pointer"
@@ -102,7 +142,7 @@ function EditableRow({
           type="button"
           data-testid="research-scope-edit"
           onClick={() => {
-            setDraft(value)
+            setDraft(editValue)
             setEditing(true)
           }}
           className="inline-flex shrink-0 items-center gap-1 rounded border border-line px-1.5 py-0.5 text-muted transition hover:text-fg cursor-pointer"
@@ -177,6 +217,9 @@ export function ScopeCard({
       }`
     : '—'
   const used = job.usedSeconds > 0 ? ` ${t('research.budgetUsed', { used: formatClock(job.usedSeconds) })}` : ''
+  // Trần cứng ĐƯỢC THỰC THI là `state.budgetSeconds` (hàng job), không phải `scope.budget.proposedSeconds`.
+  const capSeconds = job.budgetSeconds || budget?.proposedSeconds || 0
+  const answered = scope.openQuestions.filter((item) => item.answer)
 
   const patch = (scopePatch: Record<string, unknown>) =>
     updateJob(job.researchId, { action: 'scope', revision: scope.revision, scope: scopePatch })
@@ -216,42 +259,120 @@ export function ScopeCard({
 
       <div className="mt-1.5" data-testid="research-scope-rows">
         <EditableRow
+          row="goal"
           label={t('research.fieldGoal')}
           value={scope.goal?.text ?? ''}
+          editValue={scope.goal?.text ?? ''}
           multiline
           onSave={(text) => patch({ goal: { text, status: 'confirmed' } })}
         />
         <EditableRow
+          row="questions"
           label={t('research.fieldQuestions')}
           value={`${t('research.questionsCount', { count: scope.questions.length })}${
             scope.questions.length ? `: ${scope.questions.map((item) => item.text).join(' · ')}` : ''
           }`}
+          editValue={scope.questions.map((item) => item.text).join('\n')}
           multiline
-          onSave={(text) => patch({ questions: text.split('\n').map((line) => line.trim()).filter(Boolean) })}
-        />
-        <EditableRow
-          label={t('research.fieldTime')}
-          value={windowLabel(t, scope)}
-          onSave={(text) => patch({ timePolicy: { velocity: text.trim().toLowerCase(), status: 'confirmed' } })}
-        />
-        <EditableRow
-          label={t('research.fieldDepth')}
-          value={depthLabel(t, scope.tier, scope.depth)}
-          onSave={(text) => patch({ depth: text.trim().toLowerCase() })}
-        />
-        <EditableRow
-          label={t('research.fieldBudget')}
-          value={`${budgetText}${used}`}
           onSave={(text) => {
-            const minutes = Number(text.replace(/[^0-9]/g, ''))
-            return Number.isFinite(minutes) && minutes > 0
-              ? patch({ budget: { proposedSeconds: minutes * 60, approved: true } })
-              : Promise.resolve(false)
+            // Mỗi DÒNG là một câu hỏi; giữ `id` cũ theo vị trí để server không dựng lại câu hỏi mới.
+            const lines = text.split('\n').map((line) => line.trim()).filter(Boolean)
+            return patch({
+              questions: lines.map((line, index) => ({ id: scope.questions[index]?.id ?? `q${index + 1}`, text: line })),
+            })
           }}
         />
         <EditableRow
+          row="time"
+          label={t('research.fieldTime')}
+          value={windowLabel(t, scope)}
+          editValue={scope.timePolicy?.velocity ?? ''}
+          editor={(draft, setDraft) => (
+            <select
+              aria-label={t('research.fieldTime')}
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              className={SELECT_CLASS}
+            >
+              <option value="">{t('research.timeUnlimited')}</option>
+              {VELOCITIES.map((velocity) => (
+                <option key={velocity} value={velocity}>{t(VELOCITY_KEY[velocity])}</option>
+              ))}
+            </select>
+          )}
+          onSave={(text) => patch({ timePolicy: { velocity: text.trim().toLowerCase(), status: 'confirmed' } })}
+        />
+        <EditableRow
+          row="depth"
+          label={t('research.fieldDepth')}
+          value={depthLabel(t, scope.tier, scope.depth)}
+          // Hai lựa chọn của một dòng: `mức::độ sâu` (dấu `::` chỉ để gói hai giá trị trong một draft).
+          editValue={`${scope.tier}::${scope.depth}`}
+          editor={(draft, setDraft) => {
+            const [tierRaw, depthRaw] = draft.split('::')
+            return (
+              <div className="flex gap-1.5">
+                <select
+                  aria-label={t('research.fieldTier')}
+                  value={tierRaw}
+                  onChange={(event) => setDraft(`${event.target.value}::${depthRaw ?? ''}`)}
+                  className={SELECT_CLASS}
+                >
+                  {TIERS.map((tier) => (
+                    <option key={tier} value={tier}>{t('research.tierOption', { tier })}</option>
+                  ))}
+                </select>
+                <select
+                  aria-label={t('research.fieldDepth')}
+                  value={depthRaw}
+                  onChange={(event) => setDraft(`${tierRaw}::${event.target.value}`)}
+                  className={SELECT_CLASS}
+                >
+                  {DEPTHS.map((depth) => (
+                    <option key={depth} value={depth}>{t(DEPTH_KEY[depth])}</option>
+                  ))}
+                </select>
+              </div>
+            )
+          }}
+          onSave={(text) => {
+            const [tierRaw, depthRaw] = text.split('::')
+            const tier = Number(tierRaw)
+            const body: Record<string, unknown> = {}
+            if (Number.isFinite(tier) && tier > 0) body.tier = tier
+            if (depthRaw) body.depth = depthRaw
+            return Object.keys(body).length ? patch(body) : Promise.resolve(false)
+          }}
+        />
+        <EditableRow
+          row="budget"
+          label={t('research.fieldBudget')}
+          value={`${budgetText}${used}`}
+          editValue={String(Math.max(1, Math.round(capSeconds / 60)))}
+          editor={(draft, setDraft) => (
+            <input
+              type="number"
+              min={1}
+              max={1440}
+              aria-label={t('research.fieldBudget')}
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              className={SELECT_CLASS}
+            />
+          )}
+          onSave={(text) => {
+            const minutes = Number(text)
+            const seconds = Math.round(minutes * 60)
+            // `action:'budget'` là đường DUY NHẤT đổi trần cứng được thực thi (60..86400 giây).
+            if (!Number.isFinite(minutes) || minutes <= 0 || seconds < 60 || seconds > 86400) return Promise.resolve(false)
+            return updateJob(job.researchId, { action: 'budget', budgetSeconds: seconds })
+          }}
+        />
+        <EditableRow
+          row="outputs"
           label={t('research.fieldOutputs')}
           value={scope.outputs.join(' · ')}
+          editValue={scope.outputs.join('\n')}
           multiline
           onSave={(text) => patch({ outputs: text.split('\n').map((line) => line.trim()).filter(Boolean) })}
         />
@@ -270,6 +391,21 @@ export function ScopeCard({
         items={assumedItems(scope)}
         empty={t('research.assumedEmpty')}
       />
+
+      {/* F8: câu hỏi mở đã được trả lời phải hiện như một QUYẾT ĐỊNH, không nằm im trong dữ liệu. */}
+      {answered.length > 0 && (
+        <section className="mt-1.5" data-testid="research-scope-answered">
+          <h4 className="text-[10px] font-medium tracking-wide text-muted uppercase">{t('research.promptAnswered')}</h4>
+          <ul className="mt-0.5 space-y-0.5">
+            {answered.map((item) => (
+              <li key={item.id} className="flex items-start gap-1.5 text-fg">
+                <span className="text-muted">•</span>
+                <span><span className="text-muted">{item.text}: </span>{item.answer}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {blocked && (
         <div className="mt-1.5">

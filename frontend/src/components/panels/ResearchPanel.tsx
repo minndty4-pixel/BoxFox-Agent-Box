@@ -5,9 +5,10 @@
  * Vòng hỏi 5000 ms đã bị BỎ (bảng 4.8/§5.12): dữ liệu đến từ `researchStore`, và store chỉ gọi
  * mạng khi có sự kiện `research_*` mới trên luồng sự kiện phiên (xem `useResearchSync`).
  */
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useT, type TKey } from '../../i18n/context'
 import { useResearchStore } from '../../store/researchStore'
+import { useUiStore } from '../../store/uiStore'
 import {
   activeJob,
   jobIsActive,
@@ -158,6 +159,18 @@ export function ResearchPanel() {
   const refreshDetail = useResearchStore((s) => s.refreshDetail)
   const [tab, setTab] = useState<TabKey>('scope')
   const [accessFilter, setAccessFilter] = useState('')
+
+  // F4: thẻ báo cáo của một run (kể cả run chạy nền) mở tab này kèm `researchId`. Không đọc đích thì
+  // panel có thể hiện một run KHÁC (run tiền cảnh). Chỉ áp dụng MỘT lần cho mỗi đích để người dùng
+  // vẫn tự chuyển run được sau đó.
+  const researchTarget = useUiStore((s) => s.tabIntentTargets.research)
+  const targetId = typeof researchTarget?.researchId === 'string' ? researchTarget.researchId : null
+  const appliedTargetRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!targetId || appliedTargetRef.current === targetId) return
+    appliedTargetRef.current = targetId
+    void refreshDetail(targetId)
+  }, [targetId, refreshDetail])
 
   const job = useMemo(() => {
     const fromDetail = detail && detail.researchId === detailId ? detail : null

@@ -24,11 +24,16 @@ const TITLE_KEY: Record<ResearchPromptKind, TKey> = {
 
 type AnswerDraft = { optionId?: string; text?: string }
 
+/**
+ * Lời hỏi nhiều câu thông thường (phỏng vấn / đổi phạm vi / ngoài phạm vi / ngân sách).
+ *
+ * Lời hỏi `exit-choice` KHÔNG đi qua đây: nó neo vào nút Research và do `ResearchComposerStatus`
+ * (`ExitPrompt`) vẽ — một chỗ duy nhất, để nhánh thoát không bị hai nơi xử lý khác nhau.
+ */
 export function ResearchPromptCard({ prompt }: { prompt: ResearchPrompt }) {
   const t = useT()
   const answerPrompt = useResearchStore((s) => s.answerPrompt)
   const dismissPrompt = useResearchStore((s) => s.dismissPrompt)
-  const resolveExit = useResearchStore((s) => s.resolveExit)
   const [drafts, setDrafts] = useState<Record<string, AnswerDraft>>({})
   const [busy, setBusy] = useState(false)
 
@@ -58,46 +63,8 @@ export function ResearchPromptCard({ prompt }: { prompt: ResearchPrompt }) {
     setBusy(false)
   }
 
-  // `exit-choice`: server đã gửi đúng hai lựa chọn `pause`/`background`, không có mặc định.
-  if (prompt.kind === 'exit-choice') {
-    const options = prompt.questions[0]?.options ?? []
-    return (
-      <section
-        data-testid="research-prompt-card"
-        data-kind="exit-choice"
-        className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-2 text-[11px]"
-      >
-        <header className="flex items-center justify-between gap-2">
-          <span className="font-medium text-amber-300">{t('research.promptExit')}</span>
-          <button
-            type="button"
-            data-testid="research-prompt-dismiss"
-            aria-label={t('research.promptDismiss')}
-            onClick={() => void dismissPrompt(prompt.promptId)}
-            className="text-muted transition hover:text-fg cursor-pointer"
-          >
-            <X className="size-3" />
-          </button>
-        </header>
-        {prompt.questions[0] && <p className="mt-1 text-fg">{prompt.questions[0].text}</p>}
-        <div className="mt-1.5 flex flex-wrap gap-1.5">
-          {options.map((option) => (
-            <button
-              key={option.id}
-              type="button"
-              disabled={busy}
-              onClick={() => void resolveExit(option.id === 'background' ? 'background' : 'pause')}
-              className="rounded border border-line bg-panel px-2 py-1 transition hover:border-brand cursor-pointer"
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-        <p className="mt-1 text-muted">{prompt.note || t('research.exitNoDefault')}</p>
-      </section>
-    )
-  }
-
+  // `exit-choice` do `ResearchComposerStatus.ExitPrompt` vẽ (một chỗ duy nhất). Tới đây thì chỉ còn
+  // các loại lời hỏi nhiều câu; một `exit-choice` lọt vào cũng render như lời hỏi thường, không nhánh chết.
   return (
     <section
       data-testid="research-prompt-card"

@@ -24,6 +24,8 @@ export function ResearchReportCard({ job, inBackground }: { job: ResearchJob; in
   if (!dossier && job.status !== 'completed') return null
   const latestReview = job.reviews.at(-1)
   const incomplete = latestReview?.verdict === 'revise' || latestReview?.verdict === 'rejected'
+  // `deepen` bắt buộc có đích: facet của run, hoặc câu hỏi. Không có đích thì không gửi (server 400).
+  const deepenTarget = job.coverage.facets[0]?.id ?? job.questions[0]?.id ?? ''
 
   return (
     <section
@@ -105,8 +107,13 @@ export function ResearchReportCard({ job, inBackground }: { job: ResearchJob; in
         </button>
         <button
           type="button"
-          onClick={() => void updateJob(job.researchId, { action: 'deepen', revision: job.revision })}
-          className="rounded border border-line px-2 py-0.5 text-muted transition hover:text-fg cursor-pointer"
+          data-testid="research-report-deepen"
+          disabled={!deepenTarget}
+          onClick={() => void updateJob(job.researchId, {
+            action: 'deepen', revision: job.revision,
+            ...(job.coverage.facets[0]?.id ? { facetId: job.coverage.facets[0].id } : { questionId: deepenTarget }),
+          })}
+          className="rounded border border-line px-2 py-0.5 text-muted transition hover:text-fg disabled:opacity-40 cursor-pointer"
         >
           {t('research.reportDeepen')}
         </button>
@@ -119,7 +126,8 @@ export function ResearchReportCard({ job, inBackground }: { job: ResearchJob; in
         </button>
         <button
           type="button"
-          onClick={() => showTab('research')}
+          data-testid="research-report-open"
+          onClick={() => showTab('research', { researchId: job.researchId })}
           className="rounded border border-line px-2 py-0.5 text-muted transition hover:text-fg cursor-pointer"
         >
           {t('research.openReport')}

@@ -70,8 +70,14 @@ function ExitPrompt() {
   const mode = useResearchStore((s) => s.mode)
   const resolveExit = useResearchStore((s) => s.resolveExit)
   const clearExitChoice = useResearchStore((s) => s.clearExitChoice)
+  const dismissPrompt = useResearchStore((s) => s.dismissPrompt)
   const job = activeJob(jobs, exitChoice?.prompt.researchId || mode.activeRunId)
   if (!exitChoice) return null
+  // Luật "không mặc định": chỉ vẽ `background` khi server còn mời nó. Khi
+  // `background_runs_enabled()` tắt, server ép `'pause'` (không tạo lời hỏi này), nhưng nếu một lời
+  // hỏi cũ chỉ còn `pause` thì giao diện cũng chỉ được hiện `pause`.
+  const options = exitChoice.prompt.questions[0]?.options ?? []
+  const showBackground = options.length === 0 || options.some((option) => option.id === 'background')
   return (
     <div
       data-testid="research-exit-prompt"
@@ -103,21 +109,28 @@ function ExitPrompt() {
           <span className="font-medium text-fg">{t('research.exitPause')}</span>
           <span className="ml-1 text-muted">{t('research.exitPauseHint')}</span>
         </button>
-        <button
-          type="button"
-          data-testid="research-exit-background"
-          onClick={() => void resolveExit('background')}
-          className="block w-full rounded border border-line bg-panel px-2 py-1 text-left transition hover:border-brand cursor-pointer"
-        >
-          <span className="font-medium text-fg">{t('research.exitBackground')}</span>
-          <span className="ml-1 text-muted">{t('research.exitBackgroundHint')}</span>
-        </button>
+        {showBackground && (
+          <button
+            type="button"
+            data-testid="research-exit-background"
+            onClick={() => void resolveExit('background')}
+            className="block w-full rounded border border-line bg-panel px-2 py-1 text-left transition hover:border-brand cursor-pointer"
+          >
+            <span className="font-medium text-fg">{t('research.exitBackground')}</span>
+            <span className="ml-1 text-muted">{t('research.exitBackgroundHint')}</span>
+          </button>
+        )}
       </div>
       <div className="mt-1.5 flex items-center justify-between gap-2">
         <button
           type="button"
           data-testid="research-exit-cancel"
-          onClick={clearExitChoice}
+          onClick={() => {
+            // Đóng lời hỏi ở SERVER rồi mới ẩn: nếu chỉ ẩn cục bộ, vòng đồng bộ kế tiếp lại suy ra nó
+            // từ lời hỏi còn mở và thẻ bật lại ngay.
+            void dismissPrompt(exitChoice.prompt.promptId)
+            clearExitChoice()
+          }}
           className="rounded border border-line px-2 py-0.5 text-muted transition hover:text-fg cursor-pointer"
         >
           {t('research.exitCancel')}

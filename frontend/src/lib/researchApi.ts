@@ -62,6 +62,11 @@ export interface SetResearchModeBody {
   /** `'pause'` hoặc `'background'` — bắt buộc khi tắt mode lúc run còn hoạt động. */
   exitChoice?: 'pause' | 'background'
   activeRun?: 'pause' | 'background'
+  /**
+   * F7: gửi lại lời hỏi `exit-choice` đã nhận để server DÙNG LẠI nó thay vì tạo thêm một lời hỏi
+   * mới (server chỉ dựng lời hỏi khi `prompt.promptId` vắng).
+   */
+  prompt?: ResearchPrompt
 }
 
 export type SetResearchModeOutcome =

@@ -8,28 +8,58 @@
  * Thoát chế độ đi qua `resolveExit` của store (nó gọi `PUT .../research-mode` với `exitChoice`);
  * "Giữ trong research" trả lời lời hỏi `out-of-scope` bằng chính lựa chọn tương ứng.
  */
+import { useState } from 'react'
 import { useT } from '../../../i18n/context'
 import { useResearchStore } from '../../../store/researchStore'
 import { runLabel, stepForPhase, type ResearchJob, type ResearchPrompt } from '../../../lib/researchMode'
 import { formatClock } from './format'
 import { STEP_LABEL_KEY } from './steps'
 
+/** Id / nhãn hợp lệ cho lựa chọn "ở lại trong research" (server gửi id khác nhau tuỳ nguồn). */
+const KEEP_IDS = ['keep', 'stay', 'research']
+const KEEP_LABEL = /giữ|keep|stay|research/i
+
+/**
+ * Lựa chọn "giữ trong research" của lời hỏi `out-of-scope`.
+ *
+ * KHÔNG chọn theo một id cứng `'keep'`: chấp nhận `keep|stay|research` (không phân biệt hoa/thường),
+ * rồi tới lựa chọn có nhãn/id nói rõ việc ở lại. Không suy được thì trả `null` để người dùng tự chọn,
+ * thay vì gửi một câu trả lời đoán bừa.
+ */
+function keepOption(prompt: ResearchPrompt | null) {
+  const options = prompt?.questions[0]?.options ?? []
+  return options.find((option) => KEEP_IDS.includes(option.id.toLowerCase()))
+    ?? options.find((option) => KEEP_LABEL.test(`${option.id} ${option.label}`))
+    ?? null
+}
+
 export function OutOfScopeCard({ job, prompt }: { job: ResearchJob | null; prompt?: ResearchPrompt | null }) {
   const t = useT()
   const resolveExit = useResearchStore((s) => s.resolveExit)
   const answerPrompt = useResearchStore((s) => s.answerPrompt)
   const dismissPrompt = useResearchStore((s) => s.dismissPrompt)
+  const [error, setError] = useState('')
   const run = job ? runLabel(job.researchId) : ''
-  const keep = prompt?.questions[0]?.options.find((option) => option.id === 'keep')
-    ?? prompt?.questions[0]?.options[0]
 
   async function keepInResearch() {
     if (!prompt) return
-    await answerPrompt(prompt.promptId, {
+    const keep = keepOption(prompt)
+    if (!keep) {
+      setError(t('research.outOfScopeKeepChoose'))
+      return
+    }
+    setError('')
+    const ok = await answerPrompt(prompt.promptId, {
       revision: prompt.revision,
-      answers: [{ questionId: prompt.questions[0]?.id ?? '', ...(keep ? { optionId: keep.id } : {}) }],
+      answers: [{ questionId: prompt.questions[0]?.id ?? '', optionId: keep.id }],
       start: false,
     })
+    // Lời gọi hỏng (409 revision cũ, mạng lỗi…) ⇒ GIỮ thẻ và nói ra; không đóng lời hỏi để quyết định
+    // của người dùng không bị nuốt mất.
+    if (!ok) {
+      setError(t('research.outOfScopeKeepFailed'))
+      return
+    }
     await dismissPrompt(prompt.promptId)
   }
 
@@ -81,6 +111,7 @@ export function OutOfScopeCard({ job, prompt }: { job: ResearchJob | null; promp
         </button>
       </div>
       <p className="mt-1 text-muted">{t('research.outOfScopeKeepHint')}</p>
+      {error && <p className="mt-1 text-amber-300" role="alert" data-testid="research-out-of-scope-error">{error}</p>}
       <p className="mt-1 text-muted">{t('research.outOfScopeNoAssumptions')} {t('research.promptNote')}</p>
     </section>
   )

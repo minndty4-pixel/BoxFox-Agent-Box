@@ -103,4 +103,104 @@ describe('researchStore luồng mode', () => {
     expect(useResearchStore.getState().mode.on).toBe(false)
     expect(useResearchStore.getState().exitChoice).toBeNull()
   })
+
+  it('F7: đang có exitChoice thì bấm nút tắt lần nữa KHÔNG gửi thêm PUT (không dựng thêm lời hỏi)', async () => {
+    useResearchStore.setState({
+      sessionId: 's1',
+      mode: { ...RESEARCH_MODE_OFF, on: true, activeRunId: 'R1' },
+      exitChoice: { code: 'RESEARCH_EXIT_CHOICE_REQUIRED', message: 'm', prompt: { promptId: 'rp-x', researchId: 'R1' } as never },
+    })
+    const fetchMock = vi.fn(async () => jsonResponse({}))
+    vi.stubGlobal('fetch', fetchMock)
+    const outcome = await useResearchStore.getState().setMode(false, 'toggle')
+    expect(outcome).toBe('exit-choice')
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(useResearchStore.getState().exitChoice?.prompt.promptId).toBe('rp-x')
+  })
+
+  it('F7: resolveExit gửi lại chính lời hỏi đã nhận (server dùng lại, không tạo lời hỏi mới)', async () => {
+    const prompt = { promptId: 'rp-x', researchId: 'R1', kind: 'exit-choice' }
+    useResearchStore.setState({
+      sessionId: 's1',
+      mode: { ...RESEARCH_MODE_OFF, on: true, activeRunId: 'R1' },
+      exitChoice: { code: 'RESEARCH_EXIT_CHOICE_REQUIRED', message: 'm', prompt: prompt as never },
+    })
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).includes('research-mode')) return jsonResponse({ mode: { on: false, activeRunId: 'R1' } })
+      return jsonResponse(jobsPayload)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    await useResearchStore.getState().resolveExit('pause')
+    const putCall = fetchMock.mock.calls.find((call: unknown[]) => String(call[0]).includes('research-mode'))
+    const body = JSON.parse(String(((putCall as unknown[] | undefined)?.[1] as RequestInit | undefined)?.body))
+    expect(body.prompt).toMatchObject({ promptId: 'rp-x' })
+    // Server không tự đóng lời hỏi sau khi đã chọn ⇒ giao diện phải đóng, nếu không badge đếm dư và
+    // lần `refresh` sau lại dựng thẻ thoát trở lại (F5 + F7).
+    expect(fetchMock.mock.calls.some((call: unknown[]) => String(call[0]).includes('/prompts/rp-x/dismiss'))).toBe(true)
+  })
+
+  it('F8: PUT thoát thất bại ⇒ trả lại lời hỏi cũ, không nuốt lựa chọn', async () => {
+    const prompt = { promptId: 'rp-x', researchId: 'R1', kind: 'exit-choice' }
+    useResearchStore.setState({
+      sessionId: 's1',
+      mode: { ...RESEARCH_MODE_OFF, on: true, activeRunId: 'R1' },
+      exitChoice: { code: 'RESEARCH_EXIT_CHOICE_REQUIRED', message: 'm', prompt: prompt as never },
+    })
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ error: 'mạng lỗi' }, 500)))
+    await useResearchStore.getState().resolveExit('pause')
+    expect(useResearchStore.getState().exitChoice?.prompt.promptId).toBe('rp-x')
+    expect(useResearchStore.getState().mode.on).toBe(true)
+  })
+})
+
+describe('researchStore.refreshDetail (F2)', () => {
+  const exitPrompt = {
+    promptId: 'rp-exit', researchId: 'R1', kind: 'exit-choice', revision: 3, status: 'open', blocking: false,
+    questions: [{ id: 'exit', text: 'thế nào?', allowFreeText: false, required: true, blocking: true, affects: [],
+      options: [{ id: 'pause', label: 'p' }, { id: 'background', label: 'b' }] }],
+  }
+
+  it('tuyến chi tiết trả evidence/dossier/reviews ở CẤP TRÊN ⇒ gộp lại, tab không rỗng', async () => {
+    useResearchStore.setState({ sessionId: 's1' })
+    const payload = {
+      job: {
+        research_id: 'R1', session_id: 's1', status: 'researching',
+        state: { phase: 'reading', scope: { revision: 2 }, findings: ['kết luận'], prompts: [exitPrompt] },
+      },
+      scope: { revision: 2 },
+      prompts: [exitPrompt],
+      questions: [],
+      findings: ['kết luận'],
+      blockedSources: [],
+      evidence: [{ rowId: 'S1', claim: 'c', url: 'https://x', accessLevel: 'fulltext' }],
+      dossier: { relative_path: '.research/x/v2.md', version: 2, gate: 'pass', critique: '' },
+      reviews: [{ version: 2, mode: 'critique', verdict: 'revise' }],
+    }
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(payload)))
+    await useResearchStore.getState().refreshDetail('R1')
+    const detail = useResearchStore.getState().detail
+    expect(detail?.researchId).toBe('R1')
+    expect(detail?.evidence).toHaveLength(1)
+    expect(detail?.dossier?.version).toBe(2)
+    expect(detail?.reviews).toHaveLength(1)
+    expect(detail?.findings).toEqual(['kết luận'])
+    // Lời hỏi có ở CẢ hai chỗ (cấp trên + `state.prompts`) ⇒ khử trùng, không đếm gấp đôi badge.
+    expect(detail?.prompts.filter((item) => item.promptId === 'rp-exit')).toHaveLength(1)
+  })
+})
+
+describe('researchStore suy lời hỏi thoát (F5)', () => {
+  it('suy `exitChoice` từ lời hỏi exit-choice còn MỞ trong danh sách job (đường /research off)', async () => {
+    useResearchStore.setState({ sessionId: 's1', exitChoice: null })
+    const payload = {
+      jobs: [{
+        research_id: 'R1', status: 'researching', phase: 'searching',
+        state: { phase: 'searching', prompts: [{ promptId: 'rp-exit', researchId: 'R1', kind: 'exit-choice', status: 'open', questions: [] }] },
+      }],
+    }
+    vi.stubGlobal('fetch', vi.fn(async (url: string) =>
+      String(url).includes('?sessionId=') ? jsonResponse(payload) : jsonResponse({})))
+    await useResearchStore.getState().refresh()
+    expect(useResearchStore.getState().exitChoice?.prompt.promptId).toBe('rp-exit')
+  })
 })

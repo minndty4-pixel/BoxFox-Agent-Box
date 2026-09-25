@@ -631,10 +631,19 @@ export function readJob(value: unknown): ResearchJob {
       }
     }),
     coverage: readCoverage(raw.coverage ?? state.coverage),
-    prompts: asArray(raw.prompts)
-      .concat(asArray(state.prompts))
-      .map(readPrompt)
-      .filter((item): item is ResearchPrompt => item !== null),
+    // Lời hỏi có thể đến từ CẢ HAI chỗ (`prompts` cấp trên của tuyến chi tiết và `state.prompts` của
+    // hàng job) — gộp rồi khử trùng theo `promptId` để badge "Phản biện" không đếm gấp đôi.
+    prompts: (() => {
+      const seen = new Set<string>()
+      return asArray(raw.prompts)
+        .concat(asArray(state.prompts))
+        .map(readPrompt)
+        .filter((item): item is ResearchPrompt => {
+          if (item === null || seen.has(item.promptId)) return false
+          seen.add(item.promptId)
+          return true
+        })
+    })(),
     scope: stateScope ?? readScope(raw.scope),
   }
 }

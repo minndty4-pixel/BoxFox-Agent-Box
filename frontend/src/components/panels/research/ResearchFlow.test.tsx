@@ -15,6 +15,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '../../../i18n'
 import { useResearchStore } from '../../../store/researchStore'
+import { useUiStore } from '../../../store/uiStore'
 import { readJob, RESEARCH_MODE_OFF } from '../../../lib/researchMode'
 import { ResearchPromptCard } from './ResearchPromptCard'
 import { ScopeCard } from './ScopeCard'
@@ -48,6 +49,19 @@ function click(host: HTMLElement, selector: string): void {
   if (!node) throw new Error(`không thấy ${selector}`)
   act(() => {
     node.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+}
+
+/** Đặt giá trị cho input/textarea/select theo cách React nhìn thấy (native setter + sự kiện). */
+function setFieldValue(node: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement, value: string): void {
+  const proto = node instanceof HTMLSelectElement
+    ? HTMLSelectElement.prototype
+    : node instanceof HTMLTextAreaElement
+      ? HTMLTextAreaElement.prototype
+      : HTMLInputElement.prototype
+  Object.getOwnPropertyDescriptor(proto, 'value')!.set!.call(node, value)
+  act(() => {
+    node.dispatchEvent(new Event(node instanceof HTMLSelectElement ? 'change' : 'input', { bubbles: true }))
   })
 }
 
@@ -93,18 +107,24 @@ const interviewPrompt = {
   note: '',
 }
 
+/**
+ * Payload CHI TIẾT (`GET /api/agent/research/jobs/{id}`): `evidence/dossier/reviews/branches/coverage`
+ * nằm ở CẤP TRÊN, KHÔNG lồng trong `job` — đúng như server thật (server.py `research_job_detail`).
+ * Trước đây fixture lồng chúng vào `job`, che mất lỗi F2 (store chỉ đọc `payload.job`).
+ */
 function jobPayload(overrides: Record<string, unknown> = {}) {
   return {
     job: {
       research_id: 'R1', session_id: 's1', revision: 7, status: 'needs_user',
       phase: 'clarifying', background: false, usedSeconds: 754, budgetSeconds: 1800,
+      scopeRevision: 1,
       state: {
         goal: 'Data augmentation bằng diffusion cho ảnh y tế', tier: 2, budgetSeconds: 1800,
         phase: 'clarifying', scope: scopePayload, prompts: [interviewPrompt],
         questions: [{ id: 'q1', text: 'Nhóm phương pháp dẫn đầu?', importance: 'high', status: 'unexplored' }],
         findings: [], blockedSources: [], methods: ['web_search', 'paper_citations'],
       },
-      evidence: [], branches: [], dossier: null, reviews: [],
+      coverage: { counts: {}, unexplored: [], facets: [] },
     },
     scope: scopePayload,
     prompts: [interviewPrompt],
@@ -118,7 +138,19 @@ function jobPayload(overrides: Record<string, unknown> = {}) {
   }
 }
 
-const listPayload = { jobs: [jobPayload().job] }
+/** Hàng của tuyến DANH SÁCH (`GET /research/jobs`) — mang sẵn evidence/dossier/reviews trên hàng. */
+function jobRow(overrides: Record<string, unknown> = {}) {
+  const { job } = jobPayload()
+  return {
+    ...job,
+    origin: 'mode',
+    remainingSeconds: Math.max(0, 1800 - job.usedSeconds),
+    evidence: [], branches: [], dossier: null, reviews: [], facets: [],
+    ...overrides,
+  }
+}
+
+const listPayload = { jobs: [jobRow()] }
 
 /** Router giả cho toàn bộ API research: ghi lại lời gọi, trả payload theo tuyến. */
 function stubApi(overrides: { modeResponse?: () => Response } = {}) {
@@ -169,6 +201,7 @@ afterEach(() => {
   for (const root of roots) act(() => root.unmount())
   roots = []
   document.body.innerHTML = ''
+  useUiStore.setState({ tabIntentTargets: {} })
   vi.unstubAllGlobals()
 })
 
@@ -196,20 +229,36 @@ describe('luồng chế độ Research', () => {
     expect(answerCalls[0].body?.start).toBe(true)
     act(() => { interview.remove() })
 
-    // 3. Sửa một dòng của thẻ phạm vi ⇒ PATCH kèm `revision` đang thấy.
+    // 3. Sửa thẻ phạm vi: dòng NGÂN SÁCH đi qua `action:'budget'` (trần cứng thực thi), dòng ĐỘ SÂU
+    //    đi qua `action:'scope'`; cả hai kèm `revision` đang thấy.
     const scope = render(<ScopeCard job={readJob(jobPayload().job)} scope={{ ...scopePayload } as never} prompt={interviewPrompt as never} />)
-    click(scope, '[data-testid="research-scope-edit"]')
-    const input = scope.querySelector<HTMLInputElement>('input[aria-label]')!
-    act(() => {
-      input.value = '40'
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-    })
-    await act(async () => {
-      scope.querySelector<HTMLButtonElement>('[data-testid="research-scope-save"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+    const rowEdit = (row: string) => `[data-row="${row}"] [data-testid="research-scope-edit"]`
+    const rowSave = (row: string) => `[data-row="${row}"] [data-testid="research-scope-save"]`
+    const rowSaveClick = async (row: string) => {
+      await act(async () => {
+        scope.querySelector<HTMLButtonElement>(rowSave(row))!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      })
+    }
+
+    // 3a. Ngân sách: nhập số PHÚT ⇒ gửi `budgetSeconds` (giây) của trần cứng, KHÔNG phải nhãn hiển thị.
+    click(scope, rowEdit('budget'))
+    const budgetInput = scope.querySelector<HTMLInputElement>('[data-row="budget"] input[type="number"]')!
+    expect(budgetInput.value).toBe('30') // 1800 giây trần cứng = 30 phút
+    setFieldValue(budgetInput, '28')
+    await rowSaveClick('budget')
+    const budgetCalls = api.calls.filter((call) => call.body?.action === 'budget')
+    expect(budgetCalls).toHaveLength(1)
+    expect(budgetCalls[0].body?.budgetSeconds).toBe(28 * 60)
+
+    // 3b. Độ sâu: chọn trong ô chọn ⇒ `scope.depth` là giá trị máy, không phải chuỗi nhãn.
+    click(scope, rowEdit('depth'))
+    const depthSelect = scope.querySelectorAll<HTMLSelectElement>('[data-row="depth"] select')[1]
+    setFieldValue(depthSelect, 'deep')
+    await rowSaveClick('depth')
     const patchCalls = api.calls.filter((call) => call.body?.action === 'scope')
     expect(patchCalls).toHaveLength(1)
     expect(patchCalls[0].body?.revision).toBe(1)
+    expect((patchCalls[0].body?.scope as Record<string, unknown>)?.depth).toBe('deep')
     act(() => { scope.remove() })
 
     // 4. Tắt chế độ, run còn chạy ⇒ server đòi chọn; người dùng chọn "Tạm dừng".
@@ -275,17 +324,42 @@ describe('luồng chế độ Research', () => {
       expect(host.querySelector(`[data-testid="research-prompt-card"][data-kind="${kind}"]`)).toBeTruthy()
       act(() => { host.remove() })
     }
-    const exit = render(<ResearchPromptCard prompt={{
+    // F7: `exit-choice` chỉ còn MỘT chỗ vẽ — `ResearchComposerStatus.ExitPrompt` (qua `exitChoice`).
+    const exitPrompt = {
       promptId: 'rp-exit', researchId: 'R1', kind: 'exit-choice', revision: 3, status: 'open', blocking: false,
-      questions: [{ id: 'exit', text: 'Bạn muốn run này thế nào?', allowFreeText: false, required: true, blocking: true,
-        options: [{ id: 'pause', label: 'Tạm dừng run' }, { id: 'background', label: 'Tiếp tục chạy nền' }] }],
-      actions: ['chooseExit'], note: '',
-    } as never} />)
-    expect(exit.querySelector('[data-testid="research-prompt-card"]')?.getAttribute('data-kind')).toBe('exit-choice')
-    expect(exit.querySelectorAll('button[data-testid^="research-exit-"]').length).toBe(0)
-    expect(exit.textContent).toContain('Tạm dừng run')
-    expect(exit.textContent).toContain('Tiếp tục chạy nền')
-    expect(exit.textContent).not.toMatch(/mặc định.*đã chọn/i)
+      createdAt: '', actions: ['chooseExit'], note: '', questions: [{
+        id: 'exit', text: 'Bạn muốn run này thế nào?', why: '', allowFreeText: false, affects: [],
+        required: true, blocking: true, answer: null,
+        options: [{ id: 'pause', label: 'Tạm dừng run', cost: null }, { id: 'background', label: 'Tiếp tục chạy nền', cost: null }],
+      }],
+    }
+    useResearchStore.setState({
+      exitChoice: { code: 'RESEARCH_EXIT_CHOICE_REQUIRED', message: '', prompt: exitPrompt as never },
+    })
+    const exit = render(<ResearchComposerStatus />)
+    expect(exit.querySelector('[data-testid="research-exit-prompt"]')).toBeTruthy()
+    // Không mặc định: cả hai lựa chọn đều hiện và không nút nào ở trạng thái đã chọn.
+    const pauseButton = exit.querySelector('[data-testid="research-exit-pause"]')
+    const backgroundButton = exit.querySelector('[data-testid="research-exit-background"]')
+    expect(pauseButton).toBeTruthy()
+    expect(backgroundButton).toBeTruthy()
+    expect(pauseButton?.getAttribute('aria-pressed')).toBeNull()
+    expect(backgroundButton?.getAttribute('aria-pressed')).toBeNull()
+    expect(exit.textContent).toContain('Pause the run')
+    expect(exit.textContent).toContain('Keep running in background')
+    act(() => { exit.remove() })
+
+    // Server chỉ mời `pause` (background bị tắt) ⇒ KHÔNG hiện nút chạy nền.
+    useResearchStore.setState({
+      exitChoice: {
+        code: 'RESEARCH_EXIT_CHOICE_REQUIRED', message: '',
+        prompt: { ...exitPrompt, questions: [{ ...exitPrompt.questions[0], options: [{ id: 'pause', label: 'Tạm dừng run', cost: null }] }] } as never,
+      },
+    })
+    const paused = render(<ResearchComposerStatus />)
+    expect(paused.querySelector('[data-testid="research-exit-pause"]')).toBeTruthy()
+    expect(paused.querySelector('[data-testid="research-exit-background"]')).toBeNull()
+    act(() => { paused.remove() })
   })
 
 
@@ -301,6 +375,29 @@ describe('luồng chế độ Research', () => {
     // Chờ quá một "chu kỳ" của vòng hỏi cũ: nếu còn `setInterval(…, 5000)` thì đã có lời gọi.
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 150)) })
     expect(fetchMock).not.toHaveBeenCalled()
+    act(() => { host.remove() })
+  })
+
+  it('F4: đích `researchId` mở tab Research chọn ĐÚNG run đó, không phải run đang xem', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).includes('/research/jobs/R2')) {
+        return jsonResponse(jobPayload({ job: { ...jobPayload().job, research_id: 'R2' } }))
+      }
+      return jsonResponse(jobPayload())
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    useResearchStore.setState({
+      jobs: [
+        readJob({ ...jobPayload().job, research_id: 'R1' }),
+        readJob({ ...jobPayload().job, research_id: 'R2' }),
+      ],
+      detailId: 'R1',
+    })
+    useUiStore.setState({ tabIntentTargets: { research: { researchId: 'R2' } } })
+    const host = render(<ResearchPanel />)
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/research/jobs/R2'))).toBe(true)
+    expect(useResearchStore.getState().detailId).toBe('R2')
     act(() => { host.remove() })
   })
 
