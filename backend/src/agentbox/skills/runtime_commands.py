@@ -176,19 +176,19 @@ class RuntimeCommands:
                 result['status'] = self.store.get(sid)['status']
             if outcome.get('submit'):
                 session = self.store.get(sid)
-                self._next_turn_skills(session, enabled, invocation_id)
+                self._next_turn_skills(session, enabled, invocation_id, resolved.prompt or prompt)
                 self.start(sid, resolved.prompt, image, route,
                            await self.route_metadata(session, route), images=images,
                            attachments=attachments, invocation_id=invocation_id)
         elif resolved.kind == 'message':
-            self._next_turn_skills(session, enabled, invocation_id)
+            self._next_turn_skills(session, enabled, invocation_id, prompt)
             # Route của lượt có thể đổi model; tra metadata của CHÍNH model đó (cùng
             # nguồn như lúc tạo phiên) để `start()` vẫn đối chiếu được `thinkingLevel`
             # thay vì bỏ qua kiểm tra (B13).
             self.start(sid, prompt, image, route, await self.route_metadata(session, route),
                        images=images, attachments=attachments, invocation_id=invocation_id)
         else:
-            self._next_turn_skills(session, enabled, invocation_id)
+            self._next_turn_skills(session, enabled, invocation_id, prompt)
             session = self.store.get(sid)
             if route:
                 session['config']['route'] = route
@@ -223,7 +223,7 @@ class RuntimeCommands:
             self.store.db.execute('UPDATE command_invocations SET result=? WHERE session_id=? AND id=?', (json.dumps(result), sid, invocation_id))
         return result
 
-    def _sync_mode_block(self, session, invocation_id=None):
+    def _sync_mode_block(self, session, invocation_id=None, turn_text=''):
         """Chèn/gỡ khối ACTIVE MODE + khối run chạy nền + khối bàn giao theo TỪNG LƯỢT
         (§5.2, §5.10).
 
@@ -234,6 +234,9 @@ class RuntimeCommands:
         `invocation_id` phải là id của LƯỢT này: lượt bơm `research-resume-<id>` dùng hồ sơ
         research (kể cả khi mode đã tắt), nên khối của nó không phải khối main (review F8). Không
         truyền ⇒ giữ nguyên hành vi cũ cho lượt thường.
+
+        `turn_text` là nội dung lượt NGƯỜI DÙNG đang dựng (chưa nằm trong `messages` lúc gọi): khối
+        bàn giao chọn run theo nó. Không truyền ⇒ luật cũ (run chưa bàn giao mới nhất).
         """
         messages = session.get('messages') or []
         if not messages:
@@ -245,9 +248,12 @@ class RuntimeCommands:
                                    (RESEARCH_BACKGROUND_BLOCK_MARKER, RESEARCH_BACKGROUND_BLOCK_END),
                                    (RESEARCH_HANDOFF_BLOCK_MARKER, RESEARCH_HANDOFF_BLOCK_END)):
             current = _strip_prompt_block(current, marker, end_marker)
-        # `current` (đã gỡ khối cũ) là lượt đang dựng: nếu lượt NÓI TÊN một run thì khối bàn giao
-        # phải là run ấy, không phải run chưa bàn giao mới nhất (review D-5).
-        handoff = self.research_handoff(session, current)
+        # Lượt đang dựng là `turn_text`: nếu lượt NÓI TÊN một run thì khối bàn giao phải là run ấy,
+        # không phải run chưa bàn giao mới nhất (review D-5). KHÔNG đọc `messages[0]`: đó là PROMPT
+        # HỆ THỐNG — nơi khối ACTIVE MODE/ENABLED SKILLS được chèn — và đo sống 2026-09-25 (D-8, vòng
+        # kiểm thử P2–P5 lần 3) cho thấy nó không chứa token `r-<n>` nào, nên mọi lượt đều rơi về luật
+        # "run mới nhất" và nút "Dùng cho plan" bàn giao SAI run.
+        handoff = self.research_handoff(session, turn_text)
         content = current.rstrip()
         for block in [profile['promptBlock'], (handoff or {}).get('block')]:
             if block:
@@ -379,11 +385,15 @@ class RuntimeCommands:
         result['output'] = 'Đã bật chế độ Research.'
         return {'result': result, 'submit': bool(arg)}
 
-    def _next_turn_skills(self, session, enabled, invocation_id=None):
+    def _next_turn_skills(self, session, enabled, invocation_id=None, turn_text=''):
         """Viết lại khối kỹ năng + khối mode/nền/bàn giao cho LƯỢT này.
 
         `invocation_id` đi tiếp xuống `_sync_mode_block` để lượt bơm `research-resume-*` nhận
         đúng hồ sơ research ngay ở bước dựng prompt (review F8).
+
+        `turn_text` là nội dung lượt NGƯỜI DÙNG đang dựng: mọi chỗ gọi hàm này chạy TRƯỚC
+        `self.start(...)`, nên lượt mới CHƯA nằm trong `session['messages']` — đi tiếp xuống
+        `_sync_mode_block` để chọn đúng run khi bàn giao (D-8).
         """
         session['config']['skills'] = list(enabled)
         self.store.update_config(session['id'], session['config'])
@@ -404,7 +414,7 @@ class RuntimeCommands:
                 m['content'] = '[Historical skill read. Reload with skill_view if needed for the new turn.]'
         self.skill_loader.reset(session['id'])
         # P1 (§5.2/§5.10): chèn/gỡ khối ACTIVE MODE và khối bàn giao theo LƯỢT này.
-        self._sync_mode_block(session, invocation_id)
+        self._sync_mode_block(session, invocation_id, turn_text)
         self.store.save(session['id'], messages)
 
     async def _command_task(self, sid, resolved, block='', images=None):

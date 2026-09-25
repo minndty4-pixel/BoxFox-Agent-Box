@@ -47,6 +47,9 @@ interface ResearchState {
    * Mốc `seq` đã tiêu thụ của TỪNG phiên (`sessionId -> seq`). Đổi phiên không được kéo `seq` về 0
    * cho mọi phiên: làm vậy thì mọi sự kiện lịch sử của phiên mới bị coi là "mới", và một thẻ trạng
    * thái đã bị người dùng đóng lại mọc lên (D-4).
+   *
+   * Phiên CHƯA có khoá ở đây là phiên chưa từng nhận payload CÓ sự kiện: payload đầu tiên như vậy là
+   * ảnh chụp lịch sử (D-9 — đừng ghim mốc `0` từ một payload rỗng rồi coi lịch sử là mới).
    */
   seenSeqBySession: Record<string, number>
   /** Lời hỏi 409 khi tắt mode lúc run còn chạy: có thì phải neo thẻ vào nút Research. */
@@ -58,6 +61,12 @@ interface ResearchState {
    */
   statusCard: ResearchStatusCard | null
 
+  /**
+   * `events` là danh sách sự kiện của phiên đang mở (rỗng khi phiên chưa tải xong).
+   *
+   * Chỉ sự kiện VƯỢT mốc `seenSeqBySession` của chính phiên ấy mới là "mới"; payload ĐẦU TIÊN có sự
+   * kiện của một phiên là ảnh chụp lịch sử, không phải tin mới.
+   */
   sync: (sessionId: string, config: unknown, events: readonly { seq: number; type: string; data: Record<string, unknown> }[]) => void
   refresh: () => Promise<void>
   refreshDetail: (researchId: string) => Promise<void>
@@ -153,9 +162,13 @@ export const useResearchStore = create<ResearchState>((set, get) => ({
     // Mốc của TỪNG phiên: sự kiện chỉ "mới" khi vượt mốc đã tiêu thụ của chính phiên đó.
     const mark = seenSeqBySession[sessionId]
     const known = mark !== undefined
-    // Phiên CHƯA từng thấy: mọi sự kiện đang có là LỊCH SỬ, mốc khởi đầu là `seq` lớn nhất — nếu
-    // không thì một `research_run`/`status` từ tuần trước sẽ mọc lên như trạng thái hiện tại (§4.1
-    // dòng ~205: thẻ trạng thái là bản phát lại theo yêu cầu, không phải trạng thái nền).
+    // Phiên CHƯA từng thấy: payload đầu tiên CÓ sự kiện là ẢNH CHỤP LỊCH SỬ (cùng luật với
+    // `firstHydration` của `harnessChatStore`), nên mốc khởi đầu là `seq` lớn nhất — nếu không thì một
+    // `research_run`/`status` từ tuần trước sẽ mọc lên như trạng thái hiện tại (§4.1 dòng ~205: thẻ
+    // trạng thái là bản phát lại theo yêu cầu, không phải trạng thái nền).
+    // Payload RỖNG không được ghi mốc: `useResearchSync` gọi `sync(..., events ?? [])` ở lần render đầu
+    // (phiên chưa tải xong), và mốc `0` ghi từ đó biến chính ảnh chụp lịch sử ấy thành "mới" — mở lại
+    // phiên là thẻ `/research status` cũ mọc lại dù chưa ai gõ lệnh (D-9, vòng kiểm thử P2–P5 lần 3).
     const baseline = known ? mark : maxSeq
     const fresh = events.filter((event) => isResearchEvent(event) && event.seq > baseline)
     const nextMark = Math.max(baseline, maxSeq)
@@ -165,7 +178,14 @@ export const useResearchStore = create<ResearchState>((set, get) => ({
     // D-4: chỉ nhận sự kiện MỚI của phiên này (phiên chưa từng thấy ⇒ không nhận gì từ lịch sử).
     // Đổi phiên thì xoá thẻ cũ; còn lại giữ thẻ cho tới khi người dùng đóng.
     const statusCard = statusCardFrom(fresh) ?? (switched ? null : get().statusCard)
-    set({ sessionId, mode, lastEventSeq, statusCard, seenSeqBySession: { ...seenSeqBySession, [sessionId]: nextMark } })
+    set({
+      sessionId,
+      mode,
+      lastEventSeq,
+      statusCard,
+      // Không có sự kiện nào ⇒ chưa biết gì về phiên này: giữ nguyên sổ mốc (đừng ghim `0`).
+      seenSeqBySession: events.length === 0 ? seenSeqBySession : { ...seenSeqBySession, [sessionId]: nextMark },
+    })
     if (switched || fresh.length > 0 || modeChanged) void get().refresh()
   },
 

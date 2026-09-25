@@ -1037,11 +1037,11 @@ def test_the_handoff_block_disappears_after_it_is_delivered(harness, monkeypatch
     monkeypatch.setattr(runtime, 'research_handoff', fake_handoff)
     monkeypatch.setattr(runtime, 'mark_handoff_delivered',
                         lambda s, rid, version: delivered.append((rid, version)))
-    runtime._sync_mode_block(session)
+    runtime._sync_mode_block(session, None, 'Lập plan dựa trên báo cáo research r-ho v3')
     assert session['messages'][0]['content'].count(limits.RESEARCH_HANDOFF_BLOCK_MARKER) == 1
     assert delivered == [('r-ho', 3)]
-    # Vòng 2 (D-5): khối bàn giao phải nhận ĐÚNG lượt đang dựng — không có lượt thì không chọn được run.
-    assert seen == ['NỀN']
+    # Vòng 2 (D-5) + D-8: khối bàn giao nhận ĐÚNG lượt đang dựng — không phải `messages[0]` (prompt hệ thống).
+    assert seen == ['Lập plan dựa trên báo cáo research r-ho v3']
     monkeypatch.setattr(runtime, 'research_handoff', lambda s, prompt='': None)
     runtime._sync_mode_block(session)
     assert limits.RESEARCH_HANDOFF_BLOCK_MARKER not in session['messages'][0]['content']
@@ -1106,3 +1106,46 @@ def test_a_turn_that_names_an_unknown_run_keeps_the_old_behaviour(harness):
     store.record_dossier(sid, 'r-22', 1, '.research/r-22/v1.md', quality_ok=True)
     assert runtime.named_handoff_run(session_of(store, sid), 'run r-2 v1') == ''
     assert runtime.named_handoff_run(session_of(store, sid), 'run r-22 v1') == 'r-22'
+
+
+def test_d8_the_handoff_block_follows_the_user_turn_not_the_system_prompt(harness):
+    """D-8 (vòng kiểm thử P2–P5 lần 3): khối bàn giao phải theo LƯỢT NGƯỜI DÙNG đang dựng.
+
+    Đo sống: `messages[0]` là PROMPT HỆ THỐNG (nơi khối ACTIVE MODE/ENABLED SKILLS được chèn) và không
+    chứa token `r-<n>` nào — nên bản vá D-5 ở `75a24b2` không bao giờ được dùng tới: mọi lượt rơi về
+    luật "run chưa bàn giao mới nhất", nút "Dùng cho plan" ở thẻ của run CŨ bàn giao run KHÁC, và cổng
+    "một lần" của `f658868` không bao giờ đóng cho thẻ ấy (bấm lần hai lại gửi thêm một lượt plan).
+    """
+    store, runtime, sid = harness
+    for run_id, version in (('run-cu', 2), ('run-moi', 1)):
+        store.research_job_save(run_id, sid, {'origin': 'mode', 'phase': 'done', 'tier': 2,
+                                             'budgetSeconds': 600, 'questions': []},
+                                status='completed')
+        store.record_dossier(sid, run_id, version, f'.research/{run_id}/v{version}-{run_id}.md',
+                             quality_ok=True)
+    session = session_of(store, sid)
+    # Prompt hệ thống ĐÚNG như thật: khối mode + khối kỹ năng, KHÔNG có tên run nào.
+    session['messages'] = [{'role': 'system', 'content':
+                            f'{limits.RESEARCH_MODE_BLOCK_MARKER}\nchế độ research\n'
+                            f'{limits.RESEARCH_MODE_BLOCK_END}\n\n'
+                            '=== ENABLED SKILLS ===\nresearch-team'}]
+    store.save(sid, session['messages'])
+    runtime._next_turn_skills(session, [], None, 'Lập plan dựa trên báo cáo research run-cu v2')
+    content = store.get(sid)['messages'][0]['content']
+    assert limits.RESEARCH_HANDOFF_BLOCK_MARKER in content
+    assert 'run-cu' in content, 'khối bàn giao phải nói tên run mà LƯỢT nêu, không phải run mới nhất'
+    mode = (store.get(sid)['config'] or {}).get('researchMode') or {}
+    assert mode.get('handoffDeliveredVersion') == {'run-cu': '2'}
+
+    # Lượt sau nhắc LẠI đúng run ấy: bản đã bàn giao ⇒ KHÔNG có khối nào (cổng "một lần" của thẻ đóng).
+    session = session_of(store, sid)
+    runtime._next_turn_skills(session, [], None, 'Lập plan dựa trên báo cáo research run-cu v2')
+    content = store.get(sid)['messages'][0]['content']
+    assert limits.RESEARCH_HANDOFF_BLOCK_MARKER not in content, \
+        'lượt nhắc lại bản đã bàn giao không được kéo theo run khác'
+    assert mode.get('handoffDeliveredVersion') == {'run-cu': '2'}
+
+    # Lượt KHÔNG nói tên run nào: về đúng luật cũ — bàn giao run chưa bàn giao mới nhất.
+    session = session_of(store, sid)
+    runtime._next_turn_skills(session, [], None, 'Viết plan đi')
+    assert 'run-moi' in store.get(sid)['messages'][0]['content']
