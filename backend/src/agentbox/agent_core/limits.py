@@ -576,3 +576,74 @@ RESEARCH_EXIT_CHOICES = ('pause', 'background')
 # Cờ `state` của một job trong mode.
 RESEARCH_JOB_ORIGIN = 'mode'
 RESEARCH_JOB_ORIGIN_MAIN = 'main'
+
+
+# --- P2 research evidence / time / coverage (appended block) ----------------
+# Mô hình bằng chứng, chính sách thời gian và bản đồ bao phủ (plan v2 §5.5–5.8, §7 P2). Mọi hằng ở
+# đây chỉ thuộc pha P2/P3; khối nằm CUỐI tệp để không đụng phần thân. Mặc định `on` = tính năng CÓ
+# MẶT; `off` = hành vi y hệt `6eb2fd8` (mọi cổng mới tắt, cổng cũ dò tiêu đề vẫn chạy).
+RESEARCH_COVERAGE_ENV = 'BOXFOX_RESEARCH_COVERAGE'
+RESEARCH_COVERAGE_MODES = ('on', 'off')
+RESEARCH_COVERAGE_DEFAULT_MODE = 'on'
+
+# Cổng cấu trúc thay cho dò từ khoá tiêu đề (`research_quality.DOSSIER_SECTIONS`).
+RESEARCH_STRUCTURED_REPORT_ENV = 'BOXFOX_RESEARCH_STRUCTURED_REPORT'
+RESEARCH_STRUCTURED_REPORT_MODES = ('on', 'off')
+RESEARCH_STRUCTURED_REPORT_DEFAULT_MODE = 'on'
+
+# Cửa sổ "hiện trạng" (5.6): nhận định `trend`/`current-fact` chỉ đỡ bằng nguồn ngoài cửa sổ ⇒ lỗi.
+RESEARCH_TIME_POLICY_ENV = 'BOXFOX_RESEARCH_TIME_POLICY'
+RESEARCH_TIME_POLICY_MODES = ('on', 'off')
+RESEARCH_TIME_POLICY_DEFAULT_MODE = 'on'
+
+# Mã ổn định cho cổng/test/giao diện.
+RESEARCH_STALE_CURRENT_CLAIM_CODE = 'research-stale-current-claim'
+RESEARCH_REPORT_STRUCTURE_CODE = 'research-report-structure'
+RESEARCH_STALE_CURRENT_CLAIM_LABEL = 'nguồn cũ cho nhận định hiện trạng'
+
+# Bão hoà (5.5): hai sóng liên tiếp dưới 10% kết quả mới ⇒ `saturated`; săn trích dẫn dừng sau 3 vòng
+# liên tiếp không thêm bài mới liên quan (#6008).
+RESEARCH_SATURATION_NEW_RATIO = 0.10
+RESEARCH_SATURATION_WAVES = 2
+RESEARCH_CITATION_CHASE_STOP_ROUNDS = 3
+
+# --- P3 subagent roles (appended block) -------------------------------------
+# Vai con và hợp đồng của chúng (plan v2 §5.9, §5.11, §7 P3, §8.4). Không thêm vai mới vào
+# `ROLES`: dùng `task.kind` trên hai vai có sẵn `research` và `research-review`.
+RESEARCH_BRANCH_REPORT_ENV = 'BOXFOX_RESEARCH_BRANCH_REPORT'
+RESEARCH_BRANCH_REPORT_MODES = ('on', 'off')
+RESEARCH_BRANCH_REPORT_DEFAULT_MODE = 'on'
+RESEARCH_BRANCH_REPORT_MISSING_CODE = 'RESEARCH_BRANCH_REPORT_MISSING'
+
+# Phản biện bắt buộc từ mức 2 (#6072, §5.11). `off` ⇒ quay lại `RESEARCH_TIER_CRITIQUE` cũ.
+RESEARCH_CRITIQUE_TIER2_ENV = 'BOXFOX_RESEARCH_CRITIQUE_TIER2'
+RESEARCH_CRITIQUE_TIER2_MODES = ('on', 'off')
+RESEARCH_CRITIQUE_TIER2_DEFAULT_MODE = 'on'
+
+#: Kiểu việc của một nhánh con (`delegate_task.taskKind`). Không phải vai mới: vai vẫn là
+#: `research` hoặc `research-review`, quyền công cụ giữ nguyên đã kiểm.
+RESEARCH_BRANCH_KINDS = ('branch', 'deep-read', 'counter', 'critique', 'evidence', 'coverage')
+RESEARCH_TASK_KIND_INVALID_CODE = 'RESEARCH_TASK_KIND_INVALID'
+RESEARCH_TASK_KIND_DEFAULT = 'branch'
+
+#: Mã phát hiện của bên soát (§5.9). Giữ `severity`; `kind` là trường MỚI, thêm được, không đổi cũ.
+RESEARCH_ISSUE_KINDS = ('unsupported', 'misattributed', 'outdated', 'missing-direction',
+                        'counter-evidence', 'reasoning', 'fit', 'unlabeled-assumption')
+#: Phát hiện `missing-direction` mức cao chưa xử lý ⇒ nhãn này trên hồ sơ (§5.9).
+RESEARCH_COVERAGE_LABEL = 'bao phủ chưa đủ'
+#: Nhãn khi vòng sửa vẫn bị `revise` (#5968) — đã có từ trước, nhắc lại cho một chỗ đọc.
+RESEARCH_CRITIQUE_LABEL_KEPT = 'chưa đạt phản biện'
+
+#: Thẻ trích xuất của con `deep-read`: số nguồn trụ cột mỗi lần theo mức (§5.9, §5.11).
+RESEARCH_DEEP_READ_SOURCES = {1: 0, 2: 2, 3: 10}
+RESEARCH_EXTRACTION_MAX_FIELDS = 24
+
+#: Ngưỡng nghiệm thu của bộ lỗi cấy sẵn (§8.4): critic+verifier bắt ≥ 70% lỗi dữ kiện/gán sai;
+#: coverage reviewer bắt ≥ 60% hướng lớn bị gỡ; tỉ lệ báo sai ≤ 20% [ƯỚC LƯỢNG ngưỡng].
+RESEARCH_SEEDED_CATCH_MIN = 0.70
+RESEARCH_SEEDED_COVERAGE_MIN = 0.60
+RESEARCH_SEEDED_FALSE_ALARM_MAX = 0.20
+RESEARCH_SEEDED_DEFECT_KINDS = ('wrong-number', 'unsupported-claim', 'misattributed',
+                                'outdated-supports-current', 'removed-direction', 'survey-as-proposal',
+                                'unlabeled-assumption', 'same-origin-independent',
+                                'mismatched-benchmark')
