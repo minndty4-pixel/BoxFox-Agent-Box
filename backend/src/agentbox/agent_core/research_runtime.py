@@ -47,7 +47,8 @@ from .limits import (
     SOURCE_FAKE_SUCCESS_MIN_CHARS, SOURCE_FAKE_SUCCESS_TITLE_MARKERS, SOURCE_ORIGIN_MAX_CHARS,
     RESEARCH_MODE_REQUIRED_CODE, RESEARCH_MODE_EXIT_CHOICE_REQUIRED_CODE, RESEARCH_MODE_EVENT_CODE,
     RESEARCH_JOB_ORIGIN, RESEARCH_JOB_ORIGIN_MAIN,
-    RESEARCH_SCOPE_MAX_QUESTIONS, RESEARCH_SCOPE_REVISION_STALE_CODE,
+    RESEARCH_SCOPE_MAX_QUESTIONS, RESEARCH_SCOPE_REVISION_INVALID_CODE,
+    RESEARCH_SCOPE_REVISION_STALE_CODE,
     RESEARCH_STALE_CURRENT_CLAIM_CODE, RESEARCH_STALE_CURRENT_CLAIM_LABEL,
     RESEARCH_COVERAGE_LABEL,
     SOURCE_ROW_LIMIT_DEFAULT, SOURCE_ROW_LIMIT_MAX, STEER_DEFAULT_MODE, STEER_DRAIN_MAX,
@@ -326,6 +327,10 @@ def _search_log_rows(rt, research_id) -> list:
             if not default.exists():
                 return []
             path = default
+        elif not Path(path).exists():
+            # Đường dẫn chỉ định (bài kiểm, `BOXFOX_SEARCH_DB`) cũng phải theo cùng một luật: ĐỌC
+            # bao phủ không được tạo cơ sở dữ liệu (đợt soát `ed485f3`, finding 8).
+            return []
         return list(search_store.connect(path).search_log(research_id=rid) or [])
     except Exception as error:  # pragma: no cover - đo bao phủ không bao giờ được chặn run
         system_log.write('research.coverage.log_unread', level='warn', code='RESEARCH_COVERAGE_LOG',
@@ -368,7 +373,7 @@ def _scope_questions(rt, research_id) -> list:
     return out
 
 
-def coverage_refresh(rt, owner, research_id, *, write=True, questions=None):
+def coverage_refresh(rt, research_id, *, write=True, questions=None):
     """Đo bao phủ của run từ facet đã lưu + NHẬT KÝ TÌM, rồi (tuỳ chọn) ghi lại facet.
 
     Bão hoà là chuyện ĐO ĐƯỢC, không phải chuyện mô hình tự khai: mỗi lần gọi đọc
@@ -410,10 +415,10 @@ def coverage_refresh(rt, owner, research_id, *, write=True, questions=None):
     return coverage
 
 
-def coverage_stop(rt, owner, research_id, *, coverage=None, stalled_waves=0, budget=None):
+def coverage_stop(rt, research_id, *, coverage=None, stalled_waves=0, budget=None):
     """Bốn điều kiện dừng của §5.5 trên facet/câu hỏi hiện có (không bao giờ ném)."""
     rid = str(research_id or '')
-    cov = coverage if isinstance(coverage, dict) else coverage_refresh(rt, owner, rid)
+    cov = coverage if isinstance(coverage, dict) else coverage_refresh(rt, rid)
     facets = _facets_of(rt, rid)
     issues = [{'kind': 'coverage', 'detail': item, 'resolved': False}
               for item in (cov.get('unexplored') or [])] if cov else []
@@ -434,6 +439,22 @@ def _claims_declared(report) -> list:
     return [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
 
 
+def _claims_by_id(rows) -> dict:
+    """Sổ nhận định gom theo `claimId` (bỏ dòng thiếu mã)."""
+    grouped: dict[str, list] = {}
+    for item in rows:
+        claim_id = str(item.get('claimId') or '')
+        if claim_id:
+            grouped.setdefault(claim_id, []).append(item)
+    return grouped
+
+
+def _claims_declared_map(report) -> dict:
+    """`claims[]` của báo cáo theo khoá `claimId` (nhận cả `claim_id`)."""
+    return {str(item.get('claimId') or item.get('claim_id') or ''): item
+            for item in _claims_declared(report)}
+
+
 def record_claim_meta(rt, owner, research_id, *, report=None, window_days=0, as_of='') -> int:
     """Ghi `research_claim_meta` cho MỌI nhận định chính của run (§7.2 của hợp đồng P2).
 
@@ -449,13 +470,8 @@ def record_claim_meta(rt, owner, research_id, *, report=None, window_days=0, as_
         rows = list(rt.store.evidence_claims(owner, rid) or [])
     except Exception:  # pragma: no cover
         rows = []
-    by_claim: dict[str, list] = {}
-    for item in rows:
-        claim_id = str(item.get('claimId') or '')
-        if claim_id:
-            by_claim.setdefault(claim_id, []).append(item)
-    declared = {str(item.get('claimId') or item.get('claim_id') or ''): item
-                for item in _claims_declared(report)}
+    by_claim = _claims_by_id(rows)
+    declared = _claims_declared_map(report)
     order = [cid for cid in declared if cid]
     order += [cid for cid in by_claim if cid not in declared]
     written = 0
@@ -500,13 +516,8 @@ def stale_current_issues(rt, owner, research_id, *, report=None, window_days=0, 
         rows = list(rt.store.evidence_claims(owner, rid) or [])
     except Exception:  # pragma: no cover
         return []
-    by_claim: dict[str, list] = {}
-    for item in rows:
-        claim_id = str(item.get('claimId') or '')
-        if claim_id:
-            by_claim.setdefault(claim_id, []).append(item)
-    declared = {str(item.get('claimId') or item.get('claim_id') or ''): item
-                for item in _claims_declared(report)}
+    by_claim = _claims_by_id(rows)
+    declared = _claims_declared_map(report)
     issues = []
     for claim_id, item in declared.items():
         if not claim_id:
@@ -1149,7 +1160,7 @@ async def research_brief(rt, session, args):
               # lượt sau nâng mức mà bỏ trống trần thì hạn mức mức mới to hơn trần đang chạy, nên thiếu
               # khoá này thì thẻ mốc báo một con số không ai thi hành (lượt kiểm thử v27d, F-H).
               'ceilingSeconds': ceiling,
-              'hardCeilingSeconds': limits['hardCeilingSeconds'], 'critique': limits['critique'],
+              'hardCeilingSeconds': limits['hardCeilingSeconds'], 'critique': requires_critique,
               'ownerViews': owner_views, 'updated': updated, 'extendedTurn': bool(extended),
               'inheritsFrom': inherits or None, 'inheritedRows': inherited_rows,
               'next': f'delegate_task(role="research", …) mở đầu context bằng '
@@ -1522,7 +1533,7 @@ async def dossier_write(rt, session, args):
     job_scope = job_scope if isinstance(job_scope, dict) else {}
     job_types = research_report.normalize_job_types(job_scope.get('jobKinds') or ())
     survey_value, window_value, _velocity = _scope_time_window(rt, research_id, job)
-    coverage = coverage_refresh(rt, owner, research_id, write=True)
+    coverage = coverage_refresh(rt, research_id, write=True)
     claim_ids = [str(item.get('claimId') or '')
                  for item in (rt.store.evidence_claims(owner, research_id) or [])]
     stale_issues = stale_current_issues(rt, owner, research_id, report=report,
@@ -1653,7 +1664,7 @@ async def dossier_write(rt, session, args):
               'claimsRecorded': claims_recorded}
     if coverage:
         answer['coverage'] = coverage
-        answer['stop'] = coverage_stop(rt, owner, research_id, coverage=coverage)
+        answer['stop'] = coverage_stop(rt, research_id, coverage=coverage)
     if stale_issues:
         answer['staleCurrentClaims'] = [item.detail for item in stale_issues]
     if not verdict.ok:
@@ -1810,10 +1821,22 @@ def _clamp_issues(issues) -> list:
         if isinstance(item, dict):
             text = str(item.get('text') or '').strip()
             if text:
-                out.append({'severity': item.get('severity') if item.get('severity') in
-                            ('high', 'medium', 'low') else 'medium',
-                            'text': text[:RESEARCH_VERIFY_ISSUE_CHARS],
-                            'fix': str(item.get('fix') or '')[:RESEARCH_VERIFY_ISSUE_CHARS]})
+                row = {'severity': item.get('severity') if item.get('severity') in
+                       ('high', 'medium', 'low') else 'medium',
+                       'text': text[:RESEARCH_VERIFY_ISSUE_CHARS],
+                       'fix': str(item.get('fix') or '')[:RESEARCH_VERIFY_ISSUE_CHARS]}
+                # P3 (§5.9): giữ `kind` khi nhận ra — hợp đồng `research_verify` hứa nó, và nhãn
+                # `bao phủ chưa đủ` của hồ sơ đọc đúng trường này. Một luật, một chỗ: `research_review`.
+                kind = research_review.normalize_issue_kind(item.get('kind'))
+                if kind:
+                    row['kind'] = kind
+                # `handled`/`resolved` là dấu XỬ LÝ của một phát hiện: thiếu nó thì mọi
+                # `missing-direction` mức cao mãi mãi là 'chưa xử lý' và nhãn `bao phủ chưa đủ`
+                # không bao giờ tắt được (§5.9).
+                for flag in ('handled', 'resolved'):
+                    if item.get(flag):
+                        row[flag] = True
+                out.append(row)
         else:
             text = str(item).strip()
             if text:
@@ -1866,9 +1889,10 @@ async def research_verify(rt, session, args):
     combined = ('revise' if any(by_mode.get(item) == 'revise' for item in needed)
                 else 'ok' if all(by_mode.get(item) == 'ok' for item in needed) else 'none')
     rt.store.dossier_critique_set(research_id, version, combined)
+    coverage_label = research_review.coverage_label(issues)
     rt.store.emit(sid, 'research_verified', {
         'researchId': research_id, 'version': version, 'verdict': verdict, 'mode': mode,
-        'combined': combined, 'issues': issues,
+        'combined': combined, 'issues': issues, 'coverageLabel': coverage_label,
         'summary': summary, 'criticSessionId': critic['session_id'], 'criticAnswerChars': answer_chars,
         'at': journal.utc_now_iso()})
     rounds = rt.store.research_verification_count(research_id, verdict='revise')
@@ -1953,10 +1977,10 @@ def research_status(rt, session, args):
                          'dependentPlans': rt.store.research_dependent_plans(research_id)}
     # P2 (§7.4): bản bao phủ của run đọc từ facet đã lưu + nhật ký tìm (bão hoà là chuyện ĐO được),
     # kèm bốn điều kiện dừng của §5.5 để người đọc biết còn hướng nào chưa đóng.
-    coverage = coverage_refresh(rt, owner, research_id, write=True)
+    coverage = coverage_refresh(rt, research_id, write=True)
     if coverage:
         answer['coverage'] = coverage
-        answer['stop'] = coverage_stop(rt, owner, research_id, coverage=coverage)
+        answer['stop'] = coverage_stop(rt, research_id, coverage=coverage)
         answer['claimMeta'] = _claim_metas(rt, research_id)
     return answer
 
@@ -2046,13 +2070,13 @@ def research_update(rt, session, args):
         except Exception as error:  # pragma: no cover
             system_log.write('research.facets.terms_failed', level='warn', code='RESEARCH_FACET',
                              researchId=research_id, error=str(error)[:200])
-    coverage = coverage_refresh(rt, session['id'], research_id, write=True)
+    coverage = coverage_refresh(rt, research_id, write=True)
     answer = {'researchId': research_id, 'status': updated['status'],
               'revision': updated['revision'], 'questions': state['questions'],
               'usedSeconds': used, 'remainingSeconds': max(0, state['budgetSeconds'] - used)}
     if coverage:
         answer['coverage'] = coverage
-        answer['stop'] = coverage_stop(rt, session['id'], research_id, coverage=coverage)
+        answer['stop'] = coverage_stop(rt, research_id, coverage=coverage)
     return answer
 
 
@@ -2234,22 +2258,54 @@ def research_suggest(rt, session, args):
             'modeOn': False, 'changedConfig': False}
 
 
-def _scope_entry(value, default_status='assumed'):
+def _answered_question_ids(scope) -> set:
+    """Id những câu hỏi đã được NGƯỜI DÙNG trả lời (`answer_prompt` để lại `answer.status`)."""
+    out = set()
+    for question in (scope.get('openQuestions') or []) if isinstance(scope, dict) else []:
+        if not isinstance(question, dict):
+            continue
+        answer = question.get('answer')
+        if isinstance(answer, dict) and answer.get('status') == 'confirmed' \
+                and str(answer.get('text') or '').strip():
+            question_id = str(question.get('id') or '').strip()
+            if question_id:
+                out.add(question_id)
+    return out
+
+
+def _scope_entry(value, default_status='assumed', source_kind='agent', answered=None, seq=None):
     """Chuẩn hoá MỘT mục của thẻ phạm vi: mục người dùng sửa thì `confirmed`, agent đề xuất thì
-    `assumed`, và mọi mục đều mang `source` (§5.10)."""
+    `assumed`, và mọi mục đều mang `source` (§5.10).
+
+    `source.kind='user'` chỉ có khi CÓ BẰNG CHỨNG máy kiểm được (§8.2/M-12):
+    * `source_kind='user'` — đường chủ nhà (`scope_update` từ giao diện);
+    * hoặc mục tự khai `source.kind='user'` kèm `source.questionId` nằm trong `answered` (câu hỏi
+      đã được người dùng trả lời thật qua `answer_prompt`).
+    Mọi đường khác — kể cả mô hình tự khai `confirmed` — chỉ được `source.kind='agent'`, nên mục đó
+    không bao giờ vào phần "đã xác nhận" của brief con.
+    """
     if isinstance(value, dict):
         item = dict(value)
     else:
         item = {'text': str(value or '')}
-    item.setdefault('status', default_status)
-    if item['status'] not in ('confirmed', 'assumed'):
-        item['status'] = default_status
     source = item.get('source') if isinstance(item.get('source'), dict) else {}
-    if item['status'] == 'confirmed':
-        item.setdefault('source', {'kind': source.get('kind') or 'user',
-                                   **({'seq': source['seq']} if source.get('seq') else {})})
-    else:
-        item.setdefault('source', {'kind': 'agent'})
+    declared_kind = str(source.get('kind') or '').strip().lower()
+    question_id = str(source.get('questionId') or '').strip()
+    by_owner = source_kind == 'user'
+    by_answer = declared_kind == 'user' and bool(question_id) and question_id in (answered or set())
+    if by_owner or by_answer:
+        item['status'] = 'confirmed'
+        evidence = {'kind': 'user'}
+        if seq is not None:
+            evidence['seq'] = seq
+        if by_answer:
+            evidence['questionId'] = question_id
+        item['source'] = evidence
+        return item
+    # Không có bằng chứng người dùng ⇒ mục là GIẢ ĐỊNH, kể cả khi mô hình tự khai `confirmed`: thẻ
+    # phạm vi và brief con phải nói cùng một điều (§8.2/M-12).
+    item['status'] = default_status
+    item['source'] = {'kind': 'agent', **({'seq': source['seq']} if source.get('seq') else {})}
     return item
 
 
@@ -2392,24 +2448,24 @@ def scope_update(rt, session_id, job, payload):
     if str(job.get('status') or '') == 'cancelled':
         raise ValueError('RESEARCH_SCOPE_JOB_CANCELLED: run đã huỷ, không sửa thẻ được nữa')
     live_revision = int(scope.get('revision') or 0)
-    expected = payload.get('revision')
-    if expected is not None and int(expected) != live_revision:
+    expected = _revision_arg(payload, RESEARCH_SCOPE_REVISION_INVALID_CODE)
+    if expected is not None and expected != live_revision:
         raise ValueError(f'{RESEARCH_SCOPE_REVISION_STALE_CODE}: phạm vi đã đổi (revision '
                          f'{live_revision}) — tải lại thẻ rồi sửa lại')
     patch_body = payload.get('scope') if isinstance(payload.get('scope'), dict) else {}
     if not patch_body:
         raise ValueError('RESEARCH_SCOPE_PATCH_REQUIRED: body needs `scope` (the patch)')
-    _scope_apply_patch(scope, patch_body)
+    _scope_apply_patch(scope, patch_body, source_kind='user', seq=live_revision + 1)
     _scope_window(scope)
     scope['revision'] = live_revision + 1
     state['scope'] = scope
-    _phase_history(state, state.get('phase') or 'planning', 'scope-edited')
+    _phase_history(state, state.get('phase') or 'planning', 'scope-edited', repeat=True)
     # Người dùng đã sửa thẻ ⇒ run đang chờ câu trả lời không còn bị coi là đang chờ nữa, trừ khi
     # vẫn còn câu chặn chưa trả lời.
     status = 'needs_user' if _open_blocking(scope.get('openQuestions') or []) else str(job['status'])
     updated = rt.store.research_job_save(job['research_id'], session_id, state, status=status,
                                         revision=payload.get('jobRevision'))
-    coverage = coverage_refresh(rt, session_id, job['research_id'], write=False)
+    coverage = coverage_refresh(rt, job['research_id'], write=False)
     _scope_event(rt, job['research_id'], scope, updated, coverage=coverage)
     answer = {'researchId': job['research_id'], 'revision': scope['revision'],
               'status': updated['status'], 'scope': scope, 'needsUser': status == 'needs_user',
@@ -2444,11 +2500,17 @@ def deepen(rt, session_id, job, payload):
             merged['note'] = (f'{old} | {note}' if old else note)[:1000]
         facet = rt.store.facet_save(job['research_id'], merged)
     if question_id:
+        matched = False
         for question in state.get('questions') or []:
             if str(question.get('id') or '') == question_id:
+                matched = True
                 question['importance'] = 'high'
                 if note:
                     question['note'] = str(note)[:1000]
+        # Cùng luật với nhánh facet (đợt soát `ed485f3`, finding 6): `questionId` lạ thì TỪ CHỐI, chứ
+        # không xếp một yêu cầu không ai đọc được vào hàng đợi rồi trả 200.
+        if not matched:
+            raise ValueError(f'RESEARCH_QUESTION_UNKNOWN: run này không có câu hỏi {question_id!r}')
     requests = [item for item in (state.get('deepenRequests') or []) if isinstance(item, dict)]
     requests.append({'questionId': question_id, 'facetId': facet_id, 'note': note,
                      'at': journal.utc_now_iso()})
@@ -2499,16 +2561,20 @@ def _open_blocking(open_questions):
             if item.get('blocking') and not str(item.get('answer') or '').strip()]
 
 
-def _scope_apply_patch(scope, patch):
+def _scope_apply_patch(scope, patch, source_kind='agent', seq=None):
     """Ghép một `patch` vào thẻ phạm vi (§5.3). KHÔNG đụng `revision`, KHÔNG ghi — người gọi quyết.
 
     Dùng chung cho hai đường: mô hình gọi công cụ `research_scope`, và người dùng sửa thẻ trên giao
     diện (`PATCH /api/agent/research/jobs/{id}` với `action="scope"`). Một luật ghép, một chỗ sửa.
+    `source_kind='user'` (+`seq`) đánh dấu mục do chủ nhà viết; mặc định `'agent'` thì mục chỉ được
+    coi là "đã xác nhận" khi có `source.questionId` đã trả lời thật (`_scope_entry`).
     """
     patch = patch if isinstance(patch, dict) else {}
+    answered = _answered_question_ids(scope)
+    entry = lambda value: _scope_entry(value, source_kind=source_kind, answered=answered, seq=seq)
     for key in ('goal', 'purpose'):
         if key in patch:
-            scope[key] = _scope_entry(patch[key])
+            scope[key] = entry(patch[key])
     # P2 (§7.3): `timePolicy` có hợp đồng riêng (velocity/current/foundational/reason/status) —
     # không đi qua `_scope_entry` để khỏi bị bọc thành một mục văn bản.
     if 'timePolicy' in patch:
@@ -2517,7 +2583,7 @@ def _scope_apply_patch(scope, patch):
         if key in patch:
             scope[key] = [str(item).strip() for item in (patch[key] or []) if str(item).strip()]
     if 'exclusions' in patch:
-        scope['exclusions'] = [_scope_entry(item) for item in (patch['exclusions'] or [])]
+        scope['exclusions'] = [entry(item) for item in (patch['exclusions'] or [])]
     if 'questions' in patch:
         scope['questions'] = [dict(item) if isinstance(item, dict) else {'id': f'q{i + 1}', 'text': str(item)}
                               for i, item in enumerate(patch['questions'] or [])]
@@ -2531,7 +2597,7 @@ def _scope_apply_patch(scope, patch):
     if 'budget' in patch and isinstance(patch['budget'], dict):
         scope['budget'] = {**scope.get('budget', {}), **patch['budget']}
     if 'goalText' in patch:
-        scope['goal'] = _scope_entry({'text': str(patch['goalText'])})
+        scope['goal'] = entry({'text': str(patch['goalText'])})
     return scope
 
 
@@ -2600,7 +2666,7 @@ def research_scope(rt, session, args):
             rt.store.emit(session['id'], 'research_notice',
                           {'researchId': research_id, 'kind': 'needs-user',
                            'promptId': prompt['promptId']})
-        coverage = coverage_refresh(rt, session['id'], research_id, write=False)
+        coverage = coverage_refresh(rt, research_id, write=False)
         _scope_event(rt, research_id, scope, updated, coverage=coverage)
         answer = {'researchId': research_id, 'revision': scope['revision'], 'status': updated['status'],
                   'promptId': prompt['promptId'], 'needsUser': needs_user,
@@ -2626,7 +2692,7 @@ def research_scope(rt, session, args):
     _phase_history(state, state['phase'], 'scope-updated')
     status = 'needs_user' if _open_blocking(scope['openQuestions']) else str(job['status'])
     updated = rt.store.research_job_save(research_id, session['id'], state, status)
-    coverage = coverage_refresh(rt, session['id'], research_id, write=True)
+    coverage = coverage_refresh(rt, research_id, write=True)
     _scope_event(rt, research_id, scope, updated, coverage=coverage)
     answer = {'researchId': research_id, 'revision': scope['revision'], 'status': updated['status'],
               'scope': scope, 'needsUser': status == 'needs_user', 'facetsSeeded': seeded}
@@ -2635,12 +2701,34 @@ def research_scope(rt, session, args):
     return answer
 
 
-def _phase_history(state, phase, reason):
-    """Ghi `phaseHistory[]` — mỗi lần đổi pha/đổi nền đều để lại một dòng (§5.3)."""
+def _phase_history(state, phase, reason, repeat=False):
+    """Ghi `phaseHistory[]` — mỗi lần đổi pha/đổi nền đều để lại một dòng (§5.3).
+
+    `repeat=True` cho phép ghi lại CÙNG một pha: sửa thẻ phạm vi hai lần là hai hàng `D:`-như nhau
+    phải đọc được từ `state`, không bị luật chống trùng nuốt mất (đợt soát `ed485f3`, finding 7).
+    """
     history = state.setdefault('phaseHistory', [])
-    if history and history[-1].get('phase') == phase:
+    if history and history[-1].get('phase') == phase and not repeat:
         return
     history.append({'phase': phase, 'at': journal.utc_now_iso(), 'reason': reason})
+
+
+def _revision_arg(payload, code):
+    """`payload['revision']` → `int` hoặc `None`; giá trị không phải số ⇒ `ValueError(code: …)`.
+
+    Khoá lạc quan nhận thẳng từ thân HTTP: `int({})` ném `TypeError` và `int('banana')` ném thông báo
+    Python — cả hai đều lọt ra biên thành mã lỗi vô nghĩa với giao diện (đợt soát `ed485f3`,
+    finding 2). Một chỗ kiểm, hai đường dùng (`scope_update`, `answer_prompt`).
+    """
+    expected = payload.get('revision')
+    if expected is None or isinstance(expected, bool):
+        return None
+    if isinstance(expected, int):
+        return expected
+    try:
+        return int(str(expected).strip())
+    except (TypeError, ValueError):
+        raise ValueError(f'{code}: `revision` phải là số nguyên, nhận {expected!r}') from None
 
 
 def answer_prompt(rt, session_id, job, payload):
@@ -2662,8 +2750,8 @@ def answer_prompt(rt, session_id, job, payload):
     # `prompt['revision']`: thẻ trả lời sau khi phạm vi bị viết lại (revision tăng) phải bị từ chối,
     # kể cả khi `prompt['revision']` vẫn là con số cũ (review F10).
     live_revision = int(scope.get('revision') or 0) if scope else int(prompt.get('revision') or 0)
-    expected = payload.get('revision')
-    if expected is not None and int(expected) != live_revision:
+    expected = _revision_arg(payload, RESEARCH_SCOPE_REVISION_INVALID_CODE)
+    if expected is not None and expected != live_revision:
         raise ValueError(f'{RESEARCH_SCOPE_REVISION_STALE_CODE}: phạm vi đã đổi (revision '
                          f'{live_revision}) — tải lại thẻ rồi trả lời lại')
     answers = payload.get('answers') if isinstance(payload.get('answers'), list) else []
@@ -2904,7 +2992,16 @@ def _finish_background(rt, session, job):
     if latest is not None and review_modes and latest.get('critique') != 'ok':
         labels.append(RESEARCH_CRITIQUE_LABEL)
     if latest is not None and not latest.get('quality_ok') and job['status'] != 'partial':
-        labels.append('bao phủ chưa đủ')
+        labels.append(RESEARCH_COVERAGE_LABEL)
+    # P3 (§5.9): hướng bị bỏ ở mức `high` mà chưa xử lý ⇒ nhãn `bao phủ chưa đủ`, kể cả khi cổng
+    # chất lượng của hồ sơ đã qua. Nguồn: `issues[].kind` của các lần ghi phán quyết (P2 giữ trường
+    # này trong `research_verifications`).
+    if latest is not None:
+        open_issues = [issue for review in rt.store.research_verifications(job['research_id'])
+                       for issue in (review.get('issues') or [])]
+        if research_review.has_unhandled_missing_direction(open_issues) and \
+                RESEARCH_COVERAGE_LABEL not in labels:
+            labels.append(RESEARCH_COVERAGE_LABEL)
     version = int(latest['version']) if latest is not None else 0
     rt.store.emit(sid, 'research_report', {
         'researchId': job['research_id'], 'version': version,

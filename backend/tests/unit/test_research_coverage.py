@@ -67,12 +67,19 @@ def harness(tmp_path, monkeypatch):
     store.close()
 
 
-def log_row(runtime, facet_id, *, results=10, relevant_new=0, created=1.0, research_id=RUN):
-    """Ghi MỘT dòng nhật ký tìm qua chính `search_store` (không mở đường ghi thứ hai)."""
-    search_store.connect(runtime.search_db_path).log_search({
-        'research_id': research_id, 'session_id': 'child-1', 'facet_id': facet_id,
-        'query': 'truy vấn', 'results': results, 'new_unique': relevant_new,
-        'relevant_new': relevant_new, 'created': created})
+def log_row(runtime, facet_id, *, results=10, new_unique=None, relevant_new=None,
+            created=1.0, research_id=RUN):
+    """Ghi MỘT dòng nhật ký tìm ĐÚNG payload `search_pipeline.run_pipeline` gửi cho `log_search`.
+
+    Chỉ `created` là do bài kiểm chèn thêm (kho tự điền khi thiếu) để thứ tự sóng tất định.
+    """
+    record = {'research_id': research_id, 'session_id': 'child-1', 'facet_id': facet_id,
+              'query': 'truy vấn', 'variant_kind': 'query', 'engines': ['brave'],
+              'results': results, 'new_unique': results if new_unique is None else new_unique,
+              'latency_ms': 5, 'created': created}
+    if relevant_new is not None:
+        record['relevant_new'] = relevant_new
+    search_store.connect(runtime.search_db_path).log_search(record)
 
 
 def seed_facet(store, label, *, status='unexplored', seed='scope', note=''):
@@ -91,7 +98,7 @@ def test_saturation_is_measured_from_the_search_log_not_from_the_prose(harness):
     # Hai sóng cuối liên tiếp gần như không thêm gì mới ⇒ bão hoà (ngưỡng 0.10, hai sóng).
     log_row(runtime, facet_id, results=10, relevant_new=0, created=2.0)
     log_row(runtime, facet_id, results=10, relevant_new=0, created=3.0)
-    coverage = research_runtime.coverage_refresh(runtime, sid, RUN)
+    coverage = research_runtime.coverage_refresh(runtime, RUN)
     measured = coverage['measured']['facets'][facet_id]
     assert measured == 'saturated'
     assert coverage['counts']['saturated'] == 1
@@ -106,9 +113,34 @@ def test_a_facet_whose_last_waves_kept_finding_new_pages_is_only_searched(harnes
     facet_id = seed_facet(store, 'Hướng còn mới')
     log_row(runtime, facet_id, results=10, relevant_new=5, created=1.0)
     log_row(runtime, facet_id, results=10, relevant_new=4, created=2.0)
-    coverage = research_runtime.coverage_refresh(runtime, sid, RUN)
+    coverage = research_runtime.coverage_refresh(runtime, RUN)
     assert coverage['measured']['facets'][facet_id] == 'searched'
     assert coverage['counts']['searched'] == 1
+
+
+def test_a_facet_that_keeps_yielding_from_the_real_log_payload_never_saturates(harness):
+    """Đầu-cuối: bao phủ ghi từ payload THẬT của `search_pipeline` không bão hoà một facet còn đất."""
+    store, runtime, sid = harness
+    facet_id = seed_facet(store, 'Hướng còn nhiều đất')
+    for created in (1.0, 2.0, 3.0):
+        log_row(runtime, facet_id, results=10, new_unique=6, relevant_new=6, created=created)
+    coverage = research_runtime.coverage_refresh(runtime, RUN)
+    assert coverage['measured']['facets'][facet_id] == 'searched'
+    assert coverage['counts']['saturated'] == 0
+    stored = store.facet(RUN, facet_id)
+    assert stored['status'] == 'searched'
+    assert stored['lastNewRatio'] == 0.6
+
+
+def test_a_genuinely_exhausted_facet_still_saturates_from_the_real_log_payload(harness):
+    store, runtime, sid = harness
+    facet_id = seed_facet(store, 'Hướng đã cạn')
+    log_row(runtime, facet_id, results=10, new_unique=0, relevant_new=0, created=1.0)
+    log_row(runtime, facet_id, results=10, new_unique=0, relevant_new=0, created=2.0)
+    coverage = research_runtime.coverage_refresh(runtime, RUN)
+    assert coverage['measured']['facets'][facet_id] == 'saturated'
+    assert coverage['counts']['saturated'] == 1
+    assert store.facet(RUN, facet_id)['status'] == 'saturated'
 
 
 def test_the_measurement_never_overwrites_blocked_or_out_of_scope(harness):
@@ -118,7 +150,7 @@ def test_the_measurement_never_overwrites_blocked_or_out_of_scope(harness):
     for facet_id in (blocked, out):
         log_row(runtime, facet_id, results=10, relevant_new=0, created=1.0)
         log_row(runtime, facet_id, results=10, relevant_new=0, created=2.0)
-    research_runtime.coverage_refresh(runtime, sid, RUN)
+    research_runtime.coverage_refresh(runtime, RUN)
     assert store.facet(RUN, blocked)['status'] == 'blocked'
     assert store.facet(RUN, out)['status'] == 'out-of-scope'
 
@@ -126,7 +158,7 @@ def test_the_measurement_never_overwrites_blocked_or_out_of_scope(harness):
 def test_stop_checks_report_open_facets_and_high_questions_as_blockers(harness):
     store, runtime, sid = harness
     seed_facet(store, 'Hướng chưa chạm')
-    stop = research_runtime.coverage_stop(runtime, sid, RUN)
+    stop = research_runtime.coverage_stop(runtime, RUN)
     codes = {item['code'] for item in stop['blockers']}
     assert stop['ready'] is False
     assert 'research-facet-open' in codes
@@ -139,7 +171,7 @@ def test_stop_checks_are_ready_once_every_facet_is_closed(harness):
     scope_job(store, sid, questions=[{'id': 'q1', 'importance': 'high', 'status': 'answered'}],
               scope={'revision': 1, 'questions': [{'id': 'q1', 'text': 'Độ chính xác?',
                                                    'importance': 'high', 'status': 'answered'}]})
-    stop = research_runtime.coverage_stop(runtime, sid, RUN)
+    stop = research_runtime.coverage_stop(runtime, RUN)
     assert stop['ready'] is True and stop['blockers'] == []
 
 
@@ -219,6 +251,6 @@ def test_the_coverage_switch_off_returns_nothing(harness, monkeypatch):
     store, runtime, sid = harness
     seed_facet(store, 'Hướng chưa chạm')
     monkeypatch.setenv(limits.RESEARCH_COVERAGE_ENV, 'off')
-    assert research_runtime.coverage_refresh(runtime, sid, RUN) == {}
+    assert research_runtime.coverage_refresh(runtime, RUN) == {}
     answer = research_runtime.research_status(runtime, store.get(sid), {'researchId': RUN})
     assert 'coverage' not in answer and 'stop' not in answer

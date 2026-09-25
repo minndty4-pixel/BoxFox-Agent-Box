@@ -3306,7 +3306,7 @@ class HarnessRuntime(RuntimeCommands):
             labels = []
             if job['status'] == 'partial':
                 labels.append('partial')
-            review_modes = [mode_name for mode_name in ('evidence', 'critique')
+            review_modes = [mode_name for mode_name in research_runtime.GATE_REVIEW_MODES
                             if mode_name in (state.get('reviewModes') or [])]
             if review_modes and dossier.get('critique') != 'ok':
                 labels.append(RESEARCH_CRITIQUE_LABEL)
@@ -5825,8 +5825,7 @@ class HarnessRuntime(RuntimeCommands):
             child['config']['taskKind'] = task_kind
             if facet_id:
                 child['config']['facetId'] = facet_id
-            if review_target is not None or research_question_id or task_kind or facet_id:
-                self.store.update_config(child['id'], child['config'])
+            self.store.update_config(child['id'], child['config'])
         except BaseException:
             # Một slot rò làm mọi lần sinh con sau của cha này `FANOUT_BUSY` vĩnh viễn.
             self.release_child_slot(parent_id)
@@ -5847,8 +5846,7 @@ class HarnessRuntime(RuntimeCommands):
             scope_card = ((scope_job or {}).get('state') or {}).get('scope')
             branch_brief = research_review.build_child_brief(scope_card, question=goal,
                                                              task_kind=task_kind)
-        prompt_parts = ([branch_brief['text']] if branch_brief and branch_brief.get('text')
-                        else [goal])
+        prompt_parts = [branch_brief['text']] if branch_brief else [goal]
         if review_target is not None:
             prompt_parts.append('Binding from the harness: read the complete file with file_read before '
                                 f'judging it: {review_target["path"]}. This review is only for '

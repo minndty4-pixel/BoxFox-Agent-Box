@@ -381,14 +381,10 @@ def assess(
                 issues.append(Issue('research-shape-missing', label))
 
         for item in extra_issues or ():
-            # Nhận cả `Issue` (đường máy chấm nội bộ) lẫn dict `{'code','detail'}` (đường khác).
-            if isinstance(item, Mapping):
-                code, detail = str(item.get('code') or ''), str(item.get('detail') or '')
-            else:
-                code = str(getattr(item, 'code', '') or '')
-                detail = str(getattr(item, 'detail', '') or '')
+            # Lỗi đã tính sẵn của máy (`research_ledger.Issue`) — đi cùng kênh với lỗi cấu trúc.
+            code = str(getattr(item, 'code', '') or '')
             if code:
-                issues.append(Issue(code, detail))
+                issues.append(Issue(code, str(getattr(item, 'detail', '') or '')))
 
         # `r12` mà sổ không có — dấu vết trỏ sai; hồ sơ này chưa mở được dòng nào.
         for row_id in pinned_row_ids(markdown, rows):

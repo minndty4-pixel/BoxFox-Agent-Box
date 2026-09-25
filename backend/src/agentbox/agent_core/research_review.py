@@ -22,14 +22,14 @@ import re
 from typing import Any, Mapping, Sequence
 
 from . import limits, research_facets, research_runtime
-from .research_evidence import (CONFIDENCE_RANK, apply_cap, basis_payload, cluster_count,
-                                confidence_cap, entries, normalize_claim_type,
-                                normalize_source_kind, normalize_stance, survey_date,
-                                window_days)
+from .research_evidence import (CONFIDENCE_RANK, apply_cap, basis_payload,
+                                confidence_cap, normalize_claim_type,
+                                normalize_source_kind, normalize_stance, origin_cluster,
+                                survey_date, window_days)
 
 __all__ = [
     # kiểu việc
-    'task_kinds', 'normalize_task_kind', 'resolve_task_kind',
+    'normalize_task_kind', 'resolve_task_kind',
     # brief do máy dựng
     'ASSUMPTION_LABEL', 'scope_brief_items', 'build_child_brief', 'brief_leaks_assumption',
     # chế độ soát
@@ -67,11 +67,6 @@ def _slug(value: Any) -> str:
 
 
 # --- 1. kiểu việc của một nhánh con -----------------------------------------
-
-def task_kinds() -> tuple:
-    """Danh mục kiểu việc hợp lệ (một chỗ đọc; không bao giờ đổi tại chỗ)."""
-    return tuple(limits.RESEARCH_BRANCH_KINDS)
-
 
 def normalize_task_kind(value: Any, *, default: str = limits.RESEARCH_TASK_KIND_DEFAULT) -> str:
     """`taskKind` hợp lệ hoặc `default` khi thiếu/lạ — KHÔNG ném (dùng cho đường đọc thuần)."""
@@ -141,7 +136,9 @@ def scope_brief_items(scope: Any) -> dict:
             if not text:
                 continue
             status = _item_status(item) or 'assumed'
-            source_kind = _item_source_kind(item) or ('user' if status == 'confirmed' else 'agent')
+            # Không suy hộ: mục chỉ là "người dùng đã xác nhận" khi `source.kind='user'` có thật
+            # (§5.10/M-12). Thiếu nguồn ⇒ coi là giả định, đúng chiều an toàn.
+            source_kind = _item_source_kind(item) or 'agent'
             row = {'field': field, 'text': text, 'status': status, 'sourceKind': source_kind}
             if status == 'confirmed' and source_kind == 'user':
                 confirmed.append(row)
@@ -215,7 +212,7 @@ def build_child_brief(scope: Any, *, question: Any = '', task_kind: Any = None,
     return {'taskKind': kind, 'question': _text(question),
             'confirmed': [item['text'] for item in items['confirmed']],
             'assumed': [item['text'] for item in items['assumed']],
-            'items': items, 'lines': lines, 'text': '\n'.join(lines)}
+            'lines': lines, 'text': '\n'.join(lines)}
 
 
 def brief_leaks_assumption(brief: Any) -> list[str]:
@@ -352,7 +349,7 @@ def apply_branch_report(rt, session, args):
     Chỉ con `research` gọi được. Mọi mức tin cậy đi qua `research_evidence.confidence_cap` — mô
     hình chỉ HẠ được, không nâng quá trần. Trả `{'rowIds','claimIds','facetStatus','coverage'}`.
     """
-    if _slug(session.get('role')) in ('', 'orchestrator'):
+    if _slug(session.get('role')) != 'research':
         raise PermissionError('research_branch_report chỉ dành cho một nhánh con research')
     sid = session.get('id')
     # Sổ nguồn sống ở phiên GIỮ BRIEF (cha/việc), không ở nhánh con: hỏi cùng một chỗ với P2.
@@ -400,26 +397,31 @@ def apply_branch_report(rt, session, args):
     # 2) Nhận định: liên kết vào đúng dòng đã ghi, trần tin cậy do máy tính.
     velocity = _slug((scope.get('timePolicy') or {}).get('velocity'))
     days = window_days(velocity)
-    as_of = _text((scope.get('timePolicy') or {}).get('asOf')) or survey_date()
-    cluster_hint = None
+    # Mốc khảo sát ĐÔNG CỨNG của run là `scope['surveyDate']` — đúng khoá mà
+    # `research_runtime._scope_time_window` (và cổng hồ sơ) đọc; `timePolicy.asOf` chỉ còn là
+    # đường lùi cho hồ sơ cũ. Hai bên kẹp cùng một mốc, nếu không cùng một nhận định nhận hai mức
+    # trần khác nhau (§5.6).
+    as_of = (_text(scope.get('surveyDate'))
+             or _text((scope.get('timePolicy') or {}).get('asOf')) or survey_date())
+    cluster_keys: set[str] = set()
+    unnamed_clusters = 0
     claim_ids: list[str] = []
-    facet_ids: list[str] = []
-    fallback_rows = list(row_ids)
     default_facet = _text(args.get('facetId'))
     for claim in (args.get('claims') or []):
         if not isinstance(claim, Mapping):
             continue
         text = _text(claim.get('text') or claim.get('claim'))
+        # Chỉ nhận dòng đã ghi trong CHÍNH lời gọi này: mã lạ không được hồi sinh một nguồn khác.
         cited = [_text(item) for item in (claim.get('rowIds') or claim.get('rows') or [])]
-        cited = [item for item in cited if item in row_rows] or list(fallback_rows)
+        cited = [item for item in cited if item in row_rows]
         facet_id = _text(claim.get('facetId')) or default_facet
-        if facet_id:
-            facet_ids.append(facet_id)
         claim_id = _text(claim.get('claimId'))
         if text and cited:
-            link = rt.store.evidence_link(owner, cited[0], text, proposed_by=sid,
-                                          research_id=research_id)
-            claim_id = _text(link.get('claimId')) or claim_id
+            # MỌI dòng được dẫn đều vào sổ liên kết: nhận định nhiều nguồn giữ đủ dấu vết (§5.9).
+            for row_id in cited:
+                link = rt.store.evidence_link(owner, row_id, text, proposed_by=sid,
+                                              research_id=research_id)
+                claim_id = _text(link.get('claimId')) or claim_id
         if not claim_id:
             continue
         claim_type = normalize_claim_type(claim.get('claimType') or claim.get('type'))
@@ -427,18 +429,24 @@ def apply_branch_report(rt, session, args):
         # phải nói rõ `stanceOrigin` — nên mặc định ở đây là `source-stated`.
         stance = normalize_stance(claim.get('stanceOrigin') or claim.get('stance')
                                   or 'source-stated')
-        cap = confidence_cap(claim_type, _row_payloads(cited, row_rows), stance_origin=stance,
+        cited_rows = _row_payloads(cited, row_rows)
+        cap = confidence_cap(claim_type, cited_rows, stance_origin=stance,
                              window_days=days, as_of=as_of,
                              conflict=bool(claim.get('conflict') or claim.get('contested')))
         confidence = apply_cap(_claim_confidence(claim) or 'unknown', cap['cap'])
         rt.store.claim_meta_save(research_id, claim_id, questionId=question_id, facetId=facet_id,
                                  claimType=claim_type, stanceOrigin=stance, confidence=confidence,
                                  confidenceCap=cap['cap'],
-                                 basis=basis_payload(claim_type, _row_payloads(cited, row_rows),
-                                                     rule=cap['rule']))
+                                 basis=basis_payload(claim_type, cited_rows, rule=cap['rule']))
         claim_ids.append(claim_id)
-        if cited:
-            cluster_hint = cluster_count(_row_payloads(cited, row_rows))
+        # Cụm gốc GỘP qua MỌI nhận định: `originClusters` của facet là hợp của các nhận định, không
+        # phải giá trị của nhận định cuối cùng có dẫn nguồn (§5.9).
+        for entry in cited_rows:
+            cluster = origin_cluster(entry)
+            if cluster:
+                cluster_keys.add(cluster)
+            else:
+                unnamed_clusters += 1
 
     # 3) Facet: chỉ ghi khi biết khoá (thẻ phạm vi/người cha cấp) — không tự sinh hướng mới.
     status = _slug(args.get('status'))
@@ -465,8 +473,9 @@ def apply_branch_report(rt, session, args):
             patch['kind'] = _text(args.get('kind'))
         patch['terms'] = merged.get('terms') or []
         patch['evidenceCount'] = max(int(merged.get('evidenceCount') or 0), len(row_ids))
-        if cluster_hint is not None:
-            patch['originClusters'] = max(int(merged.get('originClusters') or 0), cluster_hint)
+        origin_clusters = len(cluster_keys) + unnamed_clusters
+        if origin_clusters:
+            patch['originClusters'] = max(int(merged.get('originClusters') or 0), origin_clusters)
         if status:
             patch['status'] = status
         patch['note'] = ' · '.join(part for part in note_parts if part)
@@ -634,25 +643,25 @@ def extraction_fields(source_kind: Any) -> list[dict]:
 
 _REVIEW_VERDICTS = ('ok', 'revise')
 _REVIEW_RELATIONS = ('supports', 'contradicts', 'unsure')
+#: Từ chỉ sự phản bác — dùng chung cho cả phán quyết lẫn quan hệ, một chỗ khai.
+_REVIEW_CONTRADICTS = ('contradicts', 'contradict', 'refutes', 'no')
 
 
 def _review_verdict(raw: Any) -> str:
     text = _slug(raw.get('verdict') or raw.get('result'))
     if text in _REVIEW_VERDICTS:
         return text
-    relation = _slug(raw.get('relation') or raw.get('stance') or raw.get('supports'))
-    if relation in ('contradicts', 'contradict', 'refutes', 'no'):
+    relation = _review_relation(raw)
+    if relation == 'contradicts':
         return 'revise'
-    if relation in _REVIEW_RELATIONS or relation in ('yes',):
-        return 'ok'
-    return ''
+    return 'ok' if relation else ''
 
 
 def _review_relation(raw: Any) -> str:
     text = _slug(raw.get('relation') or raw.get('stance') or raw.get('supports'))
     if text in _REVIEW_RELATIONS:
         return text
-    if text in ('contradicts', 'contradict', 'refutes', 'no'):
+    if text in _REVIEW_CONTRADICTS:
         return 'contradicts'
     if text in ('yes',):
         return 'supports'
@@ -674,13 +683,14 @@ def resolve_disagreement(reviews: Any, *, claim_id: Any = '', caps: Any = None) 
             if isinstance(item, Mapping)]
     reviewers: list[dict] = []
     for raw in rows:
-        key = _review_key(raw) or _text(raw.get('reviewer') or raw.get('sessionId'))
-        reviewers.append({'reviewer': key or f'reviewer-{len(reviewers) + 1}',
-                          'verdict': _review_verdict(raw), 'relation': _review_relation(raw),
-                          'mode': _slug(raw.get('mode')), 'cap': _slug(raw.get('cap')
-                                                                        or raw.get('confidenceCap'))})
-    distinct = {item['reviewer'] for item in reviewers if item['reviewer']}
-    decisions = {item['reviewer']: item for item in reviewers if item['verdict']}
+        # Danh tính KHÔNG được bịa: hồ sơ thiếu `reviewerId`/`reviewer` vẫn vào danh sách để soi,
+        # nhưng không bao giờ tính là một bên soát độc lập (xem `distinct`).
+        reviewers.append({'reviewer': _review_key(raw), 'verdict': _review_verdict(raw),
+                          'relation': _review_relation(raw), 'mode': _slug(raw.get('mode')),
+                          'cap': _slug(raw.get('cap') or raw.get('confidenceCap'))})
+    keyed = [item for item in reviewers if item['reviewer']]
+    distinct = {item['reviewer'] for item in keyed}
+    decisions = {item['reviewer']: item for item in keyed if item['verdict']}
     verdicts = {item['verdict'] for item in decisions.values()}
     relations = {item['relation'] for item in decisions.values() if item['relation']}
     contested = len(distinct) >= 2 and (

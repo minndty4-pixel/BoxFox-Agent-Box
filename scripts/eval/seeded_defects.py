@@ -43,7 +43,6 @@ FALLBACK_COVERAGE_MIN = 0.60
 FALLBACK_FALSE_ALARM_MAX = 0.20
 FALLBACK_NOT_SATURATED = ('unexplored', 'searched', 'thin', 'blocked')
 FALLBACK_ASSUMPTION_LABEL = 'GIẢ ĐỊNH (chưa xác nhận)'
-FALLBACK_CONFIDENCE_RANK = {'unknown': 0, 'low': 1, 'medium': 2, 'high': 3}
 
 #: Loại lỗi nào đóng vai bên soát nào (§8.4: "mỗi vai được đo riêng").
 REVIEWER_OF_KIND = {
@@ -127,14 +126,28 @@ def _cited(claim, by_id) -> list:
     return [by_id[row] for row in (claim.get('rowIds') or []) if row in by_id]
 
 
+def _time_policy(bundle) -> dict:
+    """`timePolicy` của thẻ phạm vi trong một bundle cấy — `{}` khi vắng."""
+    return ((bundle or {}).get('scope') or {}).get('timePolicy') or {}
+
+
 def _scope_velocity(bundle) -> str:
-    policy = ((bundle or {}).get('scope') or {}).get('timePolicy') or {}
-    return _text(policy.get('velocity'))
+    return _text(_time_policy(bundle).get('velocity'))
+
+
+def _recorded_conditions(row) -> bool:
+    """Điều kiện đo của một dòng benchmark có được ghi lại hay không (`recordedConditions`)."""
+    value = row.get('recordedConditions', row.get('recorded_conditions'))
+    if isinstance(value, bool):
+        return value
+    return _text(value).casefold() in ('1', 'true', 'yes', 'y', 'on')
 
 
 def _scope_as_of(bundle) -> str:
-    policy = ((bundle or {}).get('scope') or {}).get('timePolicy') or {}
-    return _text(policy.get('asOf'))
+    """Mốc khảo sát ĐÔNG CỨNG của run: `scope.surveyDate` (hình dạng sản xuất ghi) → đường lùi
+    `timePolicy.asOf` cho hồ sơ cũ."""
+    scope = (bundle or {}).get('scope') or {}
+    return _text(scope.get('surveyDate')) or _text(_time_policy(bundle).get('asOf'))
 
 
 # --- bộ dò: mỗi hàm là một mức sàn máy kiểm được của một bên soát -------------
@@ -202,8 +215,6 @@ def removed_direction(bundle):
     report = (bundle or {}).get('report') or {}
     modules = {_fold(item) for item in (report.get('modules') or [])}
     unexplored = {_text(item) for item in (report.get('unexplored') or [])}
-    facets = harness_module('research_facets')
-    _ = facets  # đọc để giữ một nguồn khi cần mở rộng; luật hướng nằm ở `research_report`.
     report_mod = harness_module('research_report')
     not_saturated = tuple(getattr(report_mod, 'NOT_SATURATED_STATUSES', FALLBACK_NOT_SATURATED))
     for facet in (bundle or {}).get('facets', []):
@@ -257,36 +268,56 @@ def unlabeled_assumption(bundle):
     return {'detected': False, 'detail': 'mọi giả định đều mang nhãn chưa xác nhận'}
 
 
-def _declared_above_cap(bundle):
-    """Trần máy tính từ sổ; nhận định khai cao hơn trần ⇒ bên soát phải bắt."""
+def same_origin_independent(bundle):
+    """Verifier: hai bản của CÙNG một nguồn được đếm là hai nguồn độc lập.
+
+    Tín hiệu RIÊNG của loại này là sự thu gọn cụm gốc: một nhận định dẫn từ hai dòng trở lên mà
+    số cụm gốc (``research_evidence.cluster_count``) lại ÍT hơn số dòng ⇒ chúng là bản sao/bài viết
+    lại của cùng một nguồn, không phải hai nguồn độc lập. Không dùng lại thước "khai cao hơn trần"
+    (đó là bộ dò của loại khác) — bắt đúng dấu vết `originCluster` của bundle cấy.
+    """
     evidence = harness_module('research_evidence')
     if evidence is None:
-        return {'detected': False, 'detail': 'thiếu mã harness để tính trần'}
+        return {'detected': False, 'detail': 'thiếu mã harness để đếm cụm gốc'}
     by_id = {row.get('rowId'): row for row in _rows(bundle)}
     for claim in _claims(bundle):
         cited = _cited(claim, by_id)
-        if not cited:
+        if len(cited) < 2:
             continue
-        cap = evidence.confidence_cap(claim.get('claimType'), cited,
-                                      stance_origin=claim.get('stanceOrigin') or 'source-stated',
-                                      window_days=evidence.window_days(_scope_velocity(bundle)),
-                                      as_of=_scope_as_of(bundle) or None)
-        declared = _text(claim.get('confidence'))
-        rank = FALLBACK_CONFIDENCE_RANK
-        if declared in rank and cap.get('cap') in rank and rank[declared] > rank[cap['cap']]:
-            return {'detected': True, 'detail': f'{claim.get("claimId")}: khai {declared} > trần '
-                                                f'{cap["cap"]} ({cap["rule"]})'}
-    return {'detected': False, 'detail': 'không nhận định nào khai cao hơn trần máy tính'}
-
-
-def same_origin_independent(bundle):
-    """Verifier: hai bản của CÙNG một nguồn được đếm là hai nguồn độc lập."""
-    return _declared_above_cap(bundle)
+        clusters = evidence.cluster_count(cited)
+        if clusters < len(cited):
+            return {'detected': True,
+                    'detail': (f'{claim.get("claimId")}: {len(cited)} dòng chỉ gộp thành '
+                               f'{clusters} cụm gốc — cùng một nguồn, không độc lập')}
+    return {'detected': False, 'detail': 'các nguồn được dẫn nằm ở cụm gốc khác nhau'}
 
 
 def mismatched_benchmark(bundle):
-    """Critic: số của hai bàn đo khác điều kiện bị so thẳng với nhau."""
-    return _declared_above_cap(bundle)
+    """Critic: số của hai bàn đo khác điều kiện bị so thẳng với nhau.
+
+    Tín hiệu RIÊNG của loại này là `recordedConditions` của bundle cấy: một nhận định `benchmark`
+    dẫn nguồn mà điều kiện đo KHÔNG được ghi lại thì con số không so được với nhau. Không dùng lại
+    thước "khai cao hơn trần".
+    """
+    evidence = harness_module('research_evidence')
+    by_id = {row.get('rowId'): row for row in _rows(bundle)}
+    for claim in _claims(bundle):
+        kind = (_text(claim.get('claimType') or claim.get('type')).casefold().replace('_', '-'))
+        if evidence is not None:
+            kind = evidence.normalize_claim_type(claim.get('claimType') or claim.get('type'))
+        if kind != 'benchmark':
+            continue
+        cited = _cited(claim, by_id)
+        if not cited:
+            continue
+        unrecorded = [row.get('rowId') for row in cited
+                      if not _recorded_conditions(row)]
+        if unrecorded:
+            return {'detected': True,
+                    'detail': (f'{claim.get("claimId")}: điều kiện đo không được ghi lại ở '
+                               f'{unrecorded} — không so thẳng con số')}
+    return {'detected': False, 'detail': 'mọi con số benchmark đều kèm điều kiện đo'} 
+
 
 
 DETECTORS = {
@@ -428,6 +459,10 @@ def run_live(fixtures=None, *, delegate=None, budget_usd=None, env=None) -> dict
 
     ``delegate`` là hàm ``(role, taskKind, prompt) -> str`` do người gọi cấp; tệp này không tự
     mở kết nối model, nên một lần chạy thiếu cổng chi tiền vẫn không thể tiêu gì.
+
+    ``catchRate`` ở đây là **TÍN HIỆU KHÓI**: nó đối chiếu cụm từ khoá trên câu trả lời thật
+    (``_live_hit``), KHÔNG phải điểm đo chất lượng của bên soát. Muốn chấm chất lượng thì phải
+    chấm người (grade) trên câu trả lời, không dùng con số này làm bằng chứng.
     """
     gate = guard.check(budget_usd, env)
     if not gate['allowed']:
@@ -448,24 +483,37 @@ def run_live(fixtures=None, *, delegate=None, budget_usd=None, env=None) -> dict
                         'answerChars': len(_text(answer))})
     return {'allowed': True, 'reason': '', 'gate': gate, 'results': results,
             'catchRate': (caught / expected_total) if expected_total else 0.0,
-            'caught': caught, 'total': expected_total}
+            'caught': caught, 'total': expected_total,
+            'smoke': True, 'signal': 'smoke',
+            'note': ('catchRate là TÍN HIỆU KHÓI (đối chiếu cụm từ khoá trên câu trả lời thật), '
+                     'không phải điểm đo chất lượng của bên soát')}
 
 
 def _live_hit(kind: str, answer) -> bool:
-    """Bên soát TRẢ LỜI có nêu đúng loại lỗi không (so từ khoá của loại lỗi)."""
+    """Bên soát TRẢ LỜI có nêu đúng loại lỗi không (so CỤM TỪ đặc trưng của loại lỗi).
+
+    Từ khoá ở mức CỤM TỪ, không phải từ đơn: một bài soát tiếng Việt chung chung (có "số", "so
+    sánh") KHÔNG được tính là bắt lỗi. Vì vậy ``catchRate`` của đường live chỉ là TÍN HIỆU KHÓI —
+    đối chiếu từ khoá trên câu trả lời thật — chứ không phải điểm đo chất lượng của bên soát.
+    """
     text = _fold(answer)
     if not text:
         return False
     keywords = {
-        'wrong-number': ('số', 'number', 'không khớp'),
-        'unsupported-claim': ('không có nguồn', 'unsupported', 'no backing', 'thiếu nguồn'),
-        'misattributed': ('gán sai', 'misattrib', 'không nhắc', 'sai nguồn'),
-        'outdated-supports-current': ('cũ', 'outdated', 'stale', 'ngoài cửa sổ'),
-        'removed-direction': ('thiếu hướng', 'missing direction', 'bỏ hướng', 'bao phủ'),
-        'survey-as-proposal': ('đề xuất', 'proposal', 'suy luận', 'survey'),
-        'unlabeled-assumption': ('giả định', 'assumption', 'chưa xác nhận'),
-        'same-origin-independent': ('cùng nguồn', 'same origin', 'không độc lập', 'một nguồn'),
-        'mismatched-benchmark': ('điều kiện', 'benchmark', 'so sánh', 'không cùng'),
+        'wrong-number': ('số không khớp', 'số không có trong', 'number mismatch', 'số sai'),
+        'unsupported-claim': ('không có nguồn', 'thiếu nguồn', 'unsupported claim', 'no backing',
+                              'không có dòng sổ'),
+        'misattributed': ('gán sai', 'sai nguồn', 'misattribut', 'gán cho nguồn khác'),
+        'outdated-supports-current': ('nguồn cũ', 'ngoài cửa sổ', 'stale current', 'outdated source'),
+        'removed-direction': ('thiếu hướng', 'bỏ hướng', 'missing direction', 'hướng bị gỡ'),
+        'survey-as-proposal': ('đề xuất của chính mình', 'suy luận khai là nguồn',
+                               'trình như đề xuất', 'survey as proposal'),
+        'unlabeled-assumption': ('giả định chưa xác nhận', 'không nhãn', 'unlabeled assumption',
+                                 'giả định không nhãn'),
+        'same-origin-independent': ('cùng một nguồn', 'cùng nguồn', 'không độc lập', 'same origin',
+                                    'một cụm gốc'),
+        'mismatched-benchmark': ('khác điều kiện', 'điều kiện đo', 'so sánh sai điều kiện',
+                                 'benchmark condition', 'không cùng điều kiện'),
     }.get(kind, ())
     # Cả hai vế đều đã bỏ dấu: bên soát có thể trả lời có dấu hoặc không.
     return any(_fold(word) in text for word in keywords)
@@ -491,6 +539,8 @@ def main(argv=None) -> int:
         print(guard.rendered_refusal(gate, guard.missing_connection()))
         return 2
     print('Đường LIVE cần một hàm `delegate` — dùng `run_live(fixtures, delegate=...)` trong mã.')
+    print('LƯU Ý: `catchRate` của đường live là TÍN HIỆU KHÓI (đối chiếu cụm từ khoá trên câu '
+          'trả lời thật), không phải điểm đo chất lượng của bên soát.')
     print(render(run(fixtures)))
     return 0
 

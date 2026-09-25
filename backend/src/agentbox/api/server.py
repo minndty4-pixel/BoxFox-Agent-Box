@@ -179,6 +179,25 @@ def missing_session(sid):
                     'started with an empty store', 404)
 
 
+def _action_error(exc, statuses=None, default=400):
+    """`ValueError` mang mã hợp đồng (`CODE: chi tiết`) → `ApiError`; status tra theo mã.
+
+    Mã trần (không có dấu `:`) giữ nguyên mã và để thân lỗi RỖNG — `ApiError` tự ghép
+    `error = code: message`, nên lặp lại mã ở thân lỗi là nói hai lần một chuyện.
+    """
+    text = str(exc)
+    code, sep, detail = text.partition(':')
+    return ApiError(code, detail.strip() if sep else '', (statuses or {}).get(code, default))
+
+
+#: Mã khoá lạc quan của lượt chủ nhà → status HTTP: một chỗ khai cho CẢ nhánh `scope`/`deepen`
+#: lẫn phần còn lại của handler (cùng một luật "khoá cũ ⇒ 409, đích không có ⇒ 404").
+_RESEARCH_CONFLICT_STATUS = {'RESEARCH_SCOPE_REVISION_STALE': 409,
+                             'RESEARCH_JOB_REVISION_CONFLICT': 409,
+                             'RESEARCH_FACET_UNKNOWN': 404,
+                             'RESEARCH_QUESTION_UNKNOWN': 404}
+
+
 def _plan_review_json(row):
     """Một hàng `plan_reviews` → camelCase cho UI; `None` khi chưa có quyết định nào."""
     if not row:
@@ -248,7 +267,10 @@ def create_app(runtime):
         try:
             return await handler(request)
         except ApiError as exc:
-            return web.json_response({'error': f'{exc.code}: {exc.message}', 'code': exc.code,
+            # Thân lỗi RỖNG (mã trần, không kèm chi tiết) thì đừng ghép thêm ': ' — `error` phải
+            # đọc ra đúng bằng `code`, không lặp mã hai lần.
+            error = f'{exc.code}: {exc.message}' if exc.message else exc.code
+            return web.json_response({'error': error, 'code': exc.code,
                                       **exc.extra}, status=exc.status)
         except KeyError as exc:
             # A KeyError inside a handler is an internal defect (a missing key in a payload or a
@@ -540,7 +562,7 @@ def create_app(runtime):
         return web.json_response({'jobs': [{**job,
             # P2/P4 (§5.5, §5.12): giao diện đọc bản bao phủ và bản đồ hướng của run. Đo lại khi
             # ĐỌC (`write=False`) nên không ghi gì; tắt `BOXFOX_RESEARCH_COVERAGE` thì trả `{}`.
-            'coverage': research_runtime.coverage_refresh(runtime, sid, job['research_id'],
+            'coverage': research_runtime.coverage_refresh(runtime, job['research_id'],
                                                           write=False),
             'facets': runtime.store.facet_list(job['research_id']),
             # P1 (§5.12): bơm/API/giao diện đọc `phase`, `origin` và `scope.revision` ngoài `status`.
@@ -580,21 +602,14 @@ def create_app(runtime):
                 return web.json_response(research_runtime.scope_update(runtime, job['session_id'],
                                                                        job, body))
             except ValueError as exc:
-                text = str(exc)
-                code = text.split(':', 1)[0]
-                # `ApiError` tự ghép `error = code: detail`, nên thân lỗi đưa vào là PHẦN SAU mã.
-                detail = text.split(':', 1)[1].strip() if ':' in text else text
-                raise ApiError(code, detail, 409 if 'REVISION_STALE' in code else 400) from None
+                raise _action_error(exc, _RESEARCH_CONFLICT_STATUS) from None
         if action == 'deepen':
             # §5.12: xin đào sâu một câu hỏi/hướng — xếp vào hàng đợi của run, nâng ưu tiên facet.
             try:
                 return web.json_response(research_runtime.deepen(runtime, job['session_id'],
                                                                  job, body))
             except ValueError as exc:
-                text = str(exc)
-                code = text.split(':', 1)[0]
-                detail = text.split(':', 1)[1].strip() if ':' in text else text
-                raise ApiError(code, detail, 404 if code == 'RESEARCH_FACET_UNKNOWN' else 400) from None
+                raise _action_error(exc, _RESEARCH_CONFLICT_STATUS) from None
         if action in {'pause', 'cancel'}:
             # P1 (§5.3/M-09): dừng theo JOB — KHÔNG `runtime.stop(session)`. Huỷ con của job, và chỉ
             # dừng lượt đang chạy khi nó đúng là lượt tiếp tục của job này.
@@ -625,8 +640,11 @@ def create_app(runtime):
                 question['note'] = str(body.get('reason') or 'Skipped by user')[:1000]
             else:
                 question['importance'] = str(body.get('importance') or 'high')
-        updated = runtime.store.research_job_save(research_id, job['session_id'], state,
-                                                  status=status, revision=body.get('revision'))
+        try:
+            updated = runtime.store.research_job_save(research_id, job['session_id'], state,
+                                                      status=status, revision=body.get('revision'))
+        except ValueError as exc:
+            raise _action_error(exc, _RESEARCH_CONFLICT_STATUS) from None
         if action == 'skip':
             owner = runtime.store.get(job['session_id'])
             for branch in runtime.store.children_of(job['session_id']):
@@ -721,7 +739,7 @@ def create_app(runtime):
                     'background': bool(state.get('background')),
                     'scopeRevision': int((state.get('scope') or {}).get('revision') or 0),
                     'usedSeconds': runtime.store.research_job_used_seconds(sid, research_id),
-                    'coverage': research_runtime.coverage_refresh(runtime, sid, research_id,
+                    'coverage': research_runtime.coverage_refresh(runtime, research_id,
                                                                   write=False),
                     'facets': runtime.store.facet_list(research_id)},
             'scope': state.get('scope') or {},
