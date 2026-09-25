@@ -70,6 +70,12 @@ def test_two_queries_are_merged_and_a_repeated_url_collapses(tools, monkeypatch)
     assert result['perQuery'] == [{'query': 'truy vấn đầu', 'count': 1},
                                  {'query': 'truy vấn thứ hai', 'count': 2}]
     assert result['queries'] == ['truy vấn đầu', 'truy vấn thứ hai']
+    decisions = [item for branch in result['searchTrace']['perQuery']
+                 for item in branch['candidates']]
+    assert [(item['url'], item['disposition']) for item in decisions] == [
+        ('https://example.com/a', 'retained'),
+        ('https://example.com/a', 'duplicate'),
+        ('https://example.com/b', 'retained')]
 
 
 def test_a_refused_leg_is_named_in_per_query_instead_of_disappearing(tools, monkeypatch):
@@ -425,7 +431,7 @@ def test_the_schema_advertises_the_new_arguments_and_keeps_the_contract(tools):
     assert {'queries', 'site', 'freshness', 'lang', 'exclude'} <= set(schema['properties'])
     assert schema['properties']['queries']['maxItems'] == web_module.SEARCH_QUERY_MAX - 1
     assert schema['properties']['freshness']['enum'] == ['day', 'week', 'month', 'year']
-    assert schema['properties']['source']['enum'] == ['web', 'wikipedia', 'stackoverflow', 'github', 'papers']
+    assert schema['properties']['source']['enum'] == ['web', 'wikipedia', 'stackoverflow', 'github', 'papers', 'openreview']
     assert len([entry for entry in SCHEMAS if entry['function']['name'] == 'web_search']) == 1
 
 

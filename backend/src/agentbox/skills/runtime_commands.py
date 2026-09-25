@@ -162,6 +162,21 @@ class RuntimeCommands:
             session = self.store.get(sid)
             if route:
                 session['config']['route'] = route
+                subagents = session['config'].get('subagents', [])
+                existing_models = {s.get('model') for s in subagents if s.get('model')}
+                is_single = (
+                    bool(session['config'].get('isSingleModel'))
+                    or bool(session['config'].get('singleModel'))
+                    or (len(existing_models) == 1 and not any(m in {'inherit', 'default'} for m in existing_models))
+                )
+                if is_single and subagents:
+                    from ..agent_core.runtime import route_to_model_spec
+                    new_spec = route_to_model_spec(route)
+                    if new_spec:
+                        session['config']['isSingleModel'] = True
+                        session['config']['singleModel'] = new_spec
+                        for s in subagents:
+                            s['model'] = new_spec
                 self.store.update_config(sid, session['config'])
             # Nhánh command/skill: khối tệp đính kèm phải được dựng ở ĐÂY nữa, nếu không
             # đường skill mất đường dẫn dù người dùng đã đính kèm tệp (A7).

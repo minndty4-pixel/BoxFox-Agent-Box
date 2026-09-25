@@ -430,6 +430,51 @@ def test_a_pdf_body_is_rebuilt_on_the_host_and_labelled(tools, monkeypatch):
     assert 'Bang du lieu thuc nghiem' in payload['text']
 
 
+def _multipage_pdf(page_count: int = 3) -> bytes:
+    kids = ' '.join(f'{4 + 2 * index} 0 R' for index in range(page_count)).encode()
+    objects = [b'1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj',
+               b'2 0 obj << /Type /Pages /Kids [' + kids + b'] /Count '
+               + str(page_count).encode() + b' >> endobj',
+               b'3 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj']
+    for index in range(page_count):
+        page_id = 4 + 2 * index
+        stream_id = page_id + 1
+        content = (f'BT /F1 12 Tf 72 720 Td (Distinct page {index + 1}) Tj ET').encode()
+        objects.extend([
+            f'{page_id} 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] '
+            f'/Resources << /Font << /F1 3 0 R >> >> /Contents {stream_id} 0 R >> endobj'.encode(),
+            f'{stream_id} 0 obj << /Length {len(content)} >> stream\n'.encode()
+            + content + b'\nendstream endobj',
+        ])
+    out = bytearray(b'%PDF-1.4\n')
+    offsets = []
+    for obj in objects:
+        offsets.append(len(out))
+        out += obj + b'\n'
+    xref = len(out)
+    out += b'xref\n0 ' + str(len(objects) + 1).encode() + b'\n0000000000 65535 f \n'
+    for offset in offsets:
+        out += f'{offset:010d} 00000 n \n'.encode()
+    out += (b'trailer << /Size ' + str(len(objects) + 1).encode()
+            + b' /Root 1 0 R >>\nstartxref\n' + str(xref).encode() + b'\n%%EOF\n')
+    return bytes(out)
+
+
+def test_pdf_page_windows_can_continue_past_the_first_window(tools, monkeypatch):
+    pdf = _multipage_pdf()
+    _serve(monkeypatch, lambda url: _FakeResponse(pdf, ctype='application/pdf', url=url))
+    url = 'https://example.org/full-paper.pdf'
+    first = tools.fetch({'url': url, 'pdfPageCount': 1})
+    assert first['pdfPages'] == 3 and first['pdfPagesRead'] == 1
+    assert first['pdfNextPage'] == 2 and 'Distinct page 1' in first['text']
+    second = tools.fetch({'url': url, 'pdfStartPage': first['pdfNextPage'], 'pdfPageCount': 2})
+    assert second['pdfPageStart'] == 2 and second['pdfPagesRead'] == 2
+    assert second['pdfNextPage'] is None and 'Distinct page 3' in second['text']
+    assert 'Distinct page 1' not in second['text']
+    with pytest.raises(web_module.WebError, match='fresh URL fetch'):
+        tools.fetch({'url': url, 'ref': first['ref'], 'pdfStartPage': 2})
+
+
 def test_pdf_without_the_library_says_so_instead_of_returning_junk(monkeypatch):
     monkeypatch.setitem(__import__('sys').modules, 'pdfplumber', None)
     markdown, info = reading.pdf_to_markdown(_tiny_pdf())

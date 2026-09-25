@@ -90,7 +90,7 @@ def test_multiturn_restart_and_isolation(tmp_path):
     asyncio.run(run())
 
 
-@pytest.mark.parametrize('role', list(ROLES))
+@pytest.mark.parametrize('role', [name for name in ROLES if name not in {'plan-review', 'research-review'}])
 def test_each_specialist_policy_and_lineage(tmp_path, role):
     async def run():
         store = SessionStore(tmp_path / 'sessions.db')
@@ -217,7 +217,7 @@ def test_skills_are_full_upstream_and_path_safe():
     # (vòng 27 A7) — kỹ năng của BoxFox nằm cùng cây `vendor/hermes` để `DEFAULT_SKILLS` nạp được
     # bằng id. Con số này là chốt chống cây bị cắt cụt, không phải hợp đồng với upstream: sửa nó
     # khi CÓ CHỦ Ý thêm/bớt gói.
-    assert len(catalog.items) == 211
+    assert len(catalog.items) == 218
     for sid, item in catalog.items.items():
         read = catalog.read(sid)
         assert hashlib.sha256(read['content'].encode()).hexdigest() == item['sha256']

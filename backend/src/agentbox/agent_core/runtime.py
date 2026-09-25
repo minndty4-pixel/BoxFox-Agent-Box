@@ -4,6 +4,7 @@ Original licenses and exact/adapted module provenance: ../vendor/manifest.json.
 """
 import asyncio
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -105,11 +106,11 @@ CORE MULTI-AGENT DELEGATION PROTOCOL:
    - Phase 1 (Explore): Delegate to role='explore' to survey files, symbols, dependency trees, and existing architecture.
      * `write_plan` refuses a plan that leans on outside facts without a Sources / Citations section naming where each fact came from; that answer must come from a real tool call of this session (`web_search`/`web_fetch` host-side, or `role='research'`), never from memory.
      * Hand every external-knowledge question (a library's real API, a standard, a version, a web page) to role='research'. It reaches the browser AND the host-side `web_search`/`web_fetch` tools; you hold those two tools as well, so answer a quick fact yourself and delegate the deep survey. The sandbox network can be OFF — the host tools are not affected — so a research answer may still honestly say "could not verify". Accept that over a guessed source.
-     * Open a research job with `research_brief` BEFORE the first `delegate_task(role='research')`: it fixes the tier (1, 2 or 3), the job profile, the dossier folder and the branch/wave budget, and the owner gets to see the cost before the work runs. A job without a brief is reported (`RESEARCH_BRIEF_MISSING`) with the tier it assumed. Do not raise the tier mid-job.`research_brief` keeps one job per turn: a new question is a new turn.
-     * The dossier is MAIN's file: a research branch reports ledger rows up with `source_add` and answers with its findings — it never writes the dossier. Write it with `dossier_write` after the gate passes, then, at level 3, delegate `role='research-review'` and record its verdict with `research_verify`. When the owner stated an opinion or an assumption, list it in `ownerViews` at brief time: the dossier must then carry the three-label critique section (support / contradict / unsure), each label with a source.
+     * For research, first map the decision and questions that could change it. Call `research_brief` with goal, questions, methods, output, budgetSeconds and a tier estimate. Tell the owner the estimate. Mix evidence methods when appropriate; a market question can need papers and code. Delegate bounded questions with `questionId`, not website categories. Main updates question states and blocked sources through `research_update`, then chooses follow-ups by their likely impact on the decision.
+     * Research children only read and add ledger rows; MAIN writes dossiers. A new-format job saves incomplete drafts too. For consequential tier-3 conclusions, run two separate `research-review` children, one `reviewTarget.mode='evidence'` and one `mode='critique'`, each bound to the exact dossier id/version. Record each verdict with matching `research_verify.mode`. Only claim verification when both pass for the current version. Stop with a conditional answer at the budget limit or after two unproductive loops; state the unanswered questions and impact.
    - Phase 2 (Plan & Design):
      * Delegate to role='plan' to construct ordered milestones, risks, and acceptance criteria.
-     * A written plan is NOT finished work. Right after `write_plan`, delegate role='plan-review' on the file it just wrote (read-only critic: it checks every path, command and criterion you claimed) and then record its verdict with `plan_verify(identity, version, verdict, issues, summary)`. That verdict is bound to the exact version: after you write the next version, critique that one too.
+     * A written plan is NOT finished work. Right after `write_plan`, delegate role='plan-review' with `reviewTarget={kind:'plan',identity,version}` so it reads the exact saved file; then record its verdict with `plan_verify(identity, version, verdict, issues, summary)`. A new version needs a new critique.
      * Without a recorded `plan_verify` verdict of `ok` for the exact version, `request_approval` for the plan is refused (`PLAN_APPROVAL_UNVERIFIED`) and so is an approval from the Plan tab — do not spend a request on it. Two `revise` rounds per turn is the cap; past it, report the open findings to the owner honestly instead of looping.
      * For user-facing or architectural changes, delegate to role='design' to specify API/UI contracts before coding.
    - Phase 3 (Build): Delegate implementation slices to role='build'. Enforce surgical edits and zero placeholder stubs.
@@ -793,6 +794,27 @@ def route_for(value):
         _, provider, model = value.split(':', 2)
         return {'providerId': provider, 'modelId': model}
     return {'model': value}
+
+
+def route_to_model_spec(route: dict | None) -> str:
+    """Chuyển đổi route dictionary sang chuỗi model spec tương thích `route_for`.
+
+    Dùng cho chế độ single-model khi người dùng đổi model giữa chừng trong phiên:
+    `{'providerId': 'opencode', 'modelId': 'm1'}` -> `'provider:opencode:m1'`
+    `{'connectionId': 'c1', 'modelId': 'm1'}` -> `'model:c1:m1'`
+    `{'aliasId': 'fast'}` -> `'alias:fast'`
+    """
+    if not isinstance(route, dict):
+        return ''
+    if route.get('providerId') and route.get('modelId'):
+        return f"provider:{route['providerId']}:{route['modelId']}"
+    if route.get('connectionId') and route.get('modelId'):
+        return f"model:{route['connectionId']}:{route['modelId']}"
+    if route.get('aliasId'):
+        return f"alias:{route['aliasId']}"
+    if route.get('model'):
+        return str(route['model'])
+    return str(route.get('modelId') or '')
 
 
 # Sàn an toàn của harness khi không nguồn nào trả lời. Router trả lời được cho mọi
@@ -1485,7 +1507,7 @@ class HarnessRuntime(RuntimeCommands):
         self.fanout_queue_wait = FANOUT_QUEUE_WAIT_SECONDS
         self.writer_lock = asyncio.Lock()
         # web_search / web_fetch run on the HOST: the box has no Internet (only loopback).
-        self.web = WebTools()
+        self.web = WebTools(snapshot_store=store)
 
     async def heal_context_windows(self):
         """Sửa cửa sổ ngữ cảnh của các phiên ĐÃ LƯU, trả về số phiên đã sửa.
@@ -1631,6 +1653,11 @@ class HarnessRuntime(RuntimeCommands):
                   # Cắt bằng hằng số dùng chung: phía giao diện đọc đúng con số này từ
                   # `limits.py` (qua `runtime-info`), không chép tay lại lần thứ hai.
                   'instructions': str(values.get('instructions', ''))[:INSTRUCTIONS_MAX_CHARS]}
+        if single_model:
+            config['singleModel'] = single_model
+            config['isSingleModel'] = True
+        elif values.get('isSingleModel'):
+            config['isSingleModel'] = True
         # T5 — trần fan-out của RIÊNG phiên này (mặc định 3, trần 6). Ghi vào config để
         # `fanout_limit` đọc lại ở mỗi lần sinh con và để giao diện thấy đúng con số engine
         # đang áp; giá trị ngoài dải bị BỎ (không kẹp im lặng thành một trần khác).
@@ -1699,6 +1726,12 @@ class HarnessRuntime(RuntimeCommands):
                             '(T14), so this flag changes no behaviour yet'),
             })
         role_instructions = ROLES[role].instructions if role in ROLES else ORCHESTRATOR_SOP_GUIDANCE
+        required_research = {
+            'research': ('research-search', 'research-reading', 'research-evidence'),
+            'research-review': ('research-critique', 'research-evidence'),
+        }.get(role, ())
+        required_text = '\n\n'.join(self.catalog.read(skill)['content']
+                                   for skill in required_research if skill in self.catalog.items)
         # Vòng 24 (D-31/D-32): phiên chính chỉ nhận MỘT dòng bằng chứng; dạng câu trả lời nằm
         # trong kỹ năng `final-report`. Phiên con không nhận dòng này: chúng trả kết quả cho cha
         # theo `CHILD_RESULT_CONTRACT`, không trả báo cáo cho chủ nhà.
@@ -1707,6 +1740,7 @@ class HarnessRuntime(RuntimeCommands):
             f"{get_agent_identity()}\n\n"
             f"=== ASSIGNED ROLE: {role.upper()} ===\n"
             f"{role_instructions}\n\n"
+            f"{required_text}\n\n"
             f"=== ENABLED SKILLS (Load full content via skill_view before executing complex workflows) ===\n"
             f"{self.catalog.prompt(skills)}"
             f'\n\n=== ANSWER LENGTH ===\n{ANSWER_LENGTH_HINT}'
@@ -1780,6 +1814,23 @@ class HarnessRuntime(RuntimeCommands):
                 else:
                     updated['thinkingLevel'] = thinking_level
             session['config']['route'] = updated
+            # Đồng bộ sub-agents nếu phiên ở chế độ Single Model:
+            # Nhận biết qua cờ isSingleModel/singleModel, hoặc phiên cũ có toàn bộ subagents
+            # cùng một model spec (không phải inherit/default).
+            subagents = session['config'].get('subagents', [])
+            existing_models = {s.get('model') for s in subagents if s.get('model')}
+            is_single = (
+                bool(session['config'].get('isSingleModel'))
+                or bool(session['config'].get('singleModel'))
+                or (len(existing_models) == 1 and not any(m in {'inherit', 'default'} for m in existing_models))
+            )
+            if is_single and subagents:
+                new_spec = route_to_model_spec(updated)
+                if new_spec:
+                    session['config']['isSingleModel'] = True
+                    session['config']['singleModel'] = new_spec
+                    for s in subagents:
+                        s['model'] = new_spec
             self.store.update_config(sid, session['config'])
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError('Prompt is required')
@@ -2812,6 +2863,12 @@ class HarnessRuntime(RuntimeCommands):
         Một hàm, hai chỗ gọi (chat qua `decision()` và route tab Plan): chép câu này hai lần là
         cách chắc chắn nhất để hai đường nói hai chuyện khác nhau.
         """
+        dependencies = self.store.plan_research_dependencies(identity, version)
+        stale = [item for item in dependencies if item['stale']]
+        if stale:
+            names = ', '.join(item['researchId'] for item in stale)
+            return (f'PLAN_RESEARCH_STALE: {identity}@v{int(version)} depends on changed research '
+                    f'{names}; revise the plan and review the new version')
         row = self.store.plan_verification(identity, version)
         if row is not None and row.get('verdict') == 'ok':
             return None
@@ -3111,6 +3168,13 @@ class HarnessRuntime(RuntimeCommands):
                        'contextEstimate': estimate_tokens(messages, tools),
                        'stepsUsed': steps_used, 'toolsRun': tools_run,
                        'deadlineUsedMs': round((time.time() - started) * 1000)}
+            active_research_id = research_runtime.research_config(session).get('researchId')
+            if active_research_id:
+                active_job = self.store.research_job(active_research_id)
+                if active_job and (active_job['status'] in {
+                        'scoping', 'researching', 'verifying', 'synthesizing', 'critiquing'}
+                        or float(active_job['updated']) >= started):
+                    payload['researchId'] = active_research_id
             if extra:
                 payload.update(extra)
             if gate_numbers.get('last'):
@@ -3807,7 +3871,7 @@ class HarnessRuntime(RuntimeCommands):
             return await self.delegate(session, args)
         if name in {'web_search', 'web_fetch', 'read_source', 'paper_citations'}:
             self.web_switch_notices(sid)
-            return await self.web.run(name, args, sid)
+            return await self.web.run(name, args, sid, scope_id=self.root_session_id(sid))
         if name == 'browser_use' and session['role'] == 'research' and args.get('action') not in {'navigate', 'snapshot', 'screenshot'}:
             raise PermissionError('Research browser access is read-only navigation/snapshot')
         if name == 'write_plan':
@@ -3816,6 +3880,8 @@ class HarnessRuntime(RuntimeCommands):
             return await self.plan_verify(session, args)
         if name in {'source_add', 'source_list', 'source_verify'}:
             return await self.research_ledger_tool(session, name, args)
+        if name == 'claim_assess':
+            return research_runtime.claim_assess(self, session, args)
         if name == 'dossier_write':
             return await research_runtime.dossier_write(self, session, args)
         if name == 'research_brief':
@@ -3824,6 +3890,8 @@ class HarnessRuntime(RuntimeCommands):
             return await research_runtime.research_verify(self, session, args)
         if name == 'research_status':
             return research_runtime.research_status(self, session, args)
+        if name == 'research_update':
+            return research_runtime.research_update(self, session, args)
         if name == 'cancel_child':
             return await research_runtime.cancel_child(self, session, args)
         if name == 'journal_write':
@@ -4646,6 +4714,20 @@ class HarnessRuntime(RuntimeCommands):
         # hàng `plan_evaluations`: chặn trước khi tốn một lượt ghi đĩa là hành vi mong muốn. Vì vậy nhánh
         # P3-0 trong `plan_eval` là lưới an toàn cho `write_plan` gọi từ nơi khác, không phải đường sống.
         check_plan_quality(markdown)
+        dependencies = []
+        raw_dependencies = args.get('researchDependencies') or []
+        if not isinstance(raw_dependencies, list):
+            raise ValueError('PLAN_RESEARCH_DEPENDENCIES_INVALID: expected a list')
+        for raw in raw_dependencies:
+            if not isinstance(raw, dict) or not raw.get('researchId') or \
+                    isinstance(raw.get('version'), bool) or not isinstance(raw.get('version'), int):
+                raise ValueError('PLAN_RESEARCH_DEPENDENCIES_INVALID: researchId and version are required')
+            dossier = self.store.dossier(str(raw['researchId']), raw['version'])
+            if dossier is None or self.root_session_id(dossier['session_id']) != self.root_session_id(sid):
+                raise ValueError('PLAN_RESEARCH_DEPENDENCY_UNKNOWN: use a dossier from this task')
+            dependencies.append({'researchId': str(raw['researchId']),
+                                 'version': int(raw['version']),
+                                 'contentHash': dossier.get('content_hash') or ''})
         # Vòng 25 (D-34) — CỔNG NGUỒN, ngay sau cổng cấu trúc và TRƯỚC khi chạm đăng ký/đĩa: một
         # kế hoạch viện dẫn dữ kiện ngoài mà nguồn không có bằng chứng công cụ thì không ghi tệp,
         # không có hàng `plan_evaluations` — cùng hành vi đã tài liệu hoá của `PLAN_QUALITY_REJECTED`.
@@ -4710,7 +4792,8 @@ class HarnessRuntime(RuntimeCommands):
         identity = plan_identity(written['relativePath'])
         payload = {'identity': identity, 'version': version, 'slug': confirmed.group('slug'),
                    'relativePath': written['relativePath'], 'title': str(written.get('title') or title)[:120],
-                   'bytes': int(written.get('bytes') or len(markdown.encode('utf-8')))}
+                   'bytes': int(written.get('bytes') or len(markdown.encode('utf-8'))),
+                   'contentHash': hashlib.sha256(write_args['markdown'].encode('utf-8')).hexdigest()}
         if not registration.degraded:
             # Hai trường hợp đồng bằng: ở nhánh suy giảm không có bản chấm, nên `parentVersion` và
             # `headerSource` KHÔNG được bịa — chỉ ghi khi harness thật sự đã quyết hai giá trị đó.
@@ -4724,6 +4807,9 @@ class HarnessRuntime(RuntimeCommands):
             if registration.ambiguity:
                 # D-3: bản này ra đời từ dải mơ hồ (đi qua vé) — hàng `P:` phải nói được điều đó.
                 payload['identityAmbiguity'] = registration.ambiguity
+        if dependencies:
+            self.store.plan_research_link(identity, version, dependencies)
+            payload['researchDependencies'] = self.store.plan_research_dependencies(identity, version)
         self.store.emit(sid, 'plan_written', payload)
         # Vòng 25 (D-36) — SỔ SỞ HỮU: đường từ nhóm kế hoạch về phiên GỐC. Đo vòng 25: tab Plan ghi
         # được hàng duyệt nhưng `session_id` toàn `NULL`, nên cú bấm không mở được lượt nào. Ghi
@@ -4756,8 +4842,10 @@ class HarnessRuntime(RuntimeCommands):
         # Vòng 25 (D-33) — bước kế tiếp KHÔNG phải tuỳ chọn: một bản kế hoạch chưa qua phản biện
         # độc lập thì cổng duyệt từ chối (PLAN_APPROVAL_UNVERIFIED), ở cả hai đường. Nói thẳng
         # ngay tại chỗ model vừa ghi xong, vì đó là chỗ nó quyết định làm gì tiếp.
-        answer['next'] = ("Next: delegate_task(role='plan-review', goal='critique " + payload['relativePath']
-                          + "', ...) then plan_verify(identity='" + identity + "', version=" + str(version)
+        answer['next'] = ("Next: delegate_task(role='plan-review', reviewTarget={kind:'plan',identity:'"
+                          + identity + "',version:" + str(version) + "}, goal='critique "
+                          + payload['relativePath'] + "', ...) then plan_verify(identity='"
+                          + identity + "', version=" + str(version)
                           + ", verdict=<its verdict>). Until that verdict is recorded, request_approval "
                             "for this plan is refused with PLAN_APPROVAL_UNVERIFIED.")
         return answer
@@ -4828,6 +4916,7 @@ class HarnessRuntime(RuntimeCommands):
             raise ValueError(f'{PLAN_VERIFY_NO_CRITIC_CODE}: no plan write is recorded for '
                              f'{identity}@v{version} — write the plan first with write_plan')
         usable = []
+        plan_record = self.store.plan_written_record(tree, identity, version)
         for row in children:
             if row['role'] != 'plan-review':
                 continue
@@ -4837,6 +4926,17 @@ class HarnessRuntime(RuntimeCommands):
                 continue
             if int(row['answer_chars'] or 0) < PLAN_REVIEW_MIN_ANSWER_CHARS:
                 continue
+            if plan_record and plan_record.get('contentHash'):
+                target = (self.store.get(row['session_id']).get('config') or {}).get('reviewTarget') or {}
+                if target.get('kind') != 'plan' or target.get('identity') != identity \
+                        or target.get('version') != version \
+                        or target.get('path') != plan_record['relativePath'] \
+                        or target.get('contentHash') != plan_record['contentHash']:
+                    continue
+                if not research_runtime._review_read_proof(self, row['session_id'],
+                                                           plan_record['relativePath'],
+                                                           plan_record['contentHash']):
+                    continue
             usable.append(row)
         if not usable:
             raise ValueError(f'{PLAN_VERIFY_NO_CRITIC_CODE}: {identity}@v{version} has no usable independent '
@@ -4846,7 +4946,7 @@ class HarnessRuntime(RuntimeCommands):
         critic = max(usable, key=lambda row: (float(row['started'] or 0), str(row['session_id'])))
         # Câu trả lời ĐỌC ĐƯỢC: event `assistant` mới nhất có chữ khác rỗng (câu chốt của con).
         text = ''
-        for event in self.store.events(critic['session_id']):
+        for event in self.store.events_tail(critic['session_id']):
             if event['type'] != 'assistant':
                 continue
             candidate = event['data'].get('text') if isinstance(event['data'], dict) else None
@@ -5294,6 +5394,46 @@ class HarnessRuntime(RuntimeCommands):
         goal = args.get('goal', '')
         if not isinstance(goal, str) or not goal.strip():
             raise ValueError('Child goal required')
+        research_question_id = None
+        research_cfg = research_runtime.research_config(session)
+        if role == 'research' and research_cfg.get('jobMode') == 'v2':
+            research_question_id = str(args.get('questionId') or '').strip()
+            research_job = self.store.research_job(research_cfg['researchId'])
+            if not research_job or research_question_id not in {
+                    item['id'] for item in research_job['state'].get('questions', [])}:
+                raise ValueError('RESEARCH_BRANCH_QUESTION_REQUIRED: pass a questionId from research_status')
+            if research_job['status'] in {'paused', 'cancelled', 'completed', 'partial', 'needs_user'}:
+                raise ValueError('RESEARCH_JOB_INACTIVE: resume the job before delegating another branch')
+        review_target = None
+        if role == 'research-review':
+            requested = args.get('reviewTarget') or {}
+            if requested.get('kind') != 'research' or not requested.get('researchId') \
+                    or isinstance(requested.get('version'), bool) \
+                    or not isinstance(requested.get('version'), int):
+                raise ValueError('RESEARCH_REVIEW_TARGET_REQUIRED: pass reviewTarget with researchId and version')
+            dossier = self.store.dossier(requested['researchId'], requested['version'])
+            if dossier is None or dossier['session_id'] != session['id']:
+                raise ValueError('RESEARCH_REVIEW_TARGET_UNKNOWN: that dossier version is not owned by this session')
+            review_target = {'kind': 'research', 'researchId': requested['researchId'],
+                             'version': requested['version'], 'path': dossier['relative_path'],
+                             'contentHash': dossier.get('content_hash') or '',
+                             'mode': requested.get('mode') or 'critique'}
+            if review_target['mode'] not in {'evidence', 'critique'}:
+                raise ValueError('RESEARCH_REVIEW_MODE_INVALID')
+        if role == 'plan-review':
+            requested = args.get('reviewTarget') or {}
+            if requested.get('kind') != 'plan' or not requested.get('identity') \
+                    or isinstance(requested.get('version'), bool) \
+                    or not isinstance(requested.get('version'), int):
+                raise ValueError('PLAN_REVIEW_TARGET_REQUIRED: pass reviewTarget with identity and version')
+            record = self.store.plan_written_record([session['id']] + [
+                item['session_id'] for item in self.store.children_of(session['id'])],
+                requested['identity'], requested['version'])
+            if record is None:
+                raise ValueError('PLAN_REVIEW_TARGET_UNKNOWN')
+            review_target = {'kind': 'plan', 'identity': requested['identity'],
+                             'version': requested['version'], 'path': record['relativePath'],
+                             'contentHash': record.get('contentHash') or ''}
         config = session['config']
         # T5 — toạ độ của CHA và hai trần sinh con, tính TRƯỚC khi tạo phiên con: một hàng
         # `sessions` không được sinh ra rồi mới bị từ chối, và một lượt không được sinh con vô hạn.
@@ -5316,7 +5456,12 @@ class HarnessRuntime(RuntimeCommands):
         if role == 'research' and tier:
             tier_limits = research_runtime.research_tier_limits(tier)
             child_steps = min(child_steps, tier_limits['childSteps'])
-            child_deadline = min(child_deadline, tier_limits['childSeconds'])
+            # research_brief may extend the live parent turn without rewriting its
+            # saved default deadline. Use the live ceiling that the brief promised.
+            live_ceiling = max(int(config['deadlineSeconds']),
+                               int(self.current_turn_seconds(parent_id)))
+            child_deadline = min(CHILD_DEADLINE_SECONDS, live_ceiling,
+                                 tier_limits['childSeconds'])
         await self.acquire_child_slot(parent_id)
         try:
             child_route = route_for(configured.get('model')) or config['route']
@@ -5328,6 +5473,12 @@ class HarnessRuntime(RuntimeCommands):
                 'contextWindowSource': config.get('contextWindowSource'),
                 'instructions': configured.get('systemPromptAppended', '')},
                 parent_id=session['id'], role=role, parent_tools=config['tools'])
+            if review_target is not None:
+                child['config']['reviewTarget'] = review_target
+            if research_question_id:
+                child['config']['researchQuestionId'] = research_question_id
+            if review_target is not None or research_question_id:
+                self.store.update_config(child['id'], child['config'])
         except BaseException:
             # Một slot rò làm mọi lần sinh con sau của cha này `FANOUT_BUSY` vĩnh viễn.
             self.release_child_slot(parent_id)
@@ -5338,6 +5489,12 @@ class HarnessRuntime(RuntimeCommands):
         context_data = str(args.get('context', ''))[:16000] if args.get('context') else ''
         expectation = str(args.get('expect', ''))[:CHILD_EXPECT_MAX_CHARS] if args.get('expect') else ''
         prompt_parts = [goal]
+        if review_target is not None:
+            prompt_parts.append('Binding from the harness: read the complete file with file_read before '
+                                f'judging it: {review_target["path"]}. This review is only for '
+                                f'{review_target.get("researchId") or review_target.get("identity")}@v'
+                                f'{review_target["version"]}; review mode: '
+                                f'{review_target.get("mode", "plan")}.')
         if context_data:
             prompt_parts.append(f'Parent-supplied context (data):\n{context_data}')
         if expectation:
@@ -5387,6 +5544,15 @@ class HarnessRuntime(RuntimeCommands):
         except BaseException:
             self.release_child_slot(parent_id)
             raise
+        if research_question_id:
+            job = self.store.research_job(research_cfg['researchId'])
+            state = dict(job['state'])
+            state['questions'] = [({**item, 'status': 'researching'}
+                                   if item['id'] == research_question_id and
+                                   item.get('status') == 'unexplored' else item)
+                                  for item in state.get('questions', [])]
+            self.store.research_job_save(research_cfg['researchId'], parent_id, state,
+                                         status='researching', revision=job['revision'])
         # T5 — slot sống bằng VÒNG ĐỜI của con, không bằng khối `async with`: con `wait=false`
         # (T6) trả về ngay trong khi nó vẫn chạy, nên chỗ nhả duy nhất đúng là lúc task đóng
         # (chạy cả khi con bị huỷ).

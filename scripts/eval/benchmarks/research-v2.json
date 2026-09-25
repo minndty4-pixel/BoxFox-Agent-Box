@@ -1,0 +1,21 @@
+{
+  "measured": false,
+  "repetitions": 3,
+  "dimensions": ["goalFit", "evidence", "coverage", "reasoning", "decisionUsefulness"],
+  "cases": [
+    {"id": "simple-fact", "kind": "simple", "challenge": "Find one dated fact with a primary source and stop at a suitable budget."},
+    {"id": "technology-choice", "kind": "complex", "challenge": "Compare two technologies under the same task and constraints."},
+    {"id": "diffusion-synthetic-data", "kind": "complex", "challenge": "Map diffusion methods for synthetic data through papers and versioned code."},
+    {"id": "openreview-rebuttal", "kind": "complex", "challenge": "Separate submission, review, rebuttal and decision in an OpenReview forum."},
+    {"id": "paper-code-mismatch", "kind": "complex", "challenge": "Identify a paper claim not matched by its released repository."},
+    {"id": "benchmark-conditions", "kind": "complex", "challenge": "Avoid ranking results measured on incompatible data, splits or compute."},
+    {"id": "health-opportunity", "kind": "complex", "challenge": "Assess a healthcare workflow opportunity using documents and practice signals."},
+    {"id": "dated-regulation", "kind": "complex", "challenge": "Resolve which official rule applied at a specified date."},
+    {"id": "public-community", "kind": "complex", "challenge": "Treat public Facebook posts as attributed signals and detect reposts."},
+    {"id": "missing-evidence", "kind": "complex", "challenge": "Report a blocked pivotal source and give a conditional conclusion."},
+    {"id": "user-hypothesis-refuted", "kind": "complex", "challenge": "Test the user's assumption and preserve credible contrary evidence."},
+    {"id": "interrupted-job", "kind": "complex", "challenge": "Resume after provider loss or restart without duplicating work or budget."}
+  ],
+  "rollout": {"minimumCasesPassing": 10, "minimumMedianPerDimension": 4,
+              "maximumSevereMisattributions": 0, "simpleCaseMustNotRegress": true}
+}

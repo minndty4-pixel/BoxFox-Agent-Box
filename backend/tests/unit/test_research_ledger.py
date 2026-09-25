@@ -26,6 +26,27 @@ def codes(rows, profile=None, verified=None):
     return {issue.code for issue in research_ledger.assess_rows(rows, profile, verified=verified or {})}
 
 
+def test_independent_papers_on_doi_platform_count_separately():
+    papers = [row('r1', host='doi.org', url='https://doi.org/10.1186/study-a', tier=1,
+                  excerpt=long_text('Independent study of referrals and patient outcomes', 8)),
+              row('r2', host='doi.org', url='https://doi.org/10.1371/study-b', tier=1,
+                  excerpt=long_text('Another study with a separate sample and methods', 8))]
+    assert research_ledger.independent_count(papers) == 2
+    same_paper = row('r3', host='doi.org', url='https://doi.org/10.1186/study-a', tier=1,
+                     excerpt=long_text('Different passage from the first study', 8))
+    assert research_ledger.independent_count([*papers, same_paper]) == 2
+
+
+def test_public_posts_by_one_author_count_as_one_origin():
+    posts = [row('r1', host='facebook.com', url='https://facebook.com/group/posts/1',
+                 payload={'authorId': 'clinician-42'}),
+             row('r2', host='facebook.com', url='https://facebook.com/group/posts/2',
+                 payload={'authorId': 'clinician-42'}),
+             row('r3', host='facebook.com', url='https://facebook.com/group/posts/3',
+                 payload={'authorId': 'clinician-87'})]
+    assert research_ledger.independent_count(posts) == 2
+
+
 def test_a_source_row_keeps_the_verbatim_excerpt_the_tier_and_the_fetch_date():
     item = research_ledger.Row(row_id='r7', claim='mức phí', url='https://moh.gov.vn/a', host='moh.gov.vn',
                                tier=1, excerpt='Nguyên văn đoạn đã đọc.', fetched_at='2026-09-23T10:00:00Z',
@@ -107,9 +128,9 @@ def test_a_verified_failure_on_a_secondary_source_is_flagged():
     rows = [row('r1', host='dantri.com.vn', tier=2, excerpt=body)]
     assert 'research-doc-pointer-missing' in codes(rows, verified={'r1': False})
     assert 'research-doc-pointer-missing' not in codes(rows, verified={'r1': True})
-    # Nguồn chính thống mở lại hỏng KHÔNG bị chấm: thiếu bản gốc là chuyện của bản chính thống.
+    # Nguồn chính thống đổi hoặc không mở lại được cũng không thể coi là đã kiểm.
     primary = [row('r1', host='vanban.chinhphu.vn', tier=1, excerpt=body)]
-    assert 'research-doc-pointer-missing' not in codes(primary, verified={'r1': False})
+    assert 'research-doc-pointer-missing' in codes(primary, verified={'r1': False})
 
 
 def test_a_host_document_that_is_not_marked_is_flagged():

@@ -29,6 +29,7 @@ of which one call can carry 20 000 at most).
 import io
 import re
 import urllib.parse
+import uuid
 import unicodedata
 import zlib
 from collections import OrderedDict
@@ -495,13 +496,17 @@ def read_tier(*, content_type: str = '', reader: str | None = None, pdf: bool = 
 
 
 def pdf_to_markdown(data: bytes, *, max_pages: int = 40, max_tables: int = 24,
-                    max_chars: int = 200000) -> tuple[str, dict]:
+                    max_chars: int = 200000, start_page: int = 1) -> tuple[str, dict]:
     """Rebuild a PDF as markdown text + markdown tables with pdfplumber (tier 3).
 
     Returns ``('', info)`` when pdfplumber is missing or the bytes are not a PDF;
     the caller then falls through to the reader tier.
     """
-    info = {'pages': 0, 'tables': 0, 'tier': 'pdf-table', 'engine': 'pdfplumber'}
+    info = {'pages': 0, 'tables': 0, 'tier': 'pdf-table', 'engine': 'pdfplumber',
+            'startPage': start_page, 'pagesRead': 0}
+    if start_page < 1 or max_pages < 1:
+        info['reason'] = 'start_page and max_pages must be positive'
+        return '', info
     if not data[:5].startswith(b'%PDF-'):
         info['reason'] = 'not a PDF body'
         return '', info
@@ -515,10 +520,21 @@ def pdf_to_markdown(data: bytes, *, max_pages: int = 40, max_tables: int = 24,
     try:
         with pdfplumber.open(io.BytesIO(data)) as pdf:
             info['pages'] = len(pdf.pages)
-            for number, page in enumerate(pdf.pages[:max_pages], start=1):
+            first = start_page - 1
+            if first >= len(pdf.pages):
+                info['reason'] = 'requested page is beyond the end of the PDF'
+                return '', info
+            stop = min(first + max_pages, len(pdf.pages))
+            info['pagesRead'] = stop - first
+            if stop < len(pdf.pages):
+                info['truncatedPages'] = len(pdf.pages) - stop
+                info['nextPage'] = stop + 1
+            for number in range(first, stop):
+                page = pdf.pages[number]
+                page_number = number + 1
                 text = (page.extract_text() or '').strip()
                 if text:
-                    parts.append(f'## Trang {number}\n\n{text}')
+                    parts.append(f'## Trang {page_number}\n\n{text}')
                 if table_count < max_tables:
                     for rows in (page.extract_tables() or []):
                         cleaned = [[(cell or '').replace('\n', ' ').strip() for cell in row] for row in rows]
@@ -536,6 +552,9 @@ def pdf_to_markdown(data: bytes, *, max_pages: int = 40, max_tables: int = 24,
     if len(body) > max_chars:
         body = body[:max_chars]
         info['truncated'] = True
+    if not body and info['pages']:
+        info['scanLikely'] = True
+        info['reason'] = 'no selectable text; scanned PDF may need OCR'
     return body, info
 
 # ------------------------------------------------------------------ read store (A-4)
@@ -543,8 +562,8 @@ def pdf_to_markdown(data: bytes, *, max_pages: int = 40, max_tables: int = 24,
 # ĐO ĐƯỢC 2026-09-23: `docs.python.org/3/whatsnew/3.13.html` dựng được 113 936 ký tự nhưng
 # một lời gọi chỉ mang về 20 000 (trần ngữ cảnh), và 8 000 đầu là râu ria điều hướng. Đầu đọc
 # `r.jina.ai` trả CẢ tài liệu trong một lời gọi (`x-start` không cắt) ⇒ nút thắt nằm phía ta.
-# Bộ đệm này giữ bản đầy đủ trong bộ nhớ tiến trình (KHÔNG ghi đĩa) để `read_source` đọc tiếp
-# bằng `offset` mà không phải tải lại trang.
+# Bộ đệm này giữ bản đầy đủ trong bộ nhớ tiến trình; WebTools có thể ghim bản sao
+# theo phiên nghiên cứu vào SQLite để `read_source` đọc tiếp sau khi khởi động lại.
 
 def fold_text(value: str) -> str:
     """Bỏ dấu + hạ chữ cho phép so khớp #5966, **giữ nguyên độ dài** để offset còn dùng được."""
@@ -592,8 +611,7 @@ class ReadStore:
     """Bản đầy đủ của những trang đã tải, trong bộ nhớ tiến trình, LRU theo lần chạm.
 
     Trần (`limits.py`): ``READ_STORE_MAX_ENTRIES`` bản · ``READ_STORE_ENTRY_MAX_CHARS`` ký tự một
-    bản · ``READ_STORE_MAX_CHARS`` tổng. KHÔNG ghi đĩa: tiến trình host khởi động lại là bộ đệm
-    rỗng, và một `ref` cũ trở thành `WEB_READ_REF_UNKNOWN` — nói thẳng, không đoán.
+    bản · ``READ_STORE_MAX_CHARS`` tổng. Runtime có thể lưu một bản sao bền vững theo phiên việc.
     """
 
     def __init__(self, *, max_entries: int = READ_STORE_MAX_ENTRIES,
@@ -616,7 +634,9 @@ class ReadStore:
         if old is not None:
             self._drop(old)
         self._seq += 1
-        ref = f'r{self._seq}'
+        # A reference must remain unique after a harness restart because durable
+        # research snapshots can outlive this in-memory cache.
+        ref = 'r-' + uuid.uuid4().hex
         entry = {'ref': ref, 'url': url, 'finalUrl': final, 'text': stored,
                  'storedChars': len(stored)}
         entry.update(fields)

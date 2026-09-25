@@ -930,7 +930,7 @@ def test_fixture_r_du_muoi_hai_ca_va_chi_R2_bat_mang(evalmods):
 def run_scores(*args):
     """Chạy `scripts/eval/research_scores.py` như người dùng chạy: từ gốc repo, không shell."""
     return subprocess.run([sys.executable, str(EVAL_DIR / 'research_scores.py'), *args],
-                          cwd=str(REPO_ROOT), capture_output=True, text=True)
+                          cwd=str(REPO_ROOT), capture_output=True, text=True, encoding='utf-8')
 
 
 def test_cli_ghi_mot_dong_json_roi_ghi_noi_duoc(tmp_path, evalmods):

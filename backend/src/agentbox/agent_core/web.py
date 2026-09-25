@@ -30,6 +30,7 @@ surface (router, harness, box control) can never be reached through this tool.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import html
 import http.client
 import ipaddress
@@ -88,7 +89,7 @@ MAX_INFLATED_BYTES = 8 * MAX_BODY_BYTES
 # Một PDF bị cắt được tải lại ĐÚNG MỘT lần với trần riêng này — vẫn có chặn, vì PDF
 # học thuật thường 2–8 MiB.
 MAX_PDF_BYTES = 8 * 1024 * 1024
-PUBLIC_SOURCES = ('web', 'wikipedia', 'stackoverflow', 'github', 'papers')
+PUBLIC_SOURCES = ('web', 'wikipedia', 'stackoverflow', 'github', 'papers', 'openreview')
 
 # Web content is data. The envelope is repeated in every payload so neither the
 # model nor a future consumer can mistake a page for an instruction.
@@ -416,10 +417,11 @@ def _search_queries(args: dict) -> list[str]:
 
 
 def _search_cache_key(queries: list[str], source: str, count: int, site: str, freshness: str,
-                      lang: str, exclude: set[str]) -> str:
+                      lang: str, exclude: set[str], cursor: int = 0) -> str:
     """Khoá cache theo args ĐÃ CHUẨN HOÁ (không theo chuỗi thô của model)."""
     return json.dumps({'queries': queries, 'source': source, 'count': count, 'site': site,
-                       'freshness': freshness, 'lang': lang, 'exclude': sorted(exclude)},
+                       'freshness': freshness, 'lang': lang, 'exclude': sorted(exclude),
+                       'cursor': cursor},
                       sort_keys=True, ensure_ascii=False)
 
 
@@ -638,6 +640,9 @@ def _provider_github(query: str, count: int, options: dict | None = None) -> lis
     payload = json.loads(text or '{}')
     return [{'title': _bounded_snippet(item.get('full_name')),
              'url': str(item.get('html_url') or ''),
+             'defaultBranch': str(item.get('default_branch') or ''),
+             'commitApiUrl': ('https://api.github.com/repos/' + str(item.get('full_name')) +
+                              '/commits/' + urllib.parse.quote(str(item.get('default_branch') or 'HEAD'))),
              'snippet': _bounded_snippet((item.get('description') or '') +
                                          f" — {item.get('stargazers_count', 0)} stars, updated {str(item.get('pushed_at') or '')[:10]}"),
              'provider': 'github'}
@@ -707,6 +712,47 @@ def _provider_papers(query: str, count: int, options: dict | None = None) -> lis
     if not results:
         raise WebError('WEB_SEARCH_UNAVAILABLE', 'openalex found nothing for this query')
     return results
+
+
+def _openreview_value(content: dict, name: str) -> str:
+    value = content.get(name) or ''
+    if isinstance(value, dict):
+        value = value.get('value') or ''
+    if isinstance(value, list):
+        value = ', '.join(str(item) for item in value)
+    return str(value)
+
+
+def _provider_openreview(query: str, count: int, options: dict | None = None) -> list[dict]:
+    """Public API v2 search; leave venue status as metadata, not a verdict."""
+    options = options or {}
+    params = {'term': query, 'source': 'forum', 'limit': count,
+              'offset': int(options.get('cursor') or 0), 'count': 'true'}
+    url = 'https://api2.openreview.net/notes/search?' + urllib.parse.urlencode(params)
+    _, _, body, _ = _retry(lambda: http_request(url, headers={'Accept': 'application/json'}))
+    payload = json.loads(body or '{}')
+    total = payload.get('count') if isinstance(payload.get('count'), int) else None
+    rows = []
+    for note in (payload.get('notes') or [])[:count]:
+        ident = str(note.get('id') or '').strip()
+        if not ident:
+            continue
+        content = note.get('content') or {}
+        if not isinstance(content, dict):
+            content = {}
+        venue = _openreview_value(content, 'venue')
+        venue_id = _openreview_value(content, 'venueid')
+        rows.append({'title': _bounded_snippet(_openreview_value(content, 'title')),
+                     'url': 'https://openreview.net/forum?id=' + urllib.parse.quote(ident),
+                     'forumApiUrl': 'https://api2.openreview.net/notes?' + urllib.parse.urlencode({'forum': ident}),
+                     'snippet': _bounded_snippet(_openreview_value(content, 'abstract')),
+                     'venue': venue, 'venueId': venue_id,
+                     'publicationState': 'venue-reported' if venue_id else 'unknown',
+                     'totalCount': total,
+                     'provider': 'openreview'})
+    if not rows:
+        raise WebError('WEB_SEARCH_UNAVAILABLE', 'OpenReview found no public submissions for this query')
+    return rows
 
 
 def _provider_crossref(query: str, count: int, options: dict | None = None) -> list[dict]:
@@ -822,6 +868,7 @@ SOURCE_PROVIDERS = {
     'wikipedia': (_provider_wikipedia,),
     'stackoverflow': (_provider_stackexchange,),
     'github': (_provider_github,),
+    'openreview': (_provider_openreview,),
     # Thứ tự là HỢP ĐỒNG (đo 2026-09-23): OpenAlex trả hồ sơ đầy đủ nhất và có `select` nên nhẹ
     # nhất; Crossref có hồ sơ DOI; Europe PMC phủ y–sinh; arXiv để CUỐI vì nó chập chờn (406).
     'papers': (_provider_papers, _provider_crossref, _provider_europepmc, _provider_arxiv),
@@ -913,8 +960,10 @@ def _find_terms(value) -> list[str]:
 class WebTools:
     """``web_search`` / ``web_fetch`` implementation. Blocking I/O runs in a worker thread."""
 
-    def __init__(self, log=None):
+    def __init__(self, log=None, snapshot_store=None):
         self.log = log or system_log
+        self.snapshot_store = snapshot_store
+        self._snapshot_scope = contextvars.ContextVar('boxfox_web_snapshot_scope', default=None)
         # A-4: bản đầy đủ của mọi trang đã tải, để `read_source` đọc tiếp mà không phải tải lại.
         # Công tắc `BOXFOX_WEB_READ_STORE=off` làm bộ đệm trơ (mọi `ref` thành `WEB_READ_REF_UNKNOWN`).
         self.store = reading.ReadStore()
@@ -922,8 +971,10 @@ class WebTools:
         # vì cùng một truy vấn tốn ~0,7 s và chân không khoá có thể bị từ chối bất cứ lúc nào.
         self._search_cache: OrderedDict[str, tuple[float, dict]] = OrderedDict()
 
-    async def run(self, name: str, args: dict, session_id: str | None = None) -> dict:
+    async def run(self, name: str, args: dict, session_id: str | None = None,
+                  *, scope_id: str | None = None) -> dict:
         started = time.time()
+        scope_token = self._snapshot_scope.set(scope_id or session_id)
         try:
             if name == 'web_search':
                 result = await asyncio.to_thread(self.search, args)
@@ -950,6 +1001,8 @@ class WebTools:
                                f'the host-side {name} call failed ({exc.__class__.__name__})')
             self._log_error(name, wrapped, session_id, started, args)
             raise wrapped from exc
+        finally:
+            self._snapshot_scope.reset(scope_token)
         self._log_ok(name, result, session_id, started)
         return result
 
@@ -1015,24 +1068,39 @@ class WebTools:
         site = _domain(str(args.get('site') or ''))
         if site and not _looks_like_host(site):
             raise WebError('WEB_URL_INVALID', f'site must be a host name or a domain, not {site!r}')
+        if source == 'openreview' and site:
+            raise WebError('WEB_URL_INVALID', 'OpenReview search does not support the site filter')
         exclude = _domains(args.get('exclude'))
         freshness = str(args.get('freshness') or '').strip().lower()
         if freshness and freshness not in FRESHNESS_WINDOWS:
             raise WebError('WEB_URL_INVALID',
                            f'unknown freshness {freshness!r}; use one of {", ".join(FRESHNESS_WINDOWS)}')
         lang = str(args.get('lang') or '').strip().lower()[:8]
+        cursor = 0
+        if source == 'openreview':
+            try:
+                cursor = int(args.get('cursor') or 0)
+            except (TypeError, ValueError):
+                raise WebError('WEB_URL_INVALID', 'OpenReview cursor must be a nonnegative integer') from None
+            if cursor < 0 or cursor > 100000:
+                raise WebError('WEB_URL_INVALID', 'OpenReview cursor must be between 0 and 100000')
+            if cursor and len(queries) != 1:
+                raise WebError('WEB_URL_INVALID', 'OpenReview pagination accepts one query at a time')
+        elif args.get('cursor') is not None:
+            raise WebError('WEB_URL_INVALID', 'cursor is supported only for source="openreview"')
 
-        cache_key = _search_cache_key(queries, source, count, site, freshness, lang, exclude)
+        cache_key = _search_cache_key(queries, source, count, site, freshness, lang, exclude, cursor)
         cached = self._cache_get(cache_key)
         if cached is not None:
             # KHÔNG tự ghi nhật ký ở đây: `run()` → `_log_ok` đã ghi đúng một dòng `web.search`
             # (kèm `cached`, `sessionId`, `durationMs`); tự ghi thêm là hai dòng cho một lời gọi.
             return {**cached, 'cached': True}
 
-        options = {'freshness': freshness, 'lang': lang, 'exclude': exclude}
+        options = {'freshness': freshness, 'lang': lang, 'exclude': exclude, 'cursor': cursor}
         providers = SOURCE_PROVIDERS.get(source) or GENERAL_PROVIDERS
         rows: list[dict] = []
         per_query: list[dict] = []
+        found_by_query: list[tuple[str, list[dict]]] = []
         errors: list[str] = []
         for query in queries:
             effective = f'site:{site} {query}' if site else query
@@ -1046,13 +1114,14 @@ class WebTools:
                 entry['error'] = failure[:160]
                 errors.append(failure)
             per_query.append(entry)
+            found_by_query.append((query, found))
             rows.extend(found)
         if exclude:
             # Firecrawl không có tham số loại trừ tên miền (đo được: `sources=`/`page=` là 400), nên
             # `exclude` chạy ở phía ta — nó chỉ lọc kết quả, không cắt bớt truy vấn.
             rows = [row for row in rows if _host_of(str(row.get('url') or '')) not in exclude]
-        results, deduped = _dedupe_results(rows)
-        results, dropped = _fit_results(results)
+        merged_results, deduped = _dedupe_results(rows)
+        results, dropped = _fit_results(merged_results)
         if not results:
             hint = ('Every provider was refused or empty. Try source="wikipedia", "stackoverflow", '
                     'or "github", or fetch a known URL with web_fetch.')
@@ -1062,10 +1131,50 @@ class WebTools:
                            f'no result for {queries[0]!r}: ' + ' | '.join(errors[:3]) + '. ' + hint + keys,
                            f'every provider refused or returned nothing for {len(queries)} quer'
                            f'{"y" if len(queries) == 1 else "ies"} ({len(errors)} attempt(s))')
+        retained = {reading.normalize_url(str(row.get('url') or '')) for row in results}
+        merged = {reading.normalize_url(str(row.get('url') or '')) for row in merged_results}
+        trace: list[dict] = []
+        seen_candidates: set[str] = set()
+        trace_chars = 0
+        trace_omitted = 0
+        for query, candidates in found_by_query:
+            decisions = []
+            for row in candidates:
+                url = str(row.get('url') or '').strip()
+                key = reading.normalize_url(url) if url else ''
+                if not url:
+                    disposition = 'invalid-url'
+                elif _host_of(url) in exclude:
+                    disposition = 'excluded-host'
+                elif key in seen_candidates:
+                    disposition = 'duplicate'
+                elif key in retained:
+                    disposition = 'retained'
+                elif key in merged:
+                    disposition = 'payload-limit'
+                else:
+                    disposition = 'duplicate'
+                seen_candidates.add(key)
+                cost = len(url) + len(disposition) + 30
+                if trace_chars + cost <= 3500:
+                    decisions.append({'url': url, 'disposition': disposition})
+                    trace_chars += cost
+                else:
+                    trace_omitted += 1
+            trace.append({'query': query, 'candidates': decisions})
         payload = {'query': queries[0], 'queries': queries, 'source': source, 'count': len(results),
                    'results': results, 'perQuery': per_query, 'deduped': deduped, 'dropped': dropped,
+                   'searchTrace': {'perQuery': trace, 'omittedCandidates': trace_omitted},
                    'untrusted': True, 'note': UNTRUSTED_NOTE, 'cached': False,
-                   'fetchedAt': _now()}
+                   'fetchedAt': _now(),
+                   'pagination': {'supported': source == 'openreview',
+                                  'nextCursor': (cursor + len(rows) if source == 'openreview'
+                                                 and len(rows) >= count
+                                                 and (rows[0].get('totalCount') is None or
+                                                      cursor + len(rows) < rows[0]['totalCount'])
+                                                 else None)},
+                   'filters': {'site': site or None, 'exclude': sorted(exclude),
+                               'freshness': freshness or None, 'lang': lang or None}}
         self._cache_put(cache_key, payload)
         return payload
 
@@ -1126,6 +1235,16 @@ class WebTools:
         """
         ref = str(args.get('ref') or '').strip()
         offset = _read_offset(args.get('offset'))
+        pdf_window = args.get('pdfStartPage') is not None or args.get('pdfPageCount') is not None
+        try:
+            pdf_start = int(args.get('pdfStartPage') or 1)
+            pdf_count = int(args.get('pdfPageCount') or 40)
+        except (TypeError, ValueError):
+            raise WebError('WEB_URL_INVALID', 'PDF page numbers must be integers') from None
+        if pdf_start < 1 or pdf_count < 1 or pdf_count > 40:
+            raise WebError('WEB_URL_INVALID', 'pdfStartPage must be positive and pdfPageCount must be 1–40')
+        if pdf_window and (ref or offset):
+            raise WebError('WEB_URL_INVALID', 'PDF page selection requires a fresh URL fetch without ref or offset')
         try:
             max_chars = int(args.get('maxChars') or MAX_TEXT_DEFAULT)
         except (TypeError, ValueError):
@@ -1157,7 +1276,10 @@ class WebTools:
         title, text, links, reader, read_tier, extra = '', '', [], None, 'html', {}
         if direct_error is None:
             title, text, links, reader, read_tier, extra = self._extract(
-                ctype, final, body, meta.get('rawBody'))
+                ctype, final, body, meta.get('rawBody'),
+                pdf_start=pdf_start, pdf_count=pdf_count)
+            if pdf_window and ctype != 'application/pdf' and not body[:5].startswith('%PDF-'):
+                raise WebError('WEB_URL_INVALID', 'PDF page selection requires a PDF response')
 
         if (direct_error is None and ctype == 'application/pdf' and not text.strip()
                 and meta.get('truncatedBytes')
@@ -1171,7 +1293,12 @@ class WebTools:
             if meta2.get('rawBody') and not meta2.get('truncatedBytes'):
                 status, ctype, body, final, meta = status2, ctype2, body2, final2, meta2
                 title, text, links, reader, read_tier, extra = self._extract(
-                    ctype, final, body, meta.get('rawBody'))
+                    ctype, final, body, meta.get('rawBody'),
+                    pdf_start=pdf_start, pdf_count=pdf_count)
+        if pdf_window and direct_error is None and not text.strip():
+            raise WebError('WEB_FETCH_EMPTY',
+                           f'PDF pages starting at {pdf_start} have no selectable text: '
+                           f'{extra.get("pdfNote") or "scanned or beyond the document"}')
 
         quality = reading.body_check(text, url=final, status=status or None, content_type=ctype,
                                      reader=reader, title=title)
@@ -1247,8 +1374,10 @@ class WebTools:
         """Lưu BẢN ĐẦY ĐỦ (không phải mảnh vừa trả) vào bộ đệm; công tắc `off` ⇒ không lưu gì."""
         if web_read_store_mode() != 'on':
             return {}
-        extra = {key: payload[key] for key in ('tables', 'pdfPages', 'pdfNote') if key in payload}
-        return self.store.put(url=url, final=final, text=text, host=payload.get('host'),
+        extra = {key: payload[key] for key in ('tables', 'pdfPages', 'pdfPageStart',
+                                               'pdfPagesRead', 'pdfNextPage', 'pdfTextTruncated',
+                                               'pdfPageLimitReached', 'pdfNote') if key in payload}
+        entry = self.store.put(url=url, final=final, text=text, host=payload.get('host'),
                               status=payload.get('status'), contentType=payload.get('contentType'),
                               title=payload.get('title'), links=list(payload.get('links') or []),
                               reader=payload.get('reader'), readerReason=payload.get('readerReason'),
@@ -1256,11 +1385,19 @@ class WebTools:
                               contentEncoding=payload.get('contentEncoding'),
                               decoded=bool(payload.get('decoded')), partial=bool(payload.get('partial')),
                               extra=extra, fetchedAt=payload.get('fetchedAt'))
+        scope = self._snapshot_scope.get()
+        if scope and self.snapshot_store is not None:
+            self.snapshot_store.research_snapshot_save(scope, reading.normalize_url(final or url), entry)
+        return entry
 
     def _entry(self, ref: str) -> dict:
         """Bản ghi theo `ref`; thiếu (hoặc bộ đệm đang tắt) ⇒ `WEB_READ_REF_UNKNOWN`, nói rõ vì sao."""
         mode = web_read_store_mode()
-        entry = self.store.get(ref) if mode == 'on' else None
+        scope = self._snapshot_scope.get()
+        if mode == 'on' and scope and self.snapshot_store is not None:
+            entry = self.snapshot_store.research_snapshot_ref(scope, ref)
+        else:
+            entry = self.store.get(ref) if mode == 'on' else None
         if entry is None:
             because = ('the read store is off (BOXFOX_WEB_READ_STORE=off)' if mode != 'on'
                        else 'it was never stored, or the store dropped it')
@@ -1272,7 +1409,12 @@ class WebTools:
 
     def _entry_by_url(self, url: str) -> dict | None:
         """Bản lưu gần nhất của một URL (đã chuẩn hoá bỏ `www.`/fragment/tham số theo dõi)."""
-        return self.store.by_url(url) if web_read_store_mode() == 'on' else None
+        if web_read_store_mode() != 'on':
+            return None
+        scope = self._snapshot_scope.get()
+        if scope and self.snapshot_store is not None:
+            return self.snapshot_store.research_snapshot_url(scope, reading.normalize_url(url))
+        return self.store.by_url(url)
 
     def _stored_payload(self, entry: dict, *, offset: int, max_chars: int) -> dict:
         """Một mảnh của bản đã lưu, **cùng hình dạng payload** như `fetch` nhưng KHÔNG gọi mạng."""
@@ -1391,7 +1533,8 @@ class WebTools:
                 'fetchedAt': _now()}
 
     def _extract(self, ctype: str, final: str, body: str,
-                 raw: bytes | None) -> tuple[str, str, list, str | None, str, dict]:
+                 raw: bytes | None, *, pdf_start: int = 1,
+                 pdf_count: int = 40) -> tuple[str, str, list, str | None, str, dict]:
         """Turn a raw body into ``(title, text, links, reader, tier, extra keys)``.
 
         Tier order (chốt #6010/#6011): publisher HTML (tables kept) → JATS full text
@@ -1401,9 +1544,18 @@ class WebTools:
         """
         extra: dict = {}
         if ctype == 'application/pdf' or body[:5].startswith('%PDF-'):
-            markdown, info = reading.pdf_to_markdown(raw if isinstance(raw, (bytes, bytearray)) else b'')
+            markdown, info = reading.pdf_to_markdown(
+                raw if isinstance(raw, (bytes, bytearray)) else b'',
+                start_page=pdf_start, max_pages=pdf_count)
             if markdown:
-                extra.update({'tables': info.get('tables', 0), 'pdfPages': info.get('pages', 0)})
+                extra.update({'tables': info.get('tables', 0), 'pdfPages': info.get('pages', 0),
+                              'pdfPageStart': pdf_start,
+                              'pdfPagesRead': info.get('pagesRead', 0),
+                              'pdfNextPage': info.get('nextPage'),
+                              'pdfTextTruncated': bool(info.get('truncated')),
+                              'pdfPageLimitReached': bool(info.get('truncatedPages'))})
+                if info.get('truncatedPages') or info.get('truncated'):
+                    extra['pdfNote'] = 'PDF extraction stopped before full document; later pages or text are unread'
                 return '', markdown, [], None, 'pdf-table', extra
             extra['pdfNote'] = info.get('reason') or 'the PDF could not be rebuilt on the host'
             return '', '', [], None, 'pdf-table', extra

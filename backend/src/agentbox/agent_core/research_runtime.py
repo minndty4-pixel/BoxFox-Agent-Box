@@ -14,6 +14,8 @@ import json
 import os
 import re
 import time
+import unicodedata
+import urllib.parse
 from typing import Any
 
 from . import journal, research_header, research_ledger, research_profiles, research_quality
@@ -93,6 +95,26 @@ def research_tier_limits(tier) -> dict:
         'extensionSeconds': (RESEARCH_TURN_EXTENSION_SECONDS_TIER3 if tier >= 3 else 0),
         'critique': bool(RESEARCH_TIER_CRITIQUE[tier]),
     }
+
+
+def _review_modes_for(state: dict | None, tier: int) -> list[str]:
+    """Review obligation belongs to the decision, independently of its time tier."""
+    configured = (state or {}).get('reviewModes')
+    if isinstance(configured, list):
+        return [mode for mode in ('evidence', 'critique') if mode in configured]
+    return ['evidence', 'critique'] if tier >= 3 else []
+
+
+def _choose_review_modes(tier: int, questions: list[dict], output: str) -> list[str]:
+    if tier >= 3:
+        return ['evidence', 'critique']
+    high_count = sum(item.get('importance') == 'high' for item in questions)
+    planning = bool(re.search(r'\b(plan|planning|roadmap)\b|kế hoạch|triển khai', output, re.I))
+    if high_count >= 2 and (len(questions) >= 3 or planning):
+        return ['evidence', 'critique']
+    if len(questions) >= 2:
+        return ['evidence']
+    return []
 
 
 def _mode(env_name, modes, default, env=None):
@@ -208,7 +230,7 @@ def _rows_of(rt, sid) -> list:
 def _row_of(item) -> Any:
     return research_ledger.Row(
         row_id=item['rowId'], claim=item.get('claim') or '', url=item.get('url') or '',
-        host=item.get('host') or '', tier=int(item.get('tier') or 4), type=item.get('type') or 'normal',
+        host=item.get('host') or '', tier=int(item['tier'] if item.get('tier') is not None else 4), type=item.get('type') or 'normal',
         excerpt=item.get('excerpt') or '', fetched_at=item.get('fetchedAt') or '',
         origin=item.get('origin'), method=item.get('method'), source_row_id=item.get('sourceRowId'),
         status=item.get('status') or 'unverified', fingerprint=item.get('fingerprint') or '',
@@ -248,6 +270,7 @@ def source_add(rt, session, args):
     if not excerpt:
         raise ValueError('SOURCE_INVALID: excerpt must not be empty — record what you actually read, verbatim')
     tier_info = source_tiers.classify(url, type=args.get('type'), method=args.get('method'),
+                                      claim=claim,
                                       overrides=source_tiers.load_from_env().overrides)
     excerpt_text = excerpt[:SOURCE_EXCERPT_MAX_CHARS]
     key = _excerpt_key(excerpt_text)
@@ -279,10 +302,11 @@ def source_add(rt, session, args):
                              code='SOURCE_REUSED', row=item.row_id, host=item.host,
                              added=len(added), conflicts=conflicts, branchLinked=linked)
         item = _row_of(rt.store.source_row(owner, item.row_id) or {})
+        link = rt.store.evidence_link(owner, item.row_id, claim, proposed_by=sid)
         answer = {'rowId': item.row_id, 'tier': item.tier, 'type': item.type, 'host': item.host,
                   'fetchedAt': item.fetched_at, 'reused': True,
                   'counts': _ledger_counts(rt, owner), 'label': source_tiers.TIER_LABELS.get(item.tier, ''),
-                  'reason': 'đã có dòng sổ cho đúng URL và đúng đoạn trích này'}
+                  'reason': 'đã có dòng sổ cho đúng URL và đúng đoạn trích này', **link}
         if added:
             answer['payloadMerged'] = added
         if conflicts:
@@ -312,13 +336,14 @@ def source_add(rt, session, args):
         'step': rt.active_step.get(sid),
     }
     stored = rt.store.source_add(owner, row)
+    link = rt.store.evidence_link(owner, stored['rowId'], claim, proposed_by=sid)
     counts = _ledger_counts(rt, owner)
     system_log.write('research.source.added', session_id=sid, code='SOURCE_ADDED',
                      row=stored['rowId'], host=stored['host'], tier=stored['tier'],
                      rows=counts['rows'], chars=len(excerpt_text))
     answer = {'rowId': stored['rowId'], 'tier': stored['tier'], 'type': stored['type'],
               'host': stored['host'], 'fetchedAt': stored['fetchedAt'], 'counts': counts,
-              'label': tier_info.label, 'reason': tier_info.reason, 'reused': False}
+              'label': tier_info.label, 'reason': tier_info.reason, 'reused': False, **link}
     if not tier_info.is_primary:
         answer['note'] = (f'{stored["host"]} xếp tầng {stored["tier"]} ({tier_info.label}); một khẳng '
                           f'định then chốt cần nguồn thứ hai KHÁC nguồn tin gốc.')
@@ -353,7 +378,65 @@ def source_list(rt, session, args):
     counts = _ledger_counts(rt, owner)
     return {'rows': rows, 'counts': {'total': counts['rows'], 'byTier': counts['byTier'],
                                      'byChild': counts['byChild'], 'independent': counts['independent']},
-            'window': {'limit': limit, 'returned': len(rows), 'newestFirst': True}}
+            'window': {'limit': limit, 'returned': len(rows), 'newestFirst': True},
+            'evidenceGraph': rt.store.evidence_graph(owner, limit=limit)}
+
+
+def claim_assess(rt, session, args):
+    """An independent reviewer assesses a claim/passage relation for one dossier hash."""
+    if session.get('role') != 'research-review':
+        raise PermissionError('claim_assess is research-review-only')
+    target = (session.get('config') or {}).get('reviewTarget') or {}
+    if target.get('kind') != 'research' or not target.get('contentHash'):
+        raise ValueError('RESEARCH_REVIEW_TARGET_REQUIRED')
+    parent_id = str(session.get('parent_id') or '')
+    if not parent_id:
+        raise ValueError('RESEARCH_REVIEW_OWNER_REQUIRED')
+    dossier = rt.store.dossier(target.get('researchId'), target.get('version'))
+    if not dossier or dossier['session_id'] != parent_id or \
+            dossier['relative_path'] != target.get('path') or \
+            dossier['content_hash'] != target.get('contentHash'):
+        raise ValueError('RESEARCH_REVIEW_TARGET_CHANGED')
+    if not _review_read_proof(rt, session['id'], dossier['relative_path'], dossier['content_hash']):
+        raise ValueError('RESEARCH_REVIEW_DOCUMENT_NOT_READ')
+    relation = str(args.get('relation') or '').strip().lower()
+    if relation not in {'supports', 'contradicts', 'context', 'insufficient', 'inaccessible'}:
+        raise ValueError('RESEARCH_RELATION_INVALID')
+    rationale = str(args.get('rationale') or '').strip()
+    if len(rationale) < 20:
+        raise ValueError('RESEARCH_ASSESSMENT_REASON_TOO_SHORT')
+    return rt.store.evidence_assess(parent_id, str(args.get('passageId') or ''),
+                                    str(args.get('claimId') or ''), session['id'],
+                                    dossier['content_hash'], relation, rationale[:2000])
+
+
+def _passage_match(excerpt: str, body: str) -> tuple[bool, float]:
+    """Compare a passage with local windows, never with the whole document."""
+    def tokens(value):
+        folded = unicodedata.normalize('NFKC', value).casefold()
+        return re.findall(r'\w+', folded, flags=re.UNICODE)
+
+    needle, haystack = tokens(excerpt), tokens(body)
+    if not needle or not haystack:
+        return False, 0.0
+    if len(needle) <= len(haystack):
+        width = len(needle)
+        for start in range(len(haystack) - width + 1):
+            if haystack[start:start + width] == needle:
+                return True, 1.0
+    # OCR and HTML extraction may disturb a few words. Compare adjacent windows,
+    # not the short quotation against thousands of unrelated words.
+    width = len(needle)
+    step = max(1, width // 8)
+    target = set(needle)
+    best = 0.0
+    for start in range(0, max(1, len(haystack) - width + 1), step):
+        candidate = set(haystack[start:start + width])
+        score = len(target & candidate) / max(1, len(target | candidate))
+        best = max(best, score)
+    # A near match may be OCR noise, or one changed word that reverses the
+    # meaning. Keep the score for diagnosis but never certify it as verbatim.
+    return False, best
 
 
 async def source_verify(rt, session, args):
@@ -368,40 +451,107 @@ async def source_verify(rt, session, args):
         raise ValueError(f'SOURCE_VERIFY_UNKNOWN: no ledger row {row_id!r} in this session — '
                          f'call source_list to see the row ids you have')
     url = stored['url']
+    workspace_source = (stored.get('method') == 'workspace' and
+                        not urllib.parse.urlsplit(url).scheme)
+    async def read_workspace(offset):
+        result = await rt.executor.execute('file_read',
+                                           {'path': url, 'offset': offset, 'limit': 50000}, sid)
+        if result.get('is_error') or result.get('encoding') == 'base64':
+            raise ValueError('workspace document has no readable UTF-8 text')
+        return {'text': result.get('content') or '', 'title': os.path.basename(url),
+                'status': 200, 'reader': 'workspace',
+                'nextOffset': result.get('nextOffset'),
+                'truncated': bool(result.get('truncated')),
+                'fetchedAt': journal.utc_now_iso()}
     try:
-        payload = await asyncio.to_thread(rt.web.fetch, {'url': url, 'maxChars': 6000})
+        payload = (await read_workspace(0) if workspace_source else
+                   await asyncio.to_thread(rt.web.fetch, {'url': url, 'maxChars': 50000}))
     except Exception as exc:  # lỗi mở lại ⇒ KHÔNG BAO GIỜ `ok` (A-6, "thành công giả")
         rt.store.source_status_set(owner, row_id, 'unverified', matched=False)
         code = getattr(exc, 'code', exc.__class__.__name__)
         system_log.write('research.source.verify', level='warn', session_id=sid,
                          code='SOURCE_VERIFY_UNREACHABLE', row=row_id, host=stored['host'], remote=code)
-        return {'rowId': row_id, 'status': 'unverified', 'matched': False, 'unreachable': True,
+        return {'rowId': row_id, 'status': 'unverified', 'matched': False,
+                'claimSupport': 'not_checked', 'unreachable': True,
                 'fakeSuccess': False, 'viaReader': False, 'host': stored['host'],
+                'blockedSource': {'url': url, 'attempt': 'source_verify/web_fetch',
+                                  'readablePortion': stored.get('excerpt') or '',
+                                  'claim': stored.get('claim') or '', 'errorCode': str(code)},
                 'message': f'không mở lại được {stored["host"]} ({code}) — ghi "chưa mở được bản gốc" '
                            f'vào hồ sơ thay vì coi dòng này là đã kiểm'}
     served = dict(payload or {})
     text = str(served.get('text') or '')
+    matched, ratio = _passage_match(stored.get('excerpt') or '', text)
+    read_error = None
+    next_offset = served.get('nextOffset')
+    next_page = served.get('pdfNextPage')
+    current_ref = served.get('ref')
+    pdf_text_truncated = bool(served.get('pdfTextTruncated'))
+    segments = 1
+    while not matched and (next_offset is not None or next_page is not None) and segments < 36:
+        try:
+            if next_offset is None:
+                # A PDF window has been fully read. Reopen the following page
+                # window rather than declaring a quotation on page 41 stale.
+                page = await asyncio.to_thread(rt.web.fetch, {
+                    'url': url, 'pdfStartPage': next_page, 'maxChars': 50000})
+                current_ref = page.get('ref')
+                pdf_text_truncated = pdf_text_truncated or bool(page.get('pdfTextTruncated'))
+            else:
+                read_args = {'offset': next_offset, 'maxChars': 20000}
+                if workspace_source:
+                    page = await read_workspace(next_offset)
+                elif current_ref:
+                    read_args['ref'] = current_ref
+                    page = await asyncio.to_thread(rt.web.read_source, read_args)
+                else:
+                    page = await asyncio.to_thread(rt.web.fetch, {'url': url, **read_args})
+        except Exception as exc:
+            read_error = getattr(exc, 'code', exc.__class__.__name__)
+            break
+        chunk = str(page.get('text') or '')
+        if not chunk or (next_offset is not None and page.get('nextOffset') == next_offset):
+            break
+        # Keep a small overlap so a quotation across a slice boundary is found.
+        matched, ratio = _passage_match(stored.get('excerpt') or '', text[-2000:] + chunk)
+        text += chunk
+        next_offset = page.get('nextOffset')
+        next_page = page.get('pdfNextPage')
+        segments += 1
     title = str(served.get('title') or '').strip()
     body = text.strip()
-    fake = (title in SOURCE_FAKE_SUCCESS_TITLE_MARKERS) or (len(body) < SOURCE_FAKE_SUCCESS_MIN_CHARS)
-    ratio = research_ledger.jaccard(research_ledger.shingles(stored.get('excerpt') or ''),
-                                    research_ledger.shingles(text))
-    matched = (not fake) and ratio >= research_ledger.JACCARD_MERGE
-    status = 'ok' if matched else ('stale' if not fake else 'unverified')
+    fake = (not workspace_source and
+            ((title in SOURCE_FAKE_SUCCESS_TITLE_MARKERS) or
+             (len(body) < SOURCE_FAKE_SUCCESS_MIN_CHARS)))
+    matched = (not fake) and matched
+    incomplete = bool(next_offset is not None or next_page is not None or pdf_text_truncated or read_error or
+                      (segments == 1 and served.get('truncated') and
+                       served.get('nextOffset') is None))
+    approximate = not matched and ratio >= research_ledger.JACCARD_MERGE
+    status = 'ok' if matched else ('unverified' if fake or incomplete or approximate else 'stale')
     rt.store.source_status_set(owner, row_id, status, matched=matched)
     system_log.write('research.source.verify', level='info', session_id=sid,
                      code='SOURCE_VERIFY_OK' if matched else 'SOURCE_VERIFY_MISMATCH', row=row_id,
                      host=stored['host'], status=status, overlap=round(ratio, 3), chars=len(body),
                      fakeSuccess=fake)
-    answer = {'rowId': row_id, 'status': status, 'matched': matched, 'unreachable': False,
+    answer = {'rowId': row_id, 'status': status, 'matched': matched,
+              'claimSupport': 'not_checked', 'unreachable': False,
               'fakeSuccess': bool(fake), 'viaReader': bool(served.get('reader')),
               'host': stored['host'], 'httpStatus': served.get('status'),
-              'overlap': round(ratio, 3), 'chars': len(body), 'fetchedAt': served.get('fetchedAt')}
+              'overlap': round(ratio, 3), 'approximate': approximate,
+              'chars': len(body), 'fetchedAt': served.get('fetchedAt')}
+    answer['segmentsRead'] = segments
+    if read_error:
+        answer['readError'] = str(read_error)
     if fake:
         answer['message'] = (f'{stored["host"]} trả HTTP {served.get("status")} nhưng thân bài chỉ '
                              f'{len(body)} ký tự (dưới sàn {SOURCE_FAKE_SUCCESS_MIN_CHARS})'
                              f'{f", tiêu đề {title!r}" if title else ""} — "thành công giả": dòng này '
                              f'KHÔNG được coi là đã kiểm; tìm bản gốc khác, hoặc ghi "chưa mở được bản gốc".')
+    elif incomplete and not matched:
+        answer['message'] = 'bản đọc bị cắt trước khi tìm thấy đoạn trích; cần đọc tiếp trang/PDF'
+    elif approximate:
+        answer['message'] = 'đoạn gần giống nhưng không trùng nguyên văn; kiểm lại từ thay đổi và ngữ cảnh'
     elif not matched:
         answer['message'] = (f'nội dung đã đổi (trùng {round(ratio, 3)} < {research_ledger.JACCARD_MERGE}); '
                              f'cập nhật đoạn trích bằng `source_add` rồi mới viết hồ sơ.')
@@ -458,18 +608,26 @@ async def research_brief(rt, session, args):
     defaulted = None
     if tier not in RESEARCH_TIERS:
         defaulted, tier = str(raw_tier), RESEARCH_TIER_DEFAULT
+    existing = research_config(session)
+    job_mode = bool(args.get('questions') or args.get('methods') or args.get('goal')
+                    or existing.get('jobMode') == 'v2')
     raw_profile = str(args.get('jobProfile') or '').strip()
-    profile = research_profiles.resolve(raw_profile)
+    # A v2 job is often a mix of documents, papers and user signals. An omitted
+    # legacy profile must not silently turn a medical research plan into a
+    # price comparison with price/currency fields. Keep the old default only
+    # for legacy briefs that still rely on it.
+    profile = research_profiles.resolve(raw_profile or ('mixed' if job_mode else 'market'))
     bad_profile = None
     if profile is None:
-        bad_profile = raw_profile or '(empty)'
-        profile = research_profiles.resolve('market')
+        bad_profile = raw_profile
+        profile = research_profiles.resolve('mixed' if job_mode else 'market')
     limits = research_tier_limits(tier)
     branch_ceiling = limits['branchCeiling']
     owner_views = _owner_views(args.get('ownerViews'))
     branches = [str(item).strip() for item in (args.get('branches') or []) if str(item).strip()]
-    dropped_branches = max(0, len(branches) - branch_ceiling)
-    branches = branches[:branch_ceiling]
+    dropped_branches = 0 if job_mode else max(0, len(branches) - branch_ceiling)
+    if not job_mode:
+        branches = branches[:branch_ceiling]
     ceiling, clamped = limits['turnSeconds'], None
     if args.get('ceilingSeconds') is not None:
         try:
@@ -479,7 +637,6 @@ async def research_brief(rt, session, args):
         ceiling = max(60, min(wanted, limits['turnSeconds']))
         if ceiling != wanted:
             clamped = wanted
-    existing = research_config(session)
     # `ceilingSeconds` bỏ trống ⇒ GIỮ trần đã chốt (kẹp theo trần của mức), cho CẢ lượt mới lẫn
     # lượt đang chạy. Phải tính TRƯỚC guard bên dưới: nếu tính sau, một lời gọi "cập nhật" trong
     # cùng lượt (đổi nhánh) mà bỏ trống trần sẽ bị từ chối oan, vì lúc ấy `ceiling` còn là hạn mức
@@ -513,6 +670,12 @@ async def research_brief(rt, session, args):
             raise ValueError(f'{RESEARCH_BRIEF_RAISE_REFUSED_CODE}: trần lượt đã chốt '
                              f'{existing.get("ceilingSeconds")}s; cần dài hơn thì xin chủ nhà ở lượt sau')
     slug = slug_from_question(question, args.get('researchId'))
+    if job_mode and not same_turn and existing.get('researchId') != slug:
+        owner = rt.store.research_job(slug)
+        if owner and owner['session_id'] != sid:
+            # Stable per-session suffix prevents two independent owners with the
+            # same question from sharing a job, dossier and verdict namespace.
+            slug = f'{slug[:31].rstrip("-")}-{sid[:8].lower()}'
     # Một việc = MỘT phòng: hỏi tiếp cùng việc ở lượt sau thì ghi tiếp vào chính phòng ấy (bản `v2`,
     # `v3`… nối tiếp, đúng thứ mà `dossier_versions` đếm), câu hỏi mới ⇒ phòng mới vì phòng đặt tên
     # theo câu hỏi. Phòng cũ chỉ bị thay khi nó KHÔNG khớp khuôn `.research/<slug>-<yyyymmdd-hhmm>`
@@ -527,6 +690,50 @@ async def research_brief(rt, session, args):
               'waves': limits['waves'], 'waveSize': limits['waveSize'],
               'hardCeilingSeconds': limits['hardCeilingSeconds'], 'mode': 'brief',
               'turn': current_turn}
+    if job_mode or existing.get('jobMode') == 'v2':
+        config['jobMode'] = 'v2'
+        previous = rt.store.research_job(slug)
+        raw_questions = args.get('questions') if isinstance(args.get('questions'), list) else None
+        questions = []
+        for index, item in enumerate(raw_questions or []):
+            if isinstance(item, dict):
+                wording = str(item.get('text') or '').strip()
+                importance = str(item.get('importance') or 'medium').lower()
+                done_when = str(item.get('doneWhen') or '').strip()
+            else:
+                wording, importance, done_when = str(item).strip(), 'medium', ''
+            if wording:
+                questions.append({'id': f'q{index + 1}', 'text': wording[:1000],
+                                  'importance': importance if importance in ('high', 'medium', 'low') else 'medium',
+                                  'doneWhen': done_when[:1000], 'status': 'unexplored'})
+        if not questions and previous:
+            questions = previous['state'].get('questions') or []
+        if not questions:
+            questions = [{'id': 'q1', 'text': question, 'importance': 'high',
+                          'doneWhen': '', 'status': 'unexplored'}]
+        prior_state = previous['state'] if previous else {}
+        methods = [str(item).strip()[:80] for item in (args.get('methods') or [])
+                   if str(item).strip()][:12]
+        try:
+            budget = int(args.get('budgetSeconds') or prior_state.get('budgetSeconds')
+                         or limits['hardCeilingSeconds'])
+        except (TypeError, ValueError):
+            budget = limits['hardCeilingSeconds']
+        budget = max(60, min(budget, 86400))
+        output = str(args.get('output') or prior_state.get('output') or '')[:1000]
+        required_reviews = _choose_review_modes(tier, questions, output)
+        required_reviews = [mode for mode in ('evidence', 'critique')
+                            if mode in required_reviews or mode in _review_modes_for(prior_state, 0)]
+        state = {**prior_state, 'goal': str(args.get('goal') or prior_state.get('goal') or question)[:2000],
+                 'question': question, 'questions': questions,
+                 'methods': methods or prior_state.get('methods') or [],
+                 'output': output,
+                 'branches': branches, 'tier': tier, 'budgetSeconds': budget,
+                 'reviewModes': required_reviews,
+                 'findings': prior_state.get('findings') or [],
+                 'blockedSources': prior_state.get('blockedSources') or []}
+        rt.store.research_job_save(slug, sid, state,
+                                   status=previous['status'] if previous else 'scoping')
     session.setdefault('config', {})['research'] = config
     # `save` chỉ ghi MESSAGES, nên brief nằm trong `config` phải đi qua `update_config`: không có
     # dòng này thì mức/hồ sơ/phòng hồ sơ biến mất ở lượt sau (harness đọc lại phiên từ store).
@@ -549,7 +756,7 @@ async def research_brief(rt, session, args):
     if dropped_branches:
         notices.append(('RESEARCH_BRANCHES_CLAMPED',
                         f'{dropped_branches} nhánh vượt trần mức {tier} ({branch_ceiling}) đã bị bỏ khỏi brief'))
-    if owner_views:
+    if owner_views and not job_mode:
         # #6025 — tự động, không hỏi lại: brief có ý kiến/giả định ⇒ pha phản biện PHẢI có mục riêng
         # ba nhãn, mỗi nhãn kèm nguồn. Câu này nói cho main biết hợp đồng ấy ngay lúc chốt brief.
         notices.append((RESEARCH_OWNER_VIEWS_CODE,
@@ -569,13 +776,15 @@ async def research_brief(rt, session, args):
     for code, message in notices:
         rt.store.emit(sid, 'notice', {'code': code, 'tier': tier, 'partial': False,
                                       'message': f'{code}: {message}'})
+    requires_critique = bool(limits['critique'] or
+                             (job_mode and 'critique' in state.get('reviewModes', [])))
     rt.store.emit(sid, 'notice', {'code': 'RESEARCH_BRIEF', 'tier': tier, 'jobProfile': profile.key,
                                   'profileLabel': research_profiles.label_of(profile.key),
                                   'dossierDir': dossier_dir, 'branches': branches,
                                   'ceilingSeconds': ceiling, 'partial': False,
                                   'message': (f'RESEARCH_BRIEF: mức {tier} · {research_profiles.label_of(profile.key)} '
                                               f'· phòng {dossier_dir} · trần {ceiling}s'
-                                              f'{" · có phản biện độc lập" if limits["critique"] else ""}')})
+                                              f'{" · có phản biện độc lập" if requires_critique else ""}')})
     system_log.write('research.brief', level='info', session_id=sid, code='RESEARCH_BRIEF', tier=tier,
                      profile=profile.key, dossierDir=dossier_dir, branches=len(branches),
                      ceilingSeconds=ceiling, updated=updated)
@@ -608,14 +817,24 @@ async def research_brief(rt, session, args):
               'ownerViews': owner_views, 'updated': updated, 'extendedTurn': bool(extended),
               'next': f'delegate_task(role="research", …) mở đầu context bằng '
                       f'"Mức: {tier} · hồ sơ: {profile.key} · phòng hồ sơ: {dossier_dir}"'}
+    if config.get('jobMode') == 'v2':
+        job = rt.store.research_job(slug)
+        answer['job'] = {'status': job['status'], 'budgetSeconds': job['state']['budgetSeconds'],
+                         'reviewModes': job['state'].get('reviewModes', []),
+                         'questions': [{'id': item['id'], 'text': item['text'],
+                                        'status': item['status']}
+                                       for item in job['state']['questions']]}
+        answer['next'] += (' — pass an exact lowercase `questionId` from `job.questions` '
+                           'for every research branch; e.g. `q1`, not a label like `Q1`')
     if limits['waves'] > 1:
         answer['next'] += (f' — tối đa {limits["waves"]} sóng × {limits["waveSize"]} nhánh; hết sóng thì gộp '
                            f'báo cáo, đừng mở nhánh mới')
-    if limits['critique']:
-        answer['next'] += (' — mức 3: nhánh viết hồ sơ báo LÊN main; main giao '
-                           'delegate_task(role="research-review") đọc hồ sơ rồi main gọi research_verify '
-                           'trước khi báo chủ nhà')
-    if owner_views:
+    review_modes = state.get('reviewModes', []) if job_mode else []
+    if limits['critique'] or review_modes:
+        answer['next'] += (' — sau khi viết hồ sơ, main giao research-review và gọi research_verify '
+                           f'cho đúng bản ở các chế độ {", ".join(review_modes or ["critique"])}; '
+                           'chừa ngân sách cho kiểm chứng và phản biện trước khi kết luận')
+    if owner_views and not job_mode:
         answer['next'] += (f' — brief có {len(owner_views)} ý kiến chủ nhà: hồ sơ phải có mục soi ý kiến '
                            f'đủ ba nhãn {", ".join(label for label, _ in research_quality.OWNER_VIEW_LABELS)}, '
                            f'mỗi nhãn kèm nguồn')
@@ -636,6 +855,15 @@ def branch_limit_check(rt, session, role):
     tier = int(cfg.get('tier') or 0)
     if not tier:
         return None
+    if cfg.get('jobMode') == 'v2':
+        job = rt.store.research_job(cfg.get('researchId'))
+        if job and job['status'] in {'paused', 'cancelled', 'completed', 'partial'}:
+            raise ValueError(f'RESEARCH_JOB_NOT_ACTIVE: {job["status"]}')
+        if job and rt.store.research_job_used_seconds(session['id'], cfg.get('researchId')) >= \
+                int(job['state'].get('budgetSeconds') or 0):
+            raise ValueError('RESEARCH_JOB_BUDGET_EXHAUSTED')
+        return len([row for row in rt.store.children_of(session['id'], turn=rt.active_turn.get(session['id']))
+                    if row.get('role') == 'research'])
     sid = session['id']
     ceiling = research_tier_limits(tier)['branchCeiling']
     opened = 0
@@ -782,39 +1010,53 @@ async def dossier_write(rt, session, args):
     if not markdown.strip():
         raise ValueError('DOSSIER_INVALID: markdown must be a non-empty string')
     tier_limits = research_tier_limits(level)
-    critique_arg = str(args.get('critique') or 'none').strip().lower()
+    job = rt.store.research_job(research_id) if cfg.get('jobMode') == 'v2' else None
+    review_modes = _review_modes_for(job['state'] if job else None, level)
+    # The writer cannot certify its own independent critique. A verdict belongs
+    # to this *written version* and can only be recorded after the review child.
+    critique_arg = 'none' if cfg.get('jobMode') == 'v2' else str(args.get('critique') or 'none').strip().lower()
     if critique_arg not in research_header.CRITIQUE_VALUES:
         critique_arg = 'none'
     rows = _dossier_rows(rt, sid, args.get('rows'))
     if len(rows) > RESEARCH_MAX_ROWS_PER_DOSSIER:
         rows = rows[:RESEARCH_MAX_ROWS_PER_DOSSIER]
-    children = _planned_children(rt, sid)
+    # V2 grades the decisive claims and the question map. A branch that was
+    # cancelled, blocked, or found no evidence must be able to report that
+    # outcome without inventing a ledger row to satisfy the legacy lineage gate.
+    children = [] if cfg.get('jobMode') == 'v2' else _planned_children(rt, sid)
     mode, raw_mode = research_quality.gate_mode()
     if raw_mode:
         mode_notice(rt, sid, RESEARCH_GATE_MODE_UNKNOWN_CODE, RESEARCH_GATE_ENV, raw_mode,
                     RESEARCH_GATE_DEFAULT_MODE)
     latest_verdict = rt.store.research_verification_latest(research_id)
     critique_ok = True
-    if tier_limits['critique']:
+    if tier_limits['critique'] or review_modes:
         # Bản ĐẦU của mức 3 ghi được (chưa ai phản biện thì không có gì để kèm); từ bản thứ hai, sau
         # khi đã có phán quyết, hồ sơ phải mang phản biện ĐẠT — nếu không thì đây là bản viết lại
         # lờ phản biện, và cổng chặn (D-40, #6024).
-        critique_ok = (critique_arg == 'ok') or latest_verdict is None
+        critique_ok = (True if cfg.get('jobMode') == 'v2'
+                       else (critique_arg == 'ok') or latest_verdict is None)
         if critique_arg == 'none' and latest_verdict is None:
             rt.store.emit(sid, 'notice', {
                 'code': RESEARCH_CRITIQUE_MISSING_CODE, 'partial': False,
-                'message': (f'{RESEARCH_CRITIQUE_MISSING_CODE}: mức {level} cần phản biện độc lập — sau '
+                'message': (f'{RESEARCH_CRITIQUE_MISSING_CODE}: cần kiểm chứng độc lập — sau '
                             f'bản này hãy delegate_task(role="research-review") rồi `research_verify`')})
-    verdict = research_quality.assess(session, profile=profile, level=level, markdown=markdown,
+    verdict = research_quality.assess(session,
+                                      profile=None if cfg.get('jobMode') == 'v2' else profile,
+                                      level=level, markdown=markdown,
                                       rows=rows, child_ids=children, mode=mode,
                                       critique_ok=critique_ok, verified=_verified_map(rows),
-                                      owner_views=(cfg.get('ownerViews') if cfg else []),
-                                      review=str(args.get('review') or ''))
+                                      owner_views=(cfg.get('ownerViews') if cfg and
+                                                   cfg.get('jobMode') != 'v2' else []),
+                                      review=str(args.get('review') or ''),
+                                      require_claim_citations=cfg.get('jobMode') == 'v2')
     if not verdict.ok and verdict.mode == 'enforce':
         system_log.write('research.gate.rejected', level='warn', session_id=sid,
                          code=research_quality.RESEARCH_QUALITY_PREFIX, mode=verdict.mode,
                          issues=[item['code'] for item in verdict.missing], rows=len(rows))
-        raise ValueError(research_quality.rejection_message(verdict))
+        if cfg.get('jobMode') != 'v2':
+            raise ValueError(research_quality.rejection_message(verdict))
+        # New durable jobs keep the draft and its missing items for continuation.
     versions = rt.store.dossier_versions(research_id)
     version = (int(versions[-1] or 0) if versions else 0) + 1
     # Phòng hồ sơ phải là `.research/<researchId>-<yyyymmdd-hhmm>` — đúng khuôn tên phòng của
@@ -862,7 +1104,9 @@ async def dossier_write(rt, session, args):
                          f'{path!r}; không có gì được đăng ký')
     rt.store.record_dossier(sid, research_id, version, returned, profile=profile.key, level=level,
                             critique=critique_arg, gate=gate_label, rows=len(rows),
-                            bytes=int(written.get('bytes') or len(full.encode('utf-8'))))
+                            bytes=int(written.get('bytes') or len(full.encode('utf-8'))),
+                            content_hash=hashlib.sha256(full.encode('utf-8')).hexdigest(),
+                            quality_ok=verdict.ok)
     payload = {'researchId': research_id, 'version': version, 'profile': profile.key, 'level': level,
                'rows': len(rows), 'relativePath': returned, 'gate': verdict.mode,
                'bytes': int(written.get('bytes') or len(full.encode('utf-8')))}
@@ -886,18 +1130,19 @@ async def dossier_write(rt, session, args):
               'level': level, 'relativePath': returned, 'files': written.get('files') or [returned],
               'header': {'version': version, 'researchId': research_id, 'profile': profile.key,
                          'level': level, 'critique': critique_arg, 'rows': len(rows)},
+              'state': 'draft' if not verdict.ok or review_modes or tier_limits['critique'] else 'ready',
               'gate': {'mode': verdict.mode, 'ok': verdict.ok,
                        'issues': [item['code'] for item in verdict.missing], 'soft': verdict.soft,
                        'counts': verdict.counts},
               'journal': bool(pin and pin[1]),
               'bytes': payload['bytes'], 'sha1': written.get('sha1')}
-    if not verdict.ok and verdict.mode == 'warn':
+    if not verdict.ok:
         answer['warning'] = research_quality.notice_for(verdict.issues, len(rows))
-    critique_step = (' — mức 3 cần phản biện độc lập: **báo main** kèm đường dẫn hồ sơ để main giao '
+    critique_step = (' — cần kiểm chứng độc lập: **báo main** kèm đường dẫn hồ sơ để main giao '
                      'delegate_task(role="research-review") rồi main gọi `research_verify` cho bản này '
                      '(chỉ main ghi được phán quyết)')
     answer['next'] = ('báo cáo chủ nhà bằng đường dẫn hồ sơ, không dán lại toàn văn'
-                      + (critique_step if tier_limits['critique'] else ''))
+                      + (critique_step if tier_limits['critique'] or review_modes else ''))
     return answer
 
 
@@ -941,7 +1186,51 @@ def annotate_branch_answer(rt, session, child_id, answer, calls=()):
 # --------------------------------------------------------------------------- phản biện (đợt 6)
 
 
-def research_critique(rt, sid, research_id, version):
+def _review_read_proof(rt, child_id: str, path: str, content_hash: str) -> bool:
+    """A completed reviewer must have read the exact saved bytes, including all slices."""
+    if not content_hash:
+        return False  # legacy versions have no immutable content identity
+    slices: dict[int, str] = {}
+    size = None
+    after = 0
+    while True:
+        page = rt.store.events(child_id, after=after)
+        if not page:
+            break
+        for event in page:
+            if event['type'] != 'tool_end':
+                continue
+            data = event['data'] if isinstance(event['data'], dict) else {}
+            args = data.get('args') or {}
+            result = data.get('result') or {}
+            if data.get('name') != 'file_read' or str(args.get('path') or '') != path \
+                    or result.get('is_error') or not isinstance(result.get('content'), str):
+                continue
+            try:
+                offset = int(args.get('offset') or 0)
+            except (TypeError, ValueError):
+                continue
+            slices[offset] = result['content']
+            if result.get('truncated') is False:
+                size = offset + len(result['content'])
+        next_after = page[-1]['seq']
+        if next_after <= after:
+            break
+        after = next_after
+    if size is None:
+        return False
+    cursor = 0
+    parts = []
+    while cursor < size:
+        piece = slices.get(cursor)
+        if not piece:
+            return False
+        parts.append(piece)
+        cursor += len(piece)
+    return cursor == size and hashlib.sha256(''.join(parts).encode('utf-8')).hexdigest() == content_hash
+
+
+def research_critique(rt, sid, research_id, version, mode='critique'):
     """Cổng provenance của phản biện hồ sơ — khuôn `plan_critique`, đọc verdict ở DÒNG CUỐI.
 
     Bốn điều kiện: có bản hồ sơ thật cho `(research_id, version)`; phiên con mang vai
@@ -960,14 +1249,26 @@ def research_critique(rt, sid, research_id, version):
             continue
         if int(child.get('answer_chars') or 0) < RESEARCH_REVIEW_MIN_ANSWER_CHARS:
             continue
+        target = (rt.store.get(child['session_id']).get('config') or {}).get('reviewTarget') or {}
+        if row.get('content_hash'):
+            if target.get('kind') != 'research' or target.get('researchId') != research_id \
+                    or target.get('version') != version or target.get('path') != row['relative_path'] \
+                    or target.get('contentHash') != row.get('content_hash'):
+                continue
+            if target.get('mode') != mode:
+                continue
+            if not _review_read_proof(rt, child['session_id'], row['relative_path'],
+                                      row.get('content_hash') or ''):
+                continue
         usable.append(child)
     if not usable:
         raise ValueError(f'{RESEARCH_VERIFY_NO_CRITIC_CODE}: {research_id}@v{version} chưa có phản biện '
                          f'dùng được — delegate_task(role="research-review") SAU khi bản này được ghi và '
-                         f'để nó kết thúc với câu trả lời ít nhất {RESEARCH_REVIEW_MIN_ANSWER_CHARS} ký tự')
+                         f'để nó đọc toàn bộ đúng file bằng file_read và kết thúc với câu trả lời '
+                         f'ít nhất {RESEARCH_REVIEW_MIN_ANSWER_CHARS} ký tự')
     critic = max(usable, key=lambda item: (float(item.get('started') or 0), str(item.get('session_id'))))
     text = ''
-    for event in rt.store.events(critic['session_id']):
+    for event in rt.store.events_tail(critic['session_id']):
         if event['type'] != 'assistant':
             continue
         candidate = event['data'].get('text') if isinstance(event['data'], dict) else None
@@ -986,9 +1287,18 @@ def research_critique(rt, sid, research_id, version):
 def _clamp_issues(issues) -> list:
     out = []
     for item in issues or []:
-        text = str(item).strip()
-        if text:
-            out.append(text[:RESEARCH_VERIFY_ISSUE_CHARS])
+        if isinstance(item, dict):
+            text = str(item.get('text') or '').strip()
+            if text:
+                out.append({'severity': item.get('severity') if item.get('severity') in
+                            ('high', 'medium', 'low') else 'medium',
+                            'text': text[:RESEARCH_VERIFY_ISSUE_CHARS],
+                            'fix': str(item.get('fix') or '')[:RESEARCH_VERIFY_ISSUE_CHARS]})
+        else:
+            text = str(item).strip()
+            if text:
+                out.append({'severity': 'medium', 'text': text[:RESEARCH_VERIFY_ISSUE_CHARS],
+                            'fix': ''})
     return out[:RESEARCH_VERIFY_MAX_ISSUES]
 
 
@@ -1015,17 +1325,30 @@ async def research_verify(rt, session, args):
     if verdict not in ('ok', 'revise'):
         raise ValueError('RESEARCH_VERIFY_INVALID: verdict must be "ok" or "revise"')
     issues = _clamp_issues(args.get('issues'))
+    mode = str(args.get('mode') or 'critique').strip().lower()
+    if mode not in {'evidence', 'critique'}:
+        raise ValueError('RESEARCH_VERIFY_MODE_INVALID')
     summary = str(args.get('summary') or '')[:RESEARCH_VERIFY_SUMMARY_CHARS]
-    critic, critic_verdict, answer_chars = research_critique(rt, sid, research_id, version)
+    critic, critic_verdict, answer_chars = research_critique(rt, sid, research_id, version, mode=mode)
     if critic_verdict != verdict:
         raise ValueError(f'{RESEARCH_VERIFY_VERDICT_MISMATCH_CODE}: phản biện nói {critic_verdict!r} mà bạn '
                          f'ghi {verdict!r} — ghi đúng điều nó nói, hoặc hỏi nó phản biện lại nếu nó sai')
     rt.store.record_research_verification(research_id, version, sid, verdict, issues=issues,
                                           summary=summary, critic_session_id=critic['session_id'],
-                                          critic_answer_chars=answer_chars, critic_verdict=critic_verdict)
-    rt.store.dossier_critique_set(research_id, version, verdict)
+                                          critic_answer_chars=answer_chars, critic_verdict=critic_verdict,
+                                          mode=mode)
+    review_rows = rt.store.research_verifications(research_id, version=version)
+    by_mode = {item['mode']: item['verdict'] for item in reversed(review_rows)}
+    job = rt.store.research_job(research_id)
+    needed = set(_review_modes_for(job['state'], job['state'].get('tier', 0))) if job else {mode}
+    if not needed:
+        needed = {mode}
+    combined = ('revise' if any(by_mode.get(item) == 'revise' for item in needed)
+                else 'ok' if all(by_mode.get(item) == 'ok' for item in needed) else 'none')
+    rt.store.dossier_critique_set(research_id, version, combined)
     rt.store.emit(sid, 'research_verified', {
-        'researchId': research_id, 'version': version, 'verdict': verdict, 'issues': issues,
+        'researchId': research_id, 'version': version, 'verdict': verdict, 'mode': mode,
+        'combined': combined, 'issues': issues,
         'summary': summary, 'criticSessionId': critic['session_id'], 'criticAnswerChars': answer_chars,
         'at': journal.utc_now_iso()})
     rounds = rt.store.research_verification_count(research_id, verdict='revise')
@@ -1045,12 +1368,13 @@ async def research_verify(rt, session, args):
     system_log.write('research.verified', level='info', session_id=sid, code='RESEARCH_VERIFIED',
                      researchId=research_id, version=version, verdict=verdict, issues=len(issues),
                      reviseRounds=rounds)
-    answer = {'researchId': research_id, 'version': version, 'verdict': verdict, 'capped': capped,
+    answer = {'researchId': research_id, 'version': version, 'verdict': verdict,
+              'mode': mode, 'combined': combined, 'capped': capped,
               'label': label, 'issues': issues, 'criticSessionId': critic['session_id'],
               'criticAnswerChars': answer_chars, 'reviseRounds': rounds}
     if verdict == 'revise':
-        answer['next'] = ('sửa đúng các điểm đã nêu rồi ghi bản mới bằng `dossier_write` (kèm '
-                          f'critique="ok" khi đã xử lý) — còn tối đa {RESEARCH_VERIFY_REVISE_MAX} vòng sửa')
+        answer['next'] = ('sửa đúng các điểm đã nêu rồi ghi bản nháp mới bằng `dossier_write`, '
+                          'sau đó kiểm lại đúng phiên bản')
     if capped:
         answer['message'] = (f'{RESEARCH_CRITIQUE_LABEL}: đã quá trần {RESEARCH_VERIFY_REVISE_MAX} vòng '
                              f'`revise` cho việc này — dừng viết lại và báo chủ nhà trung thực, kèm bản '
@@ -1076,14 +1400,21 @@ def research_status(rt, session, args):
     versions = [int(item) for item in rt.store.dossier_versions(research_id)]
     latest = rt.store.dossier_latest(research_id)
     verifications = rt.store.research_verifications(research_id)
+    job = rt.store.research_job(research_id)
+    review_modes = _review_modes_for(job['state'] if job else None,
+                                     int(latest['level']) if latest else 0)
     cfg = research_config(session)
     answer = {'researchId': research_id, 'versions': versions,
               'latest': ({'version': int(latest['version']), 'path': latest['relative_path'],
                           'profile': latest['profile'], 'level': int(latest['level']),
                           'critique': latest['critique'], 'gate': latest['gate'],
                           'rows': int(latest['rows']), 'bytes': int(latest['bytes']),
-                          'sessionId': latest['session_id']} if latest else None),
-              'verifications': [{'version': int(item['version']), 'verdict': item['verdict'],
+                          'sessionId': latest['session_id'],
+                          'publication': ('reviewed' if latest.get('quality_ok') and
+                                           (not review_modes or latest['critique'] == 'ok')
+                                           else 'draft')} if latest else None),
+              'verifications': [{'version': int(item['version']), 'mode': item.get('mode'),
+                                 'verdict': item['verdict'],
                                  'issues': len(item['issues']), 'summary': item['summary'],
                                  'criticSessionId': item['criticSessionId']} for item in verifications],
               'config': ({'tier': cfg.get('tier'), 'jobProfile': cfg.get('jobProfile'),
@@ -1094,7 +1425,66 @@ def research_status(rt, session, args):
                          'revise': rt.store.research_verification_count(research_id, verdict='revise'),
                          'ledgerRows': rt.store.source_count(owner),
                          'independent': research_ledger.independent_count(_rows_of(rt, owner))}}
+    if job:
+        used = rt.store.research_job_used_seconds(job['session_id'], research_id)
+        answer['job'] = {**job, 'usedSeconds': used,
+                         'remainingSeconds': max(0, job['state'].get('budgetSeconds', 0) - used),
+                         'children': rt.store.children_of(job['session_id']),
+                         'dependentPlans': rt.store.research_dependent_plans(research_id)}
     return answer
+
+
+def research_update(rt, session, args):
+    """Checkpoint a question, finding or blocker without rewriting the dossier."""
+    if session.get('role') != 'orchestrator' or session.get('parent_id'):
+        raise PermissionError('research_update is orchestrator-only')
+    research_id = str(args.get('researchId') or research_config(session).get('researchId') or '')
+    job = rt.store.research_job(research_id)
+    if not job or job['session_id'] != session['id']:
+        raise ValueError('RESEARCH_JOB_UNKNOWN')
+    state = dict(job['state'])
+    qid = str(args.get('questionId') or '')
+    qstatus = str(args.get('questionStatus') or '')
+    if qid:
+        if qstatus not in {'unexplored', 'researching', 'evidenced', 'contested', 'blocked', 'answered'}:
+            raise ValueError('RESEARCH_QUESTION_STATUS_INVALID')
+        found = False
+        for item in state['questions']:
+            if item['id'] == qid:
+                item['status'] = qstatus
+                item['note'] = str(args.get('note') or '')[:2000]
+                found = True
+        if not found:
+            raise ValueError('RESEARCH_QUESTION_UNKNOWN')
+    finding = args.get('finding')
+    if finding:
+        state.setdefault('findings', []).append(str(finding)[:2000])
+    blocked = args.get('blockedSource')
+    if isinstance(blocked, dict) and blocked.get('url'):
+        state.setdefault('blockedSources', []).append({
+            'url': str(blocked['url'])[:2000], 'attempt': str(blocked.get('attempt') or '')[:500],
+            'impact': str(blocked.get('impact') or '')[:1000]})
+    status = str(args.get('status') or job['status'])
+    used = rt.store.research_job_used_seconds(session['id'], research_id)
+    if status == 'completed':
+        unresolved = [item['id'] for item in state['questions']
+                      if item.get('importance') == 'high' and
+                      not (item.get('status') == 'answered' or
+                           (item.get('status') == 'blocked' and item.get('note')))]
+        dossier = rt.store.dossier_latest(research_id)
+        required_reviews = _review_modes_for(state, state.get('tier', 0))
+        if unresolved or not dossier or not dossier.get('quality_ok') or \
+                (required_reviews and dossier.get('critique') != 'ok'):
+            raise ValueError('RESEARCH_JOB_INCOMPLETE: resolve or qualify high-impact questions, '
+                             'write a quality-checked dossier, and complete required reviews; '
+                             f'unresolved={unresolved}')
+    if used >= state['budgetSeconds'] and status not in {'partial', 'completed', 'paused', 'cancelled'}:
+        status = 'partial'
+    updated = rt.store.research_job_save(research_id, session['id'], state, status,
+                                         revision=args.get('revision'))
+    return {'researchId': research_id, 'status': updated['status'],
+            'revision': updated['revision'], 'questions': state['questions'],
+            'usedSeconds': used, 'remainingSeconds': max(0, state['budgetSeconds'] - used)}
 
 
 async def cancel_child(rt, session, args):

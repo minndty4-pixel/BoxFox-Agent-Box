@@ -102,7 +102,7 @@ def test_watchdog_huy_con_qua_han_chi_nha_mot_slot(tmp_path):
         store.save(sid, sessions[0]['messages'], 'running')
         aged = children[0]['sessionId']
         store.db.execute('UPDATE children SET started=? WHERE session_id=?',
-                         (time.time() - 1_000, aged))
+                         (time.time() - 1_300, aged))
         watchdog = PeerWatchdog(store, runtime=runtime)
         watchdog.first_scan = False   # luật 4 (RESTART) chỉ đúng ở nhịp ĐẦU của một tiến trình
 

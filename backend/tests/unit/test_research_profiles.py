@@ -27,17 +27,19 @@ def missing_hard(key: str, payload: dict) -> set[str]:
 
 
 def test_every_profile_names_a_group_and_its_hard_fields():
-    assert set(rp.GROUPS) == {'official-document', 'academic', 'market'}
-    assert len(rp.PROFILES) == 9
+    assert set(rp.GROUPS) == {'official-document', 'academic', 'market', 'mixed'}
+    assert len(rp.PROFILES) == 10
     for key, profile in rp.PROFILES.items():
         assert profile.group in rp.GROUPS, key
         assert profile.label and profile.label.strip(), key
-        assert profile.hard_fields, f'{key} phải có ít nhất một trường bắt buộc'
+        if key != 'mixed':
+            assert profile.hard_fields, f'{key} phải có ít nhất một trường bắt buộc'
         for field in profile.fields:
             assert field.required in ('hard', 'soft'), (key, field.key)
             assert field.label, (key, field.key)
             assert field.kind in rp.KINDS, (key, field.key)
     assert rp.label_of('health') == 'văn bản chính thống (y tế)'
+    assert rp.required_keys('mixed') == ()
 
 
 def test_the_law_profile_demands_number_effective_date_and_validity():

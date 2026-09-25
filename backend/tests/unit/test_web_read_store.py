@@ -169,28 +169,28 @@ def test_the_read_store_switch_off_stores_nothing_and_kills_references(tools, se
 
 def test_the_store_drops_the_oldest_entry_when_it_is_full():
     store = reading_module.ReadStore(max_entries=2)
-    store.put(url='https://a.example/1', final='https://a.example/1', text='một')
-    store.put(url='https://a.example/2', final='https://a.example/2', text='hai')
-    store.put(url='https://a.example/3', final='https://a.example/3', text='ba')
-    assert len(store) == 2 and store.get('r1') is None
-    assert store.get('r2')['text'] == 'hai' and store.get('r3')['text'] == 'ba'
+    first = store.put(url='https://a.example/1', final='https://a.example/1', text='một')
+    second = store.put(url='https://a.example/2', final='https://a.example/2', text='hai')
+    third = store.put(url='https://a.example/3', final='https://a.example/3', text='ba')
+    assert len(store) == 2 and store.get(first['ref']) is None
+    assert store.get(second['ref'])['text'] == 'hai' and store.get(third['ref'])['text'] == 'ba'
 
 
 def test_a_touched_entry_survives_the_next_eviction():
     store = reading_module.ReadStore(max_entries=2)
-    store.put(url='https://a.example/1', final='https://a.example/1', text='một')
-    store.put(url='https://a.example/2', final='https://a.example/2', text='hai')
-    store.get('r1')                                             # chạm vào bản cũ nhất
+    first = store.put(url='https://a.example/1', final='https://a.example/1', text='một')
+    second = store.put(url='https://a.example/2', final='https://a.example/2', text='hai')
+    store.get(first['ref'])                                     # chạm vào bản cũ nhất
     store.put(url='https://a.example/3', final='https://a.example/3', text='ba')
-    assert store.get('r1') is not None and store.get('r2') is None
+    assert store.get(first['ref']) is not None and store.get(second['ref']) is None
 
 
 def test_the_store_respects_the_total_budget():
     store = reading_module.ReadStore(max_entries=10, entry_max_chars=100, max_chars=250)
-    store.put(url='https://a.example/1', final='https://a.example/1', text='x' * 100)
+    first = store.put(url='https://a.example/1', final='https://a.example/1', text='x' * 100)
     store.put(url='https://a.example/2', final='https://a.example/2', text='y' * 100)
     store.put(url='https://a.example/3', final='https://a.example/3', text='z' * 100)
-    assert store.total_chars == 200 and store.get('r1') is None
+    assert store.total_chars == 200 and store.get(first['ref']) is None
 
 
 def test_one_entry_is_capped_and_says_how_much_was_kept():

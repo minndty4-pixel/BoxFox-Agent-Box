@@ -4,6 +4,7 @@ Contract: backend/src/agentbox/agent_core/plan_quality.py (pure) + failures.PLAN
 """
 import asyncio
 import copy
+import hashlib
 import json
 
 import pytest
@@ -128,6 +129,22 @@ def test_a_verification_section_must_name_a_command_and_an_expected_result():
     assert plan_quality_issues('# P\n\n## Verification\n## Risks\n- none known\n') == ['verification-section']
 
 
+def test_later_verification_procedure_counts_after_early_acceptance_criteria():
+    markdown = '''# Referral agent plan
+
+## Tiêu chí nghiệm thu MVP
+- Document classification accuracy exceeds 90% on the held-out set.
+
+## Verification / Acceptance criteria
+- Run `python -m pytest backend/tests/test_referral_validity.py -q`.
+- Expected result: the suite passes and reports the held-out accuracy.
+
+## Risks / Limitations
+- Current legal rules require expert review before deployment.
+'''
+    assert plan_quality_issues(markdown) == []
+
+
 def test_host_and_path_normalisation_is_prefix_based_not_character_set_based():
     """H2 (hậu kiểm vòng 25): `lstrip('www.')` / `lstrip('./')` cắt theo TẬP ký tự.
 
@@ -226,8 +243,9 @@ def test_a_compliant_plan_is_written_exactly_as_before_the_gate(tmp_path):
         assert (name, args['slug'], args['markdown']) == ('write_plan', 'workspace-plan', GOOD_PLAN)
         written = events_of(store, sid, 'plan_written')[0]['data']
         assert written == {'identity': 'workspace-plan', 'version': 1, 'slug': 'workspace-plan',
-                           'relativePath': '.plans/v1-workspace-plan.md', 'title': 'Workspace plan',
-                           'bytes': len(GOOD_PLAN.encode('utf-8'))}
+                               'relativePath': '.plans/v1-workspace-plan.md', 'title': 'Workspace plan',
+                               'bytes': len(GOOD_PLAN.encode('utf-8')),
+                               'contentHash': hashlib.sha256(GOOD_PLAN.encode('utf-8')).hexdigest()}
         assert events_of(store, sid, 'ui_intent')[0]['data'] == \
             {'tab': 'plan', 'target': {'identity': 'workspace-plan', 'version': 1}, 'reason': 'plan_written'}
         assert tool_results(store, sid)[-1]['relativePath'] == '.plans/v1-workspace-plan.md'

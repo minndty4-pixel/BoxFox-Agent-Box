@@ -666,7 +666,7 @@ export const useHarnessChatStore = create<State>((set, get) => ({
           subagents: isSingleModel && singleModelId
             ? harness?.subagents?.map(s => ({ ...s, model: singleModelId })) ?? []
             : harness?.subagents,
-          ...(singleModelId ? { singleModel: singleModelId, model: singleModelId }
+          ...(singleModelId ? { singleModel: singleModelId, model: singleModelId, isSingleModel: true }
               : (harness?.mainModel && harness.mainModel !== 'default' ? { model: harness.mainModel } : {}))
         })
         useSessionRecordStore.getState().record(session.id, {

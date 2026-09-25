@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import re
 import unicodedata
+import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -140,9 +141,32 @@ def jaccard(left: Iterable[str], right: Iterable[str]) -> float:
 
 
 def origin_unit(row: Row) -> str:
-    """Nhãn "nguồn tin gốc" của một dòng: lời khai của con, hoặc host."""
+    """Identify the actual work or author on shared publishing platforms."""
     declared = (row.origin or '').strip().lower()
-    return declared or (row.host or '').strip().lower()
+    if declared:
+        return declared
+    parsed = urllib.parse.urlsplit(row.url or '')
+    host = (parsed.hostname or row.host or '').lower().removeprefix('www.')
+    path = urllib.parse.unquote(parsed.path or '').strip('/').lower()
+    query = urllib.parse.parse_qs(parsed.query)
+    if host == 'doi.org' and path:
+        return f'doi:{path}'
+    if host in {'arxiv.org', 'export.arxiv.org'} and path:
+        return 'arxiv:' + re.sub(r'^(abs|pdf)/', '', path).removesuffix('.pdf')
+    if host == 'openreview.net' and query.get('id'):
+        return 'openreview:' + query['id'][0].lower()
+    if host in {'pubmed.ncbi.nlm.nih.gov', 'pmc.ncbi.nlm.nih.gov'} and path:
+        return f'ncbi:{path}'
+    if host == 'eutils.ncbi.nlm.nih.gov' and query.get('id'):
+        return 'ncbi:' + query['id'][0].lower()
+    if host == 'github.com' and len(path.split('/')) >= 2:
+        return 'github-owner:' + path.split('/')[0]
+    if host == 'facebook.com':
+        author = str((row.payload or {}).get('authorId') or '').strip().lower()
+        return 'facebook-author:' + (author or path.split('/')[0] or host)
+    if host.endswith('vbpl.vn') and query.get('ItemID'):
+        return 'vbpl-document:' + query['ItemID'][0]
+    return host
 
 
 def tier_of(rows: Sequence[Row]) -> int:
@@ -195,7 +219,7 @@ def origin_units(rows: Sequence[Row]) -> list[Unit]:
         for right in range(left + 1, len(places)):
             if prints[right] is None:
                 continue
-            if (places[left].host or '') == (places[right].host or ''):
+            if origin_unit(places[left]) == origin_unit(places[right]):
                 continue
             if jaccard(prints[left] or (), prints[right] or ()) >= JACCARD_MERGE:
                 union(left, right)
@@ -307,6 +331,7 @@ def assess_rows(
     profile: Any | None = None,
     *,
     verified: Mapping[str, bool] | None = None,
+    min_excerpt_chars: int = MIN_EXCERPT_CHARS,
 ) -> list[Issue]:
     """Kiểm cấp DÒNG SỔ (A5). `verified` là bản đồ `rowId -> mở lại được nguyên văn`."""
     issues: list[Issue] = []
@@ -314,7 +339,7 @@ def assess_rows(
 
     for row in rows:
         excerpt = (row.excerpt or '').strip()
-        if len(excerpt) < MIN_EXCERPT_CHARS:
+        if len(excerpt) < min_excerpt_chars:
             issues.append(Issue('research-excerpt-missing', f'{row.row_id}: {len(excerpt)} ký tự'))
         if row.tier is None or int(row.tier) < 0:
             issues.append(Issue('research-tier-unknown', row.row_id))
@@ -326,8 +351,6 @@ def assess_rows(
             continue
         row = next((item for item in rows if item.row_id == row_id), None)
         if row is None or (row.method or '') == 'workspace':
-            continue
-        if (row.tier or 0) <= 1:
             continue
         issues.append(Issue('research-doc-pointer-missing', f'{row_id}: {row.host} chưa mở lại được'))
 
@@ -373,7 +396,13 @@ def assess_rows(
             issues.append(Issue('research-host-doc-unmarked', row.row_id))
 
     if profile is not None and getattr(profile, 'validity', False):
-        needs_validity = [(row, getattr(profile, 'validity_fields', ()) or ()) for row in rows]
+        # Workflow interviews and hospital forms are not statutes. Check legal
+        # validity fields only on rows that actually assert a legal rule.
+        needs_validity = [(row, getattr(profile, 'validity_fields', ()) or ()) for row in rows
+                          if row.payload.get('evidenceType') in ('law', 'regulation', 'official-rule')
+                          or row.payload.get('docNumber')
+                          or re.search(r'(?i)\b(thông tư|nghị định|quyết định|luật)\b',
+                                       f'{row.claim} {row.excerpt}')]
         for row, field_keys in needs_validity:
             if (row.type or 'normal') == 'confirm':
                 continue

@@ -242,6 +242,20 @@ def plan_quality_issues(markdown: str) -> list:
     for spec in REQUIRED_SECTIONS:
         if spec['trigger'] == 'external_facts' and not claims_external_facts(text):
             continue
+        if spec['id'] == 'verification':
+            # Product and research plans often have both an acceptance-target
+            # section and a later verification procedure. The first heading
+            # alone must not hide the concrete checks in the second.
+            bodies = [body for heading, body in found_sections
+                      if body.strip() and any(key in heading for key in spec['heading_keys'])]
+            if not bodies:
+                issues.append(spec['missing'][0])
+            else:
+                if not any(has_concrete_check(body) for body in bodies):
+                    issues.append('verification-command')
+                if not any(has_expected_result(body) for body in bodies):
+                    issues.append('verification-expected')
+            continue
         found = _find_with_body(found_sections, spec['heading_keys'])
         if not found:
             issues.append(spec['missing'][0])
@@ -250,11 +264,6 @@ def plan_quality_issues(markdown: str) -> list:
         if not body.strip():
             issues.append(spec['missing'][0])
             continue
-        if spec['id'] == 'verification':
-            if not has_concrete_check(body):
-                issues.append('verification-command')
-            if not has_expected_result(body):
-                issues.append('verification-expected')
     return issues
 
 

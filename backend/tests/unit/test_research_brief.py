@@ -62,6 +62,42 @@ def test_a_wrong_tier_is_clamped_to_two_and_the_notice_says_so(harness):
     assert limits.RESEARCH_TIER_DEFAULTED_CODE in answer['notices']
 
 
+def test_v2_brief_returns_exact_question_ids_for_delegation(harness):
+    store, runtime, sid, session = harness
+    answer = brief(runtime, session, goal='Decide scope',
+                   questions=[{'text': 'Which records matter?', 'importance': 'high'},
+                              {'text': 'Who needs them?', 'importance': 'high'}],
+                   methods=['law', 'users'], budgetSeconds=1100)
+    assert [item['id'] for item in answer['job']['questions']] == ['q1', 'q2']
+    assert answer['job']['budgetSeconds'] == 1100
+    assert 'questionId' in answer['next'] and '`q1`' in answer['next']
+
+
+def test_v2_brief_without_a_profile_uses_mixed_evidence_not_price(harness):
+    store, runtime, sid, session = harness
+    answer = asyncio.run(runtime.dispatch(session, 'research_brief', {
+        'tier': 2, 'question': 'Quy trình chuyển viện và nhu cầu người bệnh?',
+        'rationale': 'Cần đối chiếu quy định, nhu cầu và sản phẩm.',
+        'goal': 'Lập kế hoạch agent y tế', 'methods': ['law', 'users', 'products'],
+        'questions': [{'text': 'Giấy tờ cần gì?', 'importance': 'high'}],
+    }))
+    assert answer['jobProfile'] == 'mixed'
+    assert research_runtime.research_config(store.get(sid))['profileGroup'] == 'mixed'
+
+
+def test_consequential_v2_plan_requires_both_reviews_within_tier_two(harness):
+    store, runtime, sid, session = harness
+    answer = brief(runtime, session, goal='Plan a referral agent',
+                   output='Detailed product plan and safety conditions', budgetSeconds=1200,
+                   questions=[{'text': 'What does the law require?', 'importance': 'high'},
+                              {'text': 'What do patients need?', 'importance': 'high'},
+                              {'text': 'Which products exist?', 'importance': 'medium'}])
+    assert answer['tier'] == 2
+    assert answer['job']['reviewModes'] == ['evidence', 'critique']
+    assert store.research_job(answer['researchId'])['state']['reviewModes'] == ['evidence', 'critique']
+    assert 'research-review' in answer['next']
+
+
 def test_a_ceiling_longer_than_the_tier_allows_is_clamped(harness):
     store, runtime, sid, session = harness
     answer = brief(runtime, session, ceilingSeconds=99999)

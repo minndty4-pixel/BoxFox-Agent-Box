@@ -5,9 +5,10 @@ import logging
 import os
 import re
 import sys
+import time
 from pathlib import Path
 from aiohttp import web
-from ..agent_core import plan_registry
+from ..agent_core import plan_registry, research_runtime
 from ..agent_core.plan_header import IDENTITY_PATTERN
 from ..agent_core.peer_watchdog import PeerWatchdog
 from ..agent_core.runtime import HarnessRuntime, DecisionError
@@ -56,6 +57,56 @@ from .owner_settings import OwnerSettings
 
 
 logger = logging.getLogger('boxfox.harness.api')
+RESEARCH_PUMP_KEY = web.AppKey('research_pump', asyncio.Task)
+
+
+async def research_continuation_step(runtime):
+    """Resume eligible research jobs once; persisted turns keep retries idempotent."""
+    for job in runtime.store.research_jobs_active():
+        sid = job['session_id']
+        try:
+            session = runtime.store.get(sid)
+            if session['status'] in {'running', 'awaiting_decision'}:
+                continue
+            state = dict(job['state'])
+            used = runtime.store.research_job_used_seconds(sid, job['research_id'])
+            remaining = int(state.get('budgetSeconds') or 0) - used
+            if remaining < 60:
+                runtime.store.research_job_save(job['research_id'], sid, state,
+                                                status='partial', revision=job['revision'])
+                continue
+            turn = int(session.get('turn_count') or 0)
+            if turn <= int(state.get('lastContinuationTurn') or 0) and \
+                    time.time() - float(state.get('lastContinuationAt') or 0) < 90:
+                continue
+            progress = (sum(q.get('status') in ('answered', 'evidenced')
+                            for q in state.get('questions', [])),
+                        len(state.get('findings', [])), runtime.store.source_count(sid),
+                        len(runtime.store.dossier_versions(job['research_id'])))
+            old = tuple(state.get('lastProgress') or ())
+            stalled = (int(state.get('stalledTurns') or 0) + 1 if old == progress else 0)
+            state.update(lastProgress=list(progress), stalledTurns=stalled,
+                         lastContinuationTurn=turn, lastContinuationAt=time.time(),
+                         continuationAttempt=int(state.get('continuationAttempt') or 0) + 1)
+            if stalled >= 2:
+                runtime.store.research_job_save(job['research_id'], sid, state,
+                                                status='partial', revision=job['revision'])
+                continue
+            runtime.store.research_job_save(job['research_id'], sid, state,
+                                            revision=job['revision'])
+            # Clamp the next autonomous turn to the remaining aggregate budget.
+            session['config']['deadlineSeconds'] = max(
+                60, min(int(session['config'].get('deadlineSeconds') or 600), int(remaining)))
+            runtime.store.update_config(sid, session['config'])
+            await runtime.submit(sid,
+                f'Continue research job {job["research_id"]} from research_status. '
+                'Prioritize unanswered decision-critical questions, verify important claims, '
+                'record findings with research_update, and stop with a qualified partial '
+                'result if evidence is blocked. Do not exceed the remaining job budget.',
+                invocation_id=f'research-resume-{job["research_id"]}-{state["continuationAttempt"]}')
+        except Exception:
+            # One malformed or temporarily unavailable job must not kill the pump.
+            logger.exception('research continuation could not start for %s', job['research_id'])
 
 DEFAULT_HARNESS_PORT = 3102
 HARNESS_VERSION = '0.1.0'
@@ -206,6 +257,23 @@ def create_app(runtime):
         # watchdog làm thì chính nó ghi (`watchdog.child_closed` / `watchdog.wait_forced`).
 
     app.on_startup.append(start_peer_watchdog)
+
+    async def research_continuations(_app):
+        """Resume only new durable jobs, using stored progress and the original budget."""
+        async def pump():
+            while True:
+                await asyncio.sleep(15)
+                await research_continuation_step(runtime)
+        _app[RESEARCH_PUMP_KEY] = asyncio.create_task(pump())
+
+    async def stop_research_continuations(_app):
+        task = _app.get(RESEARCH_PUMP_KEY)
+        if task:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    app.on_startup.append(research_continuations)
+    app.on_cleanup.append(stop_research_continuations)
 
     async def health(request):
         return web.json_response({'status': 'ok', 'service': 'boxfox-harness', 'version': HARNESS_VERSION})
@@ -420,6 +488,79 @@ def create_app(runtime):
     async def list_sessions(request):
         limit = min(100, max(1, int(request.query.get('limit', '50'))))
         return web.json_response({'sessions': runtime.store.list(limit)})
+
+    async def research_jobs(request):
+        sid = request.query.get('sessionId', '').strip()
+        if not sid:
+            raise ApiError('RESEARCH_SESSION_REQUIRED', 'sessionId is required')
+        try:
+            runtime.store.get(sid)
+        except KeyError:
+            raise missing_session(sid) from None
+        jobs = runtime.store.research_jobs_for(sid)
+        return web.json_response({'jobs': [{**job,
+            'usedSeconds': runtime.store.research_job_used_seconds(sid, job['research_id']),
+            'remainingSeconds': max(0, job['state'].get('budgetSeconds', 0)
+                                    - runtime.store.research_job_used_seconds(sid, job['research_id'])),
+            'evidence': runtime.store.source_rows(sid, limit=50, newest_first=True),
+            'evidenceGraph': runtime.store.evidence_graph(sid, limit=50),
+            'dependentPlans': runtime.store.research_dependent_plans(job['research_id']),
+            'branches': [{**branch, 'questionId':
+                          (runtime.store.get(branch['session_id'])['config'] or {}).get('researchQuestionId')}
+                         for branch in runtime.store.children_of(sid)],
+            'dossier': runtime.store.dossier_latest(job['research_id']),
+            'reviews': runtime.store.research_verifications(job['research_id'], limit=10),
+            } for job in jobs]})
+
+    async def research_job_update(request):
+        research_id = request.match_info['research_id']
+        job = runtime.store.research_job(research_id)
+        if job is None:
+            raise ApiError('RESEARCH_JOB_UNKNOWN', research_id, 404)
+        body = await request.json()
+        action = str(body.get('action') or '')
+        if action not in {'pause', 'resume', 'cancel', 'prioritize', 'skip', 'budget'}:
+            raise ApiError('RESEARCH_ACTION_INVALID', action)
+        state = dict(job['state'])
+        status = job['status']
+        if action in {'pause', 'cancel', 'resume'}:
+            status = {'pause': 'paused', 'cancel': 'cancelled', 'resume': 'researching'}[action]
+            if action == 'resume' and job['status'] not in {'paused', 'partial', 'needs_user'}:
+                raise ApiError('RESEARCH_RESUME_INVALID', 'Job is not paused or partial')
+            if action == 'resume':
+                # A paused job may have stopped in the same turn the pump last saw.
+                # Explicit resume must wake it even without a new user turn.
+                state['lastContinuationTurn'] = -1
+                state['stalledTurns'] = 0
+        elif action == 'budget':
+            seconds = body.get('budgetSeconds')
+            if isinstance(seconds, bool) or not isinstance(seconds, int) or not 60 <= seconds <= 86400:
+                raise ApiError('RESEARCH_BUDGET_INVALID', 'budgetSeconds must be 60..86400')
+            state['budgetSeconds'] = seconds
+        else:
+            qid = str(body.get('questionId') or '')
+            question = next((item for item in state.get('questions', []) if item['id'] == qid), None)
+            if question is None:
+                raise ApiError('RESEARCH_QUESTION_UNKNOWN', qid, 404)
+            if action == 'skip':
+                question['status'] = 'blocked'
+                question['note'] = str(body.get('reason') or 'Skipped by user')[:1000]
+            else:
+                question['importance'] = str(body.get('importance') or 'high')
+        updated = runtime.store.research_job_save(research_id, job['session_id'], state,
+                                                  status=status, revision=body.get('revision'))
+        if action == 'skip':
+            owner = runtime.store.get(job['session_id'])
+            for branch in runtime.store.children_of(job['session_id']):
+                if branch.get('role') != 'research' or branch.get('status') != 'started':
+                    continue
+                child = runtime.store.get(branch['session_id'])
+                if child['config'].get('researchQuestionId') == qid:
+                    await research_runtime.cancel_child(runtime, owner, {
+                        'sessionId': branch['session_id'], 'reason': 'Question skipped by user'})
+        if action in {'pause', 'cancel'}:
+            await runtime.stop(job['session_id'])
+        return web.json_response({'job': updated})
 
     def known_session(sid):
         """The session record, or an explicit 404 the UI can act on."""
@@ -782,6 +923,9 @@ def create_app(runtime):
             payload['stateVersion'] = version
             evaluation = runtime.store.plan_evaluation(identity, version)
         payload['version'] = version if version is not None else state.state_version
+        payload['researchDependencies'] = runtime.store.plan_research_dependencies(
+            identity, payload['version'] or 0)
+        payload['researchStale'] = any(item['stale'] for item in payload['researchDependencies'])
         # Vòng 25 (D-33/D-36): HAI khoá này LUÔN có mặt — giao diện phân biệt được "harness cũ,
         # thiếu trường" với "harness mới, chưa có phê biện" (`state: 'none'`). Bản được hỏi dùng
         # ĐÚNG số đã phân giải ở trên, không đọc lại chỉ mục lần thứ hai.
@@ -906,6 +1050,8 @@ def create_app(runtime):
     app.router.add_get('/api/agent/skills/{skill}', skill)
     app.router.add_get('/api/agent/skills/{skill}/readiness', readiness)
     app.router.add_get('/api/agent/sessions', list_sessions)
+    app.router.add_get('/api/agent/research/jobs', research_jobs)
+    app.router.add_patch('/api/agent/research/jobs/{research_id}', research_job_update)
     app.router.add_post('/api/agent/sessions', create)
     app.router.add_get('/api/agent/sessions/{sid}', session)
     app.router.add_delete('/api/agent/sessions/{sid}', delete_session)

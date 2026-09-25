@@ -59,7 +59,14 @@ TIER1_HOSTS: tuple[str, ...] = (
     'europepmc.org',
     'ncbi.nlm.nih.gov',
     'pubmed.ncbi.nlm.nih.gov',
-    'github.com',
+    'openaccess.thecvf.com',
+    'openreview.net',
+    'papers.nips.cc',
+    'proceedings.mlr.press',
+    'ieeexplore.ieee.org',
+    'aclanthology.org',
+    'dl.acm.org',
+    'developers.google.com',
 )
 
 #: Hậu tố nhận **cả** host con (`.gov.vn` phủ `moh.gov.vn`, `kcb.vn` không thuộc).
@@ -67,8 +74,7 @@ GOV_SUFFIXES: tuple[str, ...] = ('.gov.vn', '.gov', '.edu.vn', '.europa.eu', '.a
 
 #: Tầng 1 theo HAI cách khớp: hậu tố host (`readthedocs.io`, `docs.python.org`) và NHÃN ĐẦU
 #: của host (`docs.`, `developer.` — kho mã chính chủ, tài liệu hãng).
-TIER1_SUFFIXES: tuple[str, ...] = ('docs.', 'developer.', 'developers.', 'readthedocs.io',
-                                   'docs.python.org')
+TIER1_SUFFIXES: tuple[str, ...] = ('docs.python.org',)
 
 #: Tầng 2 — báo chí chính thống.
 TIER2_HOSTS: tuple[str, ...] = (
@@ -222,6 +228,7 @@ def classify(
     *,
     type: str | None = None,
     method: str | None = None,
+    claim: str | None = None,
     overrides: dict[int, tuple[str, ...]] | None = None,
     official_social: tuple[str, ...] | None = None,
 ) -> Tier:
@@ -249,6 +256,12 @@ def classify(
             table = overrides.get(tier_number) or ()
             if table and _host_in(host, tuple(table)):
                 return Tier(tier_number, kind, host, 'env-override')
+
+    # A repository is primary for its own code, never automatically for performance.
+    # Operator overrides above still take precedence.
+    if host == 'github.com' and any(word in (claim or '').casefold()
+                                    for word in ('code', 'mã nguồn', 'repository', 'repo', 'commit')):
+        return Tier(1, kind, host, 'host-in-table')
 
     if _host_in(host, TIER1_HOSTS) or _suffix_in(host, TIER1_SUFFIXES) \
             or _prefix_in(host, TIER1_SUFFIXES):

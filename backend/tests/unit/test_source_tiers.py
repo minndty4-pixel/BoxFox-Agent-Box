@@ -75,7 +75,7 @@ def test_a_host_with_subdomain_documents_lands_in_tier_one():
     tier = classify('https://docs.python.org/3/whatsnew/3.13.html')
     assert tier.tier == 1
     assert classify('https://developers.google.com/sheets/api').tier == 1
-    assert classify('https://myproject.readthedocs.io/en/latest/').tier == 1
+    assert classify('https://myproject.readthedocs.io/en/latest/').tier == 3
 
 
 def test_an_override_table_can_move_a_host_to_another_tier():

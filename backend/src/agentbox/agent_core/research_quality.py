@@ -35,6 +35,7 @@ from .reading import fold_text, normalize_url
 RESEARCH_CODES: tuple[str, ...] = (
     'research-sources-missing',
     'research-sources-unproven',
+    'research-findings-unlinked',
     'research-excerpt-missing',
     'research-tier-unknown',
     'research-claim-single-source',
@@ -62,6 +63,7 @@ OWNER_VIEW_LABELS: tuple[tuple[str, str], ...] = (
 REMEDIES: Mapping[str, str] = {
     'research-sources-missing': 'Thêm dòng sổ cho từng khẳng định, hoặc ghi rõ "kết luận từ mã trong workspace".',
     'research-sources-unproven': 'Mở URL bằng `web_fetch` rồi `source_add` kèm đoạn trích nguyên văn.',
+    'research-findings-unlinked': 'Đặt mã dòng sổ [rN] ngay cạnh mỗi kết luận thực nghiệm hoặc ghi rõ đó là suy luận/chưa biết.',
     'research-excerpt-missing': f'Lưu đoạn trích nguyên văn ≥ {RESEARCH_MIN_EXCERPT_CHARS} ký tự đã đọc, không phải tóm tắt.',
     'research-tier-unknown': 'Khai `type` (`host-doc`/`official-social`) hoặc dùng nguồn xếp được tầng.',
     'research-claim-single-source': 'Thêm nguồn thứ hai ở host khác, viết độc lập (bản đăng lại cùng bản tin hoặc cùng `origin` đã khai vẫn tính một nguồn), hoặc hạ khẳng định xuống "suy luận".',
@@ -198,6 +200,24 @@ def has_external_claims(markdown: str) -> bool:
     return bool(urls_in(markdown)) or bool(plan_quality.cited_hosts(markdown))
 
 
+def findings_without_evidence(markdown: str) -> bool:
+    """Flag a substantive findings section with no evidence pointer at all."""
+    lines = str(markdown or '').splitlines()
+    in_findings = False
+    body: list[str] = []
+    for line in lines:
+        heading = _HEADING_RE.match(line)
+        if heading:
+            label = fold_text(heading.group(1))
+            if in_findings:
+                break
+            in_findings = any(word in label for word in _FINDINGS_WORDS)
+        elif in_findings:
+            body.append(line)
+    text = '\n'.join(body).strip()
+    return len(text) >= 60 and not _ROW_ID_RE.search(text) and not _URL_RE.search(text)
+
+
 def gate_mode(env: Mapping[str, str] | None = None) -> tuple[str, str | None]:
     """`(mode, giá trị lạ)`. Giá trị hợp lệ ⇒ phần tử hai là `None` — cùng hợp đồng với `_mode`.
 
@@ -290,6 +310,7 @@ def assess(
     verified: Mapping[str, bool] | None = None,
     owner_views: Sequence[str] = (),
     review: str = '',
+    require_claim_citations: bool = False,
 ) -> Verdict:
     """Cổng tầng hồ sơ. `mode=None` ⇒ đọc từ môi trường. Không bao giờ ném."""
     _ = session  # chỗ cắm cho tương lai; cổng này thuần theo tham số
@@ -314,10 +335,18 @@ def assess(
         if rows:
             for url in unproven:
                 issues.append(Issue('research-sources-unproven', url))
-        elif has_external_claims(markdown):
+        elif has_external_claims(markdown) or require_claim_citations:
             issues.append(Issue('research-sources-missing', f'{len(urls_in(markdown))} URL, 0 dòng sổ'))
 
-        issues.extend(assess_rows(rows, profile, verified=verified))
+        if require_claim_citations and findings_without_evidence(markdown):
+            issues.append(Issue('research-findings-unlinked', 'mục Phát hiện không trỏ tới dòng sổ'))
+
+        # A verbatim short sentence can be the entire relevant passage. V2
+        # checks its source and relation separately, so padding to 80 chars
+        # would reward invented context rather than faithful quotation.
+        issues.extend(assess_rows(rows, profile, verified=verified,
+                                  min_excerpt_chars=(1 if require_claim_citations
+                                                     else RESEARCH_MIN_EXCERPT_CHARS)))
 
         planned = [str(item) for item in child_ids if str(item)]
         # Một nhánh để lại dấu vết khi dòng sổ mang mã nhánh ấy — hoặc ở cột `child_id` (nhánh ghim
@@ -417,6 +446,17 @@ def ledger_payload(rows: Sequence[Row]) -> dict[str, Any]:
     return payload
 
 
+def _best_document_payload(profile: Any, rows: Sequence[Row]) -> dict[str, Any]:
+    """Do not assemble a fictitious document from unrelated ledger rows."""
+    groups: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        key = str(row.origin or row.url or row.row_id)
+        groups.setdefault(key, {}).update(dict(row.payload or {}))
+    if not groups:
+        return {}
+    return min(groups.values(), key=lambda payload: len(profile.missing(payload)))
+
+
 def hard_missing(profile: Any, rows: Sequence[Row]) -> list[str]:
     """Nhãn trường `hard` còn thiếu (#5989) — thứ duy nhất được quyền từ chối một hồ sơ.
 
@@ -427,7 +467,7 @@ def hard_missing(profile: Any, rows: Sequence[Row]) -> list[str]:
         return []
     covered = set(getattr(profile, 'validity_fields', ()) or ()) if getattr(profile, 'validity', False) else set()
     out: list[str] = []
-    for field, level in profile.missing(ledger_payload(rows)):
+    for field, level in profile.missing(_best_document_payload(profile, rows)):
         if level != 'hard' or field.key in covered:
             continue
         label = field.label or field.key
@@ -440,7 +480,7 @@ def soft_missing(profile: Any, rows: Sequence[Row]) -> list[str]:
     """Trường `soft` còn thiếu — **không** từ chối, chỉ hiện trong báo cáo."""
     if profile is None:
         return []
-    payload = ledger_payload(rows)
+    payload = _best_document_payload(profile, rows)
     out: list[str] = []
     for field, level in profile.missing(payload):
         if level != 'soft':

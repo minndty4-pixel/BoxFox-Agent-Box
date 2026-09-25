@@ -1,6 +1,7 @@
 """Bảng khai báo hồ sơ việc (vòng 27 · B-3a) — dữ liệu thuần, không luật.
 
-Ba nhóm hồ sơ (`official-document`, `academic`, `market`) và chín hồ sơ con. Mỗi hồ sơ khai
+Ba nhóm hồ sơ bằng chứng (`official-document`, `academic`, `market`), chín mẫu con và một
+mẫu trung lập `mixed` cho việc nghiên cứu nhiều phương pháp. Mỗi mẫu bằng chứng khai
 **trường bắt buộc** với mức `hard` (thiếu ⇒ hồ sơ đỏ) hoặc `soft` (thiếu ⇒ nhắc), **luật chờ**
 (`any_of` — nhóm trường chỉ cần một cái), **luật hiệu lực** (`validity`), và **số nguồn độc lập
 tối thiểu** cho khẳng định then chốt.
@@ -16,12 +17,13 @@ from typing import Any, Mapping, Sequence
 
 # --- Nhóm và nhãn ----------------------------------------------------------
 
-GROUPS: tuple[str, ...] = ('official-document', 'academic', 'market')
+GROUPS: tuple[str, ...] = ('official-document', 'academic', 'market', 'mixed')
 
 GROUP_LABELS: Mapping[str, str] = {
     'official-document': 'văn bản chính thống',
     'academic': 'học thuật & kỹ thuật',
     'market': 'thị trường',
+    'mixed': 'nghiên cứu đa phương pháp',
 }
 
 KINDS: tuple[str, ...] = ('text', 'enum', 'number', 'date', 'url')
@@ -93,7 +95,7 @@ class Profile:
         return missing
 
 
-# --- Chín hồ sơ ------------------------------------------------------------
+# --- Chín mẫu bằng chứng và một mẫu việc hỗn hợp ----------------------------
 
 LAW = Profile(
     key='law',
@@ -236,9 +238,20 @@ USERS = Profile(
     notes='Một lượt phàn nàn đơn lẻ không phải gap đã kiểm — phải ghi "chỉ 1 lượt".',
 )
 
+MIXED = Profile(
+    key='mixed',
+    group='mixed',
+    label='nhiều loại bằng chứng',
+    # A v2 job can mix laws, studies, product pages and community reports.
+    # Document-specific fields are checked on their own evidence rows, never
+    # invented as a single global schema for the entire job.
+    fields=(),
+    notes='Mẫu trung lập cho việc pha trộn nguồn; không thay thế kiểm tra từng loại bằng chứng.',
+)
+
 PROFILES: Mapping[str, Profile] = {
     item.key: item
-    for item in (LAW, HEALTH, FINANCE, PAPER, VENDOR_DOC, REPO, PRICE, COMPETITOR, USERS)
+    for item in (LAW, HEALTH, FINANCE, PAPER, VENDOR_DOC, REPO, PRICE, COMPETITOR, USERS, MIXED)
 }
 
 PROFILE_LABELS: Mapping[str, str] = {key: item.label for key, item in PROFILES.items()}

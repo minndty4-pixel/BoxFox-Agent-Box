@@ -14,7 +14,8 @@ DEFAULT_SKILLS = {'codebase-inspection', 'systematic-debugging', 'requesting-cod
                   'planning',
                   # Vòng 27 (A7/C-1): ba mức + bốn pha + sổ nguồn + hình dạng hồ sơ. Nhận mặc
                   # định vì mọi lượt nghiên cứu đều phải mở đầu bằng `research_brief`.
-                  'research-team',
+                  'research-team', 'research-scoping', 'research-search', 'research-reading',
+                  'research-evidence', 'research-synthesis', 'research-critique', 'research-to-plan',
                   # Vòng 27 (A7): `arxiv` gọi `web_fetch` trên API export.arxiv.org (không còn
                   # `curl` — vai research không có `terminal_exec`); `blocked-page-recovery` là
                   # thang 5 bậc cho trang bị chặn, đúng việc research và không cần gói nào.

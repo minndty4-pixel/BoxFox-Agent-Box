@@ -150,3 +150,8 @@ For handling heavy streaming data, large log files, or rich documents (>2,000 li
 ## 7. Vấn Đề Tồn Đọng Với CUA (Computer Use Agent)
 - CUA (Computer Use Agent) hiện tại chưa hoạt động đúng.
 
+---
+
+## Phụ lục mới 2026-09-25: research v2 và lượt thử chuyển tuyến
+
+Phần bổ sung này không sửa nội dung các mục trước. Chủ nhà yêu cầu dừng các lượt test sống để tiết kiệm token. Trạng thái code, số đo test, các lỗi quan sát được ở bài toán y tế, giới hạn route Muse/Gemini và việc cần soát tiếp được ghi trong [phụ lục research v2](docs/handoff/research-v2-live-addendum-2026-09-25.md). Lượt sống đã hủy; dossier còn nháp và benchmark chất lượng 12×3 chưa đo.

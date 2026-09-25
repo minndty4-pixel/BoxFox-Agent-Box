@@ -30,6 +30,7 @@ import { isCompactViewport, useViewportWidth } from './components/shell/useViewp
 import { Resizer } from './components/shell/Resizer'
 import { ChatPanel } from './components/panels/ChatPanel'
 import { PlanPanel } from './components/panels/PlanPanel'
+import { ResearchPanel } from './components/panels/ResearchPanel'
 import { DecisionsPanel } from './components/panels/DecisionsPanel'
 import { TerminalPanel } from './components/panels/TerminalPanel'
 import { SandboxScreenPanel } from './components/panels/SandboxScreenPanel'
@@ -52,6 +53,7 @@ import { useCompletionEmail } from './hooks/useCompletionEmail'
 
 const TAB_LABEL_KEY: Record<PanelTabId, string> = {
   plan: 'tabs.plan',
+  research: 'tabs.plan',
   sandbox: 'tabs.sandbox',
   subagents: 'tabs.subagents',
   ide: 'tabs.ide',
@@ -67,6 +69,7 @@ const TAB_LABEL_KEY: Record<PanelTabId, string> = {
 
 const TAB_ICON: Record<PanelTabId, React.ComponentType<{ className?: string }>> = {
   plan: FileText,
+  research: BrainCircuit,
   sandbox: Monitor,
   subagents: BrainCircuit,
   ide: Code2,
@@ -82,6 +85,7 @@ const TAB_ICON: Record<PanelTabId, React.ComponentType<{ className?: string }>> 
 
 const AVAILABLE_PANEL_TABS: { id: PanelTabId; label: string; desc: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 'plan', label: 'Plan Document', desc: 'Architecture blueprint & step review', icon: FileText },
+  { id: 'research', label: 'Research', desc: 'Questions, evidence gaps & budget', icon: BrainCircuit },
   { id: 'sandbox', label: 'Sandbox Machine', desc: 'Live container vision & browser frame', icon: Monitor },
   { id: 'subagents', label: 'Sub-agents Console', desc: 'Autonomous specialists activity & thinking', icon: BrainCircuit },
   { id: 'ide', label: 'IDE (VS Code Web)', desc: 'code-server running inside the box', icon: Code2 },
@@ -184,6 +188,8 @@ export default function App() {
     switch (activeTab) {
       case 'plan':
         return <PlanPanel />
+      case 'research':
+        return <ResearchPanel />
       case 'sandbox':
         return <SandboxScreenPanel />
       case 'subagents':
@@ -296,7 +302,7 @@ export default function App() {
                             : 'text-muted'
                         }`}
                     />
-                    <span>{tab === 'decisions' ? 'Decisions' : tab === 'subagents' ? 'Sub-agents' : t(TAB_LABEL_KEY[tab] as 'tabs.plan')}</span>
+                    <span>{tab === 'research' ? 'Research' : tab === 'decisions' ? 'Decisions' : tab === 'subagents' ? 'Sub-agents' : t(TAB_LABEL_KEY[tab] as 'tabs.plan')}</span>
 
                     {isDecisionsWithPending && (
                       <span

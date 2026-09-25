@@ -3,6 +3,7 @@
 Running work is marked interrupted after restart; tool side effects are never replayed.
 """
 import json
+import hashlib
 import sqlite3
 import time
 import uuid
@@ -155,6 +156,8 @@ class SessionStore:
                 gate TEXT NOT NULL DEFAULT 'clear',
                 rows INTEGER NOT NULL DEFAULT 0,
                 bytes INTEGER NOT NULL DEFAULT 0,
+                content_hash TEXT NOT NULL DEFAULT '',
+                quality_ok INTEGER NOT NULL DEFAULT 0,
                 created REAL NOT NULL,
                 PRIMARY KEY (research_id, version));
             CREATE TABLE IF NOT EXISTS session_steers (
@@ -172,6 +175,7 @@ class SessionStore:
                 version INTEGER NOT NULL,
                 session_id TEXT NOT NULL,
                 verdict TEXT NOT NULL,
+                mode TEXT NOT NULL DEFAULT 'critique',
                 issues TEXT NOT NULL DEFAULT '[]',
                 summary TEXT NOT NULL DEFAULT '',
                 critic_session_id TEXT,
@@ -179,7 +183,57 @@ class SessionStore:
                 critic_verdict TEXT,
                 created REAL NOT NULL);
             CREATE INDEX IF NOT EXISTS research_verifications_job ON research_verifications(research_id, id);
+            CREATE TABLE IF NOT EXISTS research_jobs (
+                research_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'scoping',
+                revision INTEGER NOT NULL DEFAULT 1,
+                created REAL NOT NULL,
+                updated REAL NOT NULL);
+            CREATE INDEX IF NOT EXISTS research_jobs_session ON research_jobs(session_id, updated);
+            CREATE TABLE IF NOT EXISTS research_sources (
+                source_id TEXT NOT NULL, session_id TEXT NOT NULL,
+                url TEXT NOT NULL, normalized_url TEXT NOT NULL,
+                host TEXT NOT NULL DEFAULT '', origin TEXT,
+                PRIMARY KEY(session_id, source_id), UNIQUE(session_id, normalized_url));
+            CREATE TABLE IF NOT EXISTS research_passages (
+                passage_id TEXT NOT NULL, session_id TEXT NOT NULL,
+                source_id TEXT NOT NULL, excerpt TEXT NOT NULL,
+                excerpt_hash TEXT NOT NULL, locator TEXT NOT NULL DEFAULT '{}',
+                extraction_method TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY(session_id, passage_id),
+                UNIQUE(session_id, source_id, excerpt_hash));
+            CREATE TABLE IF NOT EXISTS research_claims (
+                claim_id TEXT NOT NULL, session_id TEXT NOT NULL,
+                text TEXT NOT NULL, text_hash TEXT NOT NULL,
+                PRIMARY KEY(session_id, claim_id), UNIQUE(session_id, text_hash));
+            CREATE TABLE IF NOT EXISTS research_relations (
+                session_id TEXT NOT NULL, row_id TEXT NOT NULL,
+                passage_id TEXT NOT NULL, claim_id TEXT NOT NULL,
+                proposed_by TEXT,
+                PRIMARY KEY(session_id, passage_id, claim_id));
+            CREATE TABLE IF NOT EXISTS research_assessments (
+                session_id TEXT NOT NULL, passage_id TEXT NOT NULL,
+                claim_id TEXT NOT NULL, reviewer_id TEXT NOT NULL,
+                content_hash TEXT NOT NULL, relation TEXT NOT NULL,
+                rationale TEXT NOT NULL, created REAL NOT NULL,
+                PRIMARY KEY(session_id, passage_id, claim_id, reviewer_id, content_hash));
+            CREATE TABLE IF NOT EXISTS research_snapshots (
+                ref TEXT PRIMARY KEY, scope_id TEXT NOT NULL,
+                normalized_url TEXT NOT NULL, entry TEXT NOT NULL,
+                created REAL NOT NULL);
+            CREATE INDEX IF NOT EXISTS research_snapshots_url
+                ON research_snapshots(scope_id, normalized_url, created);
+            CREATE TABLE IF NOT EXISTS plan_research_dependencies (
+                identity TEXT NOT NULL, version INTEGER NOT NULL,
+                research_id TEXT NOT NULL, research_version INTEGER NOT NULL,
+                research_hash TEXT NOT NULL, created REAL NOT NULL,
+                PRIMARY KEY(identity, version, research_id));
         ''')
+        self._add_missing_columns('research_dossiers', {'content_hash': "TEXT NOT NULL DEFAULT ''"})
+        self._add_missing_columns('research_dossiers', {'quality_ok': 'INTEGER NOT NULL DEFAULT 0'})
+        self._add_missing_columns('research_verifications', {'mode': "TEXT NOT NULL DEFAULT 'critique'"})
         # Bộ đếm lượt của phiên (T2 đọc nó để mọi event mang `turn`). Cột thêm kiểu cộng thêm:
         # phiên cũ đọc ra `0` rồi lượt kế tiếp bắt đầu từ 1.
         self._add_missing_columns('sessions', {'turn_count': 'INTEGER NOT NULL DEFAULT 0'})
@@ -259,6 +313,13 @@ class SessionStore:
         self.get(sid)
         return [{'seq': r['seq'], 'type': r['kind'], 'data': json.loads(r['payload']), 'created': r['created']}
                 for r in self.db.execute('SELECT * FROM events WHERE session_id=? AND seq>? ORDER BY seq LIMIT 500', (sid, after))]
+
+    def events_tail(self, sid, limit=500):
+        self.get(sid)
+        rows = self.db.execute('SELECT * FROM events WHERE session_id=? ORDER BY seq DESC LIMIT ?',
+                               (sid, int(limit))).fetchall()
+        return [{'seq': r['seq'], 'type': r['kind'], 'data': json.loads(r['payload']),
+                 'created': r['created']} for r in reversed(rows)]
 
     def list(self, limit=50):
         rows = self.db.execute(
@@ -793,6 +854,21 @@ class SessionStore:
                 found = float(row['created'])
         return found
 
+    def plan_written_record(self, session_ids, identity, version):
+        """The exact saved plan event, including its content hash when available."""
+        found = None
+        for sid in session_ids:
+            rows = self.db.execute("SELECT payload,created FROM events WHERE session_id=? "
+                                   "AND kind='plan_written' ORDER BY seq", (sid,))
+            for row in rows:
+                try:
+                    data = json.loads(row['payload'])
+                except (TypeError, ValueError):
+                    continue
+                if data.get('identity') == identity and data.get('version') == version:
+                    found = {**data, 'created': row['created'], 'sessionId': sid}
+        return found
+
     def last_turn_status(self, sid):
         """Bộ số của hàng `turn_end` MỚI NHẤT: `{'turn','status','partial','code','at'}`.
 
@@ -918,7 +994,8 @@ class SessionStore:
                         ' VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                         (sid, row_id, values.get('child_id'), values.get('job'),
                          str(values.get('claim') or ''), str(values.get('url') or ''),
-                         str(values.get('host') or ''), int(values.get('tier') or 4),
+                         str(values.get('host') or ''),
+                         int(values['tier'] if values.get('tier') is not None else 4),
                          str(values.get('type') or 'normal'), str(values.get('excerpt') or ''),
                          str(values.get('fetched_at') or ''), values.get('origin'), values.get('method'),
                          values.get('source_row_id'), str(values.get('status') or 'unverified'),
@@ -968,6 +1045,126 @@ class SessionStore:
         row = self.db.execute('SELECT COUNT(*) AS total FROM source_ledger WHERE session_id=?',
                               (sid,)).fetchone()
         return int((row['total'] if row else 0) or 0)
+
+    def evidence_link(self, sid, row_id, claim, *, proposed_by=None):
+        """Normalize a legacy ledger row into source, passage, claim and relation."""
+        from ..agent_core.reading import normalize_url
+        row = self.source_row(sid, row_id)
+        if row is None:
+            raise ValueError('RESEARCH_EVIDENCE_ROW_UNKNOWN')
+        normalized = normalize_url(row['url'])
+        source_id = 's-' + hashlib.sha256(normalized.encode()).hexdigest()[:20]
+        excerpt = row['excerpt']
+        excerpt_hash = hashlib.sha256(excerpt.encode()).hexdigest()
+        passage_id = 'p-' + hashlib.sha256((source_id + excerpt_hash).encode()).hexdigest()[:20]
+        claim = str(claim).strip()
+        claim_hash = hashlib.sha256(claim.casefold().encode()).hexdigest()
+        claim_id = 'c-' + claim_hash[:20]
+        payload = row.get('payload') or {}
+        locator = {key: payload[key] for key in ('page', 'section', 'line', 'locator', 'commit')
+                   if key in payload}
+        with self.db:
+            self.db.execute('INSERT OR IGNORE INTO research_sources '
+                            '(source_id,session_id,url,normalized_url,host,origin) VALUES(?,?,?,?,?,?)',
+                            (source_id, sid, row['url'], normalized, row['host'], row.get('origin')))
+            self.db.execute('INSERT OR IGNORE INTO research_passages '
+                            '(passage_id,session_id,source_id,excerpt,excerpt_hash,locator,extraction_method) '
+                            'VALUES(?,?,?,?,?,?,?)',
+                            (passage_id, sid, source_id, excerpt, excerpt_hash,
+                             json.dumps(locator, ensure_ascii=False), row.get('method') or ''))
+            self.db.execute('INSERT OR IGNORE INTO research_claims '
+                            '(claim_id,session_id,text,text_hash) VALUES(?,?,?,?)',
+                            (claim_id, sid, claim, claim_hash))
+            self.db.execute('INSERT OR IGNORE INTO research_relations '
+                            '(session_id,row_id,passage_id,claim_id,proposed_by) VALUES(?,?,?,?,?)',
+                            (sid, row_id, passage_id, claim_id, proposed_by))
+        return {'sourceId': source_id, 'passageId': passage_id, 'claimId': claim_id}
+
+    def evidence_graph(self, sid, limit=100):
+        rows = self.db.execute('SELECT r.row_id,r.passage_id,r.claim_id,c.text AS claim,'
+                               'p.excerpt,p.locator,p.extraction_method,s.url,s.origin '
+                               'FROM research_relations r '
+                               'JOIN research_claims c ON c.session_id=r.session_id AND c.claim_id=r.claim_id '
+                               'JOIN research_passages p ON p.session_id=r.session_id AND p.passage_id=r.passage_id '
+                               'JOIN research_sources s ON s.session_id=r.session_id AND s.source_id=p.source_id '
+                               'WHERE r.session_id=? ORDER BY r.row_id LIMIT ?', (sid, int(limit))).fetchall()
+        out = []
+        for row in rows:
+            item = dict(row)
+            item['locator'] = json.loads(item['locator'])
+            item['excerpt'] = item['excerpt'][:500]
+            item['assessments'] = [dict(a) for a in self.db.execute(
+                'SELECT reviewer_id,content_hash,relation,rationale,created '
+                'FROM research_assessments WHERE session_id=? AND passage_id=? AND claim_id=? '
+                'ORDER BY created', (sid, item['passage_id'], item['claim_id'])).fetchall()]
+            out.append(item)
+        return out
+
+    def evidence_assess(self, sid, passage_id, claim_id, reviewer_id, content_hash,
+                        relation, rationale):
+        linked = self.db.execute('SELECT 1 FROM research_relations WHERE session_id=? '
+                                 'AND passage_id=? AND claim_id=?',
+                                 (sid, passage_id, claim_id)).fetchone()
+        if linked is None:
+            raise ValueError('RESEARCH_RELATION_UNKNOWN')
+        with self.db:
+            self.db.execute('INSERT INTO research_assessments '
+                            '(session_id,passage_id,claim_id,reviewer_id,content_hash,relation,rationale,created) '
+                            'VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(session_id,passage_id,claim_id,reviewer_id,content_hash) '
+                            'DO UPDATE SET relation=excluded.relation,rationale=excluded.rationale,created=excluded.created',
+                            (sid, passage_id, claim_id, reviewer_id, content_hash,
+                             relation, rationale, time.time()))
+        return {'passageId': passage_id, 'claimId': claim_id, 'relation': relation,
+                'reviewerId': reviewer_id, 'contentHash': content_hash}
+
+    def research_snapshot_save(self, scope_id, normalized_url, entry):
+        """Persist the full bounded reader copy for a root research session."""
+        with self.db:
+            self.db.execute('INSERT OR IGNORE INTO research_snapshots '
+                            '(ref,scope_id,normalized_url,entry,created) VALUES(?,?,?,?,?)',
+                            (entry['ref'], scope_id, normalized_url,
+                             json.dumps(entry, ensure_ascii=False), time.time()))
+
+    def research_snapshot_ref(self, scope_id, ref):
+        row = self.db.execute('SELECT entry FROM research_snapshots WHERE scope_id=? AND ref=?',
+                              (scope_id, ref)).fetchone()
+        return json.loads(row['entry']) if row else None
+
+    def research_snapshot_url(self, scope_id, normalized_url):
+        row = self.db.execute('SELECT entry FROM research_snapshots '
+                              'WHERE scope_id=? AND normalized_url=? ORDER BY created DESC LIMIT 1',
+                              (scope_id, normalized_url)).fetchone()
+        return json.loads(row['entry']) if row else None
+
+    def plan_research_link(self, identity, version, dependencies):
+        with self.db:
+            for item in dependencies:
+                self.db.execute('INSERT OR REPLACE INTO plan_research_dependencies '
+                                '(identity,version,research_id,research_version,research_hash,created) '
+                                'VALUES(?,?,?,?,?,?)',
+                                (identity, int(version), item['researchId'], int(item['version']),
+                                 item['contentHash'], time.time()))
+
+    def plan_research_dependencies(self, identity, version):
+        rows = self.db.execute('SELECT research_id,research_version,research_hash FROM '
+                               'plan_research_dependencies WHERE identity=? AND version=? '
+                               'ORDER BY research_id', (identity, int(version))).fetchall()
+        result = []
+        for row in rows:
+            latest = self.dossier_latest(row['research_id'])
+            stale = (latest is None or latest['version'] != row['research_version'] or
+                     latest['content_hash'] != row['research_hash'])
+            result.append({'researchId': row['research_id'], 'version': row['research_version'],
+                           'contentHash': row['research_hash'], 'latestVersion':
+                           latest['version'] if latest else None, 'stale': stale})
+        return result
+
+    def research_dependent_plans(self, research_id):
+        rows = self.db.execute('SELECT identity,version FROM plan_research_dependencies '
+                               'WHERE research_id=? ORDER BY created DESC', (research_id,)).fetchall()
+        return [{'identity': row['identity'], 'version': row['version'],
+                 'dependencies': self.plan_research_dependencies(row['identity'], row['version'])}
+                for row in rows]
 
     def source_counts_by_child(self, sid):
         """`{child_id: số dòng}` — luật "mỗi nhánh con phải để lại một dòng" đọc từ đây."""
@@ -1063,17 +1260,19 @@ class SessionStore:
     # Hồ sơ research (vòng 27 đợt 4, C-2) — chỉ mục các bản đã ghi trong `.research/`
 
     def record_dossier(self, sid, research_id, version, relative_path, profile='', level=0,
-                       critique='none', gate='clear', rows=0, bytes=0):
+                       critique='none', gate='clear', rows=0, bytes=0, content_hash='', quality_ok=False):
         """Ghim một bản hồ sơ đã ghi (khoá `(research_id, version)` — ghi đè cùng version là KHÔNG-THỂ)."""
         with self.db:
             self.db.execute(
                 'INSERT INTO research_dossiers(research_id,version,session_id,relative_path,profile,level,'
-                ' critique,gate,rows,bytes,created) VALUES(?,?,?,?,?,?,?,?,?,?,?)'
+                ' critique,gate,rows,bytes,content_hash,quality_ok,created) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)'
                 ' ON CONFLICT(research_id, version) DO UPDATE SET session_id=excluded.session_id,'
                 ' relative_path=excluded.relative_path, profile=excluded.profile, level=excluded.level,'
-                ' critique=excluded.critique, gate=excluded.gate, rows=excluded.rows, bytes=excluded.bytes',
+                ' critique=excluded.critique, gate=excluded.gate, rows=excluded.rows, bytes=excluded.bytes,'
+                ' content_hash=excluded.content_hash,quality_ok=excluded.quality_ok',
                 (str(research_id), int(version), sid, str(relative_path), str(profile or ''), int(level or 0),
-                 str(critique or 'none'), str(gate or 'clear'), int(rows or 0), int(bytes or 0), time.time()))
+                 str(critique or 'none'), str(gate or 'clear'), int(rows or 0), int(bytes or 0),
+                 str(content_hash or ''), int(bool(quality_ok)), time.time()))
         return self.dossier(research_id, version)
 
     def dossier(self, research_id, version):
@@ -1081,6 +1280,69 @@ class SessionStore:
         row = self.db.execute('SELECT * FROM research_dossiers WHERE research_id=? AND version=?',
                               (str(research_id), int(version))).fetchone()
         return dict(row) if row is not None else None
+
+    def research_job(self, research_id):
+        row = self.db.execute('SELECT * FROM research_jobs WHERE research_id=?',
+                              (str(research_id),)).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        item['state'] = json.loads(item['state'])
+        return item
+
+    def research_jobs_for(self, session_id):
+        rows = self.db.execute('SELECT research_id FROM research_jobs WHERE session_id=? '
+                               'ORDER BY updated DESC', (session_id,)).fetchall()
+        return [self.research_job(row['research_id']) for row in rows]
+
+    def research_jobs_active(self):
+        rows = self.db.execute("SELECT research_id FROM research_jobs WHERE status IN "
+                               "('scoping','researching','verifying','synthesizing','critiquing') "
+                               'ORDER BY updated').fetchall()
+        return [self.research_job(row['research_id']) for row in rows]
+
+    def research_job_save(self, research_id, session_id, state, status=None, revision=None):
+        """One SQLite transaction for checkpoint and optimistic user edits."""
+        allowed = {'scoping', 'researching', 'verifying', 'synthesizing', 'critiquing',
+                   'needs_user', 'completed', 'partial', 'paused', 'cancelled'}
+        current = self.research_job(research_id)
+        if current and current['session_id'] != session_id:
+            raise ValueError('RESEARCH_JOB_OWNER_MISMATCH')
+        if revision is not None and current and current['revision'] != revision:
+            raise ValueError('RESEARCH_JOB_REVISION_CONFLICT')
+        selected = status or (current['status'] if current else 'scoping')
+        if selected not in allowed:
+            raise ValueError('RESEARCH_JOB_STATUS_INVALID')
+        now = time.time()
+        with self.db:
+            self.db.execute('INSERT INTO research_jobs '
+                            '(research_id,session_id,state,status,revision,created,updated) '
+                            'VALUES(?,?,?,?,?,?,?) ON CONFLICT(research_id) DO UPDATE SET '
+                            'state=excluded.state,status=excluded.status,revision=excluded.revision,'
+                            'updated=excluded.updated',
+                            (research_id, session_id, json.dumps(state, ensure_ascii=False), selected,
+                             (current['revision'] + 1 if current else 1),
+                             current['created'] if current else now, now))
+        return self.research_job(research_id)
+
+    def research_job_used_seconds(self, session_id, research_id=None):
+        """Cumulative main-turn wall time from persisted events; retries cannot reset it."""
+        used: dict[int, float] = {}
+        tags: dict[int, set[str]] = {}
+        rows = self.db.execute("SELECT payload FROM events WHERE session_id=? AND kind='turn_end'",
+                               (session_id,))
+        for row in rows:
+            try:
+                event = json.loads(row['payload'])
+                turn = int(event.get('turn') or 0)
+                ms = float(event.get('deadlineUsedMs') or 0)
+            except (TypeError, ValueError):
+                continue
+            used[turn] = max(used.get(turn, 0), ms)
+            if event.get('researchId'):
+                tags.setdefault(turn, set()).add(str(event['researchId']))
+        return round(sum(ms for turn, ms in used.items()
+                         if research_id is None or str(research_id) in tags.get(turn, set())) / 1000, 1)
 
     def dossier_versions(self, research_id):
         """Số version đang có của một việc, tăng dần."""
@@ -1169,14 +1431,14 @@ class SessionStore:
 
     def record_research_verification(self, research_id, version, session_id, verdict, issues=None,
                                      summary='', critic_session_id=None, critic_answer_chars=0,
-                                     critic_verdict=None):
+                                     critic_verdict=None, mode='critique'):
         """Ghim MỘT phán quyết cho `(research_id, version)`. Trả hàng vừa ghi."""
         with self.db:
             cursor = self.db.execute(
-                'INSERT INTO research_verifications(research_id,version,session_id,verdict,issues,summary,'
-                ' critic_session_id,critic_answer_chars,critic_verdict,created) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                'INSERT INTO research_verifications(research_id,version,session_id,verdict,mode,issues,summary,'
+                ' critic_session_id,critic_answer_chars,critic_verdict,created) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
                 (str(research_id), int(version), session_id, str(verdict),
-                 json.dumps(list(issues or []), ensure_ascii=False), str(summary or ''),
+                 str(mode), json.dumps(list(issues or []), ensure_ascii=False), str(summary or ''),
                  critic_session_id, int(critic_answer_chars or 0), critic_verdict, time.time()))
         row = self.db.execute('SELECT * FROM research_verifications WHERE id=?',
                               (int(cursor.lastrowid),)).fetchone()

@@ -204,3 +204,9 @@ cd /code/minndty3-design/BoxFox-Agent-Box/frontend && npx vitest run
 - `docs/plan/v29/v29-provider-route-plan.md` — dạng route `provider + model`.
 - `docs/plan/v29/v29-research-verify-plan.md` — kiểm nghiệm research offline.
 - `docs/plan/v29/v29-research-handoff-outline.md` — đề cương handoff kiểm nghiệm.
+
+---
+
+## 10. Phụ lục sau vòng 29 — research v2 (2026-09-25)
+
+Phần này chỉ bổ sung thông tin mới, không thay đổi các quyết định và số đo vòng 29 ở trên. Chủ nhà đã yêu cầu dừng test sống. Xem [phụ lục research v2](research-v2-live-addendum-2026-09-25.md) để biết code đang sửa, hai lượt nghiên cứu chuyển tuyến đã hủy, giới hạn nguồn web, tình trạng các route Muse/Gemini, số đo test và phần agent cloud cần soát. Dossier hiện là bản nháp; benchmark chất lượng 12×3 vẫn chưa đo.

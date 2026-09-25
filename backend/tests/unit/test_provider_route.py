@@ -326,3 +326,101 @@ def test_heal_reads_the_provider_map_only_when_a_provider_session_exists(tmp_pat
     assert asyncio.run(runtime.heal_context_windows()) == 1
     assert client.provider_map_calls == 0, 'không có phiên provider nào ⇒ không đọc snapshot thứ hai'
     store.close()
+
+
+def test_route_to_model_spec_formats_all_route_types():
+    """Hàm route_to_model_spec phải chuyển đúng các dạng route sang model spec."""
+    from agentbox.agent_core.runtime import route_to_model_spec
+    assert route_to_model_spec({'providerId': 'opencode', 'modelId': 'm1'}) == 'provider:opencode:m1'
+    assert route_to_model_spec({'connectionId': 'c1', 'modelId': 'm1'}) == 'model:c1:m1'
+    assert route_to_model_spec({'aliasId': 'fast'}) == 'alias:fast'
+    assert route_to_model_spec({'model': 'glm-5'}) == 'glm-5'
+    assert route_to_model_spec({'modelId': 'claude-3'}) == 'claude-3'
+    assert route_to_model_spec(None) == ''
+    assert route_to_model_spec({}) == ''
+
+
+def test_single_model_subagents_sync_when_route_changes(tmp_path):
+    """Khi đổi model giữa chừng trong phiên Single Model, toàn bộ subagents phải tự động đổi theo."""
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        client = StubModel([_turn_response(), _turn_response()])
+        runtime = HarnessRuntime(store, StubExecutor(), client)
+
+        initial_model = f'provider:{PROVIDER}:{MODEL_A}'
+        session = runtime.create({'skills': [], 'singleModel': initial_model, 'model': initial_model})
+        assert session['config']['isSingleModel'] is True
+        assert {s['model'] for s in session['config']['subagents']} == {initial_model}
+
+        # Đổi sang Model B ở lượt tiếp theo
+        new_route = {'providerId': PROVIDER, 'modelId': MODEL_B}
+        await runtime.submit(session['id'], 'hello', None, new_route)
+        await runtime.tasks[session['id']]
+
+        updated_config = store.get(session['id'])['config']
+        assert updated_config['route']['modelId'] == MODEL_B
+        expected_new_model = f'provider:{PROVIDER}:{MODEL_B}'
+        assert updated_config['singleModel'] == expected_new_model
+        assert {s['model'] for s in updated_config['subagents']} == {expected_new_model}
+        store.close()
+
+    asyncio.run(run())
+
+
+def test_harness_multi_model_subagents_do_not_sync_when_route_changes(tmp_path):
+    """Ở chế độ Harness (nhiều model riêng biệt), đổi route của cha không ghi đè model của con."""
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        client = StubModel([_turn_response()])
+        runtime = HarnessRuntime(store, StubExecutor(), client)
+
+        subagents = [
+            {'id': 'explore', 'model': 'DeepSeek V4 Flash', 'enabled': True},
+            {'id': 'build', 'model': 'GLM 5.2', 'enabled': True},
+            {'id': 'review', 'model': 'DeepSeek V4 Pro', 'enabled': True},
+        ]
+        session = runtime.create({
+            'skills': [],
+            'subagents': subagents,
+            'connectionId': 'c1',
+            'modelId': MODEL_A,
+        })
+        assert session['config'].get('isSingleModel') is not True
+
+        # Đổi route của cha sang Model B
+        await runtime.submit(session['id'], 'hello', None, {'connectionId': 'c1', 'modelId': MODEL_B})
+        await runtime.tasks[session['id']]
+
+        updated_config = store.get(session['id'])['config']
+        assert updated_config['route']['modelId'] == MODEL_B
+        # Subagents vẫn phải giữ nguyên cấu hình riêng biệt từng vai
+        assert {s['model'] for s in updated_config['subagents']} == {'DeepSeek V4 Flash', 'GLM 5.2', 'DeepSeek V4 Pro'}
+        store.close()
+
+    asyncio.run(run())
+
+
+def test_legacy_single_model_session_heals_on_turn(tmp_path):
+    """Phiên cũ đã lưu mọi subagent cùng 1 model (như Gemini) tự lành sang model mới khi gửi lượt."""
+    async def run():
+        store = SessionStore(tmp_path / 'sessions.db')
+        client = StubModel([_turn_response()])
+        runtime = HarnessRuntime(store, StubExecutor(), client)
+
+        # Giả lập cấu hình của phiên cũ (tất cả subagent cùng 'provider:gemini:flash-lite', không có cờ isSingleModel)
+        old_spec = 'provider:gemini:flash-lite'
+        subagents = [{'id': r, 'model': old_spec, 'enabled': True} for r in ['explore', 'build', 'research']]
+        session = runtime.create({'skills': [], 'subagents': subagents, 'providerId': 'gemini', 'modelId': 'flash-lite'})
+        assert 'isSingleModel' not in session['config']
+
+        # Gửi lượt mới bằng OpenCode Muse Spark
+        muse_route = {'providerId': 'opencode', 'modelId': 'muse-spark-1.3-contributor-free'}
+        await runtime.submit(session['id'], 'research question', None, muse_route)
+        await runtime.tasks[session['id']]
+
+        updated_config = store.get(session['id'])['config']
+        assert updated_config['isSingleModel'] is True
+        assert {s['model'] for s in updated_config['subagents']} == {'provider:opencode:muse-spark-1.3-contributor-free'}
+        store.close()
+
+    asyncio.run(run())

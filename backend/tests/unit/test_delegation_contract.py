@@ -74,7 +74,8 @@ def test_delegate_task_schema_states_the_result_shape_and_stays_backward_compati
     schema = next(s for s in SCHEMAS if s['function']['name'] == 'delegate_task')['function']
     properties = schema['parameters']['properties']
     # T6 (vòng 22) thêm `wait` (sinh con không chặn) và `deliverTo` (con giao kết quả cho ai).
-    assert set(properties) == {'role', 'goal', 'context', 'expect', 'wait', 'deliverTo'}
+    assert set(properties) == {'role', 'goal', 'context', 'expect', 'wait', 'deliverTo',
+                               'reviewTarget', 'questionId'}
     assert properties['wait']['type'] == 'boolean' and properties['deliverTo']['type'] == 'array'
     assert schema['parameters']['required'] == ['role', 'goal'], \
         'existing callers send role/goal/context only: nothing new may become required'
@@ -122,9 +123,9 @@ def test_child_budget_is_clamped_by_the_parent_and_by_the_engine_ceiling(tmp_pat
     đúng trần 420 s — vẫn là quyết định của CHA, không phải của con.
     """
     cases = [
-        ({'maxSteps': 60, 'deadlineSeconds': 900}, 40, 420),
+        ({'maxSteps': 60, 'deadlineSeconds': 900}, 40, 900),
         ({'maxSteps': 12, 'deadlineSeconds': 60}, 12, 60),
-        ({}, 40, 420),
+        ({}, 40, 600),
     ]
     for parent_values, steps, seconds in cases:
         _, _, child = run_delegation(tmp_path / f"p{steps}-{seconds}", delegate_args(),

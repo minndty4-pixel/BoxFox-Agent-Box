@@ -28,11 +28,13 @@ ROLE_SKILLS = {
     'review': {'requesting-code-review', 'codebase-inspection'},
     'simplify': {'simplify-code', 'codebase-inspection'},
     'testing': {'test-driven-development', 'dogfood', 'claude-design'},
-    'research': {'research-team', 'grounded-citations', 'arxiv', 'blocked-page-recovery', 'codebase-inspection'},
+    'research': {'research-team', 'research-search', 'research-reading', 'research-evidence',
+                 'grounded-citations', 'arxiv', 'blocked-page-recovery', 'codebase-inspection'},
     # Vòng 27 (đợt 6, D-36): người phản biện hồ sơ — vai chỉ-đọc, cùng bộ kỹ năng soi mã với
     # `plan-review`. Thiếu khoá này thì `delegate_task(role="research-review")` ném KeyError
     # ngay ở bước chọn kỹ năng cho con (đo sống: `TURN_FAILED_KEYERROR: KeyError: 'research-review'`).
-    'research-review': {'codebase-inspection'},
+    'research-review': {'codebase-inspection', 'research-critique', 'research-evidence',
+                        'research-search', 'research-reading'},
 }
 
 

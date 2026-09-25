@@ -28,7 +28,7 @@ MAX_STEPS_MAX = 60
 DEADLINE_DEFAULT_SECONDS = 600
 DEADLINE_MAX_SECONDS = 1200
 CHILD_MAX_STEPS = 40
-CHILD_DEADLINE_SECONDS = 420
+CHILD_DEADLINE_SECONDS = 900
 
 # Trần BYTE của một request mà router chấp nhận, và phần byte của request không nằm trong
 # `messages` (prompt vai + schema công cụ). Bộ nén phải biết cả hai: trên cửa sổ 1M, ngưỡng
@@ -108,7 +108,7 @@ FANOUT_GLOBAL_CEILING = 8
 # Hết chỗ chờ quá ngần này thì trả lỗi tool cho model — một lượt không bao giờ treo vì hết slot.
 FANOUT_QUEUE_WAIT_SECONDS = 30
 # Chặn vòng lặp sinh con trong MỘT lượt (một lượt 40 bước có thể gọi `delegate_task` 40 lần).
-CHILDREN_PER_TURN_MAX = 12
+CHILDREN_PER_TURN_MAX = 18
 FANOUT_BUSY_CODE = 'FANOUT_BUSY'
 CHILDREN_PER_TURN_CODE = 'CHILDREN_PER_TURN_EXHAUSTED'
 
@@ -147,7 +147,7 @@ PEER_DELIVER_MAX = 4
 # = 300): watchdog chỉ được huỷ con đã vượt xa mọi ngưỡng hợp lệ, nếu không nó thành kẻ giết việc
 # đang chạy tốt. Nhịp quét thưa (10 s) vì mỗi nhịp là một giao dịch trên SQLite dùng chung.
 WATCHDOG_TICK_SECONDS = 10
-CHILD_WALL_MAX_SECONDS = 900
+CHILD_WALL_MAX_SECONDS = 1200
 # Hàng `started` còn sót lại từ lần chạy TRƯỚC (tiến trình bị giết): thao tác tool không được chạy
 # lại, nên không hồi sinh — đóng nó bằng `RESTART`, cùng luật với `UPDATE sessions SET
 # status='interrupted'` lúc mở DB.

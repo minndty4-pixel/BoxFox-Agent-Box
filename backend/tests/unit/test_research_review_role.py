@@ -12,7 +12,8 @@ from agentbox.agent_core import roles
 def test_the_research_critic_role_exists_and_can_only_read():
     role = roles.ROLES['research-review']
     assert role.name == 'Research Review'
-    assert role.tools == roles.READ | roles.SOURCE_READ
+    assert role.tools == roles.READ | roles.SOURCE_READ | {'web_search', 'web_fetch', 'read_source', 'paper_citations', 'claim_assess'}
+    assert 'claim_assess' in roles.allowed_tools('research-review', parent=roles.ORCHESTRATOR_TOOLS)
     for forbidden in ('source_add', 'dossier_write', 'research_verify', 'write_plan', 'delegate_task'):
         assert forbidden not in role.tools, f'vai phản biện không được có {forbidden}'
     assert {'file_read', 'source_list', 'source_verify', 'research_status'} <= set(role.tools)
@@ -25,7 +26,7 @@ def test_the_research_critic_instructions_demand_a_final_verdict_line():
     lowered = text.lower()
     assert 'final line' in lowered or 'last line' in lowered
     assert 'source_verify' in text, 'phải mở LẠI nguồn, không tin lời kể'
-    assert 'never write' in lowered and 'never insert ledger rows' in lowered
+    assert 'never edit the dossier' in lowered and 'never insert source rows' in lowered
 
 
 def test_the_review_role_is_declared_last_in_the_delegate_enum_and_the_research_role_reads_the_ledger():

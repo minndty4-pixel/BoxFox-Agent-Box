@@ -25,6 +25,7 @@ export interface CompletionEmail {
 
 export type PanelTabId =
   | 'plan'
+  | 'research'
   | 'sandbox'
   | 'subagents'
   | 'ide'
@@ -40,6 +41,7 @@ export type PanelTabId =
 
 export const ALL_PANEL_TABS: PanelTabId[] = [
   'plan',
+  'research',
   'sandbox',
   'subagents',
   'ide',

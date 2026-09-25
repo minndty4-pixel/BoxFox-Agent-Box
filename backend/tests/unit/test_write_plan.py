@@ -4,6 +4,7 @@ Contract: docs/plan/next-batch-contract.md §1 (plan_written + ui_intent).
 """
 import asyncio
 import copy
+import hashlib
 import json
 
 import pytest
@@ -146,10 +147,11 @@ def test_write_plan_emits_plan_written_then_ui_intent(tmp_path):
 
         written = events_of(store, sid, 'plan_written')
         assert len(written) == 1
-        assert set(written[0]['data']) == {'identity', 'version', 'slug', 'relativePath', 'title', 'bytes'}
+        assert set(written[0]['data']) == {'identity', 'version', 'slug', 'relativePath', 'title', 'bytes', 'contentHash'}
         assert written[0]['data'] == {'identity': 'workspace-plan', 'version': 1, 'slug': 'workspace-plan',
                                       'relativePath': '.plans/v1-workspace-plan.md', 'title': 'Workspace plan',
-                                      'bytes': len(PLAN_MARKDOWN.encode('utf-8'))}
+                                      'bytes': len(PLAN_MARKDOWN.encode('utf-8')),
+                                      'contentHash': hashlib.sha256(PLAN_MARKDOWN.encode('utf-8')).hexdigest()}
         intent = events_of(store, sid, 'ui_intent')
         assert len(intent) == 1
         assert intent[0]['data'] == {'tab': 'plan', 'target': {'identity': 'workspace-plan', 'version': 1},
@@ -191,7 +193,8 @@ def test_nested_plan_target_uses_the_reader_identity_and_version(tmp_path):
         written = events_of(store, sid, 'plan_written')
         assert written[0]['data'] == {'identity': 'docs/docs', 'version': 1, 'slug': 'docs',
                                       'relativePath': '.plans/docs/v1-docs.md', 'title': 'Docs',
-                                      'bytes': len(PLAN_MARKDOWN.encode('utf-8'))}
+                                      'bytes': len(PLAN_MARKDOWN.encode('utf-8')),
+                                      'contentHash': hashlib.sha256(PLAN_MARKDOWN.encode('utf-8')).hexdigest()}
         assert events_of(store, sid, 'ui_intent')[0]['data'] == \
             {'tab': 'plan', 'target': {'identity': 'docs/docs', 'version': 1}, 'reason': 'plan_written'}
         assert tool_results(store, sid)[-1]['relativePath'] == '.plans/docs/v1-docs.md'
@@ -586,7 +589,7 @@ def test_an_unreadable_index_falls_back_and_invents_nothing(tmp_path):
         assert name == 'write_plan' and 'version' not in args and 'directory' not in args
         assert args['markdown'] == PLAN_MARKDOWN, 'không có header nào được ghép ở nhánh suy giảm'
         data = events_of(store, sid, 'plan_written')[0]['data']
-        assert set(data) == {'identity', 'version', 'slug', 'relativePath', 'title', 'bytes'}, \
+        assert set(data) == {'identity', 'version', 'slug', 'relativePath', 'title', 'bytes', 'contentHash'}, \
             'nhánh suy giảm không được thêm `parentVersion`/`headerSource` — hai giá trị đó chưa ai biết'
         assert scored(store, sid) == [] and store.plan_evaluation('workspace-plan', 1) is None
         store.close()

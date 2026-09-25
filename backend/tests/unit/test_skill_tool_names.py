@@ -196,10 +196,9 @@ def test_research_team_and_blocked_page_recovery_are_enabled_for_research():
 
     team = (VENDOR / 'skills/research/research-team/SKILL.md').read_text(encoding='utf-8')
     assert len(team.splitlines()) <= 220, 'skill phải đủ ngắn để model đọc hết'
-    assert '[s<N>]' not in team and '[r<N>]' in team, 'mã dòng là `r<N>` trong sổ của harness'
-    for needle in ('Mức: <n>', 'research_brief', 'cancel_child', 'research_verify', 'research-review',
-                   'Đang ở:', 'Ngân sách:', 'ủng hộ', 'phản bác', 'chưa chắc',
-                   'chưa mở được bản gốc', 'dossierDir', '3 vòng'):
+    assert '[s<N>]' not in team and 'row id' in team
+    for needle in ('research_brief', 'research_update', 'research_verify', 'research-review',
+                   'budgetSeconds', 'reviewTarget', 'evidence', 'critique'):
         assert needle in team, f'research-team thiếu `{needle}`'
 
     recovery = (VENDOR / 'skills/web/blocked-page-recovery/SKILL.md').read_text(encoding='utf-8')

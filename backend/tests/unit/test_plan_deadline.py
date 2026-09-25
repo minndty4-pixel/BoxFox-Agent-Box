@@ -88,7 +88,7 @@ def notices(store, sid, code=None):
 def test_the_deadline_numbers_are_the_measured_ones():
     assert limits.DEADLINE_DEFAULT_SECONDS == 600
     assert limits.DEADLINE_MAX_SECONDS == 1200
-    assert limits.CHILD_DEADLINE_SECONDS == 420
+    assert limits.CHILD_DEADLINE_SECONDS == 900
     assert limits.PLAN_TURN_EXTENSION_SECONDS == 420 and limits.PLAN_TURN_EXTENSIONS_MAX == 1
     assert limits.TURN_EXTENDED_CODE == 'TURN_EXTENDED'
     assert limits.DEADLINE_MIN_SECONDS == 5, 'sàn cũ giữ nguyên: nới không được phá nó'

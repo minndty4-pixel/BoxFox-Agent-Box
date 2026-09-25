@@ -54,7 +54,7 @@ def test_schemas_are_advertised_with_the_required_arguments():
     assert exposed['web_search']['function']['parameters']['required'] == ['query']
     assert exposed['web_fetch']['function']['parameters']['required'] == ['url']
     assert set(exposed['web_search']['function']['parameters']['properties']['source']['enum']) == {
-        'web', 'wikipedia', 'stackoverflow', 'github', 'papers'}
+        'web', 'wikipedia', 'stackoverflow', 'github', 'papers', 'openreview'}
 
 
 def test_failures_keep_the_web_prefix():
@@ -368,8 +368,8 @@ def test_the_dispatcher_sends_web_tools_to_the_host_not_the_box():
     sent = {}
 
     class FixtureWeb:
-        async def run(self, name, args, sid):
-            sent.update(name=name, args=args, sid=sid)
+        async def run(self, name, args, sid, *, scope_id=None):
+            sent.update(name=name, args=args, sid=sid, scope_id=scope_id)
             return {'content': 'host-side'}
 
     class FixtureExecutor:
@@ -381,7 +381,8 @@ def test_the_dispatcher_sends_web_tools_to_the_host_not_the_box():
 
     runtime = HarnessRuntime.__new__(HarnessRuntime)
     runtime.web = FixtureWeb()
+    runtime.root_session_id = lambda sid: sid
     session = {'id': 's1', 'role': 'orchestrator', 'config': {'tools': {'web_search'}}}
     result = asyncio.run(HarnessRuntime.dispatch(runtime, session, 'web_search', {'query': 'x'}))
     assert result == {'content': 'host-side'}
-    assert sent == {'name': 'web_search', 'args': {'query': 'x'}, 'sid': 's1'}
+    assert sent == {'name': 'web_search', 'args': {'query': 'x'}, 'sid': 's1', 'scope_id': 's1'}
