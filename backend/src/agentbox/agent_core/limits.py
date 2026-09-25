@@ -647,3 +647,50 @@ RESEARCH_SEEDED_DEFECT_KINDS = ('wrong-number', 'unsupported-claim', 'misattribu
                                 'outdated-supports-current', 'removed-direction', 'survey-as-proposal',
                                 'unlabeled-assumption', 'same-origin-independent',
                                 'mismatched-benchmark')
+
+
+# --- Công tắc P2/P3: một chỗ đọc --------------------------------------------
+# `runtime._env_switch` là bản riêng tư của P1. P2/P3 đọc công tắc qua đây để không mọc bản sao thứ
+# ba, và để bài kiểm truyền `env={...}` thay vì vá `os.environ` (thứ tự kiểm không ảnh hưởng nhau).
+def env_switch(name, modes, default, env=None):
+    """Giá trị công tắc trong `modes`; biến trống hoặc giá trị lạ ⇒ `default` (không bao giờ ném)."""
+    source = os.environ if env is None else env
+    raw = str(source.get(name) or '').strip().lower()
+    return raw if raw in modes else default
+
+
+def research_coverage_enabled(env=None):
+    """`BOXFOX_RESEARCH_COVERAGE`: `on` (mặc định) ⇒ facet, bão hoà và cổng bao phủ CÓ MẶT.
+
+    Mặc định `on` là "tính năng CÓ MẶT", không phải "đang bật": một run chỉ dựng bản đồ bao phủ khi
+    mode `/research` đang bật, còn `off` là đường lùi về đúng hành vi `6eb2fd8`.
+    """
+    return env_switch(RESEARCH_COVERAGE_ENV, RESEARCH_COVERAGE_MODES,
+                      RESEARCH_COVERAGE_DEFAULT_MODE, env) == 'on'
+
+
+def research_structured_report_enabled(env=None):
+    """`BOXFOX_RESEARCH_STRUCTURED_REPORT`: `on` ⇒ cổng kiểm CẤU TRÚC; `off` ⇒ quay lại dò tiêu đề."""
+    return env_switch(RESEARCH_STRUCTURED_REPORT_ENV, RESEARCH_STRUCTURED_REPORT_MODES,
+                      RESEARCH_STRUCTURED_REPORT_DEFAULT_MODE, env) == 'on'
+
+
+def research_time_policy_enabled(env=None):
+    """`BOXFOX_RESEARCH_TIME_POLICY`: `on` ⇒ có cửa sổ "hiện trạng" và lỗi nguồn cũ."""
+    return env_switch(RESEARCH_TIME_POLICY_ENV, RESEARCH_TIME_POLICY_MODES,
+                      RESEARCH_TIME_POLICY_DEFAULT_MODE, env) == 'on'
+
+
+def research_critique_tier2_enabled(env=None):
+    """`BOXFOX_RESEARCH_CRITIQUE_TIER2`: `on` (mặc định) ⇒ phản biện từ mức 2 (vòng 34, #6072).
+
+    `off` ⇒ quay lại đúng `RESEARCH_TIER_CRITIQUE` (critic chỉ ở mức 3).
+    """
+    return env_switch(RESEARCH_CRITIQUE_TIER2_ENV, RESEARCH_CRITIQUE_TIER2_MODES,
+                      RESEARCH_CRITIQUE_TIER2_DEFAULT_MODE, env) == 'on'
+
+
+def research_branch_report_enabled(env=None):
+    """`BOXFOX_RESEARCH_BRANCH_REPORT`: `on` ⇒ con research trả thẻ có cấu trúc; `off` ⇒ văn bản tự do."""
+    return env_switch(RESEARCH_BRANCH_REPORT_ENV, RESEARCH_BRANCH_REPORT_MODES,
+                      RESEARCH_BRANCH_REPORT_DEFAULT_MODE, env) == 'on'
