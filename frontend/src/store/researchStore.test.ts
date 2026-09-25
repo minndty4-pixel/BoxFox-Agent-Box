@@ -310,6 +310,32 @@ describe('researchStore thẻ trạng thái /research status (D-4)', () => {
     expect(useResearchStore.getState().statusCard).toBeNull()
   })
 
+  it('H1 (soát vòng 4): sự kiện cục bộ `model_change` không được đẩy mốc `seq` lên và nuốt thẻ MỚI', async () => {
+    // `harnessChatStore` chèn `model_change` với `seq: Date.now()` (mili giây, ~1,7e12). Nếu mốc tính cả
+    // sự kiện đó thì mọi `research_*` thật sau này bị coi là lịch sử ⇒ thẻ `/research status` im lặng
+    // vĩnh viễn trong tab cho tới khi nạp lại trang.
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(jobsPayload)))
+    const config = { researchMode: { on: true, activeRunId: 'R-1' } }
+    const modelChange = { seq: Date.now(), type: 'model_change', data: { from: 'a', to: 'b' } }
+    useResearchStore.getState().sync('s1', config, [
+      statusEvent(2051, 'R-1 · researching'),
+      modelChange,
+    ])
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(useResearchStore.getState().statusCard?.seq).toBe(2051)
+    expect(useResearchStore.getState().consumedSeq).toBe(2051)
+
+    useResearchStore.getState().dismissStatusCard()
+    // Lệnh MỚI sau khi đổi model: thẻ phải mọc lại (mốc vẫn ở 2051, không phải ~1,7e12).
+    useResearchStore.getState().sync('s1', config, [
+      statusEvent(2051, 'R-1 · researching'),
+      modelChange,
+      statusEvent(2053, 'R-1 · needs_user · pha clarifying'),
+    ])
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(useResearchStore.getState().statusCard?.seq).toBe(2053)
+  })
+
   it('D-9/R5-1: thẻ đã đóng KHÔNG mọc lại khi cùng phiên được đồng bộ dưới id server', async () => {
     // Phiên tạo trong trang được đồng bộ dưới khoá TẠM (`session-…`) trước khi có id server; mở lại từ
     // danh sách bên là id server. Khoá đổi ⇒ mốc theo phiên không chặn được bản phát lại (R5-1).

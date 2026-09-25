@@ -150,6 +150,19 @@ function eventSeconds(event: { created?: unknown }): number {
 }
 
 /**
+ * `seq` do SERVER cấp, 0 với sự kiện do TRÌNH DUYỆT tự chèn.
+ *
+ * `harnessChatStore` đẩy một sự kiện cục bộ `model_change` mang `seq: Date.now()` (MILI giây, ~1,7e12)
+ * mỗi lần đổi model/provider/alias trong phiên. `seq` của server là AUTOINCREMENT (vài nghìn), nên nếu
+ * tính sự kiện cục bộ vào mốc thì mốc nhảy lên ~1,7e12 và MỌI sự kiện `research_*` thật sau đó bị coi là
+ * lịch sử — thẻ `/research status` im lặng vĩnh viễn cho tới khi nạp lại trang (soát vòng 4, H1). Cùng
+ * quy ước với `harnessChatStore` (`lastServerSeq` bỏ qua `model_change`).
+ */
+function serverSeq(event: { seq: number; type: string }): number {
+  return event.type === 'model_change' ? 0 : event.seq
+}
+
+/**
  * Lời hỏi `exit-choice` còn MỞ của bất kỳ run nào đang thấy.
  *
  * Luồng `/research off` bắt đầu ở SERVER: server tạo lời hỏi `exit-choice` rồi chỉ phát một sự kiện
@@ -178,6 +191,7 @@ export const useResearchStore = create<ResearchState>((set, get) => ({
   lastEventSeq: 0,
   exitChoice: null,
   statusCard: null,
+  // Sổ mốc theo phiên lớn dần theo số phiên đã mở trong TAB này; không cần dọn trong vòng đời một tab.
   seenSeqBySession: {},
   consumedSeq: 0,
 
@@ -191,7 +205,7 @@ export const useResearchStore = create<ResearchState>((set, get) => ({
     const mode = readResearchMode(config)
     const switched = sessionId !== get().sessionId
     const seenSeqBySession = get().seenSeqBySession
-    const maxSeq = events.reduce((max, event) => Math.max(max, event.seq), 0)
+    const maxSeq = events.reduce((max, event) => Math.max(max, serverSeq(event)), 0)
     // Mốc của TỪNG phiên, siết thêm bằng SÀN CHUNG: sự kiện chỉ "mới" khi vượt cả hai (R5-1 — cùng một
     // phiên có thể đổi khoá giữa khoá tạm và id server, sàn chung không phụ thuộc khoá).
     const mark = Math.max(seenSeqBySession[sessionId] ?? 0, get().consumedSeq)
@@ -205,7 +219,7 @@ export const useResearchStore = create<ResearchState>((set, get) => ({
       && event.seq > (mark ?? 0)
       && eventSeconds(event) >= PAGE_OPENED_AT - PAGE_OPENED_SKEW_SECONDS)
     const nextMark = Math.max(mark ?? 0, maxSeq)
-    const lastEventSeq = events.reduce((max, event) => Math.max(max, event.seq), switched ? 0 : get().lastEventSeq)
+    const lastEventSeq = events.reduce((max, event) => Math.max(max, serverSeq(event)), switched ? 0 : get().lastEventSeq)
     const modeChanged = switched || mode.on !== get().mode.on || mode.activeRunId !== get().mode.activeRunId
       || mode.revision !== get().mode.revision
     // D-4: chỉ nhận sự kiện MỚI của phiên này (phiên chưa từng thấy ⇒ không nhận gì từ lịch sử).
