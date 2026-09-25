@@ -31,6 +31,20 @@ __all__ = ['active_pack', 'pack_search', 'pack_fetch', 'pack_pages', 'PACK_ENV']
 
 PACK_ENV = 'BOXFOX_WEB_PACK'
 _MAX_PAGES_BYTES = 4 * 1024 * 1024
+#: Từ vựng `accessLevel` DUY NHẤT cho hàng trả mô hình: giống `academic.ACCESS_LEVELS` (hợp đồng
+#: §4), để một trường không mang hai từ vựng (low). Gói khai theo từ vựng §3
+#: (`open|abstract|paywalled|metadata`), nên đọc gói thì quy đổi.
+ACCESS_LEVELS = ('snippet', 'abstract', 'fulltext-available', 'fulltext-read')
+_PACK_ACCESS_MAP = {'open': 'fulltext-available', 'abstract': 'abstract',
+                    'paywalled': 'snippet', 'metadata': 'snippet'}
+
+
+def _access_level(value) -> str:
+    """Quy `accessLevel` của gói về từ vựng chung; giá trị đã đúng từ vựng thì giữ nguyên."""
+    text = str(value or '').strip().lower()
+    if text in ACCESS_LEVELS:
+        return text
+    return _PACK_ACCESS_MAP.get(text, 'snippet')
 
 
 def _fold(value: str) -> str:
@@ -110,7 +124,7 @@ def _row_for(url: str, source: dict, snippet: str = '', rank: int = 0) -> dict:
             'rank': rank,
             'publishedAt': str(source.get('date') or ''),
             'dateSource': 'provider' if source.get('date') else 'unknown',
-            'accessLevel': str(source.get('accessLevel') or 'snippet'),
+            'accessLevel': _access_level(source.get('accessLevel')),
             'sourceKind': str(source.get('kind') or 'page')}
 
 
@@ -187,6 +201,10 @@ def pack_fetch(url: str) -> dict | None:
         file_name = str(source.get('file') or '')
         if not file_name:
             return None
+        # Chốt `..`/đường dẫn tuyệt đối: gói do host tạo (`build_pack` đã chặn), nhưng một gói
+        # dựng tay không được phép thoát khỏi cây của gói (low).
+        if os.path.isabs(file_name) or '..' in Path(file_name).parts:
+            return None
         # Hợp đồng §3 (và `build_pack.validate_pack`) nói `file` là đường dẫn TƯƠNG ĐỐI TRONG GÓI,
         # tức đã gồm tiền tố `pages/`. Bản đầu chỉ ghép thêm `pages/` nên mọi gói do `build_pack.py`
         # dựng đều đọc trượt (`<gói>/pages/pages/<tệp>`) và `web_fetch` báo "không có trong gói".
@@ -218,6 +236,6 @@ def pack_pages() -> list[dict]:
         return []
     return [{'url': str(item.get('url')), 'title': str(item.get('title') or ''),
              'publishedAt': str(item.get('date') or ''), 'kind': str(item.get('kind') or ''),
-             'accessLevel': str(item.get('accessLevel') or 'snippet'),
+             'accessLevel': _access_level(item.get('accessLevel')),
              'file': str(item.get('file') or '')}
             for item in _sources(root)]

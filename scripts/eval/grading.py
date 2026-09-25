@@ -265,9 +265,15 @@ def within_one(pairs: list[tuple[float, float]]) -> float | None:
 
 
 def _total(scores: dict | None) -> int | None:
+    """Tổng điểm của các tiêu chí BẮT BUỘC; `None` khi thiếu một tiêu chí bắt buộc nào.
+
+    `c10_cost_latency` là TUỲ CHỌN (§8.6, `OPTIONAL_COLUMNS`): bảng để trống ô này vẫn phải ra
+    tổng điểm, nếu không độ khớp giám khảo ↔ người luôn co về `n=0` (M11).
+    """
     if not isinstance(scores, dict):
         return None
-    values = [scores.get(code) for code in CRITERION_CODES]
+    required = [code for code in CRITERION_CODES if code not in OPTIONAL_COLUMNS]
+    values = [scores.get(code) for code in required]
     if any(value is None for value in values):
         return None
     return sum(int(value) for value in values)

@@ -33,6 +33,7 @@ import json
 import re
 import shutil
 import sys
+import time
 from pathlib import Path
 
 PAGE_EXTENSIONS = ('.html', '.htm', '.txt', '.json', '.pdf')
@@ -174,7 +175,9 @@ def build_pack(manifest_path: str | Path, out_dir: str | Path, *,
 
     pack = {
         'scenarioId': manifest['scenarioId'],
-        'builtAt': built_at or '1970-01-01T00:00:00Z',
+        # Không bịa mốc `1970-01-01`: thiếu `--built-at` thì ghi mốc HIỆN TẠI (UTC) —
+        # `reference_map.load_map` cũng từ chối một bản đồ thiếu ngày (low).
+        'builtAt': built_at or time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
         'sources': rows,
     }
     (out_dir / PACK_JSON).write_text(json.dumps(pack, ensure_ascii=False, indent=2) + '\n',

@@ -140,6 +140,8 @@ def test_search_falls_through_when_the_pack_has_no_index(tools, monkeypatch, tmp
     payload = tools.search({'query': 'gói không có chỉ mục'})
     assert payload['results'][0]['url'] == 'https://example.com/a'
     assert 'pack' not in payload
+    # Lời gọi này ĐÃ chạm mạng dù đang bật gói: payload phải nói rõ, không im lặng (§1/§8.3).
+    assert 'search_index.jsonl' in payload['packWarning']
 
 
 # ------------------------------------------------------------------ fetch trong chế độ gói

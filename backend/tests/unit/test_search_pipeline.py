@@ -304,3 +304,125 @@ def test_run_pipeline_rejects_an_empty_query(monkeypatch):
     monkeypatch.setenv('BOXFOX_SEARCH_PIPELINE', 'on')
     with pytest.raises(WebError):
         sp.run_pipeline([], source='web', count=5, options={})
+
+
+# ------------------------------------------------------------------ H1 · bản bỏ từng bước
+def test_no_expansion_ablation_skips_generated_variants(monkeypatch):
+    monkeypatch.setenv('BOXFOX_SEARCH_PIPELINE', 'on')
+    monkeypatch.setenv(sp.ABLATION_ENV, 'no-expansion')
+    seen: list[str] = []
+
+    def fake(query, *, engines, count, time_range=None, language='', timeout=None):
+        seen.append(query)
+        return {'results': [{'url': 'https://a.example/1', 'title': 'A', 'engine': 'brave'}],
+                'engines': list(engines), 'unresponsive': [], 'error': None, 'latencyMs': 5}
+
+    monkeypatch.setattr(sp, 'searxng_search', fake)
+    payload = sp.run_pipeline(['retrieval augmented generation'], source='web', count=5,
+                              options={'facet': {'label': 'retrieval augmented generation',
+                                                 'terms': ['RAG']}})
+    assert payload['pipeline']['ablation'] == 'no-expansion'
+    assert payload['pipeline']['steps']['ablation'] == 'no-expansion'
+    assert seen == ['retrieval augmented generation'], 'bản bỏ bước vẫn nở biến thể'
+
+
+def test_no_dedupe_ablation_keeps_the_duplicate_the_full_pipeline_merges(monkeypatch):
+    monkeypatch.setenv('BOXFOX_SEARCH_PIPELINE', 'on')
+    shared = 'retrieval augmented generation combines a retriever with a generator model'
+    rows = [{'url': 'https://a.example/one', 'title': shared, 'snippet': shared, 'engine': 'brave'},
+            {'url': 'https://b.example/two', 'title': shared, 'snippet': shared, 'engine': 'brave'}]
+    monkeypatch.setattr(sp, 'searxng_search', _fake_leg(rows))
+    options = {'facet': {'label': shared, 'terms': []}}
+    full = sp.run_pipeline([shared], source='web', count=5, options=dict(options))
+    ablated = sp.run_pipeline([shared], source='web', count=5,
+                             options={**options, 'ablation': 'no-dedupe'})
+    assert len(full['results']) == 1
+    assert len(ablated['results']) == 2 and ablated['pipeline']['steps']['ablation'] == 'no-dedupe'
+
+
+def test_unknown_ablation_value_falls_back_to_the_full_pipeline(monkeypatch):
+    monkeypatch.setenv('BOXFOX_SEARCH_PIPELINE', 'on')
+    monkeypatch.setenv(sp.ABLATION_ENV, 'làm-cho-có')
+    monkeypatch.setattr(sp, 'searxng_search',
+                        _fake_leg([{'url': 'https://a.example/1', 'title': 'A', 'engine': 'brave'}]))
+    payload = sp.run_pipeline(['q'], source='web', count=5, options={})
+    assert payload['pipeline']['ablation'] is None
+    assert payload['pipeline']['steps']['ablation'] is None
+
+
+# ------------------------------------------------------------------ M5 · lọc tên miền bị loại
+def test_exclude_drops_the_domain_and_is_reported(monkeypatch):
+    monkeypatch.setenv('BOXFOX_SEARCH_PIPELINE', 'on')
+    rows = [{'url': 'https://good.example/1', 'title': 'A', 'engine': 'brave'},
+            {'url': 'https://bad.example/2', 'title': 'B', 'engine': 'brave'}]
+    monkeypatch.setattr(sp, 'searxng_search', _fake_leg(rows))
+    payload = sp.run_pipeline(['q'], source='web', count=5, options={'exclude': ['bad.example']})
+    assert [row['url'] for row in payload['results']] == ['https://good.example/1']
+    assert payload['pipeline']['steps']['excluded'] == 1
+    assert payload['filters']['exclude'] == ['bad.example']
+
+
+def test_exclude_hosts_accepts_a_url_a_bare_host_and_nonsense():
+    assert sp._exclude_hosts({'exclude': 'https://WWW.Bad.Example/x'}) == {'bad.example'}
+    assert sp._exclude_hosts({'exclude': 'Bad.Example'}) == {'bad.example'}
+    # Một chuỗi trần cũng được coi là một tên miền (đường cũ nhận cả hai).
+    assert sp._exclude_hosts({'exclude': 'bad.example'}) == {'bad.example'}
+    assert sp._exclude_hosts({'exclude': None}) == set()
+    assert sp._exclude_hosts({}) == set()
+
+
+def test_cache_key_separates_exclude_cursor_and_ablation():
+    base = sp._pipeline_cache_key(['q'], 'web', 5, {})
+    assert base == sp._pipeline_cache_key(['q'], 'web', 5, {})
+    assert base != sp._pipeline_cache_key(['q'], 'web', 5, {'exclude': ['bad.example']})
+    assert base != sp._pipeline_cache_key(['q'], 'web', 5, {'cursor': 2})
+    assert base != sp._pipeline_cache_key(['q'], 'web', 5, {'ablation': 'no-rrf'})
+
+
+# ------------------------------------------------------------------ M6 · tên miền hai tầng
+@pytest.mark.parametrize('host, expected', [
+    ('a.com.vn', 'a.com.vn'),
+    ('b.com.vn', 'b.com.vn'),
+    # Tên miền con cùng đăng ký (`news.a.com.vn`) gộp về `a.com.vn`, nhưng hai SITE khác nhau thì không.
+    ('news.a.com.vn', 'a.com.vn'),
+    ('user.github.io', 'user.github.io'),
+    ('x.example.com', 'example.com'),
+    ('example.com', 'example.com'),
+    ('localhost', 'localhost'),
+])
+def test_registered_domain_keeps_two_level_suffixes(host, expected):
+    assert sp._registered_domain(host) == expected
+
+
+def test_rows_on_different_com_vn_sites_are_not_collapsed():
+    rows = sp.dedupe_diversity([
+        {'url': 'https://a.com.vn/1', 'title': 'tin một', 'snippet': ''},
+        {'url': 'https://b.com.vn/2', 'title': 'tin hai', 'snippet': ''},
+    ], per_domain=1)
+    assert len(rows) == 2
+
+
+# ------------------------------------------------------------------ M8 · điểm độ mới
+def test_freshness_credit_needs_a_real_date_not_a_bare_year():
+    scope = {'needs_fresh': True}
+    credited = [
+        {'url': 'https://e.example/x', '_dates': {'publishedAt': '2026-05-05', 'dateSource': 'provider'}},
+        {'url': 'https://e.example/x', '_dates': {'publishedAt': '2026-04-04', 'dateSource': 'page-meta'}},
+        {'url': 'https://e.example/2026/03/09/bai',
+         '_dates': {'publishedAt': '2026-03-09', 'dateSource': 'url'}},
+    ]
+    assert all(sp._fresh_score(row, scope) == 1.0 for row in credited)
+    uncredited = [
+        # Năm lẻ trong đường dẫn chuyên mục KHÔNG phải ngày xuất bản.
+        {'url': 'https://e.example/2026/tin-tuc',
+         '_dates': {'publishedAt': '2026-01-01', 'dateSource': 'url'}},
+        # Ngày cũ ngoài cửa sổ.
+        {'url': 'https://e.example/x', '_dates': {'publishedAt': '2019-05-05', 'dateSource': 'provider'}},
+        # Ngày đoán từ đoạn trích không còn được tính.
+        {'url': 'https://e.example/x', '_dates': {'publishedAt': '2026-05-05', 'dateSource': 'text'}},
+        {'url': 'https://e.example/x', '_dates': {'publishedAt': '', 'dateSource': 'unknown'}},
+        {},
+    ]
+    assert all(sp._fresh_score(row, scope) == 0.0 for row in uncredited)
+    # Ngoài facet hiện trạng thì ε độ mới luôn bằng 0.
+    assert sp._fresh_score(credited[0], {'needs_fresh': False}) == 0.0

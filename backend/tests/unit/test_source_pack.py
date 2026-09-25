@@ -116,3 +116,45 @@ def test_trailing_slash_urls_match(monkeypatch, tmp_path):
     _make_pack(tmp_path)
     monkeypatch.setenv('BOXFOX_WEB_PACK', str(tmp_path))
     assert source_pack.pack_fetch('https://a.example/rag/')['title'] == 'RAG overview'
+
+
+def test_access_level_uses_one_vocabulary_across_pack_rows(monkeypatch, tmp_path):
+    _make_pack(tmp_path)
+    manifest = json.loads((tmp_path / 'pack.json').read_text(encoding='utf-8'))
+    # Từ vựng §3 của gói (`open|abstract|paywalled|metadata`) quy về từ vựng dùng chung.
+    manifest['sources'][0]['accessLevel'] = 'open'
+    manifest['sources'][1]['accessLevel'] = 'paywalled'
+    (tmp_path / 'pack.json').write_text(json.dumps(manifest), encoding='utf-8')
+    monkeypatch.setenv('BOXFOX_WEB_PACK', str(tmp_path))
+    rows = source_pack.pack_search('retrieval augmented generation', 5, {})
+    assert rows[0]['accessLevel'] == 'fulltext-available'
+    assert rows[1]['accessLevel'] == 'snippet'
+    # Giá trị đã đúng từ vựng chung thì giữ nguyên, không quy đổi vòng.
+    assert source_pack._access_level('fulltext-read') == 'fulltext-read'
+    assert source_pack._access_level('') == 'snippet'
+    assert source_pack._access_level(None) == 'snippet'
+    assert all(level in source_pack.ACCESS_LEVELS for level in
+               ('fulltext-available', 'snippet', 'abstract', 'fulltext-read'))
+
+
+def test_pack_fetch_refuses_a_file_outside_the_pack_tree(monkeypatch, tmp_path):
+    _make_pack(tmp_path)
+    outside = tmp_path.parent / 'outside.html'
+    outside.write_text('<p>secret</p>', encoding='utf-8')
+    manifest = json.loads((tmp_path / 'pack.json').read_text(encoding='utf-8'))
+    manifest['sources'].append({'url': 'https://evil.example/x', 'title': 'X', 'date': '',
+                                'kind': 'page', 'accessLevel': 'open',
+                                'file': f'../{outside.name}'})
+    (tmp_path / 'pack.json').write_text(json.dumps(manifest), encoding='utf-8')
+    monkeypatch.setenv('BOXFOX_WEB_PACK', str(tmp_path))
+    assert source_pack.pack_fetch('https://evil.example/x') is None
+
+
+def test_pack_fetch_refuses_an_absolute_file(monkeypatch, tmp_path):
+    _make_pack(tmp_path)
+    manifest = json.loads((tmp_path / 'pack.json').read_text(encoding='utf-8'))
+    manifest['sources'].append({'url': 'https://evil.example/y', 'title': 'Y', 'date': '',
+                                'kind': 'page', 'accessLevel': 'open', 'file': '/etc/hostname'})
+    (tmp_path / 'pack.json').write_text(json.dumps(manifest), encoding='utf-8')
+    monkeypatch.setenv('BOXFOX_WEB_PACK', str(tmp_path))
+    assert source_pack.pack_fetch('https://evil.example/y') is None

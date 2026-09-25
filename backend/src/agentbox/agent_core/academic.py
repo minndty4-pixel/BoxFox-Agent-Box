@@ -1023,15 +1023,28 @@ def papers_search(queries: list[str], *, count: int = 10, options: dict | None =
 
 # --------------------------------------------------------------------- citation chase
 
-def _s2_ref(identifier: str) -> str:
-    text = _clean(identifier)
+def _bare_identifier(value: str) -> str:
+    """Gỡ vỏ URL khỏi một định danh: `https://openalex.org/W…` → `W…`, `openalex:W…` → `W…`.
+
+    Đường cũ nhận URL trần và trả rỗng; giữ nguyên URL thì `_s2_ref`/`_openalex_citation` không
+    phân loại được định danh (low: `citation_chase` phải chuẩn hoá như bản cũ).
+    """
+    text = _clean(value)
     if not text:
         return ''
-    if _looks_doi(text):
-        return 'DOI:' + _norm_doi(text)
+    text = re.sub(r'^(?:https?://)?(?:www\.)?openalex\.org/', '', text, flags=re.I)
+    text = re.sub(r'^openalex:', '', text, flags=re.I)
+    return text
+
+
+def _s2_ref(identifier: str) -> str:
+    text = _bare_identifier(identifier)
+    if not text:
+        return ''
+    doi = _norm_doi(text)
+    if _looks_doi(text) or _looks_doi(doi):
+        return 'DOI:' + doi
     low = text.lower()
-    if low.startswith('doi:'):
-        return 'DOI:' + _norm_doi(text)
     if low.startswith('arxiv:'):
         return 'ARXIV:' + _norm_arxiv(text)
     if _looks_arxiv(text):
@@ -1185,7 +1198,7 @@ def _openalex_work_id_from_doi(doi: str, options: dict) -> str:
 
 
 def _openalex_citation(identifier: str, *, direction: str, limit: int, options: dict) -> list[dict]:
-    text = _clean(identifier)
+    text = _bare_identifier(identifier)
     work_id = text if _WORK_ID_RE.match(text) else ''
     if not work_id:
         doi = _norm_doi(text)
@@ -1248,7 +1261,7 @@ def citation_chase(identifier: str, *, direction: str, limit: int = 25,
     its daily budget lasts.
     """
     options = options or {}
-    identifier = _clean(identifier)
+    identifier = _bare_identifier(identifier)
     direction = _clean(direction).lower()
     if not identifier or direction not in ('forward', 'backward'):
         return []

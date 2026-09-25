@@ -49,6 +49,10 @@ __all__ = ['PIPELINE_ENV', 'pipeline_enabled', 'searxng_url', 'canonical_url', '
 
 PIPELINE_ENV = 'BOXFOX_SEARCH_PIPELINE'
 SEARXNG_URL_ENV = 'BOXFOX_SEARXNG_URL'
+#: Chọn bản bỏ từng bước cho đo 8.7. `scripts/eval/search_bench.py` ghi biến này; `run_pipeline`
+#: cũng nhận `options['ablation']`. Rỗng = ống đầy đủ.
+ABLATION_ENV = 'BOXFOX_SEARCH_ABLATION'
+ABLATIONS = ('no-expansion', 'no-rrf', 'no-dedupe', 'no-tierb-rerank', 'no-local-index')
 # Từ khoá "bật" chấp nhận: hợp đồng §1 nói `on`; nhận thêm 1/true/yes để một biến môi trường
 # viết tay theo thói quen vẫn bật được, không có giá trị nào khác được coi là bật.
 _ON_VALUES = ('on', '1', 'true', 'yes')
@@ -60,9 +64,23 @@ MAX_WORKERS = 6                                  # trần luồng trong MỘT l�
 _DEDUPE_JACCARD = 0.8
 _DEDUPE_MIN_TOKENS = 8
 _DROP_PARAMS = {'fbclid', 'gclid', 'ref', 'spm', 'ref_src', 'mc_cid', 'mc_eid', 'igshid'}
+#: Hậu tố HAI tầng phổ biến: giữ hai nhãn cuối là sai với `a.com.vn` ↔ `b.com.vn` (cả hai thành
+#: `com.vn`, rồi trần 2 kết quả/tên miền bỏ oan kết quả của trang khác). Bảng này giữ ba nhãn.
+_TWO_LEVEL_SUFFIXES = frozenset({
+    'com.vn', 'gov.vn', 'edu.vn', 'org.vn', 'net.vn', 'biz.vn', 'info.vn', 'ac.vn', 'health.vn',
+    'co.uk', 'org.uk', 'ac.uk', 'gov.uk', 'me.uk', 'net.uk', 'sch.uk',
+    'com.au', 'net.au', 'org.au', 'edu.au', 'gov.au', 'id.au',
+    'com.br', 'com.cn', 'com.tw', 'com.hk', 'com.sg', 'com.my', 'com.ph', 'com.pk', 'com.tr',
+    'co.jp', 'co.kr', 'co.in', 'co.nz', 'co.za', 'co.id', 'co.th', 'co.il', 'or.jp', 'ne.jp',
+    'ac.jp', 'ac.kr', 'go.jp', 'go.kr', 'org.br', 'gov.br', 'gov.in', 'net.in', 'org.in',
+    'github.io', 'gitlab.io', 'pages.dev', 'vercel.app', 'netlify.app', 'wordpress.com',
+    'blogspot.com', 'medium.com',
+})
 _ARXIV_ID = re.compile(r'(?:www\.)?arxiv\.org/(?:abs|pdf)/([^?#\s]+)')
 _DOI_URL = re.compile(r'(?:dx\.)?doi\.org/(10\.[^\s?#]+)')
 _DATE_URL = re.compile(r'/(20\d{2})[/-](\d{1,2})(?:[/-](\d{1,2}))?')
+#: URL có ĐỦ ngày-tháng-năm mới được coi là nguồn ngày cho điểm độ mới (M8).
+_DATE_URL_FULL = re.compile(r'/(20\d{2})[/-](\d{1,2})[/-](\d{1,2})(?:[/-]|$|[?#])')
 _DATE_TEXT = re.compile(r'(20\d{2})-(\d{1,2})(?:-(\d{1,2}))?')
 _VIETNAMESE = re.compile(r'[ăâđêôơưĂÂĐÊÔƠƯáàảãạấầẩẫậắằẳẵặéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựýỳỷỹỵ]')
 
@@ -164,10 +182,19 @@ def _host_of(url: str) -> str:
 
 
 def _registered_domain(host: str) -> str:
+    """Tên miền đăng ký: ba nhãn khi hậu tố là hai tầng (`a.com.vn`), ngược lại hai nhãn.
+
+    Giữ hai nhãn cuối làm gộp oan `a.com.vn` và `b.com.vn` thành `com.vn`, rồi trần 2 kết quả/tên
+    miền bỏ kết quả của trang khác — đúng vào mặt tiếng Việt (`*.com.vn`, `*.gov.vn`, `*.edu.vn`)
+    và các hậu tố hai tầng khác (`*.co.uk`, `github.io`).
+    """
     parts = [part for part in str(host or '').split('.') if part]
     if len(parts) <= 2:
         return '.'.join(parts)
-    return '.'.join(parts[-2:])
+    last_two = '.'.join(parts[-2:])
+    if last_two in _TWO_LEVEL_SUFFIXES:
+        return '.'.join(parts[-3:])
+    return last_two
 
 
 def _tokens(value: str) -> list[str]:
@@ -234,7 +261,8 @@ def plan_queries(facet: dict, scope: dict, *, wave: int = 1) -> list[dict]:
 
     Trả danh sách `{query, variant_kind, engines, time_range, language, site, filetype}`, đã bỏ
     biến thể trùng sau chuẩn hoá và kẹp trần `SEARCH_PIPELINE_VARIANTS_L2` (mức 2) hoặc `…_L3`
-    (mức 3). `wave` chỉ để chọn trần/ghi log — nội dung biến thể không đổi theo sóng.
+    (mức 3). `level` lấy từ `scope['level']` (hợp đồng §2); `wave` chỉ để ghi log — trần biến thể
+    KHÔNG lấy từ `wave`.
     """
     facet = facet or {}
     scope = scope or {}
@@ -247,7 +275,7 @@ def plan_queries(facet: dict, scope: dict, *, wave: int = 1) -> list[dict]:
     engine_kind = 'news' if needs_fresh else ('academic' if kind == 'paper' else 'web')
     engines = _engine_hint(engine_kind)
 
-    level = int(scope.get('level') or wave or 1)
+    level = int(scope.get('level') or 1)
     cap = SEARCH_PIPELINE_VARIANTS_L3 if level >= 3 else SEARCH_PIPELINE_VARIANTS_L2
 
     variants: list[dict] = []
@@ -609,9 +637,17 @@ def record_engine_result(engine: str, *, ok: bool, empty: bool, blocked: bool,
 # ------------------------------------------------------------------ bước 9–10 · chạy ống
 
 def _pipeline_cache_key(queries: list[str], source: str, count: int, options: dict) -> str:
+    """Khoá đệm của ống: mọi thứ làm ĐỔI payload, gồm cả `exclude`, `cursor` và `ablation`.
+
+    Thiếu `exclude`/`cursor` làm lượt sau đọc lại kết quả của lượt trước sai ngữ cảnh (bộ lọc
+    tên miền bị bỏ qua); thiếu `ablation` làm bản bỏ bước đọc payload của ống đầy đủ.
+    """
     return json.dumps({'v': 1, 'queries': [str(query) for query in queries], 'source': str(source),
                        'count': int(count), 'site': options.get('site') or '',
-                       'freshness': options.get('freshness') or '', 'lang': options.get('lang') or ''},
+                       'freshness': options.get('freshness') or '', 'lang': options.get('lang') or '',
+                       'exclude': sorted(str(item) for item in (options.get('exclude') or [])),
+                       'cursor': int(options.get('cursor') or 0),
+                       'ablation': str(options.get('ablation') or '')},
                       sort_keys=True, ensure_ascii=False)
 
 
@@ -624,16 +660,31 @@ def _cache_ttl(source: str, options: dict) -> float:
 
 
 def _fresh_score(row: dict, scope: dict) -> float:
-    """ε·độ mới chỉ có nghĩa với facet hiện trạng: 1.0 khi ngày nằm trong/năm nay, ngược lại 0."""
+    """ε·độ mới chỉ có nghĩa với facet hiện trạng, và chỉ tính từ NGÀY ĐÃ GIẢI.
+
+    Chỉ thưởng khi ngày đến từ provider/meta trang, hoặc từ URL có ĐỦ ngày-tháng-năm. Một năm
+    lẻ trong tiêu đề/đoạn trích hay trong đường dẫn chuyên mục KHÔNG phải ngày xuất bản (M8).
+    """
     if not scope.get('needs_fresh'):
         return 0.0
-    date = str(row.get('publishedAt') or row.get('publishedDate') or '')
+    dates = row.get('_dates') or {}
+    source = str(dates.get('dateSource') or '').lower()
+    if source in ('provider', 'page-meta'):
+        date = str(dates.get('publishedAt') or '')
+    elif source == 'url':
+        match = _DATE_URL_FULL.search(str(row.get('url') or ''))
+        if not match:
+            return 0.0
+        date = _date_from_match(match)
+    else:
+        return 0.0
     match = _DATE_TEXT.search(date)
     if not match:
-        match = _DATE_URL.search(str(row.get('url') or ''))
-    if not match:
         return 0.0
-    year = int(match.group(1))
+    try:
+        year = int(match.group(1))
+    except (TypeError, ValueError):  # pragma: no cover - _DATE_TEXT chỉ khớp 20\d{2}
+        return 0.0
     if year >= int(time.strftime('%Y')) - 1:
         return 1.0
     return 0.0
@@ -642,6 +693,44 @@ def _fresh_score(row: dict, scope: dict) -> float:
 def _variant_reason(legs: list[dict]) -> str:
     errors = [str(leg.get('error')) for leg in legs if leg.get('error')]
     return ' | '.join(errors[:3]) or 'every engine refused or returned nothing'
+
+
+def _first_nonempty_leg(legs: list[dict]) -> dict | None:
+    """Chân ĐẦU có kết quả — bản bỏ `no-rrf` lấy thứ tự của đúng chân này (một engine tốt nhất)."""
+    for leg in legs or []:
+        if leg.get('results'):
+            return leg
+    return None
+
+
+def _exclude_hosts(options: dict) -> set[str]:
+    """Tập tên miền bị loại, đã hạ chữ + bỏ `www.` (bộ lọc tên miền mà đường cũ có)."""
+    raw = options.get('exclude')
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple, set)):
+        return set()
+    out: set[str] = set()
+    for item in raw:
+        text = str(item or '').strip().lower()
+        if '//' in text:
+            text = _host_of(text)
+        if text.startswith('www.'):
+            text = text[4:]
+        if text:
+            out.add(text)
+    return out
+
+
+def _is_excluded(url: str, exclude: set[str]) -> bool:
+    """URL thuộc tên miền bị loại? So cả host lẫn tên miền đăng ký (`a.com.vn` khớp `A.com.vn`)."""
+    if not exclude:
+        return False
+    host = _host_of(str(url or ''))
+    if not host:
+        return False
+    bare = host[4:] if host.startswith('www.') else host
+    return bare in exclude or host in exclude or _registered_domain(host) in exclude
 
 
 def run_pipeline(queries: list[str], *, source: str, count: int, options: dict,
@@ -664,6 +753,14 @@ def run_pipeline(queries: list[str], *, source: str, count: int, options: dict,
     except (TypeError, ValueError):
         limit = 5
 
+    # Bản bỏ từng bước cho đo 8.7 (H1): `options['ablation']` trước, rồi biến môi trường do
+    # `scripts/eval/search_bench.py` đặt. Giá trị lạ bị coi như ống đầy đủ (không im lặng tắt bước).
+    # Giải TRƯỚC khoá đệm để bản bỏ bước không đọc lại payload của ống đầy đủ.
+    ablation = str(options.get('ablation') or os.environ.get(ABLATION_ENV) or '').strip().lower()
+    if ablation not in ABLATIONS:
+        ablation = ''
+    options['ablation'] = ablation
+
     cache_key = _pipeline_cache_key(queries, source, limit, options)
     cached = store.cache_get(cache_key)
     if cached is not None:
@@ -677,34 +774,43 @@ def run_pipeline(queries: list[str], *, source: str, count: int, options: dict,
              'needs_fresh': bool(options.get('freshness')),
              'site_hints': [options['site']] if options.get('site') else [], **scope}
 
-    # Bước 1 — lập truy vấn (thêm các `queries` người gọi đã gửi như biến thể riêng).
-    variants = plan_queries(facet, scope, wave=int(options.get('wave') or 1))
-    if variants:
-        for extra in queries[1:]:
-            variant = dict(variants[0])
-            variant['query'] = extra
-            variant['variant_kind'] = 'user'
-            variants.append(variant)
-    variants = _dedupe_variants(variants)
-
     engine_kind = 'news' if scope.get('needs_fresh') else 'web'
     engines = pick_engines(SEARCH_ENGINE_ROTATION_N, kind=engine_kind) or list(search_store.ENGINE_FALLBACK)
+
+    # Bước 1 — lập truy vấn (thêm các `queries` người gọi đã gửi như biến thể riêng). Bản bỏ
+    # `no-expansion` CHỈ dùng truy vấn gốc, không sinh biến thể từ khoá/đồng nghĩa/ngôn ngữ.
+    if ablation == 'no-expansion':
+        variants = [{'query': query, 'variant_kind': 'query', 'engines': list(engines),
+                     'time_range': _time_range(scope), 'language': scope.get('language') or '',
+                     'site': '', 'filetype': ''} for query in queries]
+        variants = _dedupe_variants(variants)
+    else:
+        variants = plan_queries(facet, scope, wave=int(options.get('wave') or 1))
+        if variants:
+            for extra in queries[1:]:
+                variant = dict(variants[0])
+                variant['query'] = extra
+                variant['variant_kind'] = 'user'
+                variants.append(variant)
+        variants = _dedupe_variants(variants)
 
     legs: list[dict] = []
     errors: list[str] = []
 
     # Bước 9 — chỉ mục cục bộ TRƯỚC khi gọi mạng: trang đã tải vào RRF như một "engine" riêng.
-    for variant in variants:
-        try:
-            hits = store.index_search(variant['query'], limit=max(3, limit))
-        except Exception:                              # pragma: no cover - chỉ mục hỏng không làm chết ống
-            hits = []
-        if hits:
-            legs.append({'engine': 'local-index', 'variant_kind': 'local', 'weight': 1.0,
-                         'query': variant['query'],
-                         'results': [{'url': hit['url'], 'title': hit['title'],
-                                      'snippet': hit.get('snippet') or '', 'provider': 'local-index'}
-                                     for hit in hits]})
+    # Bản bỏ `no-local-index` không dùng chỉ mục này.
+    if ablation != 'no-local-index':
+        for variant in variants:
+            try:
+                hits = store.index_search(variant['query'], limit=max(3, limit))
+            except Exception:                          # pragma: no cover - chỉ mục hỏng không làm chết ống
+                hits = []
+            if hits:
+                legs.append({'engine': 'local-index', 'variant_kind': 'local', 'weight': 1.0,
+                             'query': variant['query'],
+                             'results': [{'url': hit['url'], 'title': hit['title'],
+                                          'snippet': hit.get('snippet') or '', 'provider': 'local-index'}
+                                         for hit in hits]})
 
     # Bước 2 — gọi các chân SearXNG song song, trần 6 luồng.
     health: dict[str, dict] = {}
@@ -775,28 +881,44 @@ def run_pipeline(queries: list[str], *, source: str, count: int, options: dict,
                              blocked=bool(slot['blocked']), timeout=bool(slot['timeout']),
                              latency_ms=int(slot['latency']))
 
-    # Bước 4 — gộp hạng.
-    fused = rrf_fuse(legs, k=SEARCH_RRF_K)
-    # Bước 5 — khử trùng + đa dạng tên miền.
-    ranked = dedupe_diversity(fused, per_domain=SEARCH_PER_DOMAIN_TOP)
-    # Bước 6 — BM25 (tầng A luôn chạy) + đoạn chỉ mục cục bộ cho top-30 (2 KB đầu trang).
+    # Bước 4 — gộp hạng. Bản bỏ `no-rrf` chỉ lấy thứ tự của chân đầu có kết quả (một engine tốt nhất).
+    if ablation == 'no-rrf':
+        first = _first_nonempty_leg(legs)
+        fused = rrf_fuse([first], k=SEARCH_RRF_K) if first else []
+    else:
+        fused = rrf_fuse(legs, k=SEARCH_RRF_K)
+    # Bước 5 — khử trùng + đa dạng tên miền (bản bỏ `no-dedupe` giữ nguyên hàng đã gộp).
+    if ablation == 'no-dedupe':
+        ranked = list(fused)
+    else:
+        ranked = dedupe_diversity(fused, per_domain=SEARCH_PER_DOMAIN_TOP)
+    # M5 — lọc tên miền bị loại (đường cũ có lọc; ống không được quảng cáo suông).
+    exclude = _exclude_hosts(options)
+    if exclude:
+        ranked = [row for row in ranked if not _is_excluded(str(row.get('url') or ''), exclude)]
+    # Bước 6 — BM25 + điểm cuối. Đoạn chỉ mục cục bộ cho top-30 (2 KB đầu trang), rồi M8:
+    # GIẢI NGÀY TRƯỚC điểm độ mới, vì `_fresh_score` đọc `_dates` (provider/meta/URL đủ ngày).
     for row in ranked:
         meta = store.index_get(str(row.get('canonical') or row.get('url') or ''))
         row['_meta'] = meta
         if meta is not None:
             row['indexExcerpt'] = str(meta.get('text') or '')[:INDEX_EXCERPT_CHARS]
-    bm25_rerank(ranked, queries[0], list(facet.get('terms') or []))
-    peak = max((float(row.get('rrf') or 0.0) for row in ranked), default=0.0)
-    for row in ranked:
-        row['rrfNorm'] = round(float(row.get('rrf') or 0.0) / peak, 6) if peak else 0.0
-        tier = source_tiers.classify(str(row.get('url') or ''))
-        row['tierScore'] = 1 - (tier.tier / 4)
-        row['freshScore'] = _fresh_score(row, scope)
-        row['score'] = final_score(row)
-    ranked.sort(key=lambda row: float(row.get('score') or 0.0), reverse=True)
-    # Bước 8 — ngày + nguồn ngày (dùng lại meta đã đọc ở bước 6, không truy vấn DB lần hai).
-    for row in ranked:
-        row['_dates'] = resolve_dates(row, row.get('_meta'))
+        row['_dates'] = resolve_dates(row, meta)
+    if ablation == 'no-tierb-rerank':
+        # Bản bỏ rerank: giữ thứ tự RRF, không BM25, không điểm cuối.
+        for row in ranked:
+            row['bm25'] = 0.0
+            row['score'] = float(row.get('rrf') or 0.0)
+    else:
+        bm25_rerank(ranked, queries[0], list(facet.get('terms') or []))
+        peak = max((float(row.get('rrf') or 0.0) for row in ranked), default=0.0)
+        for row in ranked:
+            row['rrfNorm'] = round(float(row.get('rrf') or 0.0) / peak, 6) if peak else 0.0
+            tier = source_tiers.classify(str(row.get('url') or ''))
+            row['tierScore'] = 1 - (tier.tier / 4)
+            row['freshScore'] = _fresh_score(row, scope)
+            row['score'] = final_score(row)
+        ranked.sort(key=lambda row: float(row.get('score') or 0.0), reverse=True)
 
     # Bước 10 — đầu ra cho mô hình (5.4.4): trần nội bộ `SEARCH_PIPELINE_TOP_K` (mặc định 8),
     # vẫn kẹp theo `count` người gọi.
@@ -817,27 +939,38 @@ def run_pipeline(queries: list[str], *, source: str, count: int, options: dict,
                    'engine': leg.get('engine'), 'resultCount': len(leg.get('results') or []),
                    'latencyMs': int(leg.get('latencyMs') or 0), 'error': leg.get('error')}
                   for leg in legs]
+    # Lows — giữ hình dạng `perQuery` của đường cũ (một số chỗ đọc nó) song song với `legs`,
+    # vốn là hình dạng chi tiết của ống.
+    trace_per_query = []
+    for query in queries:
+        candidates = [{'url': str(row.get('url') or ''), 'disposition': 'returned'}
+                      for leg in legs if leg.get('query') == query
+                      for row in (leg.get('results') or [])]
+        trace_per_query.append({'query': query, 'candidates': candidates})
     engines_used = sorted({engine for leg in legs for row in (leg.get('results') or [])
                            for engine in ([row.get('engine')] if row.get('engine') else [])
                            if engine and engine != 'local-index'}
                           | ({'local-index'} if any(leg.get('engine') == 'local-index' for leg in legs) else set()))
     engines_failed = sorted({engine for leg in legs for engine in (leg.get('unresponsive') or [])})
     steps = {'variants': len(variants), 'legs': len(legs), 'fused': len(fused),
-             'deduped': len(ranked), 'results': len(results), 'engines': len(engines)}
+             'deduped': len(ranked), 'results': len(results), 'engines': len(engines),
+             'ablation': ablation or None, 'excluded': sum(
+                 1 for row in fused if _is_excluded(str(row.get('url') or ''), exclude))}
 
     payload = {
         'query': queries[0], 'queries': list(queries), 'source': source, 'count': len(results),
         'results': results, 'perQuery': per_query,
         'deduped': max(0, len(fused) - len(ranked)), 'dropped': max(0, len(ranked) - len(results)),
-        'searchTrace': {'legs': trace_legs[:24], 'omittedCandidates': max(0, len(trace_legs) - 24)},
+        'searchTrace': {'legs': trace_legs[:24], 'perQuery': trace_per_query,
+                        'omittedCandidates': max(0, len(trace_legs) - 24)},
         'untrusted': True, 'note': UNTRUSTED_NOTE, 'cached': False, 'fetchedAt': _now(),
-        'pagination': {'supported': False, 'nextCursor': None},
+        'pagination': {'supported': source == 'openreview', 'nextCursor': None},
         'filters': {'site': options.get('site') or None,
                     'exclude': sorted(options.get('exclude') or []),
                     'freshness': options.get('freshness') or None,
                     'lang': options.get('lang') or None},
         'pipeline': {'steps': steps, 'enginesUsed': engines_used, 'enginesFailed': engines_failed,
-                     'pack': False},
+                     'ablation': ablation or None, 'pack': False},
     }
     store.cache_put(cache_key, str(source), queries[0], payload['filters'], payload,
                     _cache_ttl(str(source), options))

@@ -1149,6 +1149,7 @@ class WebTools:
         # Chế độ gói nguồn (8.3) và ống tìm 10 bước (5.4.1) ĐỨNG TRƯỚC đường cũ. Khi cả hai tắt,
         # đoạn dưới chạy y như trước (không đổi một byte cho tới khi `BOXFOX_WEB_PACK`/
         # `BOXFOX_SEARCH_PIPELINE` được bật).
+        pack_warning = None
         if source_pack.active_pack() is not None:
             pack_rows = source_pack.pack_search(queries[0], count, options)
             if pack_rows is not None:
@@ -1156,9 +1157,15 @@ class WebTools:
                                                     freshness=freshness, lang=lang, exclude=exclude)
                 self._cache_put(cache_key, payload)
                 return payload
+            # Gói KHÔNG có `search_index.jsonl` ⇒ rơi xuống đường thật (hợp đồng §3 cho phép), nhưng
+            # lời gọi này ĐÃ chạm mạng — payload phải nói rõ (§1/§8.3: "gói ⇒ không gọi mạng").
+            pack_warning = ('source pack has no search_index.jsonl: this call fell through to '
+                            'the live network instead of answering from the pack')
         if search_pipeline.pipeline_enabled():
             payload = search_pipeline.run_pipeline(queries, source=source, count=count, options=options,
                                                    session_id=self._snapshot_scope.get())
+            if pack_warning:
+                payload['packWarning'] = pack_warning
             self._cache_put(cache_key, payload)
             return payload
         providers = SOURCE_PROVIDERS.get(source) or GENERAL_PROVIDERS
@@ -1239,6 +1246,8 @@ class WebTools:
                                                  else None)},
                    'filters': {'site': site or None, 'exclude': sorted(exclude),
                                'freshness': freshness or None, 'lang': lang or None}}
+        if pack_warning:
+            payload['packWarning'] = pack_warning
         self._cache_put(cache_key, payload)
         return payload
 

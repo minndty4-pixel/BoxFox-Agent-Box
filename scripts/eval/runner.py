@@ -38,8 +38,9 @@ HARNESS_BUG = 'harness-bug'
 #: Mã lỗi của nhà cung cấp/hạ tầng ⇒ `infra-failed`. `UPSTREAM_*` phủ hết các mã
 #: `UPSTREAM_HTTP_<status>`/`UPSTREAM_TIMEOUT`/`UPSTREAM_UNREACHABLE`.
 INFRA_ERROR_CODES = ('DEADLINE', 'DEADLINE_EXCEEDED')
-#: Mã lỗi của bộ chạy tìm kiếm/gói nguồn (§8.5) ⇒ cũng là hạ tầng.
-TOOLING_ERROR_CODES = ('SEARCH_TOOLING_FAILED', 'PACK_TOOLING_FAILED')
+#: Mã lỗi của bộ chạy tìm kiếm/gói nguồn (§8.5) ⇒ cũng là hạ tầng. `POLL_EXHAUSTED` là lượt
+#: không bao giờ tới trạng thái kết thúc trong hạn chờ của bộ chạy — KHÔNG phải chất lượng (H4).
+TOOLING_ERROR_CODES = ('SEARCH_TOOLING_FAILED', 'PACK_TOOLING_FAILED', 'POLL_EXHAUSTED')
 #: Nguồn của mã `DEADLINE_EXCEEDED`: `provider` (chậm) = hạ tầng; `agent` = chất lượng.
 DEADLINE_SOURCE_AGENT = 'agent'
 #: Trạng thái kết thúc coi là "chạy xong, kể cả partial/hết ngân sách do agent".
@@ -73,6 +74,10 @@ def classify_validity(result: dict) -> str:
     result = result or {}
     if result.get('harnessBug') or result.get('sessionError'):
         return HARNESS_BUG
+    # Lượt cạn hạn chờ mà chưa tới trạng thái kết thúc là lỗi bộ chạy/hạ tầng, KHÔNG phải chất
+    # lượng (H4): một `awaiting_decision` chưa từng chạy xong không được chấm như dữ liệu chất lượng.
+    if result.get('pollExhausted'):
+        return INFRA_FAILED
     if result.get('toolingFailed'):
         return INFRA_FAILED
     code = str(result.get('errorCode') or '').strip().upper()
@@ -177,7 +182,13 @@ def run_scenario(scenario: dict, config: dict, *, repeat: int, allow_spend: bool
             reruns += 1
 
     final = attempts[-1] if attempts else {'validity': INFRA_FAILED, 'errorCode': 'NOT_RUN'}
-    measured = final['validity'] == QUALITY_VALID
+    quality_valid = final['validity'] == QUALITY_VALID
+    metrics = final.get('metrics')
+    if metrics is None and quality_valid:
+        # H3 — chỉ số thật, tất định, suy từ hồ sơ/thẻ phạm vi/nguồn đã thu được. Không có mảnh
+        # nào ⇒ `None`, và ô đó KHÔNG được đánh dấu `measured`.
+        metrics = artifact_metrics(final.get('artifacts'))
+    measured = bool(quality_valid and metrics is not None)
     return {
         'scenarioId': scenario.get('id'),
         'configId': config.get('id'),
@@ -190,7 +201,31 @@ def run_scenario(scenario: dict, config: dict, *, repeat: int, allow_spend: bool
         'infraErrorCodes': infra_error_codes(attempts),
         'errorCode': final.get('errorCode'),
         'artifacts': final.get('artifacts') or {},
-        'metrics': (final.get('metrics') if measured else None),
+        'metrics': metrics if measured else None,
+    }
+
+
+def artifact_metrics(artifacts: dict | None) -> dict | None:
+    """Khối chỉ số tất định từ hồ sơ/thẻ phạm vi/nguồn (H3). `None` khi chưa có mảnh nào.
+
+    Không gọi model, không bịa: chỉ đếm thứ có trong tệp thu được. `measured: true` chỉ được đặt
+    khi khối này (hoặc chỉ số do harness trả) tồn tại.
+    """
+    artifacts = artifacts or {}
+    report = str(artifacts.get('report') or '')
+    scope = str(artifacts.get('scope') or '')
+    sources = str(artifacts.get('sources') or '')
+    if not (report.strip() or scope.strip() or sources.strip()):
+        return None
+    source_lines = {line.strip() for line in sources.splitlines() if line.strip()}
+    return {
+        'reportChars': len(report),
+        'reportHeadings': sum(1 for line in report.splitlines() if line.lstrip().startswith('#')),
+        'scopeChars': len(scope),
+        'sourceCount': len(source_lines),
+        'hasReport': bool(report.strip()),
+        'hasScope': bool(scope.strip()),
+        'hasSources': bool(sources.strip()),
     }
 
 
@@ -250,7 +285,8 @@ def _drive_session(scenario: dict, config: dict, *, seed: int, attempt: int) -> 
     except net.NetError as exc:
         raise _HarnessUnreachable(str(exc)) from exc
     deadline = time.monotonic() + float(budget.get('wall_seconds') or 1800)
-    session = {'status': 'running'}
+    session: dict = {'status': 'running'}
+    exhausted = False
     while time.monotonic() < deadline:
         session = net.request_json(f'{harness}/api/agent/sessions/{session_id}',
                                    headers=headers, timeout=30)
@@ -258,11 +294,21 @@ def _drive_session(scenario: dict, config: dict, *, seed: int, attempt: int) -> 
         if status not in ('running', 'awaiting_decision'):
             break
         time.sleep(POLL_SECONDS)
+    else:
+        # Hết hạn chờ mà chưa tới trạng thái kết thúc ⇒ cạn poll (H4), KHÔNG ép thành 'partial'.
+        exhausted = True
     status = str(session.get('status') or 'failed')
+    terminal = status in TERMINAL_STATUSES
+    error_code = _error_code(session)
+    if exhausted and not terminal:
+        error_code = error_code or 'POLL_EXHAUSTED'
     result = {
         'sessionId': session_id,
-        'status': status if status in TERMINAL_STATUSES else 'partial',
-        'errorCode': _error_code(session),
+        # Giữ NGUYÊN trạng thái cuối của harness (kể cả `awaiting_decision` khi cạn poll).
+        'status': status,
+        'terminal': terminal,
+        'pollExhausted': bool(exhausted and not terminal),
+        'errorCode': error_code,
         'deadlineSource': 'agent' if status == 'budget_exhausted' else 'provider',
         'harnessBug': False,
         'artifacts': _collect_artifacts(session, scenario),

@@ -564,3 +564,39 @@ def test_unbudgeted_connectors_report_unlimited():
 def test_openalex_budget_default_is_fifty(monkeypatch, tmp_path):
     monkeypatch.setenv('BOXFOX_AGENT_DATA_DIR', str(tmp_path / 'fresh'))
     assert academic.daily_budget_left('openalex') == 50
+
+
+def test_bare_identifier_strips_the_openalex_wrapper():
+    assert academic._bare_identifier('https://openalex.org/W123456') == 'W123456'
+    assert academic._bare_identifier('http://www.openalex.org/W123456/') == 'W123456/'
+    assert academic._bare_identifier('openalex:W123456') == 'W123456'
+    assert academic._bare_identifier('  W123456  ') == 'W123456'
+    assert academic._bare_identifier('') == ''
+    # DOI trần đi qua nguyên vẹn để `_norm_doi` xử lý ở tầng dưới.
+    assert academic._s2_ref('https://doi.org/10.1234/abc') == 'DOI:10.1234/abc'
+    assert academic._s2_ref('https://openalex.org/W123456') == ''  # S2 không giải một id OpenAlex
+
+
+def test_citation_chase_accepts_an_openalex_url_identifier(monkeypatch):
+    payload = {'results': [{'id': 'https://openalex.org/W999', 'display_name': 'Citing work',
+                            'publication_date': '2023-04-05',
+                            'doi': 'https://doi.org/10.5/citing'}]}
+    seen: dict[str, str] = {}
+
+    def dispatch(host, url, **kwargs):
+        if 'api.openalex.org' in str(host):
+            seen['url'] = url
+            return ok(payload)
+        return 200, '[]'
+
+    monkeypatch.setattr(academic, 'polite_get', dispatch)
+    rows = academic.citation_chase('https://openalex.org/W123456', direction='forward', limit=5)
+    # Id đi vào chân OpenAlex ở dạng TRẦN (`W…`), không phải nguyên URL.
+    assert 'filter=cites' in seen['url'] and 'W123456' in seen['url']
+    assert 'openalex.org/W123456' not in seen['url']
+    assert [row['doi'] for row in rows] == ['10.5/citing']
+
+
+def test_citation_chase_still_rejects_an_empty_identifier(monkeypatch):
+    monkeypatch.setattr(academic, 'polite_get', fake_get({}))
+    assert academic.citation_chase('   ', direction='forward') == []

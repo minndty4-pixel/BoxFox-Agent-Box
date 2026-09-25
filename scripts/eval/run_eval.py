@@ -345,6 +345,10 @@ def write_scores(out_dir: Path, rows: list[dict], *, pack_hash: dict, route: str
     recorded_at = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
     with scores_path.open('w', encoding='utf-8') as handle:
         for row in rows:
+            # H3 — `measured: true` chỉ khi THẬT SỰ có khối `metrics`; không bao giờ ghi
+            # `measured: true, metrics: null`.
+            metrics = row.get('metrics')
+            measured = bool(row.get('measured')) and metrics is not None
             handle.write(json.dumps({
                 'schemaVersion': SCORES_SCHEMA_VERSION,
                 'recordedAt': recorded_at,
@@ -352,8 +356,8 @@ def write_scores(out_dir: Path, rows: list[dict], *, pack_hash: dict, route: str
                 'configId': row.get('configId'),
                 'repeat': row.get('repeat'),
                 'validity': row.get('validity'),
-                'measured': bool(row.get('measured')),
-                'metrics': row.get('metrics') if row.get('measured') else None,
+                'measured': measured,
+                'metrics': metrics if measured else None,
                 'reruns': row.get('reruns'),
                 'infraFailureRate': row.get('infraFailureRate'),
                 'infraErrorCodes': row.get('infraErrorCodes') or {},
