@@ -209,15 +209,42 @@ def test_a_refresh_run_is_a_new_run_that_inherits_the_old_ledger(harness):
     assert fresh['state']['scope']['surveyDate'] >= '2026-01-05'
 
 
-def test_the_new_run_gets_the_per_session_suffix_when_the_brief_names_the_old_one(harness):
-    """Brief của phiên đang trỏ vào run gốc ⇒ run làm mới phải là mã KHÁC, có hậu tố `-r<n>` (§5.3)."""
-    store, runtime, sid, session = harness
+def test_the_source_run_is_never_read_back_as_the_new_one(harness):
+    """Brief của phiên đang trỏ vào run gốc ⇒ run mới phải mang mã KHÁC (§5.3) và run gốc không đổi."""
+    store, runtime, sid, _session = harness
     run(store, sid, 'RS1')
     dossier(store, sid, 'RS1')
     store.update_config(sid, {'research': {'researchId': 'RS1', 'tier': 2}})
+    before = store.research_job('RS1')['state']
     answer = refresh(runtime, store.get(sid), 'RS1')
-    assert answer['researchId'].startswith('cau-hoi-goc-cua-run-r')
     assert answer['researchId'] != 'RS1'
+    kept = store.research_job('RS1')['state']
+    assert 'refreshOf' not in kept and kept['scope']['surveyDate'] == before['scope']['surveyDate']
+
+
+def test_the_natural_slug_cannot_make_the_new_run_reuse_the_old_id(harness):
+    """Mã run = slug của câu hỏi, mà câu hỏi giữ nguyên ⇒ phải ghim mã riêng, không ghi đè run gốc."""
+    store, runtime, sid, session = harness
+    run(store, sid, 'cau-hoi-goc-cua-run')
+    dossier(store, sid, 'cau-hoi-goc-cua-run')
+    source(store, sid, 'https://a.example/1', 'Nguồn cũ', research_id='cau-hoi-goc-cua-run')
+    answer = refresh(runtime, session, 'cau-hoi-goc-cua-run')
+    assert answer['researchId'] != 'cau-hoi-goc-cua-run'
+    assert store.research_job(answer['researchId'])['state']['refreshOf'] == 'cau-hoi-goc-cua-run'
+    assert 'refreshOf' not in store.research_job('cau-hoi-goc-cua-run')['state']
+    assert store.research_job(answer['researchId'])['state']['supersedes'] == 3
+
+
+def test_a_named_id_that_names_the_source_run_is_refused_before_any_write(harness):
+    store, runtime, sid, session = harness
+    run(store, sid, 'RS1')
+    dossier(store, sid, 'RS1')
+    before = store.research_job('RS1')['state']
+    with pytest.raises(ValueError) as error:
+        refresh(runtime, session, 'RS1', {'researchId': 'RS1'})
+    assert 'RESEARCH_BRIEF_INVALID' in str(error.value)
+    assert store.research_job('RS1')['state'] == before
+    assert [item['research_id'] for item in store.research_jobs_for(sid)] == ['RS1']
 
 
 def test_the_refresh_event_and_answer_agree_on_the_counts(harness):

@@ -975,7 +975,10 @@ async def research_brief(rt, session, args):
     current_turn = int(rt.active_turn.get(sid) or 0)
     same_turn = bool(existing) and int(existing.get('turn') or 0) == current_turn
     if existing and same_turn:
-        if args.get('researchId') is not None:
+        # Chủ nhà mở run làm mới (§5.8) không phải mô hình mở việc thứ hai trong cùng lượt: mã run đã
+        # được `refresh_run` ghim sẵn, nên luật "một lượt một việc" không áp cho đường chủ nhà.
+        if not (args.get('ownerInitiated') or args.get('owner_initiated')) \
+                and args.get('researchId') is not None:
             asked = slug_from_question(question, str(args.get('researchId')))
             if asked != existing.get('researchId'):
                 raise ValueError(f'{RESEARCH_BRIEF_TAKEN_CODE}: việc research '
@@ -3065,13 +3068,21 @@ async def refresh_run(rt, session, job, payload=None):
     question = str(state.get('question') or config.get('question') or '').strip() \
         or str(state.get('goal') or '').strip()
     if not question:
-        raise ValueError(f'{RESEARCH_REFRESH_NO_DOSSIER_CODE}: run {source_id} không có câu hỏi nào '
-                         f'để làm mới')
+        raise ValueError(f'RESEARCH_BRIEF_INVALID: run {source_id} không có câu hỏi nào để làm mới — '
+                         f'làm mới phải giữ nguyên câu hỏi của run gốc')
     questions = [{'text': str(item.get('text') or '').strip(),
                   'importance': str(item.get('importance') or 'medium'),
                   'doneWhen': str(item.get('doneWhen') or '')}
                  for item in (state.get('questions') or [])
                  if isinstance(item, dict) and str(item.get('text') or '').strip()]
+    jobs = rt.store.research_jobs_for(sid)
+    wanted = str(payload.get('researchId') or '').strip()
+    if wanted and slug_from_question(question, wanted).lower() == source_id.lower():
+        raise ValueError(f'RESEARCH_BRIEF_INVALID: researchId {wanted!r} trùng đúng run đang được làm '
+                         f'mới ({source_id}) — run mới phải là một run RIÊNG')
+    # Câu hỏi của run làm mới giữ NGUYÊN, mà mã run cũ chính là slug của câu hỏi ấy — nên khuôn slug
+    # tự nhiên sẽ trùng đúng mã run gốc. Ghim sẵn một mã riêng để run mới không ghi đè run cũ.
+    target_id = wanted or f'{source_id[:30].rstrip("-")}-r{len(jobs) + 1}'
     answer = await research_brief(rt, session, {
         'question': question,
         'rationale': (f'làm mới {source_id}: giữ nguyên câu hỏi và mức, dựng lại nguồn từ mốc khảo '
@@ -3084,14 +3095,15 @@ async def refresh_run(rt, session, job, payload=None):
         'methods': [str(item) for item in (state.get('methods') or []) if str(item).strip()],
         'budgetSeconds': int(state.get('budgetSeconds') or 0) or None,
         'newRun': True,
+        'ownerInitiated': True,
         'inheritsFrom': source_id,
-        'researchId': str(payload.get('researchId') or '').strip() or None,
+        'researchId': target_id,
         'scope': {**scope, 'jobKinds': kinds},
     })
     new_id = str(answer.get('researchId') or '')
-    if not new_id or new_id == source_id:
-        raise ValueError(f'{RESEARCH_REFRESH_NO_DOSSIER_CODE}: run làm mới không được ghi tách khỏi '
-                         f'{source_id}')
+    if not new_id or new_id.lower() == source_id.lower():
+        raise ValueError(f'RESEARCH_BRIEF_INVALID: run làm mới trùng mã run gốc ({source_id}) — mã '
+                         f'phải khác để sổ và hồ sơ hai run không trộn nhau')
     new_job = rt.store.research_job(new_id)
     new_state = dict(new_job['state'] or {}) if new_job else {}
     new_scope = dict(new_state.get('scope') or scope)
@@ -3104,7 +3116,7 @@ async def refresh_run(rt, session, job, payload=None):
     new_state['refreshSince'] = since
     new_state['supersedes'] = int(latest['version'])
     saved = rt.store.research_job_save(new_id, sid, new_state,
-                                      status=(new_job or {}).get('status') or 'scoping')
+                                       status=(new_job or {}).get('status') or 'scoping')
     inherited = int(answer.get('inheritedRows') or 0)
     dependent = rt.store.research_dependent_plans(source_id)
     rt.store.emit(sid, 'research_refresh', {
@@ -3123,6 +3135,7 @@ async def refresh_run(rt, session, job, payload=None):
             'next': (f'run {new_id} đã chép {inherited} dòng sổ của {source_id} ở trạng thái '
                      f'{RESEARCH_REFRESH_INHERITED_STATUS} — `source_verify` lại trước khi dùng cho '
                      f'nhận định "hiện tại"')}
+
 
 async def _halt_action(rt, session, job, action):
     """Pause/cancel MỘT job qua `runtime.research_halt` (§4.6/§5.3). Không dừng cả phiên."""
