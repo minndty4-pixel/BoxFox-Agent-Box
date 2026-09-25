@@ -64,10 +64,10 @@ interface ResearchState {
   /**
    * `events` là danh sách sự kiện của phiên đang mở (rỗng khi phiên chưa tải xong).
    *
-   * Chỉ sự kiện VƯỢT mốc `seenSeqBySession` của chính phiên ấy mới là "mới"; payload ĐẦU TIÊN có sự
-   * kiện của một phiên là ảnh chụp lịch sử, không phải tin mới.
+   * Một sự kiện chỉ là "mới" khi NÓ SINH RA SAU khi trang này mở (`created`) VÀ vượt mốc `seq` đã tiêu
+   * thụ của chính phiên ấy. Lịch sử về theo nhiều vòng 500 sự kiện, nên mốc `seq` một mình không đủ.
    */
-  sync: (sessionId: string, config: unknown, events: readonly { seq: number; type: string; data: Record<string, unknown> }[]) => void
+  sync: (sessionId: string, config: unknown, events: readonly { seq: number; type: string; data: Record<string, unknown>; created?: number }[]) => void
   refresh: () => Promise<void>
   refreshDetail: (researchId: string) => Promise<void>
   /** Bật/tắt mode; trả `'exit-choice'` khi server yêu cầu chọn số phận run trước. */
@@ -120,6 +120,26 @@ function message(error: unknown): string {
 }
 
 /**
+ * Mốc ĐỒNG HỒ của trang (epoch giây): sự kiện sinh ra TRƯỚC lúc trang này mở là LỊCH SỬ, không phải
+ * tin mới.
+ *
+ * Vì sao không suy từ "payload không rỗng đầu tiên" (bản vá trước): `GET /sessions/{sid}?after=` trả
+ * TỐI ĐA 500 sự kiện mỗi vòng, nên lịch sử về theo NHIỀU vòng poll — một `research_run{kind:'status'}`
+ * cũ nằm ở trang thứ ba vượt mốc `seq` ghim ở trang đầu và mọc thành thẻ (D-9/R4-1, vòng kiểm thử thứ
+ * tư). Ngược lại, với phiên VỪA TẠO trong trang này, payload đầu tiên đã mang sự kiện SỐNG, nên luật
+ * "ảnh chụp lịch sử" nuốt mất lệnh `/research status` đầu tiên (D-9/R4-2). Mốc đồng hồ đúng cho cả hai.
+ */
+const PAGE_OPENED_AT = Date.now() / 1000
+/** Dung sai lệch đồng hồ (giây) giữa trình duyệt và harness — cùng máy, chỉ chống lệch giờ hệ thống. */
+const PAGE_OPENED_SKEW_SECONDS = 5
+
+/** `created` của sự kiện (epoch GIÂY). Thiếu/không phải số ⇒ coi là LỊCH SỬ (an toàn hơn là dựng thẻ). */
+function eventSeconds(event: { created?: unknown }): number {
+  const value = Number(event.created)
+  return Number.isFinite(value) ? value : 0
+}
+
+/**
  * Lời hỏi `exit-choice` còn MỞ của bất kỳ run nào đang thấy.
  *
  * Luồng `/research off` bắt đầu ở SERVER: server tạo lời hỏi `exit-choice` rồi chỉ phát một sự kiện
@@ -161,17 +181,16 @@ export const useResearchStore = create<ResearchState>((set, get) => ({
     const maxSeq = events.reduce((max, event) => Math.max(max, event.seq), 0)
     // Mốc của TỪNG phiên: sự kiện chỉ "mới" khi vượt mốc đã tiêu thụ của chính phiên đó.
     const mark = seenSeqBySession[sessionId]
-    const known = mark !== undefined
-    // Phiên CHƯA từng thấy: payload đầu tiên CÓ sự kiện là ẢNH CHỤP LỊCH SỬ (cùng luật với
-    // `firstHydration` của `harnessChatStore`), nên mốc khởi đầu là `seq` lớn nhất — nếu không thì một
-    // `research_run`/`status` từ tuần trước sẽ mọc lên như trạng thái hiện tại (§4.1 dòng ~205: thẻ
-    // trạng thái là bản phát lại theo yêu cầu, không phải trạng thái nền).
-    // Payload RỖNG không được ghi mốc: `useResearchSync` gọi `sync(..., events ?? [])` ở lần render đầu
-    // (phiên chưa tải xong), và mốc `0` ghi từ đó biến chính ảnh chụp lịch sử ấy thành "mới" — mở lại
-    // phiên là thẻ `/research status` cũ mọc lại dù chưa ai gõ lệnh (D-9, vòng kiểm thử P2–P5 lần 3).
-    const baseline = known ? mark : maxSeq
-    const fresh = events.filter((event) => isResearchEvent(event) && event.seq > baseline)
-    const nextMark = Math.max(baseline, maxSeq)
+    // Hai luật, cùng lúc:
+    // 1. `seq` vượt mốc ĐÃ TIÊU THỤ — giữ cho thẻ đã đóng không mọc lại khi quay về phiên cũ (§4.1
+    //    dòng ~205: thẻ trạng thái là bản phát lại theo yêu cầu, không phải trạng thái nền).
+    // 2. `created` SAU khi trang này mở — mốc `seq` không đủ vì lịch sử về theo nhiều vòng 500 sự kiện
+    //    (một thẻ cũ ở trang thứ ba vượt mốc ghim ở trang đầu), còn phiên vừa tạo trong trang thì payload
+    //    đầu tiên ĐÃ mang sự kiện sống (D-9/R4-1, D-9/R4-2).
+    const fresh = events.filter((event) => isResearchEvent(event)
+      && event.seq > (mark ?? 0)
+      && eventSeconds(event) >= PAGE_OPENED_AT - PAGE_OPENED_SKEW_SECONDS)
+    const nextMark = Math.max(mark ?? 0, maxSeq)
     const lastEventSeq = events.reduce((max, event) => Math.max(max, event.seq), switched ? 0 : get().lastEventSeq)
     const modeChanged = switched || mode.on !== get().mode.on || mode.activeRunId !== get().mode.activeRunId
       || mode.revision !== get().mode.revision
