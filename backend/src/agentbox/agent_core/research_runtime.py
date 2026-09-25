@@ -20,6 +20,8 @@ from typing import Any
 
 from . import journal, research_header, research_ledger, research_profiles, research_quality
 from . import session_journal, source_tiers
+from . import limits
+from . import research_evidence, research_facets, research_report
 from .limits import (
     CHILD_DEADLINE_SECONDS, CHILD_MAX_STEPS, DOSSIER_DIR_MISMATCH_CODE, DOSSIER_MAX_BYTES, DOSSIER_ROOM,
     DOSSIER_VERSION_ATTEMPTS_MAX,
@@ -46,6 +48,8 @@ from .limits import (
     RESEARCH_MODE_REQUIRED_CODE, RESEARCH_MODE_EXIT_CHOICE_REQUIRED_CODE, RESEARCH_MODE_EVENT_CODE,
     RESEARCH_JOB_ORIGIN, RESEARCH_JOB_ORIGIN_MAIN,
     RESEARCH_SCOPE_MAX_QUESTIONS, RESEARCH_SCOPE_REVISION_STALE_CODE,
+    RESEARCH_STALE_CURRENT_CLAIM_CODE, RESEARCH_STALE_CURRENT_CLAIM_LABEL,
+    RESEARCH_COVERAGE_LABEL,
     SOURCE_ROW_LIMIT_DEFAULT, SOURCE_ROW_LIMIT_MAX, STEER_DEFAULT_MODE, STEER_DRAIN_MAX,
     STEER_ENV, STEER_MAX_PENDING, STEER_MODES, STEER_MODE_UNKNOWN_CODE, STEER_TEXT_MAX_CHARS,
 )
@@ -258,6 +262,261 @@ def _ledger_counts(rt, owner) -> dict:
             'byTier': _count_by(items, lambda item: str(item.tier))}
 
 
+# --- P2: bằng chứng · thời gian · bao phủ (§5.5–5.9 của kế hoạch v2) ---------
+
+
+def _pick(args, *names):
+    """Giá trị ĐẦU TIÊN có mặt trong `args` theo danh sách tên (camelCase hoặc snake_case)."""
+    for name in names:
+        if isinstance(args, dict) and args.get(name) is not None:
+            return args.get(name)
+    return None
+
+
+def _source_meta(args, *, url, host, research_id) -> dict:
+    """Siêu dữ liệu P2 của MỘT dòng sổ — chuẩn hoá, không bao giờ ném.
+
+    Mô hình chỉ khai được phần đã đọc thấy trên trang; `origin_cluster` do máy suy bằng
+    `research_evidence.origin_cluster` khi mô hình không khai, nên luật "hai nguồn độc lập" luôn có
+    dữ liệu để đếm cụm thay vì phụ thuộc trí nhớ của mô hình.
+    """
+    payload = args.get('payload') if isinstance(args.get('payload'), dict) else {}
+    kind = str(_pick(args, 'sourceKind', 'source_kind') or '').strip()
+    access = str(_pick(args, 'accessLevel', 'access_level') or '').strip()
+    return {
+        'published_at': research_evidence.parse_date(_pick(args, 'publishedAt', 'published_at')),
+        'updated_at': research_evidence.parse_date(_pick(args, 'updatedAt', 'updated_at')),
+        'version_label': str(_pick(args, 'versionLabel', 'version_label') or '').strip(),
+        # Rỗng thì để rỗng (cột có mặc định của nó); chỉ chuẩn hoá khi mô hình CÓ khai.
+        'source_kind': (research_evidence.normalize_source_kind(kind) if kind else ''),
+        'origin_cluster': research_evidence.origin_cluster({**args, 'url': url, 'host': host,
+                                                            'payload': payload}),
+        'access_level': (research_evidence.normalize_access_level(access) if access else ''),
+        'section_kind': str(_pick(args, 'sectionKind', 'section_kind') or '').strip(),
+        'event_date': research_evidence.parse_date(_pick(args, 'eventDate', 'event_date')),
+        'research_id': str(research_id or ''),
+    }
+
+
+def _search_log_rows(rt, research_id) -> list:
+    """Nhật ký tìm của MỘT run, đọc từ `search_store` — KHÔNG mở đường ghi thứ hai.
+
+    Đường dẫn lấy theo thứ tự: `rt.search_db_path` (bài kiểm ghim) → `BOXFOX_SEARCH_DB` → kho mặc
+    định. Kho mặc định **chưa có tệp** thì trả `[]` thay vì tạo mới: đọc bao phủ không được sinh ra
+    cơ sở dữ liệu ở nhà người dùng.
+    """
+    rid = str(research_id or '')
+    if not rid:
+        return []
+    try:
+        from . import search_store
+        path = getattr(rt, 'search_db_path', None)
+        if path is None:
+            path = os.environ.get(search_store.DB_PATH_ENV) or ''
+        if not path:
+            default = search_store.default_path()
+            if not default.exists():
+                return []
+            path = default
+        return list(search_store.connect(path).search_log(research_id=rid) or [])
+    except Exception as error:  # pragma: no cover - đo bao phủ không bao giờ được chặn run
+        system_log.write('research.coverage.log_unread', level='warn', code='RESEARCH_COVERAGE_LOG',
+                         researchId=rid, error=str(error)[:300])
+        return []
+
+
+def _claim_metas(rt, research_id) -> list:
+    """`research_claim_meta` của run — đọc an toàn (bảng vắng ⇒ danh sách rỗng)."""
+    try:
+        return list(rt.store.claim_meta_list(str(research_id or '')) or [])
+    except Exception:  # pragma: no cover
+        return []
+
+
+def _facets_of(rt, research_id) -> list:
+    """Facet của run — đọc an toàn."""
+    try:
+        return list(rt.store.facet_list(str(research_id or '')) or [])
+    except Exception:  # pragma: no cover
+        return []
+
+
+def _scope_questions(rt, research_id) -> list:
+    """Câu hỏi của run dưới dạng `research_facets.stop_checks` đọc được (ưu tiên `importance`)."""
+    try:
+        job = rt.store.research_job(str(research_id or ''))
+    except Exception:  # pragma: no cover
+        job = None
+    state = (job or {}).get('state') or {}
+    scope = state.get('scope') if isinstance(state.get('scope'), dict) else {}
+    out = []
+    for item in (scope.get('questions') or state.get('questions') or []):
+        if not isinstance(item, dict):
+            continue
+        out.append({'questionId': item.get('id') or item.get('questionId'),
+                    'importance': item.get('importance') or 'medium',
+                    'state': item.get('status') or item.get('state') or 'open',
+                    'text': item.get('text')})
+    return out
+
+
+def coverage_refresh(rt, owner, research_id, *, write=True, questions=None):
+    """Đo bao phủ của run từ facet đã lưu + NHẬT KÝ TÌM, rồi (tuỳ chọn) ghi lại facet.
+
+    Bão hoà là chuyện ĐO ĐƯỢC, không phải chuyện mô hình tự khai: mỗi lần gọi đọc
+    `search_store.search_log()` của run, tính `saturation_from_log` và cập nhật
+    `status`/`lastNewRatio` của facet. Hai trạng thái do người/agent quyết (`blocked`,
+    `out-of-scope`) không bị phép đo ghi đè.
+
+    `write=False` để chỉ đọc. Trả `{}` khi công tắc `BOXFOX_RESEARCH_COVERAGE=off` (hành vi cũ).
+    """
+    if not limits.research_coverage_enabled():
+        return {}
+    rid = str(research_id or '')
+    facets = _facets_of(rt, rid)
+    log_rows = _search_log_rows(rt, rid)
+    measured = research_facets.saturation_from_log(log_rows, research_id=rid)
+    metas = _claim_metas(rt, rid)
+    updated = []
+    for raw in facets:
+        row = research_facets.normalize_facet(raw)
+        state = measured['facets'].get(row['facetId'])
+        if state and row['status'] not in research_facets.CLOSED_STATUSES:
+            if state['status'] in ('searched', 'saturated'):
+                row['status'] = state['status']
+            row['lastNewRatio'] = float(state['lastRatio'])
+        row['evidenceCount'] = len([item for item in metas
+                                    if str(item.get('facetId') or '') == row['facetId']])
+        if write:
+            try:
+                row = rt.store.facet_save(rid, row) or row
+            except Exception:  # pragma: no cover - ghi facet hỏng không được chặn hồ sơ
+                pass
+        updated.append(row)
+    coverage = research_facets.coverage_payload(updated,
+                                               questions=(questions if questions is not None
+                                                          else _scope_questions(rt, rid)))
+    coverage['measured'] = {'overall': measured['overall'],
+                            'facets': {key: value['status'] for key, value in measured['facets'].items()}}
+    coverage['searchLogRows'] = len(log_rows)
+    return coverage
+
+
+def coverage_stop(rt, owner, research_id, *, coverage=None, stalled_waves=0, budget=None):
+    """Bốn điều kiện dừng của §5.5 trên facet/câu hỏi hiện có (không bao giờ ném)."""
+    rid = str(research_id or '')
+    cov = coverage if isinstance(coverage, dict) else coverage_refresh(rt, owner, rid)
+    facets = _facets_of(rt, rid)
+    issues = [{'kind': 'coverage', 'detail': item, 'resolved': False}
+              for item in (cov.get('unexplored') or [])] if cov else []
+    try:
+        return research_facets.stop_checks(facets, _scope_questions(rt, rid),
+                                           coverage_issues=issues, budget=budget,
+                                           stalled_waves=stalled_waves)
+    except Exception as error:  # pragma: no cover - điểm dừng chỉ là lời khuyên
+        return {'ready': False, 'reasons': [f'không đo được điểm dừng: {str(error)[:200]}'],
+                'blockers': [], 'partial': False, 'counts': {}, 'stalledWaves': int(stalled_waves or 0)}
+
+
+def _claims_declared(report) -> list:
+    """`claims[]` của báo cáo có cấu trúc, giữ nguyên thứ tự (rỗng nếu không có)."""
+    if not isinstance(report, dict):
+        return []
+    raw = report.get('claims')
+    return [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+
+
+def record_claim_meta(rt, owner, research_id, *, report=None, window_days=0, as_of='') -> int:
+    """Ghi `research_claim_meta` cho MỌI nhận định chính của run (§7.2 của hợp đồng P2).
+
+    Nguồn nhận định là hai đường hợp lại: `claims[]` của `report` (mô hình khai loại/lập trường/độ
+    tin cậy) và các `claimId` có thật trong sổ (`store.evidence_claims`). Trần độ tin cậy do MÁY tính
+    từ sổ (`research_evidence.confidence_cap`); mô hình chỉ **hạ** được, không nâng quá trần
+    (`research_evidence.apply_cap`). Không bao giờ ném: nhận định thiếu mã bị bỏ qua.
+    """
+    rid = str(research_id or '')
+    if not rid:
+        return 0
+    try:
+        rows = list(rt.store.evidence_claims(owner, rid) or [])
+    except Exception:  # pragma: no cover
+        rows = []
+    by_claim: dict[str, list] = {}
+    for item in rows:
+        claim_id = str(item.get('claimId') or '')
+        if claim_id:
+            by_claim.setdefault(claim_id, []).append(item)
+    declared = {str(item.get('claimId') or item.get('claim_id') or ''): item
+                for item in _claims_declared(report)}
+    order = [cid for cid in declared if cid]
+    order += [cid for cid in by_claim if cid not in declared]
+    written = 0
+    for claim_id in order:
+        item = declared.get(claim_id) or {}
+        evidence = by_claim.get(claim_id) or []
+        claim_type = research_evidence.normalize_claim_type(item.get('claimType')
+                                                            or item.get('claim_type'))
+        stance = str(item.get('stanceOrigin') or item.get('stance_origin') or '').strip()
+        stance = (research_evidence.normalize_stance(stance) if stance else
+                  ('agent-inference' if research_evidence.is_inference(claim_type) else 'source-stated'))
+        cap = research_evidence.confidence_cap(claim_type, evidence, stance_origin=stance,
+                                               window_days=window_days, as_of=as_of)
+        declared_level = str(item.get('confidence') or '').strip().lower()
+        confidence = research_evidence.apply_cap(declared_level or cap['cap'], cap['cap'])
+        try:
+            rt.store.claim_meta_save(
+                rid, claim_id,
+                claimType=claim_type, stanceOrigin=stance, confidence=confidence,
+                confidenceCap=cap['cap'],
+                basis=research_evidence.basis_payload(claim_type, evidence, rule=cap['rule']),
+                asOf=str(as_of or ''),
+                questionId=str(item.get('questionId') or item.get('question_id') or ''),
+                facetId=str(item.get('facetId') or item.get('facet_id') or ''))
+            written += 1
+        except Exception as error:  # pragma: no cover - ghi mức không được chặn ghi hồ sơ
+            system_log.write('research.claim_meta.failed', level='warn', code='RESEARCH_CLAIM_META',
+                             researchId=rid, claimId=claim_id, error=str(error)[:200])
+    return written
+
+
+def stale_current_issues(rt, owner, research_id, *, report=None, window_days=0, as_of='') -> list:
+    """Lỗi `research-stale-current-claim` cho nhận định hiện trạng (§7.6 của hợp đồng P2).
+
+    Chỉ chạy khi `BOXFOX_RESEARCH_TIME_POLICY=on` và run có cửa sổ thời gian. Trả danh sách
+    `research_quality.Issue`, gắn thẳng vào `Verdict` của `dossier_write`.
+    """
+    rid = str(research_id or '')
+    if not limits.research_time_policy_enabled() or int(window_days or 0) <= 0 or not rid:
+        return []
+    try:
+        rows = list(rt.store.evidence_claims(owner, rid) or [])
+    except Exception:  # pragma: no cover
+        return []
+    by_claim: dict[str, list] = {}
+    for item in rows:
+        claim_id = str(item.get('claimId') or '')
+        if claim_id:
+            by_claim.setdefault(claim_id, []).append(item)
+    declared = {str(item.get('claimId') or item.get('claim_id') or ''): item
+                for item in _claims_declared(report)}
+    issues = []
+    for claim_id, item in declared.items():
+        if not claim_id:
+            continue
+        claim_type = research_evidence.normalize_claim_type(item.get('claimType')
+                                                            or item.get('claim_type'))
+        if claim_type not in research_evidence.CURRENT_CLAIM_TYPES:
+            continue
+        result = research_evidence.stale_current_claim(claim_type, by_claim.get(claim_id) or [],
+                                                       window_days=window_days, as_of=as_of)
+        if result['stale']:
+            issues.append(research_quality.Issue(
+                RESEARCH_STALE_CURRENT_CLAIM_CODE,
+                f'{claim_id} ({RESEARCH_STALE_CURRENT_CLAIM_LABEL}: {result["inWindow"]} trong cửa sổ, '
+                f'{result["outside"]} ngoài cửa sổ)'))
+    return issues
+
+
 def source_add(rt, session, args):
     """`source_add`: ghim một dòng sổ. Ghi lặp CÙNG (url, đoạn trích) là idempotent — một khẳng định,
     một dòng, kể cả khi model gọi lại sau một lỗi mạng hay một lượt lặp."""
@@ -278,6 +537,7 @@ def source_add(rt, session, args):
     excerpt_text = excerpt[:SOURCE_EXCERPT_MAX_CHARS]
     key = _excerpt_key(excerpt_text)
     normalized = normalize_url(url)
+    research_id = str(research_config(session).get('researchId') or '')
     for item in _rows_of(rt, owner):
         if normalize_url(item.url) != normalized:
             continue
@@ -305,7 +565,17 @@ def source_add(rt, session, args):
                              code='SOURCE_REUSED', row=item.row_id, host=item.host,
                              added=len(added), conflicts=conflicts, branchLinked=linked)
         item = _row_of(rt.store.source_row(owner, item.row_id) or {})
-        link = rt.store.evidence_link(owner, item.row_id, claim, proposed_by=sid)
+        # P2 (§7.1): lượt gọi lại vẫn phải ĐẨY được siêu dữ liệu mới vào nguồn — dòng sổ là nguồn
+        # sự thật, nên ghi qua chính `evidence_link` thay vì mở đường ghi thứ hai.
+        meta = _source_meta(args, url=url, host=item.host or source_tiers.host_of(url),
+                            research_id=research_id)
+        link = rt.store.evidence_link(owner, item.row_id, claim, proposed_by=sid,
+                                      published_at=meta['published_at'], updated_at=meta['updated_at'],
+                                      version_label=meta['version_label'], source_kind=meta['source_kind'],
+                                      origin_cluster=meta['origin_cluster'],
+                                      access_level=meta['access_level'],
+                                      section_kind=meta['section_kind'], event_date=meta['event_date'],
+                                      research_id=meta['research_id'])
         answer = {'rowId': item.row_id, 'tier': item.tier, 'type': item.type, 'host': item.host,
                   'fetchedAt': item.fetched_at, 'reused': True,
                   'counts': _ledger_counts(rt, owner), 'label': source_tiers.TIER_LABELS.get(item.tier, ''),
@@ -336,12 +606,22 @@ def source_add(rt, session, args):
         'child_id': child_id,
         'job': research_config(session).get('researchId'),
         # P1 (§5.3): ghim dòng sổ vào ĐÚNG run đang mở, để nhiều run trong một phiên không trộn sổ.
-        'research_id': str(research_config(session).get('researchId') or ''),
+        'research_id': research_id,
         'turn': int(rt.active_turn.get(sid) or 0),
         'step': rt.active_step.get(sid),
     }
+    # P2 (§7.1): siêu dữ liệu P2 vào cùng hàng sổ (`source_ledger`), nên đường mới nhất quán với
+    # đường dùng lại — cùng một luật chuẩn hoá, cùng một cách suy cụm gốc.
+    meta = _source_meta(args, url=url, host=row['host'], research_id=research_id)
+    row.update({key: value for key, value in meta.items() if value not in (None, '')})
     stored = rt.store.source_add(owner, row)
-    link = rt.store.evidence_link(owner, stored['rowId'], claim, proposed_by=sid)
+    link = rt.store.evidence_link(owner, stored['rowId'], claim, proposed_by=sid,
+                                  published_at=meta['published_at'], updated_at=meta['updated_at'],
+                                  version_label=meta['version_label'], source_kind=meta['source_kind'],
+                                  origin_cluster=meta['origin_cluster'],
+                                  access_level=meta['access_level'],
+                                  section_kind=meta['section_kind'], event_date=meta['event_date'],
+                                  research_id=meta['research_id'])
     counts = _ledger_counts(rt, owner)
     system_log.write('research.source.added', session_id=sid, code='SOURCE_ADDED',
                      row=stored['rowId'], host=stored['host'], tier=stored['tier'],
@@ -1055,7 +1335,57 @@ def _dossier_tables(raw) -> list:
     return out
 
 
-def _dossier_op_args(path, markdown, rows, args, tables, review, title):
+def _scope_time_window(rt, research_id, job):
+    """`(surveyDate, window_days, velocity)` của run — đọc từ THẺ PHẠM VI, không hỏi mô hình.
+
+    Chạy kiểu cũ (không có `job`) ⇒ mốc khảo sát là hôm nay và `window_days = 0`, nên cổng chính
+    sách thời gian đứng yên đúng như hành vi `6eb2fd8`.
+    """
+    state = (job or {}).get('state') or {}
+    scope = state.get('scope') if isinstance(state.get('scope'), dict) else {}
+    policy = scope.get('timePolicy') if isinstance(scope.get('timePolicy'), dict) else {}
+    velocity = str(policy.get('velocity') or '')
+    survey = str(scope.get('surveyDate') or '') or research_evidence.survey_date()
+    return survey, research_evidence.window_days(velocity), velocity
+
+
+def _changelog_body(rt, research_id, version) -> str:
+    """`changelog.md` của kiểu việc `refresh`: danh sách bản đã ghi + bản này (§5.8)."""
+    lines = ['# Nhật ký thay đổi', '']
+    for item in rt.store.dossier_versions(research_id):
+        lines.append(f'- bản v{int(item)}')
+    lines.append(f'- bản v{int(version)} (bản này)')
+    return '\n'.join(lines) + '\n'
+
+
+def _dossier_sidecars(rt, research_id, version, *, report=None, coverage=None, scope=None,
+                      job_types=(), extractions=None) -> dict:
+    """Tệp phụ của run, TÊN lấy từ `research_report.sidecar_names()` — không chép tay tên nào.
+
+    Chỉ trả những tệp có nội dung; thiếu dữ liệu (ví dụ không có `report`) thì không ghi tệp rỗng —
+    một tệp rỗng trông y như một tệp hỏng với người đọc.
+    """
+    entries = [item for item in (extractions or []) if isinstance(item, dict)]
+    names = research_report.sidecar_names(version, job_types=job_types, extractions=entries)
+    claims = _claim_metas(rt, research_id)
+    body = {
+        f'v{int(version)}-scope.json': json.dumps(scope or {}, ensure_ascii=False, indent=2),
+        f'v{int(version)}-coverage.json': (json.dumps(coverage, ensure_ascii=False, indent=2)
+                                           if coverage else ''),
+        f'v{int(version)}-claims.jsonl': ''.join(json.dumps(item, ensure_ascii=False) + '\n'
+                                                 for item in claims),
+        f'v{int(version)}-report.json': (json.dumps(report, ensure_ascii=False, indent=2)
+                                         if report else ''),
+        'changelog.md': _changelog_body(rt, research_id, version),
+    }
+    for item in entries:
+        source_id = str(item.get('sourceId') or item.get('source_id') or '').replace('/', '-')
+        if source_id:
+            body[f'extractions/{source_id}.json'] = json.dumps(item, ensure_ascii=False, indent=2)
+    return {name: body[name] for name in names if str(body.get(name) or '').strip()}
+
+
+def _dossier_op_args(path, markdown, rows, args, tables, review, title, *, sidecars=None):
     """Tham số cho op `dossier_write` của box — một chỗ, để hợp đồng với worker đọc được một lần."""
     return {
         'path': path,
@@ -1068,6 +1398,10 @@ def _dossier_op_args(path, markdown, rows, args, tables, review, title):
         'tables': tables,
         'review': review,
         'overwrite': bool(args.get('overwrite')),
+        # P2 (§7.7): tệp phụ của run, đúng lược đồ DANH SÁCH của op; vắng ⇒ `[]` (đường cũ ghi đúng
+        # bộ tệp như `6eb2fd8`).
+        'sidecars': ([{'name': str(name), 'content': str(body)} for name, body in sidecars.items()]
+                     if isinstance(sidecars, dict) else list(sidecars or [])),
     }
 
 
@@ -1127,6 +1461,22 @@ async def dossier_write(rt, session, args):
     # cancelled, blocked, or found no evidence must be able to report that
     # outcome without inventing a ledger row to satisfy the legacy lineage gate.
     children = [] if cfg.get('jobMode') == 'v2' else _planned_children(rt, sid)
+    # --- P2: cổng cấu trúc · cổng thời gian · bản đồ bao phủ -------------------
+    # Hồ sơ ghi cho việc nào thì sổ/mức tin cậy/facet đọc theo việc ấy.
+    owner, _owner_child = _ledger_owner(rt, session, sid)
+    report = args.get('report') if isinstance(args.get('report'), dict) else None
+    job_scope = ((job or {}).get('state') or {}).get('scope') if job else None
+    job_scope = job_scope if isinstance(job_scope, dict) else {}
+    job_types = research_report.normalize_job_types(job_scope.get('jobKinds') or ())
+    survey_value, window_value, _velocity = _scope_time_window(rt, research_id, job)
+    coverage = coverage_refresh(rt, owner, research_id, write=True)
+    claim_ids = [str(item.get('claimId') or '')
+                 for item in (rt.store.evidence_claims(owner, research_id) or [])]
+    stale_issues = stale_current_issues(rt, owner, research_id, report=report,
+                                       window_days=window_value, as_of=survey_value)
+    # Mức tin cậy của mọi nhận định chính do MÁY chấm từ sổ; mô hình chỉ hạ được (§7.2).
+    claims_recorded = record_claim_meta(rt, owner, research_id, report=report,
+                                        window_days=window_value, as_of=survey_value)
     mode, raw_mode = research_quality.gate_mode()
     if raw_mode:
         mode_notice(rt, sid, RESEARCH_GATE_MODE_UNKNOWN_CODE, RESEARCH_GATE_ENV, raw_mode,
@@ -1152,7 +1502,10 @@ async def dossier_write(rt, session, args):
                                       owner_views=(cfg.get('ownerViews') if cfg and
                                                    cfg.get('jobMode') != 'v2' else []),
                                       review=str(args.get('review') or ''),
-                                      require_claim_citations=cfg.get('jobMode') == 'v2')
+                                      require_claim_citations=cfg.get('jobMode') == 'v2',
+                                      report=report, job_types=job_types,
+                                      facets=(coverage.get('facets') if coverage else None),
+                                      claim_ids=claim_ids, extra_issues=stale_issues)
     if not verdict.ok and verdict.mode == 'enforce':
         system_log.write('research.gate.rejected', level='warn', session_id=sid,
                          code=research_quality.RESEARCH_QUALITY_PREFIX, mode=verdict.mode,
@@ -1188,7 +1541,12 @@ async def dossier_write(rt, session, args):
                 version, research_id, profile.key, level, critique=critique_arg, gate=gate_label,
                 rows=len(rows))
             full = header + markdown
-            write_args = _dossier_op_args(path, full, rows, args, tables, review, title)
+            # P2 (§7.7): tệp phụ của run đi cùng lượt ghi hồ sơ; tên do `sidecar_names` cấp.
+            sidecars = _dossier_sidecars(rt, research_id, version, report=report, coverage=coverage,
+                                         scope=job_scope, job_types=job_types,
+                                         extractions=args.get('extractions'))
+            write_args = _dossier_op_args(path, full, rows, args, tables, review, title,
+                                          sidecars=sidecars)
             try:
                 written = await rt.executor.execute('dossier_write', write_args, sid)
                 break
@@ -1238,7 +1596,13 @@ async def dossier_write(rt, session, args):
                        'issues': [item['code'] for item in verdict.missing], 'soft': verdict.soft,
                        'counts': verdict.counts},
               'journal': bool(pin and pin[1]),
-              'bytes': payload['bytes'], 'sha1': written.get('sha1')}
+              'bytes': payload['bytes'], 'sha1': written.get('sha1'),
+              'claimsRecorded': claims_recorded}
+    if coverage:
+        answer['coverage'] = coverage
+        answer['stop'] = coverage_stop(rt, owner, research_id, coverage=coverage)
+    if stale_issues:
+        answer['staleCurrentClaims'] = [item.detail for item in stale_issues]
     if not verdict.ok:
         answer['warning'] = research_quality.notice_for(verdict.issues, len(rows))
     critique_step = (' — cần kiểm chứng độc lập: **báo main** kèm đường dẫn hồ sơ để main giao '
@@ -1534,6 +1898,13 @@ def research_status(rt, session, args):
                          'remainingSeconds': max(0, job['state'].get('budgetSeconds', 0) - used),
                          'children': rt.store.children_of(job['session_id']),
                          'dependentPlans': rt.store.research_dependent_plans(research_id)}
+    # P2 (§7.4): bản bao phủ của run đọc từ facet đã lưu + nhật ký tìm (bão hoà là chuyện ĐO được),
+    # kèm bốn điều kiện dừng của §5.5 để người đọc biết còn hướng nào chưa đóng.
+    coverage = coverage_refresh(rt, owner, research_id, write=True)
+    if coverage:
+        answer['coverage'] = coverage
+        answer['stop'] = coverage_stop(rt, owner, research_id, coverage=coverage)
+        answer['claimMeta'] = _claim_metas(rt, research_id)
     return answer
 
 
@@ -1601,9 +1972,35 @@ def research_update(rt, session, args):
         # P1 (§5.10): run CHẠY NỀN xong (mode đã tắt) ⇒ thẻ báo cáo + thông báo, và tắt cờ nền.
         # `finish_background_run` là cửa duy nhất, tự bỏ qua khi run không chạy nền (F6).
         finish_background_run(rt, session, updated)
-    return {'researchId': research_id, 'status': updated['status'],
-            'revision': updated['revision'], 'questions': state['questions'],
-            'usedSeconds': used, 'remainingSeconds': max(0, state['budgetSeconds'] - used)}
+    # P2 (§7.4): sau mỗi sóng, bản đồ bao phủ được ghép thêm facet/từ khoá mô hình gửi rồi ĐO LẠI
+    # bão hoà từ nhật ký tìm — điểm dừng đi kèm để người gọi biết còn hướng nào chưa đóng.
+    for item in (args.get('facets') or []):
+        if not isinstance(item, dict):
+            continue
+        try:
+            current = rt.store.facet(research_id, item.get('facetId') or item.get('facet_id') or '')
+            rt.store.facet_save(research_id, research_facets.merge_terms(current, item.get('terms') or [])
+                                if current else item)
+        except Exception as error:  # pragma: no cover - ghi facet không được chặn checkpoint
+            system_log.write('research.facets.update_failed', level='warn', code='RESEARCH_FACET',
+                             researchId=research_id, error=str(error)[:200])
+    terms = args.get('facetTerms') if isinstance(args.get('facetTerms'), dict) else {}
+    for facet_id, new_terms in terms.items():
+        try:
+            current = rt.store.facet(research_id, str(facet_id))
+            if current:
+                rt.store.facet_save(research_id, research_facets.merge_terms(current, new_terms))
+        except Exception as error:  # pragma: no cover
+            system_log.write('research.facets.terms_failed', level='warn', code='RESEARCH_FACET',
+                             researchId=research_id, error=str(error)[:200])
+    coverage = coverage_refresh(rt, session['id'], research_id, write=True)
+    answer = {'researchId': research_id, 'status': updated['status'],
+              'revision': updated['revision'], 'questions': state['questions'],
+              'usedSeconds': used, 'remainingSeconds': max(0, state['budgetSeconds'] - used)}
+    if coverage:
+        answer['coverage'] = coverage
+        answer['stop'] = coverage_stop(rt, session['id'], research_id, coverage=coverage)
+    return answer
 
 
 async def cancel_child(rt, session, args):
@@ -1803,6 +2200,100 @@ def _scope_entry(value, default_status='assumed'):
     return item
 
 
+def _scope_time(scope, patch) -> dict:
+    """Chuẩn hoá `timePolicy` của thẻ phạm vi (§7.3) — `velocity` lạ thì **giữ giá trị cũ + ghi chú**.
+
+    Không bao giờ ném: một giá trị tốc độ gõ sai không được làm hỏng cả lượt ghi thẻ phạm vi; nó chỉ
+    để lại `note` cho người đọc biết vì sao cửa sổ thời gian không đổi.
+    """
+    policy = dict((scope or {}).get('timePolicy') or {})
+    policy.setdefault('velocity', '')
+    policy.setdefault('current', {})
+    policy.setdefault('foundational', 'any')
+    policy.setdefault('reason', '')
+    if isinstance(patch, str):
+        # Đường gửi gọn (`timePolicy: "fast"`) là cách model hay viết nhất — nhận như velocity.
+        patch = {'velocity': patch}
+    if not isinstance(patch, dict):
+        return policy
+    for key in ('current', 'foundational', 'reason'):
+        if key in patch and patch[key] is not None:
+            policy[key] = patch[key]
+    if 'status' in patch:
+        policy['status'] = patch['status']
+    if 'velocity' in patch:
+        wanted = str(patch.get('velocity') or '').strip().lower()
+        if wanted and not research_evidence.window_days(wanted):
+            policy['note'] = (f'velocity {wanted!r} không thuộc '
+                              f'{", ".join(research_evidence.TIME_VELOCITIES)} — giữ '
+                              f'{policy.get("velocity") or "(chưa khai)"}')
+        else:
+            policy['velocity'] = wanted
+            policy.pop('note', None)
+    return policy
+
+
+def _scope_window(scope) -> dict:
+    """Cửa sổ thời gian của thẻ phạm vi, suy từ `timePolicy.velocity` + `surveyDate` của runtime."""
+    scope['surveyDate'] = scope.get('surveyDate') or research_evidence.survey_date()
+    scope['window'] = research_evidence.window_bounds((scope.get('timePolicy') or {}).get('velocity'),
+                                                      as_of=scope['surveyDate'])
+    return scope
+
+
+def seed_facets(rt, research_id, scope, *, survey=(), facets=(), citation_clusters=()) -> int:
+    """Dựng bản đồ facet ban đầu của run (§7.4): tổng quan → cây câu hỏi → cụm trích dẫn.
+
+    `seed` là dấu vết nguồn gốc của hướng khảo sát: `survey` (mục lục bài tổng quan), `scope` (câu
+    hỏi của thẻ phạm vi), `citation-cluster` (cụm trích dẫn), `agent` (mô hình tự đề xuất). Hàm
+    **không ghi đè** hàng đã có: hàng cũ được gộp từ khoá qua `merge_terms` để giữ `status` đã đo và
+    nguồn gốc từng từ.
+    """
+    if not limits.research_coverage_enabled():
+        return 0
+    rid = str(research_id or '')
+    if not rid:
+        return 0
+    incoming = []
+    for entry in (survey if isinstance(survey, (list, tuple)) else []):
+        incoming.append(research_facets.facet_from_survey(entry))
+    for item in (facets if isinstance(facets, (list, tuple)) else []):
+        incoming.append(research_facets.normalize_facet(item))
+    for question in (scope.get('questions') or []):
+        if not isinstance(question, dict):
+            continue
+        label = str(question.get('text') or '').strip()
+        if not label:
+            continue
+        incoming.append(research_facets.new_facet(label, seed='scope',
+                                                  question_id=str(question.get('id') or ''),
+                                                  priority=question.get('importance') or 'medium'))
+    for item in (citation_clusters if isinstance(citation_clusters, (list, tuple)) else []):
+        label = str(item.get('label') if isinstance(item, dict) else item).strip()
+        if not label:
+            continue
+        incoming.append(research_facets.new_facet(label, seed='citation-cluster',
+                                                  terms=(item.get('terms') if isinstance(item, dict)
+                                                         else ())))
+    written = 0
+    for facet in incoming:
+        if not facet.get('label'):
+            continue
+        try:
+            current = rt.store.facet(rid, facet['facetId']) or {}
+            if current:
+                merged = research_facets.merge_terms(current, facet.get('terms') or [])
+                merged['seedSource'] = current.get('seedSource') or facet['seedSource']
+                rt.store.facet_save(rid, merged)
+            else:
+                rt.store.facet_save(rid, facet)
+            written += 1
+        except Exception as error:  # pragma: no cover - dựng bản đồ không được chặn ghi thẻ
+            system_log.write('research.facets.seed_failed', level='warn', code='RESEARCH_FACET',
+                             researchId=rid, error=str(error)[:200])
+    return written
+
+
 def _scope_default(job, question=''):
     state = job['state'] if job else {}
     scope = state.get('scope') if isinstance(state.get('scope'), dict) else {}
@@ -1820,6 +2311,9 @@ def _scope_default(job, question=''):
             for item in questions],
         'timePolicy': scope.get('timePolicy') or {'velocity': '', 'current': {}, 'foundational': 'any',
                                                   'reason': '', 'status': 'assumed'},
+        # P2 (§7.3): mốc khảo sát do RUNTIME cấp (mô hình không tự đoán), và cửa sổ suy từ velocity.
+        'surveyDate': scope.get('surveyDate') or research_evidence.survey_date(),
+        'window': scope.get('window') if isinstance(scope.get('window'), dict) else {},
         'sourceKinds': list(scope.get('sourceKinds') or []),
         'exclusions': list(scope.get('exclusions') or []),
         'outputs': list(scope.get('outputs') or []),
@@ -1830,10 +2324,16 @@ def _scope_default(job, question=''):
     }
 
 
-def _scope_event(rt, research_id, scope, job):
-    rt.store.emit(job['session_id'], 'research_scope',
-                  {'researchId': research_id, 'revision': scope['revision'],
-                   'phase': (job['state'] or {}).get('phase'), 'status': job['status']})
+def _scope_event(rt, research_id, scope, job, *, coverage=None):
+    payload = {'researchId': research_id, 'revision': scope['revision'],
+               'phase': (job['state'] or {}).get('phase'), 'status': job['status'],
+               'surveyDate': scope.get('surveyDate'), 'window': scope.get('window')}
+    if isinstance(coverage, dict) and coverage:
+        # Thẻ phạm vi mang bản bao phủ GỌN (số đếm + hướng chưa chạm); bản đầy đủ đi cùng
+        # `research_status` và tệp phụ của run.
+        payload['coverage'] = {'counts': coverage.get('counts'),
+                               'unexplored': coverage.get('unexplored')}
+    rt.store.emit(job['session_id'], 'research_scope', payload)
 
 
 def _prompt(rt, sid, research_id, kind, questions, *, revision, note='', actions=('start', 'editScope'),
@@ -1878,9 +2378,13 @@ def research_scope(rt, session, args):
     state = dict(job['state'])
     if action in ('propose', 'update'):
         patch = args.get('patch') if isinstance(args.get('patch'), dict) else {}
-        for key in ('goal', 'purpose', 'timePolicy'):
+        for key in ('goal', 'purpose'):
             if key in patch:
                 scope[key] = _scope_entry(patch[key])
+        # P2 (§7.3): `timePolicy` có hợp đồng riêng (velocity/current/foundational/reason/status) —
+        # không đi qua `_scope_entry` để khỏi bị bọc thành một mục văn bản.
+        if 'timePolicy' in patch:
+            scope['timePolicy'] = _scope_time(scope, patch['timePolicy'])
         for key in ('jobKinds', 'sourceKinds', 'outputs'):
             if key in patch:
                 scope[key] = [str(item).strip() for item in (patch[key] or []) if str(item).strip()]
@@ -1900,6 +2404,11 @@ def research_scope(rt, session, args):
             scope['budget'] = {**scope.get('budget', {}), **patch['budget']}
         if 'goalText' in patch:
             scope['goal'] = _scope_entry({'text': str(patch['goalText'])})
+    # P2 (§7.3): cửa sổ thời gian luôn được suy lại từ `timePolicy` + `surveyDate` của runtime.
+    _scope_window(scope)
+    # P2 (§7.4): dựng bản đồ facet ban đầu từ tổng quan → cây câu hỏi → cụm trích dẫn.
+    seeded = seed_facets(rt, research_id, scope, survey=args.get('survey'),
+                         facets=args.get('facets'), citation_clusters=args.get('citationClusters'))
     if action == 'ask':
         raw = args.get('questions') if isinstance(args.get('questions'), list) else []
         if not raw:
@@ -1939,11 +2448,17 @@ def research_scope(rt, session, args):
             rt.store.emit(session['id'], 'research_notice',
                           {'researchId': research_id, 'kind': 'needs-user',
                            'promptId': prompt['promptId']})
-        _scope_event(rt, research_id, scope, updated)
-        return {'researchId': research_id, 'revision': scope['revision'], 'status': updated['status'],
-                'promptId': prompt['promptId'], 'needsUser': needs_user,
-                'openQuestions': scope['openQuestions'], 'next': 'trả lời qua POST /api/agent/research/prompts/'
-                                                                 f'{prompt["promptId"]}/answer rồi `start=true`'}
+        coverage = coverage_refresh(rt, session['id'], research_id, write=False)
+        _scope_event(rt, research_id, scope, updated, coverage=coverage)
+        answer = {'researchId': research_id, 'revision': scope['revision'], 'status': updated['status'],
+                  'promptId': prompt['promptId'], 'needsUser': needs_user,
+                  'openQuestions': scope['openQuestions'], 'surveyDate': scope.get('surveyDate'),
+                  'window': scope.get('window'), 'facetsSeeded': seeded,
+                  'next': 'trả lời qua POST /api/agent/research/prompts/'
+                          f'{prompt["promptId"]}/answer rồi `start=true`'}
+        if coverage:
+            answer['coverage'] = coverage
+        return answer
     scope['revision'] += 1
     if scope.get('tier'):
         scope['budget'] = {**scope.get('budget', **{})} if isinstance(scope.get('budget'), dict) else {}
@@ -1959,9 +2474,13 @@ def research_scope(rt, session, args):
     _phase_history(state, state['phase'], 'scope-updated')
     status = 'needs_user' if _open_blocking(scope['openQuestions']) else str(job['status'])
     updated = rt.store.research_job_save(research_id, session['id'], state, status)
-    _scope_event(rt, research_id, scope, updated)
-    return {'researchId': research_id, 'revision': scope['revision'], 'status': updated['status'],
-            'scope': scope, 'needsUser': status == 'needs_user'}
+    coverage = coverage_refresh(rt, session['id'], research_id, write=True)
+    _scope_event(rt, research_id, scope, updated, coverage=coverage)
+    answer = {'researchId': research_id, 'revision': scope['revision'], 'status': updated['status'],
+              'scope': scope, 'needsUser': status == 'needs_user', 'facetsSeeded': seeded}
+    if coverage:
+        answer['coverage'] = coverage
+    return answer
 
 
 def _phase_history(state, phase, reason):
