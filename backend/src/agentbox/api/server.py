@@ -538,6 +538,11 @@ def create_app(runtime):
             raise missing_session(sid) from None
         jobs = runtime.store.research_jobs_for(sid)
         return web.json_response({'jobs': [{**job,
+            # P2/P4 (§5.5, §5.12): giao diện đọc bản bao phủ và bản đồ hướng của run. Đo lại khi
+            # ĐỌC (`write=False`) nên không ghi gì; tắt `BOXFOX_RESEARCH_COVERAGE` thì trả `{}`.
+            'coverage': research_runtime.coverage_refresh(runtime, sid, job['research_id'],
+                                                          write=False),
+            'facets': runtime.store.facet_list(job['research_id']),
             # P1 (§5.12): bơm/API/giao diện đọc `phase`, `origin` và `scope.revision` ngoài `status`.
             'phase': (job['state'] or {}).get('phase'),
             'origin': (job['state'] or {}).get('origin'),
@@ -563,8 +568,30 @@ def create_app(runtime):
             raise ApiError('RESEARCH_JOB_UNKNOWN', research_id, 404)
         body = await request.json()
         action = str(body.get('action') or '')
-        if action not in {'pause', 'resume', 'cancel', 'prioritize', 'skip', 'budget'}:
+        if action not in {'pause', 'resume', 'cancel', 'prioritize', 'skip', 'budget', 'scope',
+                          'deepen'}:
             raise ApiError('RESEARCH_ACTION_INVALID', action)
+        if action == 'scope':
+            # §5.12: chủ nhà sửa thẻ phạm vi trên giao diện. Khoá lạc quan là `revision` của THẺ.
+            try:
+                return web.json_response(research_runtime.scope_update(runtime, job['session_id'],
+                                                                       job, body))
+            except ValueError as exc:
+                text = str(exc)
+                code = text.split(':', 1)[0]
+                # `ApiError` tự ghép `error = code: detail`, nên thân lỗi đưa vào là PHẦN SAU mã.
+                detail = text.split(':', 1)[1].strip() if ':' in text else text
+                raise ApiError(code, detail, 409 if 'REVISION_STALE' in code else 400) from None
+        if action == 'deepen':
+            # §5.12: xin đào sâu một câu hỏi/hướng — xếp vào hàng đợi của run, nâng ưu tiên facet.
+            try:
+                return web.json_response(research_runtime.deepen(runtime, job['session_id'],
+                                                                 job, body))
+            except ValueError as exc:
+                text = str(exc)
+                code = text.split(':', 1)[0]
+                detail = text.split(':', 1)[1].strip() if ':' in text else text
+                raise ApiError(code, detail, 404 if code == 'RESEARCH_FACET_UNKNOWN' else 400) from None
         if action in {'pause', 'cancel'}:
             # P1 (§5.3/M-09): dừng theo JOB — KHÔNG `runtime.stop(session)`. Huỷ con của job, và chỉ
             # dừng lượt đang chạy khi nó đúng là lượt tiếp tục của job này.
@@ -690,7 +717,10 @@ def create_app(runtime):
             'job': {**job, 'phase': state.get('phase'), 'origin': state.get('origin'),
                     'background': bool(state.get('background')),
                     'scopeRevision': int((state.get('scope') or {}).get('revision') or 0),
-                    'usedSeconds': runtime.store.research_job_used_seconds(sid, research_id)},
+                    'usedSeconds': runtime.store.research_job_used_seconds(sid, research_id),
+                    'coverage': research_runtime.coverage_refresh(runtime, sid, research_id,
+                                                                  write=False),
+                    'facets': runtime.store.facet_list(research_id)},
             'scope': state.get('scope') or {},
             'prompts': state.get('prompts') or [],
             'questions': state.get('questions') or [],

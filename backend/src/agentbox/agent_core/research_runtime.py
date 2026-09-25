@@ -21,7 +21,7 @@ from typing import Any
 from . import journal, research_header, research_ledger, research_profiles, research_quality
 from . import session_journal, source_tiers
 from . import limits
-from . import research_evidence, research_facets, research_report
+from . import research_evidence, research_facets, research_report, research_review
 from .limits import (
     CHILD_DEADLINE_SECONDS, CHILD_MAX_STEPS, DOSSIER_DIR_MISMATCH_CODE, DOSSIER_MAX_BYTES, DOSSIER_ROOM,
     DOSSIER_VERSION_ATTEMPTS_MAX,
@@ -104,24 +104,32 @@ def research_tier_limits(tier) -> dict:
     }
 
 
+# Mode mà `research_verify` phải GHI được thì hồ sơ mới coi là đã soát. `coverage` có mặt trong
+# `reviewModes` để nhắc giao việc, nhưng cổng hồ sơ không đòi bản ghi ấy (thiếu nó không chặn ghi).
+GATE_REVIEW_MODES = ('evidence', 'critique')
+
+
 def _review_modes_for(state: dict | None, tier: int) -> list[str]:
-    """Review obligation belongs to the decision, independently of its time tier."""
+    """Chế độ soát ĐÃ CHỐT của run, chỉ gồm mode mà cổng hồ sơ đòi bản ghi.
+
+    `state['reviewModes']` là điều đã chốt (thẻ phạm vi/`research_brief` đã nói ra); chưa chốt thì
+    suy từ luật chung `research_review.review_modes` — luật nằm MỘT chỗ (§5.11, #6072).
+    """
     configured = (state or {}).get('reviewModes')
     if isinstance(configured, list):
-        return [mode for mode in ('evidence', 'critique') if mode in configured]
-    return ['evidence', 'critique'] if tier >= 3 else []
+        return [mode for mode in GATE_REVIEW_MODES if mode in configured]
+    if not tier:
+        return []
+    return [mode for mode in research_review.review_modes(tier, state or {})
+            if mode in GATE_REVIEW_MODES]
 
 
-def _choose_review_modes(tier: int, questions: list[dict], output: str) -> list[str]:
-    if tier >= 3:
-        return ['evidence', 'critique']
-    high_count = sum(item.get('importance') == 'high' for item in questions)
-    planning = bool(re.search(r'\b(plan|planning|roadmap)\b|kế hoạch|triển khai', output, re.I))
-    if high_count >= 2 and (len(questions) >= 3 or planning):
-        return ['evidence', 'critique']
-    if len(questions) >= 2:
-        return ['evidence']
-    return []
+def _choose_review_modes(tier: int, questions: list[dict], output: str, scope=None) -> list[str]:
+    """Chế độ soát của một run mới — uỷ cho `research_review.review_modes` (nguồn sự thật duy nhất)."""
+    state: dict = {'questions': questions, 'output': output}
+    if isinstance(scope, dict) and scope:
+        state['scope'] = scope
+    return research_review.review_modes(tier, state)
 
 
 def _mode(env_name, modes, default, env=None):
@@ -1028,8 +1036,9 @@ async def research_brief(rt, session, args):
             budget = limits['hardCeilingSeconds']
         budget = max(60, min(budget, 86400))
         output = str(args.get('output') or prior_state.get('output') or '')[:1000]
-        required_reviews = _choose_review_modes(tier, questions, output)
-        required_reviews = [mode for mode in ('evidence', 'critique')
+        required_reviews = _choose_review_modes(
+            tier, questions, output, args.get('scope') or prior_state.get('scope'))
+        required_reviews = [mode for mode in research_review.REVIEW_MODES
                             if mode in required_reviews or mode in _review_modes_for(prior_state, 0)]
         state = {**prior_state, 'goal': str(args.get('goal') or prior_state.get('goal') or question)[:2000],
                  'question': question, 'questions': questions,
@@ -1793,7 +1802,7 @@ async def research_verify(rt, session, args):
         raise ValueError('RESEARCH_VERIFY_INVALID: verdict must be "ok" or "revise"')
     issues = _clamp_issues(args.get('issues'))
     mode = str(args.get('mode') or 'critique').strip().lower()
-    if mode not in {'evidence', 'critique'}:
+    if mode not in research_review.REVIEW_MODES:
         raise ValueError('RESEARCH_VERIFY_MODE_INVALID')
     summary = str(args.get('summary') or '')[:RESEARCH_VERIFY_SUMMARY_CHARS]
     critic, critic_verdict, answer_chars = research_critique(rt, sid, research_id, version, mode=mode)
@@ -2324,6 +2333,94 @@ def _scope_default(job, question=''):
     }
 
 
+def scope_update(rt, session_id, job, payload):
+    """Người dùng sửa thẻ phạm vi từ giao diện: `PATCH …/jobs/{id}` với `action="scope"` (§5.12).
+
+    Khác `research_scope` (công cụ của mô hình): đây là đường của CHỦ NHÀ, nên không có cổng vai,
+    chỉ có khoá lạc quan `revision` — thẻ đã đổi thì từ chối để người dùng tải lại rồi sửa tiếp.
+    `payload['scope']` là một `patch` cùng khuôn với công cụ; `timePolicy`, `surveyDate` và `window`
+    đi qua đúng luật P2 (velocity sai ⇒ giữ giá trị cũ + ghi chú, không bao giờ ném).
+    """
+    state = dict(job['state'])
+    scope = state.get('scope') if isinstance(state.get('scope'), dict) else {}
+    if not scope:
+        raise ValueError('RESEARCH_SCOPE_MISSING: run này chưa có thẻ phạm vi để sửa')
+    if str(job.get('status') or '') == 'cancelled':
+        raise ValueError('RESEARCH_SCOPE_JOB_CANCELLED: run đã huỷ, không sửa thẻ được nữa')
+    live_revision = int(scope.get('revision') or 0)
+    expected = payload.get('revision')
+    if expected is not None and int(expected) != live_revision:
+        raise ValueError(f'{RESEARCH_SCOPE_REVISION_STALE_CODE}: phạm vi đã đổi (revision '
+                         f'{live_revision}) — tải lại thẻ rồi sửa lại')
+    patch_body = payload.get('scope') if isinstance(payload.get('scope'), dict) else {}
+    if not patch_body:
+        raise ValueError('RESEARCH_SCOPE_PATCH_REQUIRED: body needs `scope` (the patch)')
+    _scope_apply_patch(scope, patch_body)
+    _scope_window(scope)
+    scope['revision'] = live_revision + 1
+    state['scope'] = scope
+    _phase_history(state, state.get('phase') or 'planning', 'scope-edited')
+    # Người dùng đã sửa thẻ ⇒ run đang chờ câu trả lời không còn bị coi là đang chờ nữa, trừ khi
+    # vẫn còn câu chặn chưa trả lời.
+    status = 'needs_user' if _open_blocking(scope.get('openQuestions') or []) else str(job['status'])
+    updated = rt.store.research_job_save(job['research_id'], session_id, state, status=status,
+                                        revision=payload.get('jobRevision'))
+    coverage = coverage_refresh(rt, session_id, job['research_id'], write=False)
+    _scope_event(rt, job['research_id'], scope, updated, coverage=coverage)
+    answer = {'researchId': job['research_id'], 'revision': scope['revision'],
+              'status': updated['status'], 'scope': scope, 'needsUser': status == 'needs_user',
+              'surveyDate': scope.get('surveyDate'), 'window': scope.get('window')}
+    if coverage:
+        answer['coverage'] = coverage
+    return answer
+
+
+def deepen(rt, session_id, job, payload):
+    """Người dùng yêu cầu ĐÀO SÂU một câu hỏi/hướng: `PATCH …/jobs/{id}` với `action="deepen"`.
+
+    Không mở lượt mới ngay (chủ nhà bấm nút, không phải gõ lệnh): yêu cầu được xếp vào
+    `state['deepenRequests']` để lượt tiếp tục kế tiếp đọc, hướng (facet) được nâng `priority` và
+    mang ghi chú của người dùng. Câu hỏi khớp thì nâng `importance` lên `high` như `prioritize`.
+    """
+    state = dict(job['state'])
+    note = str(payload.get('note') or '').strip()[:1000]
+    question_id = str(payload.get('questionId') or '').strip()
+    facet_id = str(payload.get('facetId') or '').strip()
+    if not question_id and not facet_id:
+        raise ValueError('RESEARCH_DEEPEN_TARGET_REQUIRED: cần `questionId` hoặc `facetId`')
+    facet = None
+    if facet_id:
+        facet = rt.store.facet(job['research_id'], facet_id)
+        if not facet:
+            raise ValueError(f'RESEARCH_FACET_UNKNOWN: run này không có hướng {facet_id!r}')
+        merged = dict(facet)
+        merged['priority'] = 'high'
+        if note:
+            old = str(facet.get('note') or '').strip()
+            merged['note'] = (f'{old} | {note}' if old else note)[:1000]
+        facet = rt.store.facet_save(job['research_id'], merged)
+    if question_id:
+        for question in state.get('questions') or []:
+            if str(question.get('id') or '') == question_id:
+                question['importance'] = 'high'
+                if note:
+                    question['note'] = str(note)[:1000]
+    requests = [item for item in (state.get('deepenRequests') or []) if isinstance(item, dict)]
+    requests.append({'questionId': question_id, 'facetId': facet_id, 'note': note,
+                     'at': journal.utc_now_iso()})
+    state['deepenRequests'] = requests[-20:]
+    updated = rt.store.research_job_save(job['research_id'], session_id, state)
+    rt.store.emit(session_id, 'research_deepen',
+                  {'researchId': job['research_id'], 'questionId': question_id, 'facetId': facet_id,
+                   'note': note})
+    answer = {'researchId': job['research_id'], 'revision': updated['revision'],
+              'questionId': question_id, 'facetId': facet_id,
+              'requests': len(state['deepenRequests'])}
+    if facet:
+        answer['facet'] = facet
+    return answer
+
+
 def _scope_event(rt, research_id, scope, job, *, coverage=None):
     payload = {'researchId': research_id, 'revision': scope['revision'],
                'phase': (job['state'] or {}).get('phase'), 'status': job['status'],
@@ -2358,6 +2455,42 @@ def _open_blocking(open_questions):
             if item.get('blocking') and not str(item.get('answer') or '').strip()]
 
 
+def _scope_apply_patch(scope, patch):
+    """Ghép một `patch` vào thẻ phạm vi (§5.3). KHÔNG đụng `revision`, KHÔNG ghi — người gọi quyết.
+
+    Dùng chung cho hai đường: mô hình gọi công cụ `research_scope`, và người dùng sửa thẻ trên giao
+    diện (`PATCH /api/agent/research/jobs/{id}` với `action="scope"`). Một luật ghép, một chỗ sửa.
+    """
+    patch = patch if isinstance(patch, dict) else {}
+    for key in ('goal', 'purpose'):
+        if key in patch:
+            scope[key] = _scope_entry(patch[key])
+    # P2 (§7.3): `timePolicy` có hợp đồng riêng (velocity/current/foundational/reason/status) —
+    # không đi qua `_scope_entry` để khỏi bị bọc thành một mục văn bản.
+    if 'timePolicy' in patch:
+        scope['timePolicy'] = _scope_time(scope, patch['timePolicy'])
+    for key in ('jobKinds', 'sourceKinds', 'outputs'):
+        if key in patch:
+            scope[key] = [str(item).strip() for item in (patch[key] or []) if str(item).strip()]
+    if 'exclusions' in patch:
+        scope['exclusions'] = [_scope_entry(item) for item in (patch['exclusions'] or [])]
+    if 'questions' in patch:
+        scope['questions'] = [dict(item) if isinstance(item, dict) else {'id': f'q{i + 1}', 'text': str(item)}
+                              for i, item in enumerate(patch['questions'] or [])]
+    if 'depth' in patch:
+        scope['depth'] = str(patch['depth'])
+    if 'tier' in patch:
+        try:
+            scope['tier'] = int(patch['tier'])
+        except (TypeError, ValueError):
+            pass
+    if 'budget' in patch and isinstance(patch['budget'], dict):
+        scope['budget'] = {**scope.get('budget', {}), **patch['budget']}
+    if 'goalText' in patch:
+        scope['goal'] = _scope_entry({'text': str(patch['goalText'])})
+    return scope
+
+
 def research_scope(rt, session, args):
     """`research_scope` (§5.3): ghi thẻ phạm vi — nguồn sự thật của run — và hỏi khi cần.
 
@@ -2378,32 +2511,7 @@ def research_scope(rt, session, args):
     state = dict(job['state'])
     if action in ('propose', 'update'):
         patch = args.get('patch') if isinstance(args.get('patch'), dict) else {}
-        for key in ('goal', 'purpose'):
-            if key in patch:
-                scope[key] = _scope_entry(patch[key])
-        # P2 (§7.3): `timePolicy` có hợp đồng riêng (velocity/current/foundational/reason/status) —
-        # không đi qua `_scope_entry` để khỏi bị bọc thành một mục văn bản.
-        if 'timePolicy' in patch:
-            scope['timePolicy'] = _scope_time(scope, patch['timePolicy'])
-        for key in ('jobKinds', 'sourceKinds', 'outputs'):
-            if key in patch:
-                scope[key] = [str(item).strip() for item in (patch[key] or []) if str(item).strip()]
-        if 'exclusions' in patch:
-            scope['exclusions'] = [_scope_entry(item) for item in (patch['exclusions'] or [])]
-        if 'questions' in patch:
-            scope['questions'] = [dict(item) if isinstance(item, dict) else {'id': f'q{i + 1}', 'text': str(item)}
-                                  for i, item in enumerate(patch['questions'] or [])]
-        if 'depth' in patch:
-            scope['depth'] = str(patch['depth'])
-        if 'tier' in patch:
-            try:
-                scope['tier'] = int(patch['tier'])
-            except (TypeError, ValueError):
-                pass
-        if 'budget' in patch and isinstance(patch['budget'], dict):
-            scope['budget'] = {**scope.get('budget', {}), **patch['budget']}
-        if 'goalText' in patch:
-            scope['goal'] = _scope_entry({'text': str(patch['goalText'])})
+        _scope_apply_patch(scope, patch)
     # P2 (§7.3): cửa sổ thời gian luôn được suy lại từ `timePolicy` + `surveyDate` của runtime.
     _scope_window(scope)
     # P2 (§7.4): dựng bản đồ facet ban đầu từ tổng quan → cây câu hỏi → cụm trích dẫn.
@@ -2748,7 +2856,7 @@ def _finish_background(rt, session, job):
     labels = []
     if job['status'] == 'partial':
         labels.append('partial')
-    review_modes = [name for name in ('evidence', 'critique') if name in (state.get('reviewModes') or [])]
+    review_modes = [name for name in GATE_REVIEW_MODES if name in (state.get('reviewModes') or [])]
     if latest is not None and review_modes and latest.get('critique') != 'ok':
         labels.append(RESEARCH_CRITIQUE_LABEL)
     if latest is not None and not latest.get('quality_ok') and job['status'] != 'partial':
