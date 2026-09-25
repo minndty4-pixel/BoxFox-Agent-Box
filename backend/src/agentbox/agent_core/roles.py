@@ -244,7 +244,10 @@ ORCHESTRATOR_TOOLS = WRITE | VISUAL | {'delegate_task', 'session_search', 'write
                                        # ba mức và can thiệp giữa lượt (27 → 35 công cụ).
                                        'source_add', 'source_list', 'source_verify', 'dossier_write',
                                        'research_brief', 'research_verify', 'research_status', 'research_update',
-                                       'cancel_child'} | PEER
+                                       'cancel_child',
+                                       # P1 — cửa 1: main GỢI Ý bật mode (không tự bật). Công cụ này chỉ
+                                       # phát sự kiện `research_suggested`, không đổi cấu hình (M-06).
+                                       'research_suggest'} | PEER
 
 
 def allowed_tools(role, parent=None):

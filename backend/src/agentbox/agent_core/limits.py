@@ -358,6 +358,30 @@ SEARCH_QUERY_MAX = 3
 SEARCH_PAYLOAD_CHARS = 18_000
 SEARCH_RETRY_ATTEMPTS = 2
 
+# --- Vòng research v2 (P0b) — lớp tìm kiếm 10 bước (#6077) -------------------------------------
+# Hợp đồng `/code/.plans/p0-interfaces.md` §6: ĐÚNG những hằng dưới đây, không thêm bớt tên.
+# Nguồn nội dung: kế hoạch v2 §5.4.1 (bước 2 hạn chờ, bước 4 k=60, bước 5 đa dạng tên miền),
+# §5.4.2 (mặc định riêng tư), §5.4.3 (học thuật), §5.4.4 (top-k). Mọi con số là [ƯỚC LƯỢNG] và
+# được chỉnh trên tập `dev` của 8.7, KHÔNG chỉnh trên tập `test`.
+SEARXNG_TIMEOUT_SECONDS = 8.0
+ACADEMIC_TIMEOUT_SECONDS = 10.0
+SEARCH_PIPELINE_VARIANTS_L2 = 6
+SEARCH_PIPELINE_VARIANTS_L3 = 10
+SEARCH_RRF_K = 60
+SEARCH_PER_DOMAIN_TOP = 2
+# Cầu dao engine: 3 lần lỗi liên tiếp ⇒ ngưng 5', rồi 15', rồi 60' (bước 7, lùi theo cấp số).
+SEARCH_ENGINE_FAIL_STREAK = 3
+SEARCH_ENGINE_SUSPEND_SECONDS = (300, 900, 3600)
+# Bộ đệm bền (bước 9): web chung 24 h · tin tức/hiện trạng 6 h · metadata học thuật 7 ngày.
+SEARCH_CACHE_TTL_WEB = 24 * 3600
+SEARCH_CACHE_TTL_NEWS = 6 * 3600
+SEARCH_CACHE_TTL_ACADEMIC = 7 * 86400
+SEARCH_PIPELINE_TOP_K = 8
+SEARCH_ENGINE_ROTATION_N = 4
+SEARCH_WEIGHTS = {'rrf': 0.4, 'bm25': 0.2, 'llm': 0.3, 'tier': 0.05, 'fresh': 0.05}
+PAPERS_GROUP_MAX_LEGS = 6
+OPENALEX_DAILY_CALLS_DEFAULT = 50
+
 
 def _web_switch(name, modes, default):
     """Giá trị công tắc trong `modes`, hoặc `default` khi biến trống/giá trị lạ."""
@@ -485,3 +509,53 @@ SOURCE_ROW_LIMIT_MAX = 200
 SOURCE_SPOT_TARGETS = ('vanban.chinhphu.vn', 'vbpl.vn', 'moh.gov.vn', 'thuvienphapluat.vn')
 SOURCE_FAKE_SUCCESS_TITLE_MARKERS = ('Trang chủ', 'Warning: This page maybe not yet fully loaded')
 SOURCE_FAKE_SUCCESS_MIN_CHARS = 300
+
+
+# --- P1 research mode (appended block) ---
+# Vỏ chế độ Research (plan v2 §4.1, §5.2, §5.3, §5.12). Mọi hằng ở đây chỉ thuộc pha P1; khối
+# này nằm CUỐI tệp để không đụng phần thân mà một tác nhân khác đang sửa.
+#
+# Công tắc giết: mặc định `on` = tính năng CÓ MẶT, nhưng mọi phiên vẫn bắt đầu với mode TẮT
+# (mode chỉ bật khi người dùng bấm nút hoặc gõ `/research`). `off` ⇒ mọi hành vi cũ của f17d54b.
+RESEARCH_MODE_ENV = 'BOXFOX_RESEARCH_MODE'
+RESEARCH_MODE_MODES = ('on', 'off')
+RESEARCH_MODE_DEFAULT_MODE = 'off'
+
+# Mức 3 chỉ mở được trong mode (cổng bốn cửa, §5.2). `off` ⇒ main được mở mức 3 như cũ.
+RESEARCH_TIER3_MODE_ONLY_ENV = 'BOXFOX_RESEARCH_TIER3_MODE_ONLY'
+RESEARCH_TIER3_MODE_ONLY_MODES = ('on', 'off')
+RESEARCH_TIER3_MODE_ONLY_DEFAULT_MODE = 'on'
+
+# Chạy nền khi tắt mode (#6078). `off` ⇒ tắt mode luôn tạm dừng run (không có lựa chọn chạy nền).
+RESEARCH_BACKGROUND_RUNS_ENV = 'BOXFOX_RESEARCH_BACKGROUND_RUNS'
+RESEARCH_BACKGROUND_RUNS_MODES = ('on', 'off')
+RESEARCH_BACKGROUND_RUNS_DEFAULT_MODE = 'on'
+
+# Mỗi lượt research nhắm xong trong ngắn hạn (5.3); việc dài chạy qua nhiều lượt tiếp tục.
+RESEARCH_TURN_TARGET_SECONDS_ENV = 'BOXFOX_RESEARCH_TURN_TARGET_SECONDS'
+RESEARCH_TURN_TARGET_SECONDS = 600
+
+# Mã lỗi/sự kiện ổn định cho giao diện và test.
+RESEARCH_MODE_REQUIRED_CODE = 'RESEARCH_MODE_REQUIRED'
+RESEARCH_MODE_EXIT_CHOICE_REQUIRED_CODE = 'RESEARCH_EXIT_CHOICE_REQUIRED'
+RESEARCH_SCOPE_REVISION_STALE_CODE = 'RESEARCH_SCOPE_REVISION_STALE'
+RESEARCH_JOB_BUDGET_EXHAUSTED_CODE = 'RESEARCH_JOB_BUDGET_EXHAUSTED'
+RESEARCH_MODE_ENTRY_BY = ('toggle', 'command')
+RESEARCH_MODE_BLOCK_MARKER = '=== ACTIVE MODE: RESEARCH ==='
+RESEARCH_MODE_BLOCK_END = '=== END ACTIVE MODE ==='
+RESEARCH_MODE_EVENT_CODE = 'research_mode'
+
+# Công cụ bị BỎ khỏi hồ sơ lượt khi ở mode: mode không có công cụ ghi (5.2, M-14).
+RESEARCH_MODE_EXCLUDED_TOOLS = frozenset({'file_write', 'file_edit_block', 'terminal_exec',
+                                          'write_plan', 'plan_verify'})
+# Vai con mà `delegate_task` của mode được phép giao (5.2).
+RESEARCH_MODE_DELEGATE_ROLES = frozenset({'research', 'research-review', 'explore'})
+
+# Thẻ phạm vi (5.3, 5.12): vòng hỏi tối đa 3 câu; lựa chọn mỗi câu 2–5.
+RESEARCH_SCOPE_MAX_QUESTIONS = 3
+RESEARCH_PROMPT_KINDS = ('interview', 'scope-change', 'exit-choice', 'out-of-scope', 'budget')
+RESEARCH_EXIT_CHOICES = ('pause', 'background')
+
+# Cờ `state` của một job trong mode.
+RESEARCH_JOB_ORIGIN = 'mode'
+RESEARCH_JOB_ORIGIN_MAIN = 'main'

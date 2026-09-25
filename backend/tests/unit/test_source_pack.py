@@ -1,0 +1,118 @@
+"""`source_pack` (P0b §3): tìm/đọc từ gói nguồn, KHÔNG gọi mạng.
+
+Điểm phải giữ đúng: `None` (gói không có `search_index.jsonl` ⇒ người gọi rơi về đường thật)
+KHÁC `[]` (gói có chỉ mục nhưng không dòng nào khớp ⇒ gói trả lời "không có gì").
+"""
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from agentbox.agent_core import source_pack
+
+
+def _make_pack(root, *, with_index=True):
+    (root / 'pages').mkdir(parents=True, exist_ok=True)
+    (root / 'pack.json').write_text(json.dumps({
+        'scenarioId': 's1', 'builtAt': '2026-09-25T00:00:00Z',
+        'sources': [
+            {'url': 'https://a.example/rag', 'title': 'RAG overview', 'date': '2026-03-01',
+             'kind': 'page', 'accessLevel': 'fulltext-read', 'file': 'rag.html'},
+            {'url': 'https://b.example/rag2', 'title': 'RAG two', 'date': '',
+             'kind': 'page', 'accessLevel': 'abstract', 'file': 'rag2.txt'},
+        ]}), encoding='utf-8')
+    (root / 'pages' / 'rag.html').write_text(
+        '<html><head><title>RAG overview</title></head>'
+        '<body><p>Retrieval augmented generation combines a retriever with a generator.</p>'
+        '</body></html>', encoding='utf-8')
+    (root / 'pages' / 'rag2.txt').write_text('plain text about RAG', encoding='utf-8')
+    if with_index:
+        lines = [
+            json.dumps({'query': 'retrieval augmented generation',
+                        'urls': [{'url': 'https://a.example/rag', 'rank': 1, 'snippet': 'RAG ...'},
+                                 {'url': 'https://b.example/rag2', 'rank': 2, 'snippet': 'two'}]}),
+            json.dumps({'query': 'thị trường xe điện',
+                        'urls': [{'url': 'https://a.example/rag', 'rank': 1, 'snippet': 'x'}]}),
+        ]
+        (root / 'search_index.jsonl').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    return root
+
+
+def test_active_pack_is_none_without_the_env(monkeypatch):
+    monkeypatch.delenv('BOXFOX_WEB_PACK', raising=False)
+    assert source_pack.active_pack() is None
+
+
+def test_active_pack_reads_a_directory(monkeypatch, tmp_path):
+    _make_pack(tmp_path)
+    monkeypatch.setenv('BOXFOX_WEB_PACK', str(tmp_path))
+    assert source_pack.active_pack() == tmp_path
+
+
+def test_no_index_file_returns_none(monkeypatch, tmp_path):
+    _make_pack(tmp_path, with_index=False)
+    monkeypatch.setenv('BOXFOX_WEB_PACK', str(tmp_path))
+    assert source_pack.pack_search('retrieval augmented generation', 5, {}) is None
+
+
+def test_exact_index_match_returns_rows_with_metadata(monkeypatch, tmp_path):
+    _make_pack(tmp_path)
+    monkeypatch.setenv('BOXFOX_WEB_PACK', str(tmp_path))
+    rows = source_pack.pack_search('retrieval augmented generation', 5, {})
+    assert [row['url'] for row in rows] == ['https://a.example/rag', 'https://b.example/rag2']
+    first = rows[0]
+    assert first['provider'] == 'pack' and first['engines'] == ['pack']
+    assert first['title'] == 'RAG overview' and first['publishedAt'] == '2026-03-01'
+    assert first['dateSource'] == 'provider'
+    assert first['accessLevel'] == 'fulltext-read'
+
+
+def test_token_match_accepts_a_wider_query(monkeypatch, tmp_path):
+    _make_pack(tmp_path)
+    monkeypatch.setenv('BOXFOX_WEB_PACK', str(tmp_path))
+    rows = source_pack.pack_search('what is retrieval augmented generation exactly', 5, {})
+    assert rows and rows[0]['url'] == 'https://a.example/rag'
+
+
+def test_index_present_but_no_match_returns_empty(monkeypatch, tmp_path):
+    _make_pack(tmp_path)
+    monkeypatch.setenv('BOXFOX_WEB_PACK', str(tmp_path))
+    assert source_pack.pack_search('chủ đề hoàn toàn khác', 5, {}) == []
+
+
+def test_count_caps_the_rows(monkeypatch, tmp_path):
+    _make_pack(tmp_path)
+    monkeypatch.setenv('BOXFOX_WEB_PACK', str(tmp_path))
+    rows = source_pack.pack_search('retrieval augmented generation', 1, {})
+    assert len(rows) == 1
+
+
+def test_pack_fetch_reads_html_and_txt(monkeypatch, tmp_path):
+    _make_pack(tmp_path)
+    monkeypatch.setenv('BOXFOX_WEB_PACK', str(tmp_path))
+    html = source_pack.pack_fetch('https://a.example/rag')
+    assert html['contentType'] == 'text/html' and 'Retrieval augmented generation' in html['text']
+    assert html['title'] == 'RAG overview' and html['dateSource'] == 'provider'
+    txt = source_pack.pack_fetch('https://b.example/rag2')
+    assert txt['contentType'] == 'text/plain' and txt['text'] == 'plain text about RAG'
+    assert txt['dateSource'] == 'unknown'
+
+
+def test_pack_fetch_missing_url_is_none(monkeypatch, tmp_path):
+    _make_pack(tmp_path)
+    monkeypatch.setenv('BOXFOX_WEB_PACK', str(tmp_path))
+    assert source_pack.pack_fetch('https://missing.example/nope') is None
+
+
+def test_pack_pages_lists_the_manifest(monkeypatch, tmp_path):
+    _make_pack(tmp_path)
+    monkeypatch.setenv('BOXFOX_WEB_PACK', str(tmp_path))
+    pages = source_pack.pack_pages()
+    assert [page['url'] for page in pages] == ['https://a.example/rag', 'https://b.example/rag2']
+
+
+def test_trailing_slash_urls_match(monkeypatch, tmp_path):
+    _make_pack(tmp_path)
+    monkeypatch.setenv('BOXFOX_WEB_PACK', str(tmp_path))
+    assert source_pack.pack_fetch('https://a.example/rag/')['title'] == 'RAG overview'

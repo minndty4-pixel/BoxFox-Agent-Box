@@ -43,6 +43,9 @@ from .limits import (
     RESEARCH_VERIFY_VERDICT_MISMATCH_CODE, RESEARCH_VERIFY_VERDICT_MISSING_CODE,
     RESEARCH_VERIFY_VERSION_MISSING_CODE, SOURCE_CLAIM_MAX_CHARS, SOURCE_EXCERPT_MAX_CHARS,
     SOURCE_FAKE_SUCCESS_MIN_CHARS, SOURCE_FAKE_SUCCESS_TITLE_MARKERS, SOURCE_ORIGIN_MAX_CHARS,
+    RESEARCH_MODE_REQUIRED_CODE, RESEARCH_MODE_EXIT_CHOICE_REQUIRED_CODE, RESEARCH_MODE_EVENT_CODE,
+    RESEARCH_JOB_ORIGIN, RESEARCH_JOB_ORIGIN_MAIN,
+    RESEARCH_SCOPE_MAX_QUESTIONS, RESEARCH_SCOPE_REVISION_STALE_CODE,
     SOURCE_ROW_LIMIT_DEFAULT, SOURCE_ROW_LIMIT_MAX, STEER_DEFAULT_MODE, STEER_DRAIN_MAX,
     STEER_ENV, STEER_MAX_PENDING, STEER_MODES, STEER_MODE_UNKNOWN_CODE, STEER_TEXT_MAX_CHARS,
 )
@@ -332,6 +335,8 @@ def source_add(rt, session, args):
         'payload': args.get('payload') if isinstance(args.get('payload'), dict) else {},
         'child_id': child_id,
         'job': research_config(session).get('researchId'),
+        # P1 (§5.3): ghim dòng sổ vào ĐÚNG run đang mở, để nhiều run trong một phiên không trộn sổ.
+        'research_id': str(research_config(session).get('researchId') or ''),
         'turn': int(rt.active_turn.get(sid) or 0),
         'step': rt.active_step.get(sid),
     }
@@ -373,8 +378,13 @@ def source_list(rt, session, args):
             turn = int(args.get('turn'))
         except (TypeError, ValueError):
             turn = None
+    # P1 (§5.3): một phiên có thể có nhiều RUN — lọc theo run khi người gọi chỉ đích danh, hoặc khi
+    # run đang mở đã có dòng được ghim. Phiên cũ (chưa có cột) giữ nguyên hành vi.
+    scope_id = str(args.get('researchId') or research_config(session).get('researchId') or '').strip()
+    if scope_id and not rt.store.source_rows(owner, research_id=scope_id, limit=1, newest_first=True):
+        scope_id = ''
     rows = rt.store.source_rows(owner, child_id=args.get('childId') or None, turn=turn, tier=tier,
-                                limit=limit, newest_first=True)
+                                limit=limit, newest_first=True, research_id=scope_id or None)
     counts = _ledger_counts(rt, owner)
     return {'rows': rows, 'counts': {'total': counts['rows'], 'byTier': counts['byTier'],
                                      'byChild': counts['byChild'], 'independent': counts['independent']},
@@ -608,6 +618,13 @@ async def research_brief(rt, session, args):
     defaulted = None
     if tier not in RESEARCH_TIERS:
         defaulted, tier = str(raw_tier), RESEARCH_TIER_DEFAULT
+    # P1 (§5.2, cửa 1, M-05): mức 3 CHỈ mở trong mode. Từ chối chứ KHÔNG hạ mức im lặng — hạ mức
+    # mà không nói thì người dùng nhận một bản mức 2 tưởng là mức 3.
+    if tier >= 3 and _mode_mod().research_mode_available() and _mode_mod().tier3_mode_only() \
+            and not _mode_mod().research_mode(session)['on']:
+        raise ValueError(f'{RESEARCH_MODE_REQUIRED_CODE}: research mode is off — mức 3 chỉ mở trong mode. '
+                         f'Gọi `research_suggest(reason, draftGoal)` để người dùng bật mode, hoặc làm '
+                         f'gọn trong mức 2 ở lượt này (không tự hạ mức).')
     existing = research_config(session)
     job_mode = bool(args.get('questions') or args.get('methods') or args.get('goal')
                     or existing.get('jobMode') == 'v2')
@@ -676,6 +693,17 @@ async def research_brief(rt, session, args):
             # Stable per-session suffix prevents two independent owners with the
             # same question from sharing a job, dossier and verdict namespace.
             slug = f'{slug[:31].rstrip("-")}-{sid[:8].lower()}'
+    # P1 (§5.3): `newRun` mở một RUN mới trong cùng phiên. Run cũ phải đã kết thúc hoặc tạm dừng,
+    # và mã run mới phải KHÁC để sổ/hồ sơ hai run không trộn nhau.
+    new_run = bool(args.get('newRun') or args.get('new_run'))
+    if new_run and existing:
+        prior_job = rt.store.research_job(existing.get('researchId'))
+        if prior_job is not None and prior_job['status'] not in {'completed', 'partial', 'cancelled',
+                                                                 'paused'}:
+            raise ValueError(f'RESEARCH_RUN_ACTIVE: run {existing.get("researchId")!r} đang '
+                             f'{prior_job["status"]}; tạm dừng hoặc huỷ nó trước khi mở run mới')
+        slug = f'{slug[:27].rstrip("-")}-r{len(rt.store.research_jobs_for(sid)) + 1}'
+    inherits = str(args.get('inheritsFrom') or args.get('inherits_from') or '').strip()
     # Một việc = MỘT phòng: hỏi tiếp cùng việc ở lượt sau thì ghi tiếp vào chính phòng ấy (bản `v2`,
     # `v3`… nối tiếp, đúng thứ mà `dossier_versions` đếm), câu hỏi mới ⇒ phòng mới vì phòng đặt tên
     # theo câu hỏi. Phòng cũ chỉ bị thay khi nó KHÔNG khớp khuôn `.research/<slug>-<yyyymmdd-hhmm>`
@@ -731,9 +759,20 @@ async def research_brief(rt, session, args):
                  'branches': branches, 'tier': tier, 'budgetSeconds': budget,
                  'reviewModes': required_reviews,
                  'findings': prior_state.get('findings') or [],
-                 'blockedSources': prior_state.get('blockedSources') or []}
+                 'blockedSources': prior_state.get('blockedSources') or [],
+                 # P1 (§5.2/5.3): `origin` nói job này thuộc mode hay do main tự mở — bơm chỉ chạy
+                 # job `origin='mode'`; `phase` là pha chi tiết mà bơm/API/giao diện đọc.
+                 'origin': (prior_state.get('origin')
+                            or (RESEARCH_JOB_ORIGIN if _mode_mod().research_mode(session)['on']
+                                else RESEARCH_JOB_ORIGIN_MAIN)),
+                 'phase': prior_state.get('phase') or 'clarifying',
+                 'background': bool(prior_state.get('background'))}
         rt.store.research_job_save(slug, sid, state,
                                    status=previous['status'] if previous else 'scoping')
+    inherited_rows = _copy_inherited_rows(rt, sid, inherits, slug) if inherits else 0
+    if inherits:
+        # Dòng kế thừa phải qua `source_verify` LẠI trước khi dùng cho nhận định "hiện tại" (§5.3).
+        config['inheritsFrom'] = inherits
     session.setdefault('config', {})['research'] = config
     # `save` chỉ ghi MESSAGES, nên brief nằm trong `config` phải đi qua `update_config`: không có
     # dòng này thì mức/hồ sơ/phòng hồ sơ biến mất ở lượt sau (harness đọc lại phiên từ store).
@@ -815,6 +854,7 @@ async def research_brief(rt, session, args):
               'ceilingSeconds': ceiling,
               'hardCeilingSeconds': limits['hardCeilingSeconds'], 'critique': limits['critique'],
               'ownerViews': owner_views, 'updated': updated, 'extendedTurn': bool(extended),
+              'inheritsFrom': inherits or None, 'inheritedRows': inherited_rows,
               'next': f'delegate_task(role="research", …) mở đầu context bằng '
                       f'"Mức: {tier} · hồ sơ: {profile.key} · phòng hồ sơ: {dossier_dir}"'}
     if config.get('jobMode') == 'v2':
@@ -877,8 +917,39 @@ def branch_limit_check(rt, session, role):
     return opened
 
 
+def _brief_missing_notice(rt, sid, mode, message):
+    """Một notice `RESEARCH_BRIEF_MISSING` (không dùng dedup của đường cũ: đây là cổng theo lượt)."""
+    rt.store.emit(sid, 'notice', {'code': RESEARCH_BRIEF_MISSING_CODE, 'mode': mode, 'partial': False,
+                                 'message': f'{RESEARCH_BRIEF_MISSING_CODE}: {message}'})
+
+
+def unbriefed_turn_branches(rt, session):
+    """Số nhánh research đã mở trong LƯỢT này (dùng cho luật cửa 2, §5.2)."""
+    sid = session['id']
+    return [row for row in rt.store.children_of(sid, turn=rt.active_turn.get(sid))
+            if row.get('role') == 'research']
+
+
+def quick_lookup_clamp(rt, session, role):
+    """Cửa 2 (§5.2, M-07): NGOÀI mode, nhánh research ĐẦU TIÊN không brief là tra cứu nhanh, và phải
+    chạy trong trần MỨC 1 (20 bước/180 s). Trả `None` khi luật không áp (trong mode, đã có brief,
+    hoặc không phải nhánh research)."""
+    if role != 'research' or has_research_brief(session):
+        return None
+    runtime_module = _mode_mod()
+    if not runtime_module.research_mode_available() or runtime_module.research_mode(session)['on']:
+        return None
+    limits = research_tier_limits(1)
+    return {'tier': 1, 'childSteps': limits['childSteps'], 'childSeconds': limits['childSeconds']}
+
+
 def missing_brief_gate(rt, session, role):
-    """Cổng MỀM `RESEARCH_BRIEF_MISSING`: delegate research mà chưa brief ⇒ notice + log, KHÔNG chặn."""
+    """Cổng `RESEARCH_BRIEF_MISSING` (cửa 2, §5.2/M-07).
+
+    Công tắc `BOXFOX_RESEARCH_MODE=off` ⇒ giữ nguyên hành vi cũ (`BOXFOX_RESEARCH_BRIEF` mặc định
+    `warn`). Khi tính năng bật: trong mode MỌI nhánh phải có brief; ngoài mode nhánh ĐẦU TIÊN được
+    coi là tra cứu nhanh, từ nhánh thứ hai trở đi thì từ chối.
+    """
     mode, unknown = brief_mode()
     sid = session['id']
     if unknown is not None:
@@ -886,18 +957,42 @@ def missing_brief_gate(rt, session, role):
                     RESEARCH_BRIEF_DEFAULT_MODE)
     if mode == 'off' or role != 'research' or has_research_brief(session):
         return False
-    if rt._notice_seen(sid, RESEARCH_BRIEF_MISSING_CODE):
-        return False
-    system_log.write('research.brief.missing', level='warn', session_id=sid,
-                     code=RESEARCH_BRIEF_MISSING_CODE, mode=mode)
+    runtime_module = _mode_mod()
+    if not runtime_module.research_mode_available():
+        # Công tắc TẮT ⇒ giữ NGUYÊN hành vi f17d54b: cổng MỀM `warn` (notice một lần/lượt, không chặn)
+        # và `enforce` (từ chối). P1 không được đổi hành vi mặc định của repo.
+        if rt._notice_seen(sid, RESEARCH_BRIEF_MISSING_CODE):
+            return False
+        system_log.write('research.brief.missing', level='warn', session_id=sid,
+                         code=RESEARCH_BRIEF_MISSING_CODE, mode=mode)
+        rt.store.emit(sid, 'notice', {
+            'code': RESEARCH_BRIEF_MISSING_CODE, 'mode': mode, 'partial': False,
+            'message': (f'{RESEARCH_BRIEF_MISSING_CODE}: lượt này giao việc research mà chưa gọi '
+                        f'`research_brief` — mức/hồ sơ/phòng hồ sơ chưa được chốt, nên trần theo mức và '
+                        f'cổng chất lượng hồ sơ không áp. Gọi `research_brief` rồi giao lại.')})
+        if mode == 'enforce':
+            raise ValueError(f'{RESEARCH_BRIEF_MISSING_CODE}: gọi `research_brief` trước khi '
+                             f'delegate_task(role="research")')
+        return True
+    opened = len(unbriefed_turn_branches(rt, session))
+    if runtime_module.research_mode(session)['on']:
+        _brief_missing_notice(rt, sid, mode, 'trong mode mọi nhánh research phải có mức và câu hỏi '
+                                             '(`research_brief` + `questionId`) — gọi `research_brief` '
+                                             'rồi giao lại')
+        raise ValueError(f'{RESEARCH_BRIEF_MISSING_CODE}: trong mode mọi nhánh research phải có brief; '
+                         f'gọi `research_brief` (mức 1–3) rồi giao lại với `questionId`')
+    if opened:
+        _brief_missing_notice(rt, sid, mode, 'ngoài mode chỉ nhánh research ĐẦU TIÊN được tra cứu nhanh; '
+                                             'gọi `research_brief` trước khi mở nhánh thứ hai')
+        raise ValueError(f'{RESEARCH_BRIEF_MISSING_CODE}: nhánh research thứ hai trong lượt phải có brief — '
+                         f'gọi `research_brief` trước khi `delegate_task(role="research")`')
+    system_log.write('research.brief.quick_lookup', level='info', session_id=sid,
+                     code=RESEARCH_BRIEF_MISSING_CODE, tier=1)
     rt.store.emit(sid, 'notice', {
         'code': RESEARCH_BRIEF_MISSING_CODE, 'mode': mode, 'partial': False,
-        'message': (f'{RESEARCH_BRIEF_MISSING_CODE}: lượt này giao việc research mà chưa gọi '
-                    f'`research_brief` — mức/hồ sơ/phòng hồ sơ chưa được chốt, nên trần theo mức và '
-                    f'cổng chất lượng hồ sơ không áp. Gọi `research_brief` rồi giao lại.')})
-    if mode == 'enforce':
-        raise ValueError(f'{RESEARCH_BRIEF_MISSING_CODE}: gọi `research_brief` trước khi '
-                         f'delegate_task(role="research")')
+        'message': (f'{RESEARCH_BRIEF_MISSING_CODE}: nhánh đầu tiên không brief — coi là tra cứu nhanh, '
+                    f'chạy trong trần mức 1 ({RESEARCH_TIER_CHILD_STEPS[1]} bước/'
+                    f'{RESEARCH_TIER_CHILD_SECONDS[1]} s). Việc lớn hơn thì gọi `research_brief`')})
     return True
 
 
@@ -1442,6 +1537,18 @@ def research_update(rt, session, args):
     job = rt.store.research_job(research_id)
     if not job or job['session_id'] != session['id']:
         raise ValueError('RESEARCH_JOB_UNKNOWN')
+    # P1 (§4.6/§5.3, M-18): `action='pause'|'cancel'` theo JOB (không `runtime.stop(session)`). Ngoài
+    # mode, main chỉ được đụng vào một run CHẠY NỀN — run tiền cảnh ngoài mode là việc của chủ nhà
+    # trong tab Research.
+    action = str(args.get('action') or '').strip().lower()
+    if action:
+        if action not in {'pause', 'cancel'}:
+            raise ValueError('RESEARCH_UPDATE_ACTION_INVALID: use pause or cancel')
+        in_mode = _mode_mod().research_mode(session)['on']
+        if not in_mode and not (job['state'] or {}).get('background'):
+            raise PermissionError('RESEARCH_UPDATE_BACKGROUND_ONLY: ngoài mode bạn chỉ pause/cancel được '
+                                  'một run chạy nền (`state.background=true`)')
+        return _halt_action(rt, session, job, action)
     state = dict(job['state'])
     qid = str(args.get('questionId') or '')
     qstatus = str(args.get('questionStatus') or '')
@@ -1482,6 +1589,9 @@ def research_update(rt, session, args):
         status = 'partial'
     updated = rt.store.research_job_save(research_id, session['id'], state, status,
                                          revision=args.get('revision'))
+    if updated['status'] in {'completed', 'partial'} and state.get('background'):
+        # P1 (§5.10): run CHẠY NỀN xong (mode đã tắt) ⇒ thẻ báo cáo + thông báo, và tắt cờ nền.
+        _finish_background(rt, session, updated)
     return {'researchId': research_id, 'status': updated['status'],
             'revision': updated['revision'], 'questions': state['questions'],
             'usedSeconds': used, 'remainingSeconds': max(0, state['budgetSeconds'] - used)}
@@ -1622,3 +1732,490 @@ def inject_progress_nudge(rt, sid, messages, minutes) -> bool:
     system_log.write('research.progress.nudged', level='info', session_id=sid,
                      code='RESEARCH_PROGRESS_NUDGE', count=state['count'], minutes=minutes)
     return True
+
+
+# --------------------------------------------------------------------------- P1: vỏ mode (§4/§5)
+#
+# Bốn việc của P1 nằm ở đây, và chúng dùng CHUNG một luật: mode là trạng thái của PHIÊN
+# (`session.config.researchMode`), run là `ResearchJob` (`state.origin`/`state.phase`), còn
+# `research_jobs.status` vẫn là nguồn chân lý mà bơm/API/giao diện đọc.
+#   - `research_suggest` (cửa 1): main ĐỀ XUẤT mở mode, KHÔNG đổi cấu hình (M-06).
+#   - `research_scope` (§5.3/4.4): thẻ phạm vi + lời hỏi nhiều câu, `needs_user` khi còn câu chặn.
+#   - `answer_prompt` (§5.12): trả lời MỘT lời hỏi trong MỘT lần gọi, khoá lạc quan `revision`.
+#   - `apply_research_mode` (§4.6/5.12): bật/tắt mode, và luật "tắt mode khi run đang chạy thì HỎI".
+
+
+def _mode_mod():
+    """Nạp lười `agent_core.runtime` — tránh vòng import (runtime ⇒ research_runtime)."""
+    from . import runtime as runtime_module
+    return runtime_module
+
+
+def _research_config_owner(rt, session, research_id):
+    """Chủ sở hữu THẬT của job: người gọi có thể là con nên phải tìm lên phiên gốc."""
+    job = rt.store.research_job(research_id)
+    if job is None:
+        return None, None
+    return job, job['session_id']
+
+
+def research_suggest(rt, session, args):
+    """`research_suggest`: main ĐỀ XUẤT mở research mode cho một việc lớn.
+
+    Cố ý KHÔNG có tác dụng phụ nào lên cấu hình (M-06): mode chỉ bật khi NGƯỜI DÙNG bấm nút
+    hoặc gõ `/research`. Công cụ này chỉ phát một sự kiện để giao diện vẽ thẻ gợi ý.
+    """
+    if session.get('role') != 'orchestrator' or session.get('parent_id'):
+        raise PermissionError('research_suggest is orchestrator-only: a child must not ask to enter a mode')
+    reason = str(args.get('reason') or '').strip()
+    if not reason:
+        raise ValueError('RESEARCH_SUGGEST_INVALID: reason must not be empty — say why this needs a run')
+    draft_goal = str(args.get('draftGoal') or args.get('draft_goal') or '').strip()[:2000]
+    mode = _mode_mod().research_mode(session)
+    if mode['on']:
+        return {'suggested': False, 'reason': 'mode-on',
+                'note': 'research mode is already on — call `research_brief` instead'}
+    rt.store.emit(session['id'], 'research_suggested',
+                  {'reason': reason[:2000], 'draftGoal': draft_goal})
+    system_log.write('research.suggested', level='info', session_id=session['id'],
+                     code='RESEARCH_SUGGESTED', draftGoal=draft_goal)
+    return {'suggested': True, 'reason': reason[:2000], 'draftGoal': draft_goal,
+            'modeOn': False, 'changedConfig': False}
+
+
+def _scope_entry(value, default_status='assumed'):
+    """Chuẩn hoá MỘT mục của thẻ phạm vi: mục người dùng sửa thì `confirmed`, agent đề xuất thì
+    `assumed`, và mọi mục đều mang `source` (§5.10)."""
+    if isinstance(value, dict):
+        item = dict(value)
+    else:
+        item = {'text': str(value or '')}
+    item.setdefault('status', default_status)
+    if item['status'] not in ('confirmed', 'assumed'):
+        item['status'] = default_status
+    source = item.get('source') if isinstance(item.get('source'), dict) else {}
+    if item['status'] == 'confirmed':
+        item.setdefault('source', {'kind': source.get('kind') or 'user',
+                                   **({'seq': source['seq']} if source.get('seq') else {})})
+    else:
+        item.setdefault('source', {'kind': 'agent'})
+    return item
+
+
+def _scope_default(job, question=''):
+    state = job['state'] if job else {}
+    scope = state.get('scope') if isinstance(state.get('scope'), dict) else {}
+    tier = int(state.get('tier') or scope.get('tier') or 2)
+    questions = [dict(item) for item in (state.get('questions') or [])]
+    return {
+        'revision': int(scope.get('revision') or 0),
+        'goal': scope.get('goal') or {'text': str(state.get('goal') or question or ''),
+                                      'status': 'assumed', 'source': {'kind': 'agent'}},
+        'purpose': scope.get('purpose') or {'text': '', 'status': 'assumed', 'source': {'kind': 'agent'}},
+        'jobKinds': list(scope.get('jobKinds') or []),
+        'questions': scope.get('questions') or [
+            {'id': item.get('id'), 'text': item.get('text'), 'importance': item.get('importance', 'medium'),
+             'parentId': item.get('parentId'), 'status': item.get('status', 'unexplored')}
+            for item in questions],
+        'timePolicy': scope.get('timePolicy') or {'velocity': '', 'current': {}, 'foundational': 'any',
+                                                  'reason': '', 'status': 'assumed'},
+        'sourceKinds': list(scope.get('sourceKinds') or []),
+        'exclusions': list(scope.get('exclusions') or []),
+        'outputs': list(scope.get('outputs') or []),
+        'depth': scope.get('depth') or ('deep' if tier >= 3 else 'standard' if tier == 2 else 'quick'),
+        'tier': tier,
+        'budget': scope.get('budget') or {},
+        'openQuestions': list(scope.get('openQuestions') or []),
+    }
+
+
+def _scope_event(rt, research_id, scope, job):
+    rt.store.emit(job['session_id'], 'research_scope',
+                  {'researchId': research_id, 'revision': scope['revision'],
+                   'phase': (job['state'] or {}).get('phase'), 'status': job['status']})
+
+
+def _prompt(rt, sid, research_id, kind, questions, *, revision, note='', actions=('start', 'editScope'),
+            status='open'):
+    prompt = {'promptId': f'rp-{uuid_hex()}', 'researchId': research_id, 'kind': kind,
+              'revision': int(revision), 'blocking': bool(kind != 'exit-choice'),
+              'createdAt': journal.utc_now_iso(), 'status': status, 'questions': questions,
+              'actions': list(actions), 'note': note}
+    rt.store.emit(sid, 'research_prompt', {'promptId': prompt['promptId'], 'researchId': research_id,
+                                          'kind': kind, 'status': status,
+                                          'questions': len(questions)})
+    return prompt
+
+
+def uuid_hex():
+    import uuid as _uuid
+    return _uuid.uuid4().hex[:12]
+
+
+def _open_blocking(open_questions):
+    return [item for item in open_questions
+            if item.get('blocking') and not str(item.get('answer') or '').strip()]
+
+
+def research_scope(rt, session, args):
+    """`research_scope` (§5.3): ghi thẻ phạm vi — nguồn sự thật của run — và hỏi khi cần.
+
+    `action='propose'|'update'` ghi/ghép thẻ (mỗi lần ghi tăng `revision`);
+    `action='ask'` tạo lời hỏi nhiều câu (≤ 3 câu, §4.4) và đẩy run sang `needs_user` khi còn câu
+    chặn chưa trả lời.
+    """
+    if session.get('role') != 'orchestrator':
+        raise PermissionError('research_scope is orchestrator-only (a research child notes scope in its answer)')
+    action = str(args.get('action') or 'propose').strip().lower()
+    if action not in ('propose', 'update', 'ask'):
+        raise ValueError('RESEARCH_SCOPE_ACTION_INVALID: use propose, update or ask')
+    research_id = str(args.get('researchId') or research_config(session).get('researchId') or '').strip()
+    job = rt.store.research_job(research_id) if research_id else None
+    if job is None or job['session_id'] != session['id']:
+        raise ValueError('RESEARCH_SCOPE_NO_JOB: call `research_brief` first — the scope card belongs to a run')
+    scope = _scope_default(job, str(args.get('question') or ''))
+    state = dict(job['state'])
+    if action in ('propose', 'update'):
+        patch = args.get('patch') if isinstance(args.get('patch'), dict) else {}
+        for key in ('goal', 'purpose', 'timePolicy'):
+            if key in patch:
+                scope[key] = _scope_entry(patch[key])
+        for key in ('jobKinds', 'sourceKinds', 'outputs'):
+            if key in patch:
+                scope[key] = [str(item).strip() for item in (patch[key] or []) if str(item).strip()]
+        if 'exclusions' in patch:
+            scope['exclusions'] = [_scope_entry(item) for item in (patch['exclusions'] or [])]
+        if 'questions' in patch:
+            scope['questions'] = [dict(item) if isinstance(item, dict) else {'id': f'q{i + 1}', 'text': str(item)}
+                                  for i, item in enumerate(patch['questions'] or [])]
+        if 'depth' in patch:
+            scope['depth'] = str(patch['depth'])
+        if 'tier' in patch:
+            try:
+                scope['tier'] = int(patch['tier'])
+            except (TypeError, ValueError):
+                pass
+        if 'budget' in patch and isinstance(patch['budget'], dict):
+            scope['budget'] = {**scope.get('budget', {}), **patch['budget']}
+        if 'goalText' in patch:
+            scope['goal'] = _scope_entry({'text': str(patch['goalText'])})
+    if action == 'ask':
+        raw = args.get('questions') if isinstance(args.get('questions'), list) else []
+        if not raw:
+            raise ValueError('RESEARCH_SCOPE_QUESTIONS_REQUIRED: `action="ask"` needs `questions`')
+        questions = []
+        for index, item in enumerate(raw[:RESEARCH_SCOPE_MAX_QUESTIONS]):
+            item = item if isinstance(item, dict) else {'text': str(item)}
+            options = []
+            for opt_index, option in enumerate(item.get('options') or []):
+                option = option if isinstance(option, dict) else {'label': str(option)}
+                options.append({'id': str(option.get('id') or f'o{opt_index + 1}'),
+                                'label': str(option.get('label') or '')[:300],
+                                'cost': option.get('cost')})
+            questions.append({'id': str(item.get('id') or f'iq{index + 1}'),
+                              'text': str(item.get('text') or '')[:600],
+                              'why': str(item.get('why') or '')[:300],
+                              'options': options[:5],
+                              'allowFreeText': bool(item.get('allowFreeText', True)),
+                              'affects': [str(entry) for entry in (item.get('affects') or [])],
+                              'required': bool(item.get('required', True)),
+                              'blocking': bool(item.get('blocking', True)), 'answer': None})
+        prompt = _prompt(rt, session['id'], research_id, str(args.get('kind') or 'interview'),
+                         questions, revision=scope['revision'] + 1, note=str(args.get('note') or ''))
+        scope['revision'] += 1
+        scope['openQuestions'] = [*scope.get('openQuestions', []),
+                                  *[{'id': item['id'], 'text': item['text'], 'options': item['options'],
+                                     'blocking': item['blocking'], 'affects': item['affects'],
+                                     'answer': None, 'promptId': prompt['promptId']} for item in questions]]
+        state.setdefault('prompts', []).append(prompt)
+        state['scope'] = scope
+        needs_user = bool(_open_blocking(scope['openQuestions']))
+        status = 'needs_user' if needs_user else str(job['status'])
+        state['phase'] = 'clarifying' if needs_user else state.get('phase') or 'clarifying'
+        _phase_history(state, state['phase'], 'scope-questions')
+        updated = rt.store.research_job_save(research_id, session['id'], state, status)
+        if needs_user:
+            rt.store.emit(session['id'], 'research_notice',
+                          {'researchId': research_id, 'kind': 'needs-user',
+                           'promptId': prompt['promptId']})
+        _scope_event(rt, research_id, scope, updated)
+        return {'researchId': research_id, 'revision': scope['revision'], 'status': updated['status'],
+                'promptId': prompt['promptId'], 'needsUser': needs_user,
+                'openQuestions': scope['openQuestions'], 'next': 'trả lời qua POST /api/agent/research/prompts/'
+                                                                 f'{prompt["promptId"]}/answer rồi `start=true`'}
+    scope['revision'] += 1
+    if scope.get('tier'):
+        scope['budget'] = {**scope.get('budget', **{})} if isinstance(scope.get('budget'), dict) else {}
+        budget = scope['budget']
+        budget.setdefault('proposedSeconds', int(RESEARCH_TIER_CHILD_SECONDS.get(int(scope['tier']), 420)) * 3)
+        budget.setdefault('hardCeilingSeconds',
+                          RESEARCH_TIER_HARD_CEILING_SECONDS.get(int(scope['tier']), 1800))
+        budget['bigJob'] = bool(int(scope['tier']) >= 3 or int(budget.get('proposedSeconds') or 0) > 600
+                                or len(scope.get('questions') or []) > 3)
+        budget.setdefault('approved', False)
+    state['scope'] = scope
+    state.setdefault('phase', 'planning' if not _open_blocking(scope['openQuestions']) else 'clarifying')
+    _phase_history(state, state['phase'], 'scope-updated')
+    status = 'needs_user' if _open_blocking(scope['openQuestions']) else str(job['status'])
+    updated = rt.store.research_job_save(research_id, session['id'], state, status)
+    _scope_event(rt, research_id, scope, updated)
+    return {'researchId': research_id, 'revision': scope['revision'], 'status': updated['status'],
+            'scope': scope, 'needsUser': status == 'needs_user'}
+
+
+def _phase_history(state, phase, reason):
+    """Ghi `phaseHistory[]` — mỗi lần đổi pha/đổi nền đều để lại một dòng (§5.3)."""
+    history = state.setdefault('phaseHistory', [])
+    if history and history[-1].get('phase') == phase:
+        return
+    history.append({'phase': phase, 'at': journal.utc_now_iso(), 'reason': reason})
+
+
+def answer_prompt(rt, session_id, job, payload):
+    """Trả lời MỘT lời hỏi nhiều câu trong MỘT lần gọi (§5.12, M-17).
+
+    Luật: khoá lạc quan `revision` (lệch ⇒ từ chối), mọi câu trả lời trong cùng một lần gọi,
+    câu đã trả lời thành mục `confirmed`, và chỉ mở lượt tiếp tục khi KHÔNG còn câu chặn nào.
+    """
+    prompt_id = str(payload.get('promptId') or '').strip()
+    state = dict(job['state'])
+    prompts = state.get('prompts') or []
+    prompt = next((item for item in prompts if item.get('promptId') == prompt_id), None)
+    if prompt is None:
+        raise ValueError('RESEARCH_PROMPT_UNKNOWN: no such prompt on this run')
+    if prompt.get('status') == 'answered':
+        raise ValueError('RESEARCH_PROMPT_ANSWERED: that prompt is already answered')
+    expected = payload.get('revision')
+    if expected is not None and int(expected) != int(prompt.get('revision') or 0):
+        raise ValueError(f'{RESEARCH_SCOPE_REVISION_STALE_CODE}: the prompt changed — reload the card and answer again')
+    answers = payload.get('answers') if isinstance(payload.get('answers'), list) else []
+    given = {str(item.get('questionId') or ''): item for item in answers if isinstance(item, dict)}
+    scope = state.get('scope') if isinstance(state.get('scope'), dict) else {}
+    open_questions = scope.get('openQuestions') or []
+    for question in open_questions:
+        answer = given.get(str(question.get('id')))
+        if answer is None:
+            continue
+        option = next((item for item in question.get('options') or []
+                       if item.get('id') == str(answer.get('optionId') or '')), None)
+        text = str(answer.get('text') or (option or {}).get('label') or '').strip()
+        if not text:
+            continue
+        question['answer'] = {'text': text[:600], 'optionId': (option or {}).get('id'),
+                              'status': 'confirmed', 'at': journal.utc_now_iso()}
+        question['blocking'] = False
+    required = [item for item in prompt.get('questions') or [] if item.get('required', True)]
+    unanswered = [item['id'] for item in required
+                  if not any(str(answer.get('questionId')) == str(item['id'])
+                             and (str(answer.get('text') or '').strip() or str(answer.get('optionId') or ''))
+                             for answer in answers if isinstance(answer, dict))]
+    wants_start = bool(payload.get('start'))
+    if wants_start and unanswered:
+        raise ValueError(f'RESEARCH_PROMPT_UNANSWERED: còn {len(unanswered)} câu chặn chưa trả lời '
+                         f'({", ".join(unanswered)}) — gửi MỌI câu trả lời trong một lần gọi')
+    prompt['status'] = 'answered' if not unanswered else 'open'
+    blocked = _open_blocking(open_questions)
+    if payload.get('approveBudget') and isinstance(scope.get('budget'), dict):
+        scope['budget']['approved'] = True
+    state['scope'] = scope
+    status = str(job['status'])
+    if not blocked and status == 'needs_user':
+        status = 'researching' if wants_start else 'scoping'
+        state['phase'] = 'planning' if wants_start else state.get('phase') or 'planning'
+        _phase_history(state, state['phase'], 'prompt-answered')
+    updated = rt.store.research_job_save(job['research_id'], session_id, state, status)
+    rt.store.emit(session_id, 'research_scope',
+                  {'researchId': job['research_id'], 'revision': scope.get('revision'),
+                   'phase': state.get('phase'), 'status': updated['status']})
+    return {'researchId': job['research_id'], 'promptId': prompt_id, 'status': updated['status'],
+            'revision': updated['revision'], 'resume': bool(wants_start and not blocked),
+            'openBlocking': [item['id'] for item in blocked], 'unanswered': unanswered}
+
+
+def active_run(session):
+    """Run đang hoạt động của phiên theo `researchMode.activeRunId`, hoặc `None`."""
+    mode = _mode_mod().research_mode(session)
+    run_id = str(mode.get('activeRunId') or '')
+    return run_id or None
+
+
+def apply_research_mode(rt, session, payload):
+    """Bật/tắt mode (§4.6/§5.12) — logic thuần, route HTTP chỉ gọi hàm này.
+
+    Tắt mode khi có run đang hoạt động mà THIẾU lựa chọn ⇒ `RESEARCH_EXIT_CHOICE_REQUIRED` kèm
+    một lời hỏi `exit-choice`; mode KHÔNG đổi (M-10c/M-15).
+    """
+    runtime_module = _mode_mod()
+    sid = session['id']
+    if session.get('role') != 'orchestrator' or session.get('parent_id'):
+        raise PermissionError('research mode belongs to the conversation, not to a child session')
+    want_on = bool(payload.get('on'))
+    mode = runtime_module.research_mode(session)
+    run_id = active_run(session)
+    job = rt.store.research_job(run_id) if run_id else None
+    if job is not None and job['session_id'] != sid:
+        job = None
+    active = job is not None and job['status'] in {'scoping', 'researching', 'verifying', 'synthesizing',
+                                                  'critiquing', 'needs_user', 'paused', 'partial'}
+    if want_on:
+        config = dict(session.get('config') or {})
+        mode = {**mode, 'on': True, 'since': mode.get('since') or journal.utc_now_iso(),
+                'enteredBy': str(payload.get('by') or 'toggle') if not mode['on'] else mode['enteredBy'],
+                'revision': int(mode.get('revision') or 0) + 1}
+        if job is not None:
+            mode['activeRunId'] = job['research_id']
+            state = dict(job['state'])
+            if state.get('background'):
+                state['background'] = False
+                state['phase'] = 'clarifying' if job['status'] == 'needs_user' else state.get('phase') or 'searching'
+                _phase_history(state, state['phase'], 'mode-on')
+                rt.store.research_job_save(job['research_id'], sid, state)
+                rt.store.emit(sid, 'research_run', {'researchId': job['research_id'], 'status': job['status'],
+                                                    'phase': state.get('phase'), 'background': False,
+                                                    'revision': job['revision'] + 1})
+        config['researchMode'] = mode
+        rt.store.update_config(sid, config)
+        rt.store.emit(sid, RESEARCH_MODE_EVENT_CODE,
+                      {'on': True, 'by': mode['enteredBy'], 'activeRunId': mode['activeRunId'],
+                       'revision': mode['revision']})
+        return {'on': True, 'mode': mode, 'activeRunId': mode['activeRunId'], 'prompt': None}
+    # Tắt mode.
+    if active:
+        choice = str(payload.get('exitChoice') or payload.get('activeRun') or '').strip().lower()
+        if choice not in ('pause', 'background'):
+            prompt = dict(payload.get('prompt') or {}) if isinstance(payload.get('prompt'), dict) else {}
+            if not prompt.get('promptId'):
+                question = [{'id': 'exit1', 'text': f'Run {job["research_id"]} đang chạy. Bạn muốn tạm dừng hay để nó '
+                                                   f'chạy nền?',
+                             'options': [{'id': 'pause', 'label': 'Tạm dừng run'},
+                                         {'id': 'background', 'label': 'Tiếp tục chạy nền'}],
+                             'allowFreeText': False, 'required': True, 'blocking': True, 'affects': []}]
+                prompt = _prompt(rt, sid, job['research_id'], 'exit-choice', question,
+                                 revision=int(mode.get('revision') or 0),
+                                 note='Mode giữ nguyên cho đến khi bạn chọn.', actions=('chooseExit',))
+                state = dict(job['state'])
+                state.setdefault('prompts', []).append(prompt)
+                rt.store.research_job_save(job['research_id'], sid, state)
+            raise _exit_choice_required(prompt, job, mode)
+        state = dict(job['state'])
+        if choice == 'pause':
+            state['background'] = False
+            _phase_history(state, state.get('phase') or 'searching', 'mode-off-pause')
+            rt.store.research_job_save(job['research_id'], sid, state, 'paused')
+            rt.store.emit(sid, 'research_run', {'researchId': job['research_id'], 'status': 'paused',
+                                                'phase': state.get('phase'), 'background': False,
+                                                'revision': job['revision'] + 1})
+        else:
+            state['background'] = True
+            _phase_history(state, state.get('phase') or 'searching', 'mode-off-background')
+            rt.store.research_job_save(job['research_id'], sid, state)
+            rt.store.emit(sid, 'research_run', {'researchId': job['research_id'], 'status': job['status'],
+                                                'phase': state.get('phase'), 'background': True,
+                                                'revision': job['revision'] + 1})
+    config = dict(session.get('config') or {})
+    mode = {**mode, 'on': False, 'activeRunId': run_id if active else mode.get('activeRunId'),
+            'revision': int(mode.get('revision') or 0) + 1}
+    config['researchMode'] = mode
+    rt.store.update_config(sid, config)
+    rt.store.emit(sid, RESEARCH_MODE_EVENT_CODE,
+                  {'on': False, 'by': str(payload.get('by') or 'toggle'), 'revision': mode['revision']})
+    return {'on': False, 'mode': mode, 'activeRunId': mode.get('activeRunId'), 'prompt': None,
+            'exitChoice': str(payload.get('exitChoice') or payload.get('activeRun') or '') or None}
+
+
+def _exit_choice_required(prompt, job, mode):
+    """Lỗi 409 mà route dịch thành `RESEARCH_EXIT_CHOICE_REQUIRED` + `{prompt:{kind:'exit-choice'}}`."""
+    error = ValueError(f'{RESEARCH_MODE_EXIT_CHOICE_REQUIRED_CODE}: mode stays on until you choose '
+                       f'"pause" or "background" for run {job["research_id"]}')
+    error.payload = {'code': RESEARCH_MODE_EXIT_CHOICE_REQUIRED_CODE, 'status': 409,
+                     'prompt': {**prompt, 'kind': 'exit-choice'}}
+    return error
+
+
+def dismiss_prompt(rt, session_id, job, prompt_id):
+    """Đóng lời hỏi thoát mà KHÔNG chọn ⇒ không đổi gì (M-15)."""
+    state = dict(job['state'])
+    prompt = next((item for item in state.get('prompts') or []
+                   if item.get('promptId') == prompt_id), None)
+    if prompt is None:
+        raise ValueError('RESEARCH_PROMPT_UNKNOWN')
+    prompt['status'] = 'dismissed'
+    rt.store.research_job_save(job['research_id'], session_id, state)
+    rt.store.emit(session_id, 'research_prompt', {'promptId': prompt_id,
+                                                 'researchId': job['research_id'],
+                                                 'kind': prompt.get('kind'), 'status': 'dismissed'})
+    return {'researchId': job['research_id'], 'promptId': prompt_id, 'status': 'dismissed'}
+
+
+async def _halt_action(rt, session, job, action):
+    """Pause/cancel MỘT job qua `runtime.research_halt` (§4.6/§5.3). Không dừng cả phiên."""
+    await rt.research_halt(job, 'pause' if action == 'pause' else 'cancel')
+    updated = rt.store.research_job(job['research_id'])
+    return {'researchId': job['research_id'], 'action': action,
+            'status': (updated or job)['status'], 'background': bool((updated or job)['state'].get('background'))}
+
+
+def _copy_inherited_rows(rt, sid, inherits, new_run_id):
+    """Chép sổ nguồn của run cũ sang run mới với cờ `inherited=true` (§5.3).
+
+    Dòng kế thừa giữ NGUYÊN url/đoạn trích nhưng trạng thái về `unverified`: nó phải qua
+    `source_verify` lại trước khi đỡ một nhận định "hiện tại".
+    """
+    source_job = rt.store.research_job(inherits)
+    if source_job is None or source_job['session_id'] != sid:
+        raise ValueError('RESEARCH_INHERIT_UNKNOWN: inheritsFrom must name a run of this session')
+    copied = 0
+    for row in rt.store.source_rows(sid, research_id=inherits, limit=SOURCE_ROW_LIMIT_MAX):
+        payload = dict(row.get('payload') or {})
+        payload['inherited'] = True
+        payload['inheritedFrom'] = inherits
+        rt.store.source_add(sid, {
+            'claim': row.get('claim') or '', 'url': row.get('url') or '', 'host': row.get('host') or '',
+            'tier': row.get('tier'), 'type': row.get('type'), 'excerpt': row.get('excerpt') or '',
+            'fetched_at': row.get('fetchedAt') or '', 'origin': row.get('origin'),
+            'method': row.get('method'), 'status': 'unverified', 'fingerprint': row.get('fingerprint') or '',
+            'payload': payload, 'branches': [], 'child_id': None,
+            'job': new_run_id, 'research_id': new_run_id,
+            'turn': int(rt.active_turn.get(sid) or 0), 'step': rt.active_step.get(sid)})
+        copied += 1
+    if copied:
+        rt.store.emit(sid, 'notice', {
+            'code': 'RESEARCH_INHERITED', 'partial': False, 'researchId': new_run_id,
+            'message': (f'RESEARCH_INHERITED: {copied} dòng sổ của {inherits} đã được chép sang '
+                        f'{new_run_id} với cờ inherited — phải `source_verify` lại trước khi dùng cho '
+                        f'nhận định "hiện tại"')})
+    return copied
+
+
+def _finish_background(rt, session, job):
+    """Run chạy nền tới `completed`/`partial` (§5.10): thẻ báo cáo + thông báo, tắt `state.background`.
+
+    Runtime **không** tự mở lượt main: khối bàn giao vào lượt main KẾ TIẾP của người dùng, một lần
+    cho mỗi bản hồ sơ (`researchMode.handoffDeliveredVersion`).
+    """
+    sid = job['session_id']
+    state = dict(job['state'] or {})
+    state['background'] = False
+    rt.store.research_job_save(job['research_id'], sid, state)
+    latest = rt.store.dossier_latest(job['research_id'])
+    labels = []
+    if job['status'] == 'partial':
+        labels.append('partial')
+    review_modes = [name for name in ('evidence', 'critique') if name in (state.get('reviewModes') or [])]
+    if latest is not None and review_modes and latest.get('critique') != 'ok':
+        labels.append(RESEARCH_CRITIQUE_LABEL)
+    if latest is not None and not latest.get('quality_ok') and job['status'] != 'partial':
+        labels.append('bao phủ chưa đủ')
+    version = int(latest['version']) if latest is not None else 0
+    rt.store.emit(sid, 'research_report', {
+        'researchId': job['research_id'], 'version': version,
+        'path': latest['relative_path'] if latest is not None else '',
+        'labels': labels,
+        'summary': f'{job["research_id"]} v{version} · {job["status"]}'})
+    rt.store.emit(sid, 'research_notice', {'researchId': job['research_id'], 'kind': 'background-done'})
+    rt.store.emit(sid, 'research_run', {'researchId': job['research_id'], 'status': job['status'],
+                                        'phase': state.get('phase'), 'background': False,
+                                        'revision': job['revision']})
+    system_log.write('research.background.done', level='info', session_id=sid,
+                     code='RESEARCH_BACKGROUND_DONE', researchId=job['research_id'],
+                     status=job['status'], version=version)

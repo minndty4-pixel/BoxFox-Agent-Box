@@ -38,7 +38,9 @@ TOOL_GROUPS = [
      'alwaysOn': False},
     {'key': 'researchDossiers',
      'tools': ['research_brief', 'dossier_write', 'research_verify', 'research_status',
-               'research_update', 'cancel_child'],
+               'research_update', 'cancel_child',
+               # P1 — cửa 1: main gợi ý bật mode (chỉ phát sự kiện, không bật mode).
+               'research_suggest'],
      'alwaysOn': False},
     {'key': 'peerMesh',
      'tools': ['peer_read', 'await_children'],

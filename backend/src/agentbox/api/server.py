@@ -60,6 +60,33 @@ logger = logging.getLogger('boxfox.harness.api')
 RESEARCH_PUMP_KEY = web.AppKey('research_pump', asyncio.Task)
 
 
+def research_job_pumpable(runtime, job, session):
+    """P1 (§5.2, cửa 4): bơm chỉ chạy job thuộc MODE, và chỉ theo hai đường (M-08).
+
+    (a) mode đang bật và `researchMode.activeRunId` = job đó;
+    (b) `state.background = true` (người dùng chọn "Tiếp tục chạy nền", #6078) dù mode đã tắt.
+
+    Job `origin='main'` (việc nhẹ main tự mở) KHÔNG bao giờ được bơm: nó xong trong lượt hoặc
+    thành `partial`. Job đang `clarifying` cũng không: lượt của nó là lượt đang chờ người dùng.
+    """
+    from ..agent_core import runtime as runtime_module
+    state = job.get('state') if isinstance(job.get('state'), dict) else {}
+    origin = str(state.get('origin') or '')
+    if origin not in {runtime_module.RESEARCH_JOB_ORIGIN, runtime_module.RESEARCH_JOB_ORIGIN_MAIN}:
+        # Job cũ (ghi trước P1) không có `origin`: giữ nguyên đường bơm cũ.
+        return True
+    if origin != runtime_module.RESEARCH_JOB_ORIGIN:
+        return False
+    if str(state.get('phase') or '') == 'clarifying':
+        return False
+    if bool(state.get('background')):
+        return True
+    if not runtime_module.research_mode_available():
+        return False
+    mode = runtime_module.research_mode(session)
+    return bool(mode['on']) and str(mode.get('activeRunId') or '') == str(job['research_id'])
+
+
 async def research_continuation_step(runtime):
     """Resume eligible research jobs once; persisted turns keep retries idempotent."""
     for job in runtime.store.research_jobs_active():
@@ -67,6 +94,8 @@ async def research_continuation_step(runtime):
         try:
             session = runtime.store.get(sid)
             if session['status'] in {'running', 'awaiting_decision'}:
+                continue
+            if not research_job_pumpable(runtime, job, session):
                 continue
             state = dict(job['state'])
             used = runtime.store.research_job_used_seconds(sid, job['research_id'])
@@ -127,11 +156,14 @@ class ApiError(Exception):
     reads (``SESSION_NOT_FOUND`` lets it start a fresh session instead of failing forever).
     """
 
-    def __init__(self, code, message, status=400):
+    def __init__(self, code, message, status=400, extra=None):
         super().__init__(message)
         self.code = code
         self.message = message
         self.status = status
+        # P1 (§5.12): lời hỏi thoát đi KÈM lỗi 409 (`{prompt:{kind:'exit-choice'}}`), nên phản hồi
+        # lỗi phải mang thêm dữ liệu, không chỉ code + message.
+        self.extra = extra if isinstance(extra, dict) else {}
 
 
 def missing_session(sid):
@@ -210,7 +242,8 @@ def create_app(runtime):
         try:
             return await handler(request)
         except ApiError as exc:
-            return web.json_response({'error': f'{exc.code}: {exc.message}', 'code': exc.code}, status=exc.status)
+            return web.json_response({'error': f'{exc.code}: {exc.message}', 'code': exc.code,
+                                      **exc.extra}, status=exc.status)
         except KeyError as exc:
             # A KeyError inside a handler is an internal defect (a missing key in a payload or a
             # record) — never "the route does not exist". Reporting it as a bare `Not found` cost
@@ -499,6 +532,11 @@ def create_app(runtime):
             raise missing_session(sid) from None
         jobs = runtime.store.research_jobs_for(sid)
         return web.json_response({'jobs': [{**job,
+            # P1 (§5.12): bơm/API/giao diện đọc `phase`, `origin` và `scope.revision` ngoài `status`.
+            'phase': (job['state'] or {}).get('phase'),
+            'origin': (job['state'] or {}).get('origin'),
+            'background': bool((job['state'] or {}).get('background')),
+            'scopeRevision': int(((job['state'] or {}).get('scope') or {}).get('revision') or 0),
             'usedSeconds': runtime.store.research_job_used_seconds(sid, job['research_id']),
             'remainingSeconds': max(0, job['state'].get('budgetSeconds', 0)
                                     - runtime.store.research_job_used_seconds(sid, job['research_id'])),
@@ -521,10 +559,15 @@ def create_app(runtime):
         action = str(body.get('action') or '')
         if action not in {'pause', 'resume', 'cancel', 'prioritize', 'skip', 'budget'}:
             raise ApiError('RESEARCH_ACTION_INVALID', action)
+        if action in {'pause', 'cancel'}:
+            # P1 (§5.3/M-09): dừng theo JOB — KHÔNG `runtime.stop(session)`. Huỷ con của job, và chỉ
+            # dừng lượt đang chạy khi nó đúng là lượt tiếp tục của job này.
+            halted = await runtime.research_halt(job, 'pause' if action == 'pause' else 'cancel')
+            return web.json_response({'job': halted})
         state = dict(job['state'])
         status = job['status']
-        if action in {'pause', 'cancel', 'resume'}:
-            status = {'pause': 'paused', 'cancel': 'cancelled', 'resume': 'researching'}[action]
+        if action in {'resume'}:
+            status = 'researching'
             if action == 'resume' and job['status'] not in {'paused', 'partial', 'needs_user'}:
                 raise ApiError('RESEARCH_RESUME_INVALID', 'Job is not paused or partial')
             if action == 'resume':
@@ -558,9 +601,90 @@ def create_app(runtime):
                 if child['config'].get('researchQuestionId') == qid:
                     await research_runtime.cancel_child(runtime, owner, {
                         'sessionId': branch['session_id'], 'reason': 'Question skipped by user'})
-        if action in {'pause', 'cancel'}:
-            await runtime.stop(job['session_id'])
         return web.json_response({'job': updated})
+
+    async def research_mode_set(request):
+        """P1 (§5.12): `PUT /api/agent/sessions/{sid}/research-mode` — bật/tắt mode.
+
+        Tắt khi có run đang hoạt động mà thiếu lựa chọn ⇒ 409 `RESEARCH_EXIT_CHOICE_REQUIRED` kèm
+        một lời hỏi `exit-choice`; mode KHÔNG đổi (M-10c).
+        """
+        sid = request.match_info['sid']
+        session = known_session(sid)
+        body = await request.json()
+        if 'on' not in body:
+            raise ApiError('RESEARCH_MODE_BODY_INVALID', 'body needs `on` (true/false)')
+        try:
+            result = research_runtime.apply_research_mode(runtime, session, body)
+        except ValueError as exc:
+            payload = getattr(exc, 'payload', None)
+            if isinstance(payload, dict) and payload.get('prompt'):
+                raise ApiError(payload.get('code') or 'RESEARCH_EXIT_CHOICE_REQUIRED', str(exc),
+                               int(payload.get('status') or 409), extra={'prompt': payload['prompt']}) from None
+            raise
+        return web.json_response(result)
+
+    async def research_prompt_answer(request):
+        """P1 (§5.12): trả lời MỘT lời hỏi nhiều câu trong MỘT lần gọi (M-17).
+
+        `start=true` (nút "Bắt đầu") ⇒ run rời `needs_user` và mở lượt tiếp tục; nhận cả khi mode
+        đã tắt nếu run đang chạy nền.
+        """
+        prompt_id = request.match_info['prompt_id']
+        body = await request.json()
+        job = runtime.store.research_job_by_prompt(prompt_id)
+        if job is None:
+            raise ApiError('RESEARCH_PROMPT_UNKNOWN', prompt_id, 404)
+        try:
+            result = research_runtime.answer_prompt(runtime, job['session_id'], job,
+                                                    {**body, 'promptId': prompt_id})
+        except ValueError as exc:
+            text = str(exc)
+            raise ApiError(text.split(':', 1)[0], text,
+                           409 if 'REVISION_STALE' in text else 400) from None
+        if result.get('resume'):
+            session = runtime.store.get(job['session_id'])
+            if session['status'] not in {'running', 'awaiting_decision'}:
+                updated = runtime.store.research_job(job['research_id'])
+                if research_job_pumpable(runtime, updated, session):
+                    await runtime.submit(job['session_id'],
+                        f'Continue research job {job["research_id"]} from research_status after the owner '
+                        'answered the scope prompt. Apply the confirmed answers, then continue the plan.',
+                        invocation_id=f'research-resume-{job["research_id"]}-prompt')
+        return web.json_response(result)
+
+    async def research_prompt_dismiss(request):
+        """P1 (§4.6, M-15): đóng lời hỏi thoát mà KHÔNG chọn ⇒ không đổi gì."""
+        prompt_id = request.match_info['prompt_id']
+        job = runtime.store.research_job_by_prompt(prompt_id)
+        if job is None:
+            raise ApiError('RESEARCH_PROMPT_UNKNOWN', prompt_id, 404)
+        try:
+            return web.json_response(research_runtime.dismiss_prompt(runtime, job['session_id'], job, prompt_id))
+        except ValueError as exc:
+            raise ApiError('RESEARCH_PROMPT_UNKNOWN', str(exc), 404) from None
+
+    async def research_job_detail(request):
+        """P1 (§5.12): `GET /api/agent/research/jobs/{id}` — chi tiết một run cho tab Research."""
+        research_id = request.match_info['research_id']
+        job = runtime.store.research_job(research_id)
+        if job is None:
+            raise ApiError('RESEARCH_JOB_UNKNOWN', research_id, 404)
+        sid = job['session_id']
+        state = job['state'] if isinstance(job.get('state'), dict) else {}
+        return web.json_response({
+            'job': {**job, 'phase': state.get('phase'), 'origin': state.get('origin'),
+                    'background': bool(state.get('background')),
+                    'scopeRevision': int((state.get('scope') or {}).get('revision') or 0),
+                    'usedSeconds': runtime.store.research_job_used_seconds(sid, research_id)},
+            'scope': state.get('scope') or {},
+            'prompts': state.get('prompts') or [],
+            'questions': state.get('questions') or [],
+            'findings': state.get('findings') or [],
+            'blockedSources': state.get('blockedSources') or [],
+            'evidence': runtime.store.source_rows(sid, research_id=research_id, limit=50, newest_first=True),
+            'dossier': runtime.store.dossier_latest(research_id),
+            'reviews': runtime.store.research_verifications(research_id, limit=10)})
 
     def known_session(sid):
         """The session record, or an explicit 404 the UI can act on."""
@@ -1051,7 +1175,11 @@ def create_app(runtime):
     app.router.add_get('/api/agent/skills/{skill}/readiness', readiness)
     app.router.add_get('/api/agent/sessions', list_sessions)
     app.router.add_get('/api/agent/research/jobs', research_jobs)
+    app.router.add_get('/api/agent/research/jobs/{research_id}', research_job_detail)
     app.router.add_patch('/api/agent/research/jobs/{research_id}', research_job_update)
+    app.router.add_put('/api/agent/sessions/{sid}/research-mode', research_mode_set)
+    app.router.add_post('/api/agent/research/prompts/{prompt_id}/answer', research_prompt_answer)
+    app.router.add_post('/api/agent/research/prompts/{prompt_id}/dismiss', research_prompt_dismiss)
     app.router.add_post('/api/agent/sessions', create)
     app.router.add_get('/api/agent/sessions/{sid}', session)
     app.router.add_delete('/api/agent/sessions/{sid}', delete_session)

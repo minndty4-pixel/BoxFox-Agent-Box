@@ -45,6 +45,9 @@ class SessionStore:
         # trang, cùng đoạn trích thì luật idempotent (BUG-92) giữ MỘT dòng, và nếu dòng ấy chỉ nhớ
         # nhánh A thì nhánh B bị `research-lineage-missing` mà không có cách nào gỡ (vòng 27, đợt 8).
         self._add_missing_columns('source_ledger', {'branches': "TEXT NOT NULL DEFAULT '[]'"})
+        # P1 (§5.3): `research_id` — sổ nguồn gắn theo PHIÊN, nhưng một phiên có nhiều RUN. Cột
+        # này cho `source_list`/cổng hồ sơ/đếm bằng chứng lọc theo đúng run đang mở.
+        self._add_missing_columns('source_ledger', {'research_id': "TEXT NOT NULL DEFAULT ''"})
         self._add_missing_columns('checkpoints', {
             'before_estimate': 'INTEGER', 'after_estimate': 'INTEGER',
             'context_window': 'INTEGER', 'model_id': 'TEXT',
@@ -140,6 +143,7 @@ class SessionStore:
                 fingerprint TEXT NOT NULL DEFAULT '',
                 payload TEXT NOT NULL DEFAULT '{}',
                 branches TEXT NOT NULL DEFAULT '[]',
+                research_id TEXT NOT NULL DEFAULT '',
                 turn INTEGER NOT NULL DEFAULT 0,
                 step INTEGER,
                 created REAL NOT NULL,
@@ -960,7 +964,8 @@ class SessionStore:
     # `price`, `captureAt`…); đổi cột theo từng luật mới là đổi schema theo từng ý chủ nhà.
 
     SOURCE_FIELDS = ('child_id', 'job', 'claim', 'url', 'host', 'tier', 'type', 'excerpt', 'fetched_at',
-                     'origin', 'method', 'source_row_id', 'status', 'fingerprint', 'payload', 'turn', 'step')
+                     'origin', 'method', 'source_row_id', 'status', 'fingerprint', 'payload', 'turn', 'step',
+                     'research_id')
 
     def next_source_row_id(self, sid):
         """Mã dòng kế tiếp của phiên: `r1`, `r2`… — đọc từ mã LỚN NHẤT, không từ số hàng."""
@@ -990,8 +995,8 @@ class SessionStore:
                     cursor = self.db.execute(
                         'INSERT INTO source_ledger(session_id,row_id,child_id,job,claim,url,host,tier,type,'
                         ' excerpt,fetched_at,origin,method,source_row_id,status,fingerprint,payload,branches,'
-                        ' turn,step,created)'
-                        ' VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                        ' turn,step,created,research_id)'
+                        ' VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                         (sid, row_id, values.get('child_id'), values.get('job'),
                          str(values.get('claim') or ''), str(values.get('url') or ''),
                          str(values.get('host') or ''),
@@ -1004,7 +1009,7 @@ class SessionStore:
                          json.dumps(list(values.get('branches') or []), ensure_ascii=False),
                          int(values.get('turn') or 0),
                          None if values.get('step') is None else int(values.get('step')),
-                         time.time()))
+                         time.time(), str(values.get('research_id') or values.get('researchId') or '')))
                 return self.source_row(sid, row_id)
             except sqlite3.IntegrityError as exc:
                 last_error = exc
@@ -1021,13 +1026,17 @@ class SessionStore:
                               (sid, str(row_id))).fetchone()
         return self._source_view(row) if row is not None else None
 
-    def source_rows(self, sid, child_id=None, turn=None, tier=None, limit=None, newest_first=False):
+    def source_rows(self, sid, child_id=None, turn=None, tier=None, limit=None, newest_first=False,
+                    research_id=None):
         """Các dòng sổ của một phiên, cũ → mới (hoặc mới → cũ), có trần."""
         sql = 'SELECT * FROM source_ledger WHERE session_id=?'
         params = [sid]
         if child_id:
             sql += ' AND child_id=?'
             params.append(child_id)
+        if research_id is not None:
+            sql += ' AND research_id=?'
+            params.append(str(research_id))
         if turn is not None:
             sql += ' AND turn=?'
             params.append(int(turn))
@@ -1252,6 +1261,7 @@ class SessionStore:
         item['fetchedAt'] = item.pop('fetched_at', '')
         item['childId'] = item.pop('child_id', None)
         item['sourceRowId'] = item.pop('source_row_id', None)
+        item['researchId'] = item.pop('research_id', '') or ''
         item.pop('id', None)
         item.pop('session_id', None)
         return item
@@ -1294,6 +1304,22 @@ class SessionStore:
         rows = self.db.execute('SELECT research_id FROM research_jobs WHERE session_id=? '
                                'ORDER BY updated DESC', (session_id,)).fetchall()
         return [self.research_job(row['research_id']) for row in rows]
+
+    def research_job_by_prompt(self, prompt_id):
+        """Job chứa một `promptId` (§5.12) — tuyến `answer` chỉ có id lời hỏi, không có phiên.
+
+        Quét thô bằng LIKE rồi xác nhận trên `state` đã giải JSON: LIKE chỉ là cách thu hẹp hàng,
+        không phải căn cứ để trả lời.
+        """
+        wanted = str(prompt_id)
+        rows = self.db.execute('SELECT research_id FROM research_jobs WHERE state LIKE ?',
+                               (f'%{wanted}%',)).fetchall()
+        for row in rows:
+            job = self.research_job(row['research_id'])
+            if any(str(item.get('promptId')) == wanted for item in (job['state'].get('prompts') or [])
+                   if isinstance(item, dict)):
+                return job
+        return None
 
     def research_jobs_active(self):
         rows = self.db.execute("SELECT research_id FROM research_jobs WHERE status IN "

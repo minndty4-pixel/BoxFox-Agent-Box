@@ -381,11 +381,34 @@ SCHEMAS = [
           'questionId': STRING, 'questionStatus': {'type': 'string', 'enum': [
               'unexplored', 'researching', 'evidenced', 'contested', 'blocked', 'answered']},
           'note': STRING, 'finding': STRING,
+          'action': {'type': 'string', 'enum': ['pause', 'cancel'],
+                     'description': 'Pause or cancel the whole run. Outside Research mode this is '
+                                    'allowed only for a background run.'},
           'blockedSource': {'type': 'object', 'properties': {'url': STRING,
                              'attempt': STRING, 'impact': STRING}},
           'status': {'type': 'string', 'enum': ['scoping', 'researching', 'verifying',
                     'synthesizing', 'critiquing', 'needs_user', 'completed', 'partial',
                     'paused', 'cancelled']}}, ['researchId']),
+    tool('research_suggest',
+         'Offer to open Research mode for a question that is bigger than one turn (a landscape, a '
+         'literature map, or any job over about ten minutes). This only SHOWS the suggestion card in '
+         'the conversation: it never changes the session config, and the mode stays off until the owner '
+         'turns it on. Do NOT open a tier-3 job instead.',
+         {'reason': STRING, 'draftGoal': STRING}, ['reason', 'draftGoal']),
+    tool('research_scope',
+         'Write the scope card of the run (the single source of truth for goal, questions, time policy, '
+         'source kinds, exclusions, outputs, depth and budget) and ask the owner up to three blocking '
+         'questions in ONE prompt. Use action="ask" for interview or scope-change questions; each '
+         'question carries concrete options. Unanswered blocking questions put the run in needs_user.',
+         {'action': {'type': 'string', 'enum': ['propose', 'update', 'ask']},
+          'researchId': STRING, 'patch': {'type': 'object'},
+          'questions': {'type': 'array', 'items': {'type': 'object', 'properties': {
+              'id': STRING, 'text': STRING, 'why': STRING, 'affects': {'type': 'array', 'items': STRING},
+              'blocking': {'type': 'boolean'}, 'allowFreeText': {'type': 'boolean'},
+              'options': {'type': 'array', 'items': {'type': 'object', 'properties': {
+                  'id': STRING, 'label': STRING, 'cost': STRING}}}}, 'required': ['text']}},
+          'kind': {'type': 'string', 'enum': ['interview', 'scope-change', 'out-of-scope', 'budget']}},
+         ['action']),
     tool('cancel_child',
          'Stop ONE running child of this session (the owner asked for it, or the branch is off-track). The child '
          'is closed as cancelled, its slot is released, and the result reaches you like any other child result. '
