@@ -283,6 +283,25 @@ def test_a_named_id_that_names_the_source_run_is_refused_before_any_write(harnes
     assert [item['research_id'] for item in store.research_jobs_for(sid)] == ['RS1']
 
 
+def test_the_same_named_id_cannot_be_claimed_twice(harness):
+    """Nhánh hậu tố tự sinh không còn che mã trùng: lần thứ hai phải bị TỪ CHỐI trước mọi ghi.
+
+    Cửa cũ chỉ chặn mã trùng RUN GỐC (`refresh_run`); mã đã dùng ở một run khác từng lọt qua nhánh
+    `-r{n}` của `research_brief`. Bản vá D-2 đặt cửa thứ hai: mã chủ nhà chỉ định là mã RIÊNG.
+    """
+    store, runtime, sid, session = harness
+    source_id = briefed_run(store, runtime, sid, session)
+    first = refresh(runtime, store.get(sid), source_id, {'researchId': 'rs1-lam-moi'})
+    assert first['researchId'] == 'rs1-lam-moi'
+    job = store.research_job('rs1-lam-moi')
+    store.research_job_save('rs1-lam-moi', sid, job['state'], status='completed')
+    before = sorted(item['research_id'] for item in store.research_jobs_for(sid))
+    with pytest.raises(ValueError) as error:
+        refresh(runtime, store.get(sid), source_id, {'researchId': 'rs1-lam-moi'})
+    assert 'RESEARCH_BRIEF_INVALID' in str(error.value)
+    assert sorted(item['research_id'] for item in store.research_jobs_for(sid)) == before
+
+
 def test_the_refresh_event_and_answer_agree_on_the_counts(harness):
     store, runtime, sid, session = harness
     run(store, sid, 'RS1')

@@ -245,7 +245,9 @@ class RuntimeCommands:
                                    (RESEARCH_BACKGROUND_BLOCK_MARKER, RESEARCH_BACKGROUND_BLOCK_END),
                                    (RESEARCH_HANDOFF_BLOCK_MARKER, RESEARCH_HANDOFF_BLOCK_END)):
             current = _strip_prompt_block(current, marker, end_marker)
-        handoff = self.research_handoff(session)
+        # `current` (đã gỡ khối cũ) là lượt đang dựng: nếu lượt NÓI TÊN một run thì khối bàn giao
+        # phải là run ấy, không phải run chưa bàn giao mới nhất (review D-5).
+        handoff = self.research_handoff(session, current)
         content = current.rstrip()
         for block in [profile['promptBlock'], (handoff or {}).get('block')]:
             if block:

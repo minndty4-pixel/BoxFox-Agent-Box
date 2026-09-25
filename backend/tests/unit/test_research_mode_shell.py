@@ -971,7 +971,7 @@ def test_the_background_block_is_replaced_each_turn_not_stacked(harness, monkeyp
     monkeypatch.setattr(runtime, 'turn_profile',
                         lambda s, invocation_id=None: {'mode': 'off', 'tools': [],
                                                        'promptBlock': block})
-    monkeypatch.setattr(runtime, 'research_handoff', lambda s: None)
+    monkeypatch.setattr(runtime, 'research_handoff', lambda s, prompt='': None)
     sizes = []
     for _ in range(3):
         runtime._sync_mode_block(session)
@@ -993,14 +993,81 @@ def test_the_handoff_block_disappears_after_it_is_delivered(harness, monkeypatch
     delivered: list[tuple[str, str]] = []
     monkeypatch.setattr(runtime, 'turn_profile',
                         lambda s, invocation_id=None: {'mode': 'off', 'tools': [], 'promptBlock': ''})
-    monkeypatch.setattr(runtime, 'research_handoff',
-                        lambda s: {'block': block, 'researchId': 'r-ho', 'version': 3})
+    seen: list[str] = []
+
+    def fake_handoff(s, prompt=''):
+        seen.append(prompt)
+        return {'block': block, 'researchId': 'r-ho', 'version': 3}
+
+    monkeypatch.setattr(runtime, 'research_handoff', fake_handoff)
     monkeypatch.setattr(runtime, 'mark_handoff_delivered',
                         lambda s, rid, version: delivered.append((rid, version)))
     runtime._sync_mode_block(session)
     assert session['messages'][0]['content'].count(limits.RESEARCH_HANDOFF_BLOCK_MARKER) == 1
     assert delivered == [('r-ho', 3)]
-    monkeypatch.setattr(runtime, 'research_handoff', lambda s: None)
+    # Vòng 2 (D-5): khối bàn giao phải nhận ĐÚNG lượt đang dựng — không có lượt thì không chọn được run.
+    assert seen == ['NỀN']
+    monkeypatch.setattr(runtime, 'research_handoff', lambda s, prompt='': None)
     runtime._sync_mode_block(session)
     assert limits.RESEARCH_HANDOFF_BLOCK_MARKER not in session['messages'][0]['content']
     assert 'NỀN' in session['messages'][0]['content']
+
+
+# ------------------------- khối bàn giao theo ĐÚNG run mà lượt nói tên (vòng 2, D-5)
+
+
+def test_a_turn_that_names_a_run_gets_that_run_not_the_newest_one(harness):
+    """Review vòng kiểm thử P2–P5 (D-5): khối bàn giao phải theo ĐÚNG run mà lượt nói tên.
+
+    Trước bản vá, `research_handoff` luôn lấy run chưa bàn giao MỚI NHẤT, nên bấm "Dùng cho plan"
+    ở thẻ của run cũ lại bàn giao một run khác trong khi câu lệnh vẫn nói tên run cũ.
+    """
+    store, runtime, sid = harness
+    for run_id, version in (('run-cu', 2), ('run-moi', 1)):
+        store.research_job_save(run_id, sid, {'origin': 'mode', 'phase': 'done', 'tier': 2,
+                                             'budgetSeconds': 600, 'questions': []},
+                                status='completed')
+        store.record_dossier(sid, run_id, version, f'.research/{run_id}/v{version}-{run_id}.md',
+                             quality_ok=True)
+    older = runtime.research_handoff(session_of(store, sid),
+                                     'Lập plan dựa trên báo cáo research run-cu v2')
+    assert older is not None and older['researchId'] == 'run-cu' and older['version'] == 2
+    newer = runtime.research_handoff(session_of(store, sid),
+                                     'Lập plan dựa trên báo cáo research run-moi v1')
+    assert newer is not None and newer['researchId'] == 'run-moi'
+
+
+def test_a_turn_that_names_a_delivered_run_gets_no_second_block(harness):
+    """Bản hồ sơ ĐÃ bàn giao thì lượt nhắc lại nó không được kéo theo run khác (§5.10, D-5)."""
+    store, runtime, sid = harness
+    for run_id in ('run-cu', 'run-moi'):
+        store.research_job_save(run_id, sid, {'origin': 'mode', 'phase': 'done', 'tier': 2,
+                                             'budgetSeconds': 600, 'questions': []},
+                                status='completed')
+        store.record_dossier(sid, run_id, 1, f'.research/{run_id}/v1-{run_id}.md', quality_ok=True)
+    first = runtime.research_handoff(session_of(store, sid), 'báo cáo research run-cu v1')
+    assert first is not None and first['researchId'] == 'run-cu'
+    runtime.mark_handoff_delivered(session_of(store, sid), 'run-cu', 1)
+    assert runtime.research_handoff(session_of(store, sid), 'báo cáo research run-cu v1') is None, \
+        'bản đã bàn giao không được thay bằng một run khác'
+    # Lượt KHÔNG nói tên run nào vẫn theo luật cũ: bàn giao run chưa bàn giao.
+    other = runtime.research_handoff(session_of(store, sid))
+    assert other is not None and other['researchId'] == 'run-moi'
+
+
+def test_a_turn_that_names_an_unknown_run_keeps_the_old_behaviour(harness):
+    """Tên run không có trong phiên ⇒ về đúng luật cũ (`r-2` không được khớp trong `r-22`)."""
+    store, runtime, sid = harness
+    store.research_job_save('run-that', sid, {'origin': 'mode', 'phase': 'done', 'tier': 2,
+                                             'budgetSeconds': 600, 'questions': []},
+                            status='completed')
+    store.record_dossier(sid, 'run-that', 1, '.research/run-that/v1.md', quality_ok=True)
+    handoff = runtime.research_handoff(session_of(store, sid),
+                                       'Lập plan dựa trên báo cáo research khong-co-run-nao v9')
+    assert handoff is not None and handoff['researchId'] == 'run-that'
+    # Token hoá: `r-2` KHÔNG được khớp khi phiên chỉ có `r-22` (so `in` thô sẽ sai).
+    store.research_job_save('r-22', sid, {'origin': 'mode', 'phase': 'done', 'tier': 2,
+                                         'budgetSeconds': 600, 'questions': []}, status='completed')
+    store.record_dossier(sid, 'r-22', 1, '.research/r-22/v1.md', quality_ok=True)
+    assert runtime.named_handoff_run(session_of(store, sid), 'run r-2 v1') == ''
+    assert runtime.named_handoff_run(session_of(store, sid), 'run r-22 v1') == 'r-22'

@@ -3281,18 +3281,44 @@ class HarnessRuntime(RuntimeCommands):
                      f'{RESEARCH_BACKGROUND_BLOCK_END}')
         return {'mode': 'main', 'tools': list(config.get('tools') or []), 'promptBlock': block}
 
-    def research_handoff(self, session):
+    def named_handoff_run(self, session, prompt):
+        """Mã run được NÓI RÕ trong lượt (`''` khi lượt không nhắc tên run nào).
+
+        Đối chiếu theo TỪNG token slug, KHÔNG dùng `in` thô: `'r-2' in 'r-22'` là đúng, và bàn giao
+        nhầm run vì một chuỗi con là lỗi im lặng (review vòng kiểm thử P2–P5, mục D-5).
+        """
+        text = str(prompt or '').lower()
+        if not text:
+            return ''
+        tokens = set(re.findall(r'[a-z0-9-]+', text))
+        if not tokens:
+            return ''
+        for job in self.store.research_jobs_for(session.get('id')):
+            research_id = str(job.get('research_id') or '')
+            if research_id.lower() in tokens:
+                return research_id
+        return ''
+
+    def research_handoff(self, session, prompt=''):
         """Khối bàn giao research → main (§5.10), hoặc `None` khi không có gì để bàn giao.
 
         Chỉ dựng khi mode đang TẮT, chọn run có hồ sơ mới nhất, và **một lần cho mỗi bản hồ sơ**
         (`researchMode.handoffDeliveredVersion`). Nhãn `Bạn đã xác nhận` / `Giả định của agent` là
         hợp đồng giao diện, không được trộn hai danh sách.
+
+        `prompt` = lượt đang dựng khối. Nút "Dùng cho plan" gửi câu có NÊU TÊN run ("Lập plan dựa
+        trên báo cáo research <id> v<N>"): khi ấy CHỈ run ấy được bàn giao, kể cả khi một run khác
+        mới hơn vẫn chưa bàn giao. Trước bản vá này hàm luôn lấy run chưa bàn giao mới nhất, nên
+        bấm ở thẻ của run cũ lại bàn giao run khác trong khi câu lệnh nói tên run cũ.
         """
         mode = research_mode(session)
         if mode['on']:
             return None
         delivered = mode.get('handoffDeliveredVersion') or {}
+        wanted = self.named_handoff_run(session, prompt)
         for job in self.store.research_jobs_for(session.get('id')):
+            if wanted and job['research_id'] != wanted:
+                continue
             state = job.get('state') if isinstance(job.get('state'), dict) else {}
             if str(state.get('origin') or '') not in {'', RESEARCH_JOB_ORIGIN}:
                 continue
