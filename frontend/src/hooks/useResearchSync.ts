@@ -15,14 +15,18 @@ import type { ResearchMode } from '../lib/researchMode'
 export function useResearchSync(): ResearchMode {
   const chatId = useAgentStore((s) => s.activeSessionId)
   const run = useHarnessChatStore((s) => s.sessions[chatId])
+  // Danh tính ỔN ĐỊNH của phiên: id server khi đã biết, nếu không thì khoá cục bộ. Phiên tạo trong trang
+  // bắt đầu bằng khoá tạm rồi nhận id server, còn mở lại từ danh sách bên thì dùng id server ngay: lấy
+  // id server làm khoá để sổ mốc của `researchStore` không bị tách làm hai (R5-1).
+  const identity = run?.id ?? chatId
   const events = run?.events
   const researchMode = run?.researchMode
   const sync = useResearchStore((s) => s.sync)
   const mode = useResearchStore((s) => s.mode)
 
   useEffect(() => {
-    sync(chatId, { researchMode }, events ?? [])
-  }, [chatId, researchMode, events, sync])
+    sync(identity, { researchMode }, events ?? [])
+  }, [identity, researchMode, events, sync])
 
   return mode
 }

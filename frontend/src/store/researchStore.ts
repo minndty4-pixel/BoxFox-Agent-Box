@@ -52,6 +52,16 @@ interface ResearchState {
    * ảnh chụp lịch sử (D-9 — đừng ghim mốc `0` từ một payload rỗng rồi coi lịch sử là mới).
    */
   seenSeqBySession: Record<string, number>
+  /**
+   * Sàn `seq` đã tiêu thụ, KHÔNG phụ thuộc phiên (R5-1, vòng kiểm thử thứ năm).
+   *
+   * `seenSeqBySession` khoá theo id phiên, mà CÙNG một phiên có thể được đồng bộ dưới HAI id: phiên tạo
+   * trong trang bắt đầu bằng khoá TẠM (`session-…`) rồi nhận id server khi lượt đầu chạy xong, còn mở
+   * lại phiên từ danh sách bên lại dùng id server. Mốc ghi dưới khoá tạm không chặn được bản phát lại
+   * dưới id server ⇒ thẻ `/research status` đã đóng mọc lại. `seq` là AUTOINCREMENT TOÀN CỤC của
+   * harness, nên một sàn chung là luật đúng: sự kiện cũ hơn thứ đã tiêu thụ thì mãi là lịch sử.
+   */
+  consumedSeq: number
   /** Lời hỏi 409 khi tắt mode lúc run còn chạy: có thì phải neo thẻ vào nút Research. */
   exitChoice: ResearchExitChoice | null
   /**
@@ -169,18 +179,22 @@ export const useResearchStore = create<ResearchState>((set, get) => ({
   exitChoice: null,
   statusCard: null,
   seenSeqBySession: {},
+  consumedSeq: 0,
 
   sync: (sessionId, config, events) => {
     if (!sessionId) {
-      set({ sessionId: '', mode: RESEARCH_MODE_OFF, jobs: [], detail: null, detailId: '', lastEventSeq: 0, exitChoice: null, statusCard: null, seenSeqBySession: {} })
+      // Phiên chưa mở: xoá trạng thái đang hiển thị nhưng GIỮ sổ mốc — xoá sổ là cách chắc chắn nhất để
+      // thẻ đã đóng mọc lại (R5-1: nhánh này từng quét sạch `seenSeqBySession`).
+      set({ sessionId: '', mode: RESEARCH_MODE_OFF, jobs: [], detail: null, detailId: '', lastEventSeq: 0, exitChoice: null, statusCard: null })
       return
     }
     const mode = readResearchMode(config)
     const switched = sessionId !== get().sessionId
     const seenSeqBySession = get().seenSeqBySession
     const maxSeq = events.reduce((max, event) => Math.max(max, event.seq), 0)
-    // Mốc của TỪNG phiên: sự kiện chỉ "mới" khi vượt mốc đã tiêu thụ của chính phiên đó.
-    const mark = seenSeqBySession[sessionId]
+    // Mốc của TỪNG phiên, siết thêm bằng SÀN CHUNG: sự kiện chỉ "mới" khi vượt cả hai (R5-1 — cùng một
+    // phiên có thể đổi khoá giữa khoá tạm và id server, sàn chung không phụ thuộc khoá).
+    const mark = Math.max(seenSeqBySession[sessionId] ?? 0, get().consumedSeq)
     // Hai luật, cùng lúc:
     // 1. `seq` vượt mốc ĐÃ TIÊU THỤ — giữ cho thẻ đã đóng không mọc lại khi quay về phiên cũ (§4.1
     //    dòng ~205: thẻ trạng thái là bản phát lại theo yêu cầu, không phải trạng thái nền).
@@ -202,8 +216,14 @@ export const useResearchStore = create<ResearchState>((set, get) => ({
       mode,
       lastEventSeq,
       statusCard,
+      // Đổi phiên: bỏ dữ liệu của phiên TRƯỚC ngay, đừng để thẻ báo cáo cũ sống sót tới khi vòng tải mới
+      // xong — hoặc mãi mãi, nếu phiên mới chưa có id server và tuyến jobs trả lỗi (R5-1).
+      ...(switched
+        ? { jobs: [], detail: null, detailId: '', error: null, exitChoice: null }
+        : {}),
       // Không có sự kiện nào ⇒ chưa biết gì về phiên này: giữ nguyên sổ mốc (đừng ghim `0`).
       seenSeqBySession: events.length === 0 ? seenSeqBySession : { ...seenSeqBySession, [sessionId]: nextMark },
+      consumedSeq: Math.max(get().consumedSeq, maxSeq),
     })
     if (switched || fresh.length > 0 || modeChanged) void get().refresh()
   },
