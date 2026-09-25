@@ -937,6 +937,41 @@ def test_f10_a_card_answered_after_the_scope_was_rewritten_is_refused(harness):
     assert done['resume'] is True
 
 
+def test_d6_an_open_card_answers_after_the_owner_edits_the_scope(harness):
+    """D-6 (vòng kiểm thử P2–P5): sửa thẻ phạm vi KHÔNG được làm thẻ phỏng vấn 409 vĩnh viễn.
+
+    Trước bản vá, `scope_update` tăng revision SỐNG mà không ghim lại `prompt['revision']`: giao diện
+    tải lại thẻ vẫn nhận con số CŨ, nên mọi câu trả lời đều 409 `RESEARCH_SCOPE_REVISION_STALE` — và
+    không có sự kiện nào phát lại thẻ để nó biết số mới. Luật F10 vẫn nguyên: thẻ trong DOM CŨ bị từ chối.
+    """
+    store, runtime, sid = harness
+    research_runtime.apply_research_mode(runtime, session_of(store, sid), {'on': True})
+    scope_job(store, sid)
+    asyncio.run(runtime.dispatch(session_of(store, sid), 'research_scope',
+                                 {'action': 'ask', 'researchId': 'run-scope', 'questions': [
+                                     {'id': 'iq1', 'text': 'Dùng để làm gì?', 'blocking': True,
+                                      'options': [{'id': 'o1', 'label': 'Dùng ngay'}]}]}))
+    before = store.research_job('run-scope')
+    prompt = before['state']['prompts'][0]
+    live = int(before['state']['scope']['revision'])
+    assert prompt['revision'] == live, 'thẻ mới phải mang revision SỐNG của phạm vi'
+    edited = research_runtime.scope_update(runtime, sid, before,
+                                           {'revision': live,
+                                            'scope': {'goal': {'text': 'mục tiêu mới'}}})
+    assert edited['revision'] == live + 1
+    # Giao diện tải lại thẻ (vòng 1200 ms đọc lại `prompts`) ⇒ thẻ mang revision MỚI.
+    assert store.research_job('run-scope')['state']['prompts'][0]['revision'] == live + 1
+    # DOM cũ: vẫn gửi con số CŨ ⇒ bị từ chối đúng luật F10.
+    with pytest.raises(ValueError, match=limits.RESEARCH_SCOPE_REVISION_STALE_CODE):
+        research_runtime.answer_prompt(runtime, sid, store.research_job('run-scope'), {
+            'promptId': prompt['promptId'], 'revision': live, 'start': True,
+            'answers': [{'questionId': 'iq1', 'optionId': 'o1'}]})
+    done = research_runtime.answer_prompt(runtime, sid, store.research_job('run-scope'), {
+        'promptId': prompt['promptId'], 'revision': live + 1, 'start': True,
+        'answers': [{'questionId': 'iq1', 'optionId': 'o1'}]})
+    assert done['resume'] is True and done['unanswered'] == []
+
+
 LONG_EXCERPT = ('Mức hưởng chuyển tuyến bảo hiểm y tế được quy định theo tuyến và theo từng nhóm '
                 'đối tượng, kèm danh mục giấy tờ phải nộp. ') * 2
 

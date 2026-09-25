@@ -715,9 +715,10 @@ def create_app(runtime):
             result = research_runtime.answer_prompt(runtime, job['session_id'], job,
                                                     {**body, 'promptId': prompt_id})
         except ValueError as exc:
-            text = str(exc)
-            raise ApiError(text.split(':', 1)[0], text,
-                           409 if 'REVISION_STALE' in text else 400) from None
+            # D-7 (vòng kiểm thử P2–P5): đi qua `_action_error` như các handler anh em. Truyền nguyên
+            # `text` (đã chứa mã) vào `message` khiến middleware ghép mã LẦN HAI:
+            # `error = "CODE: CODE: chi tiết"` — người dùng đọc thấy mã lặp.
+            raise _action_error(exc, {'RESEARCH_SCOPE_REVISION_STALE': 409}) from None
         if result.get('resume'):
             session = runtime.store.get(job['session_id'])
             if session['status'] not in {'running', 'awaiting_decision'}:

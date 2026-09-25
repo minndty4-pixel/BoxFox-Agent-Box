@@ -324,6 +324,46 @@ def test_a_stale_job_revision_answers_409_without_a_doubled_code(tmp_path):
     asyncio.run(flow())
 
 
+def test_the_answers_route_names_the_code_once_when_the_scope_moved(tmp_path):
+    """D-7 (vòng kiểm thử P2–P5): tuyến trả lời từng ghép mã lỗi HAI lần trong `error`.
+
+    Handler truyền nguyên `text` (đã có mã) vào `message`, rồi middleware ghép `code: message` — người
+    dùng đọc thấy `RESEARCH_SCOPE_REVISION_STALE: RESEARCH_SCOPE_REVISION_STALE: …`. Anh em cùng tệp
+    đi qua `_action_error`, nên chỉ mã MỘT lần.
+    """
+    store = SessionStore(tmp_path / 'sessions.sqlite')
+    job = scope_job(store)
+    state = dict(job['state'])
+    state['prompts'] = [{'promptId': 'rp-1', 'researchId': 'RS1', 'kind': 'interview', 'revision': 1,
+                         'status': 'open', 'blocking': True, 'createdAt': 'x', 'actions': ['start'],
+                         'questions': [{'id': 'iq1', 'text': 'Dùng để làm gì?', 'blocking': True,
+                                        'required': True, 'allowFreeText': True,
+                                        'options': [{'id': 'o1', 'label': 'Dùng ngay'}]}]}]
+    state['scope'] = {**state['scope'], 'revision': 2, 'openQuestions': [
+        {'id': 'iq1', 'text': 'Dùng để làm gì?', 'blocking': True, 'answer': None,
+         'promptId': 'rp-1', 'options': [{'id': 'o1', 'label': 'Dùng ngay'}]}]}
+    store.research_job_save('RS1', job['session_id'], state, status='needs_user')
+
+    async def flow():
+        server = TestServer(create_app(FakeRuntime(store)))
+        await server.start_server()
+        try:
+            async with ClientSession() as http:
+                answer = await http.post(server.make_url('/api/agent/research/prompts/rp-1/answer'),
+                                         headers=HEADERS,
+                                         json={'revision': 1, 'start': True,
+                                               'answers': [{'questionId': 'iq1', 'optionId': 'o1'}]})
+                assert answer.status == 409
+                body = await answer.json()
+                assert body['code'] == 'RESEARCH_SCOPE_REVISION_STALE'
+                assert body['error'].count('RESEARCH_SCOPE_REVISION_STALE') == 1
+                assert 'phạm vi đã đổi' in body['error']
+        finally:
+            await server.close()
+
+    asyncio.run(flow())
+
+
 def test_two_owner_scope_edits_leave_two_history_rows(tmp_path):
     """Sửa thẻ hai lần ⇒ hai hàng `phaseHistory` (finding 7), không bị luật chống trùng nuốt."""
     store = SessionStore(tmp_path / 'sessions.sqlite')

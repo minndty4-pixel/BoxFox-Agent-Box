@@ -2581,6 +2581,9 @@ def scope_update(rt, session_id, job, payload):
     _scope_window(scope)
     scope['revision'] = live_revision + 1
     state['scope'] = scope
+    # D-6: người dùng vừa sửa phạm vi ⇒ các lời hỏi đang mở phải mang revision MỚI, nếu không thẻ
+    # phỏng vấn 409 vĩnh viễn dù đã tải lại (§5.12, lỗ D-6 của vòng kiểm thử P2–P5).
+    _repin_open_prompts(state, scope['revision'])
     _phase_history(state, state.get('phase') or 'planning', 'scope-edited', repeat=True)
     # Người dùng đã sửa thẻ ⇒ run đang chờ câu trả lời không còn bị coi là đang chờ nữa, trừ khi
     # vẫn còn câu chặn chưa trả lời.
@@ -2671,6 +2674,20 @@ def _prompt(rt, sid, research_id, kind, questions, *, revision, note='', actions
                                           'kind': kind, 'status': status,
                                           'questions': len(questions)})
     return prompt
+
+
+def _repin_open_prompts(state, revision):
+    """Ghim lại revision SỐNG của phạm vi cho các lời hỏi ĐANG MỞ (§5.12, D-6 vòng kiểm thử P2–P5).
+
+    Khoá lạc quan của tuyến trả lời so với `scope['revision']` SỐNG (review F10), còn thẻ trả lời gửi
+    `prompt['revision']`. Phạm vi đổi mà không ghim lại ⇒ giao diện tải lại thẻ vẫn nhận con số CŨ và
+    mọi câu trả lời bị 409 `RESEARCH_SCOPE_REVISION_STALE` MÃI MÃI (`scope_update` không đụng tới
+    `prompts`, và không có sự kiện nào phát lại thẻ để nó biết số mới). Ghim ở đây giữ đúng luật F10:
+    thẻ CHƯA tải lại (DOM cũ) vẫn gửi số cũ và vẫn bị từ chối, còn thẻ đã tải lại trả lời được.
+    """
+    for prompt in (state.get('prompts') or []):
+        if isinstance(prompt, dict) and str(prompt.get('status') or 'open') == 'open':
+            prompt['revision'] = int(revision)
 
 
 def uuid_hex():
@@ -2779,6 +2796,8 @@ def research_scope(rt, session, args):
                                      'answer': None, 'promptId': prompt['promptId']} for item in questions]]
         state.setdefault('prompts', []).append(prompt)
         state['scope'] = scope
+        # D-6: lời hỏi mới đã mang số mới; các lời hỏi CŨ còn mở cũng phải theo số mới.
+        _repin_open_prompts(state, scope['revision'])
         needs_user = bool(_open_blocking(scope['openQuestions']))
         status = 'needs_user' if needs_user else str(job['status'])
         state['phase'] = 'clarifying' if needs_user else state.get('phase') or 'clarifying'
@@ -2810,6 +2829,8 @@ def research_scope(rt, session, args):
                                 or len(scope.get('questions') or []) > 3)
         budget.setdefault('approved', False)
     state['scope'] = scope
+    # D-6: mô hình viết lại phạm vi cũng làm revision SỐNG tăng ⇒ ghim lại cho lời hỏi đang mở.
+    _repin_open_prompts(state, scope['revision'])
     state.setdefault('phase', 'planning' if not _open_blocking(scope['openQuestions']) else 'clarifying')
     _phase_history(state, state['phase'], 'scope-updated')
     status = 'needs_user' if _open_blocking(scope['openQuestions']) else str(job['status'])
