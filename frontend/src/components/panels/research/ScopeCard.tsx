@@ -22,11 +22,14 @@ import {
   assumedItems,
   blockingOpenQuestions,
   confirmedItems,
-  jobIsActive,
+  jobIsSuspendable,
+  jobStatusKey,
+  jobStatusTone,
   runLabel,
   type ResearchJob,
   type ResearchPrompt,
   type ResearchScope,
+  type ResearchStatusTone,
 } from '../../../lib/researchMode'
 import { formatClock, formatMinutes } from './format'
 import { ResearchPromptCard } from './ResearchPromptCard'
@@ -51,6 +54,14 @@ const TIERS = [1, 2, 3] as const
 
 const SELECT_CLASS =
   'w-full rounded border border-line bg-bg px-1.5 py-0.5 text-[11px] text-fg outline-hidden focus:border-brand'
+
+/** Sắc thái badge trạng thái (khớp `jobStatusTone`) — dùng chung cho header thẻ phạm vi. */
+const STATUS_TONE_CLASS: Record<ResearchStatusTone, string> = {
+  warn: 'bg-amber-500/15 text-amber-300',
+  brand: 'bg-brand/15 text-brand',
+  muted: 'bg-zinc-500/15 text-muted',
+  done: 'bg-emerald-500/15 text-emerald-300',
+}
 
 /**
  * Một dòng sửa được: nhãn + giá trị + nút "Sửa" mở ô nhập ngay tại chỗ.
@@ -208,6 +219,7 @@ export function ScopeCard({
   const updateJob = useResearchStore((s) => s.updateJob)
   const blocking = blockingOpenQuestions(scope)
   const blocked = blocking.length > 0 || job.status === 'needs_user'
+  const suspendable = jobIsSuspendable(job)
   const budget = scope.budget
   const budgetText = budget?.proposedSeconds
     ? `${t('research.budgetProposed', { minutes: formatMinutes(budget.proposedSeconds) })}${
@@ -236,19 +248,11 @@ export function ScopeCard({
           {t('research.rev', { n: scope.revision })}
         </span>
         <span
-          className={`ml-auto shrink-0 rounded px-1 py-px text-[10px] font-medium ${
-            job.status === 'needs_user'
-              ? 'bg-amber-500/15 text-amber-300'
-              : jobIsActive(job)
-                ? 'bg-brand/15 text-brand'
-                : 'bg-emerald-500/15 text-emerald-300'
-          }`}
+          data-testid="research-status-badge"
+          data-status={job.status}
+          className={`ml-auto shrink-0 rounded px-1 py-px text-[10px] font-medium ${STATUS_TONE_CLASS[jobStatusTone(job)]}`}
         >
-          {job.status === 'needs_user'
-            ? t('research.statusNeedsUser')
-            : jobIsActive(job)
-              ? t('research.statusRunning')
-              : t('research.statusDone')}
+          {t(jobStatusKey(job))}
         </span>
       </header>
       <p className="mt-0.5 text-muted">
@@ -256,6 +260,25 @@ export function ScopeCard({
           ? t('research.scopeBlocking', { count: Math.max(1, blocking.length) })
           : t('research.scopeProceeding')}
       </p>
+
+      {/* D-3 (§4.1 dòng ~210): run tạm dừng phải HỎI "Tiếp tục run X?" ngay trên thẻ trạng thái —
+          run tạm dừng không tự chạy lại, người dùng phải bấm nút gửi `action:'resume'`. */}
+      {suspendable && (
+        <div
+          data-testid="research-scope-resume-ask"
+          className="mt-1.5 flex flex-wrap items-center gap-1.5 rounded border border-brand/30 bg-brand/5 px-2 py-1"
+        >
+          <span className="text-brand">{t('research.resumeAsk', { id: runLabel(job.researchId) })}</span>
+          <button
+            type="button"
+            data-testid="research-scope-resume"
+            onClick={() => void updateJob(job.researchId, { action: 'resume', revision: job.revision })}
+            className="rounded bg-zinc-100 px-2 py-0.5 text-zinc-900 transition hover:bg-white cursor-pointer"
+          >
+            {t('research.resumeRun')}
+          </button>
+        </div>
+      )}
 
       <div className="mt-1.5" data-testid="research-scope-rows">
         <EditableRow
@@ -419,7 +442,7 @@ export function ScopeCard({
 
       <footer className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[10px] text-muted">
         <span>{t('research.applyNextWave')}</span>
-        {!blocked && (
+        {!blocked && !suspendable && (
           <>
             <button
               type="button"

@@ -11,11 +11,12 @@ import { type ReactNode } from 'react'
 import { BrainCircuit } from 'lucide-react'
 import { useT } from '../../../i18n/context'
 import { useResearchStore } from '../../../store/researchStore'
-import { jobIsRunningInBackground, type ResearchJob, type ResearchPrompt } from '../../../lib/researchMode'
+import { jobIsRunningInBackground, runLabel, stepForPhase, type ResearchJob, type ResearchPrompt } from '../../../lib/researchMode'
 import { OutOfScopeCard } from './OutOfScopeCard'
 import { ResearchModeBanner } from './ResearchComposerStatus'
 import { ResearchPromptCard } from './ResearchPromptCard'
 import { ResearchReportCard } from './ResearchReportCard'
+import { STEP_LABEL_KEY } from './steps'
 
 /** Thẻ gợi ý của main: `research_suggest` KHÔNG bật chế độ, chỉ hỏi (§4.5, M-06). */
 export function ResearchSuggestCard({ reason, draftGoal }: { reason: string; draftGoal: string }) {
@@ -56,6 +57,43 @@ function pickPrompt(job: ResearchJob, kinds: ResearchPrompt['kind'][]): Research
 }
 
 /**
+ * Thẻ trạng thái `/research status` (D-4, §4.1): server phát sự kiện `research_run` mang `message`
+ * trạng thái; store giữ sự kiện MỚI nhất, đây là chỗ duy nhất vẽ nó. Đóng thẻ KHÔNG xoá dữ liệu run —
+ * chỉ ẩn câu trạng thái đã đọc.
+ */
+function ResearchStatusCard() {
+  const t = useT()
+  const statusCard = useResearchStore((s) => s.statusCard)
+  const dismiss = useResearchStore((s) => s.dismissStatusCard)
+  if (!statusCard) return null
+  const phaseLabel = statusCard.phase ? t(STEP_LABEL_KEY[stepForPhase(statusCard.phase)]) : ''
+  return (
+    <section
+      data-testid="research-status-card"
+      className="rounded-lg border border-brand/30 bg-brand/5 p-2 text-[11px] text-brand"
+    >
+      <header className="flex items-center gap-1.5">
+        <BrainCircuit className="size-3" />
+        <span className="font-medium">{t('research.statusCardTitle')}</span>
+        {statusCard.researchId && <span className="font-mono text-[10px] text-muted">{runLabel(statusCard.researchId)}</span>}
+        <button
+          type="button"
+          data-testid="research-status-card-dismiss"
+          onClick={dismiss}
+          className="ml-auto rounded border border-line px-1.5 py-0.5 text-[10px] text-muted transition hover:text-fg cursor-pointer"
+        >
+          {t('research.statusCardDismiss')}
+        </button>
+      </header>
+      {/* `message` là câu trạng thái của server ("R1 · researching · pha searching") — in nguyên văn. */}
+      <p className="mt-0.5 text-fg">{statusCard.message}</p>
+      {phaseLabel && <p className="mt-0.5 text-muted">{phaseLabel}</p>}
+      {statusCard.background && <p className="mt-0.5 text-muted">{t('research.backgroundRunning')}</p>}
+    </section>
+  )
+}
+
+/**
  * Khối thẻ trong hội thoại của phiên đang mở. Chỉ vẽ khi có việc để nói; không tốn chỗ khi rảnh.
  */
 export function ResearchConversationCards({
@@ -66,6 +104,7 @@ export function ResearchConversationCards({
 }) {
   const mode = useResearchStore((s) => s.mode)
   const jobs = useResearchStore((s) => s.jobs)
+  const statusCard = useResearchStore((s) => s.statusCard)
 
   const foreground = jobs.find((job) => job.researchId === mode.activeRunId) ?? jobs.find((job) => !jobIsRunningInBackground(job))
   const background = jobs.find(jobIsRunningInBackground)
@@ -91,10 +130,12 @@ export function ResearchConversationCards({
     }
   }
 
-  if (blocks.length === 0 && !suggest && !mode.on) return null
+  if (blocks.length === 0 && !suggest && !mode.on && !statusCard) return null
   return (
     <div className="space-y-2 pb-1" data-testid="research-conversation-cards">
       <ResearchModeBanner />
+      {/* D-4: thẻ `/research status` đứng ĐẦU, ngay sau dải chế độ — nó là câu trả lời cho lệnh vừa gõ. */}
+      <ResearchStatusCard />
       {blocks.map((block) => block.node)}
       {suggest && <ResearchSuggestCard reason={suggest.reason} draftGoal={suggest.draftGoal} />}
     </div>

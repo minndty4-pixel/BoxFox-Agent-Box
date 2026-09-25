@@ -13,10 +13,14 @@ import {
   activeJob,
   jobIsActive,
   jobIsRunningInBackground,
+  jobIsSuspendable,
+  jobStatusKey,
+  jobStatusTone,
   runLabel,
   stepForPhase,
   type ResearchEvidenceRow,
   type ResearchJob,
+  type ResearchStatusTone,
 } from '../../lib/researchMode'
 import { formatClock } from './research/format'
 import { ResearchPromptCard } from './research/ResearchPromptCard'
@@ -106,15 +110,28 @@ function EvidenceRow({ row }: { row: ResearchEvidenceRow }) {
   )
 }
 
+/** Sắc thái badge trạng thái (khớp `jobStatusTone`) — dùng chung cho header của panel. */
+const STATUS_TONE_CLASS: Record<ResearchStatusTone, string> = {
+  warn: 'bg-amber-500/15 text-amber-300',
+  brand: 'bg-brand/15 text-brand',
+  muted: 'bg-zinc-500/15 text-muted',
+  done: 'bg-emerald-500/15 text-emerald-300',
+}
+
 function JobHeader({ job }: { job: ResearchJob }) {
   const t = useT()
   const updateJob = useResearchStore((s) => s.updateJob)
+  const suspendable = jobIsSuspendable(job)
   return (
     <header className="mb-2 rounded-lg border border-line bg-panel p-2">
       <div className="flex flex-wrap items-center gap-2">
         <h2 className="text-sm font-semibold text-fg">{job.goal || t('research.name')}</h2>
-        <span className="rounded border border-line px-1 py-px text-[10px] text-muted">
-          {job.status === 'needs_user' ? t('research.statusNeedsUser') : jobIsActive(job) ? t('research.statusRunning') : t('research.statusDone')}
+        <span
+          data-testid="research-status-badge"
+          data-status={job.status}
+          className={`rounded px-1 py-px text-[10px] font-medium ${STATUS_TONE_CLASS[jobStatusTone(job)]}`}
+        >
+          {t(jobStatusKey(job))}
         </span>
         <span className="ml-auto font-mono text-[10px] text-muted">
           {formatClock(job.usedSeconds)} / {formatClock(job.budgetSeconds)}
@@ -126,14 +143,27 @@ function JobHeader({ job }: { job: ResearchJob }) {
       </p>
       {jobIsActive(job) && (
         <div className="mt-1 flex gap-1.5">
-          <button
-            type="button"
-            data-testid="research-panel-pause"
-            onClick={() => void updateJob(job.researchId, { action: 'pause', revision: job.revision })}
-            className="rounded border border-line px-1.5 py-0.5 text-[11px] text-muted transition hover:text-fg cursor-pointer"
-          >
-            {t('research.pauseRun')}
-          </button>
+          {/* Run tạm dừng/dở dang: nút "Tạm dừng" vô nghĩa và nút "Tiếp tục" là đường DUY NHẤT quay lại
+              (`PATCH … {action:'resume'}`); Huỷ vẫn còn. */}
+          {suspendable ? (
+            <button
+              type="button"
+              data-testid="research-panel-resume"
+              onClick={() => void updateJob(job.researchId, { action: 'resume', revision: job.revision })}
+              className="rounded border border-brand/40 bg-brand/10 px-1.5 py-0.5 text-[11px] text-brand transition hover:bg-brand/20 cursor-pointer"
+            >
+              {t('research.resumeRun')}
+            </button>
+          ) : (
+            <button
+              type="button"
+              data-testid="research-panel-pause"
+              onClick={() => void updateJob(job.researchId, { action: 'pause', revision: job.revision })}
+              className="rounded border border-line px-1.5 py-0.5 text-[11px] text-muted transition hover:text-fg cursor-pointer"
+            >
+              {t('research.pauseRun')}
+            </button>
+          )}
           <button
             type="button"
             data-testid="research-panel-cancel"

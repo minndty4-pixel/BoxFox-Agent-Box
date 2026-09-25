@@ -9,6 +9,8 @@
  * `/code/.plans/v2-research-mode-overhaul.md` §5.12.
  */
 
+import type { TKey } from '../i18n/context'
+
 // ── Đọc giá trị an toàn ────────────────────────────────────────────────────
 
 export type Json = Record<string, unknown>
@@ -498,6 +500,56 @@ export function jobIsActive(job: ResearchJob): boolean {
 
 export function jobIsRunningInBackground(job: ResearchJob): boolean {
   return job.background && jobIsActive(job)
+}
+
+/**
+ * Sắc thái hiển thị của trạng thái run — nguồn DUY NHẤT cho màu badge ở mọi chỗ vẽ trạng thái.
+ *
+ * `warn` (chờ người dùng) · `brand` (đang chạy) · `muted` (tạm dừng/dở dang/đã huỷ) · `done` (xong).
+ */
+export type ResearchStatusTone = 'warn' | 'brand' | 'muted' | 'done'
+
+/** Run đang tạm dừng hoặc dở dang — hiện nút "Tiếp tục" thay cho "Tạm dừng". */
+export function jobIsSuspendable(job: ResearchJob): boolean {
+  return job.status === 'paused' || job.status === 'partial'
+}
+
+/**
+ * Trạng thái run → khoá i18n. Mọi chỗ vẽ trạng thái PHẢI đi qua đây: trước đây `ResearchPanel` và
+ * `ScopeCard` tự viết `jobIsActive ? statusRunning : statusDone`, nên một run `paused`/`partial` bị
+ * vẽ nhầm thành ĐANG CHẠY (D-3).
+ */
+export function jobStatusKey(job: ResearchJob): TKey {
+  switch (job.status) {
+    case 'needs_user':
+      return 'research.statusNeedsUser'
+    case 'paused':
+      return 'research.statusPaused'
+    case 'partial':
+      return 'research.statusPartial'
+    case 'cancelled':
+      return 'research.statusCancelled'
+    case 'completed':
+      return 'research.statusDone'
+    default:
+      return 'research.statusRunning'
+  }
+}
+
+/** Trạng thái run → sắc thái badge (đi kèm `jobStatusKey`). */
+export function jobStatusTone(job: ResearchJob): ResearchStatusTone {
+  switch (job.status) {
+    case 'needs_user':
+      return 'warn'
+    case 'paused':
+    case 'partial':
+    case 'cancelled':
+      return 'muted'
+    case 'completed':
+      return 'done'
+    default:
+      return 'brand'
+  }
 }
 
 function readCoverage(value: unknown): ResearchCoverage {

@@ -21,9 +21,11 @@ import { ResearchPromptCard } from './ResearchPromptCard'
 import { ScopeCard } from './ScopeCard'
 import { ResearchComposerStatus } from './ResearchComposerStatus'
 import { ResearchConversationCards } from './ResearchConversationCards'
+import { ResearchReportCard } from './ResearchReportCard'
 import { ResearchToggle } from './ResearchToggle'
 import { RunTimeline } from './RunTimeline'
 import { ResearchPanel } from '../ResearchPanel'
+import { useHarnessChatStore } from '../../../store/harnessChatStore'
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -194,6 +196,7 @@ beforeEach(() => {
     error: null,
     lastEventSeq: 0,
     exitChoice: null,
+    statusCard: null,
   })
 })
 
@@ -202,6 +205,7 @@ afterEach(() => {
   roots = []
   document.body.innerHTML = ''
   useUiStore.setState({ tabIntentTargets: {} })
+  useHarnessChatStore.setState({ sessions: {} })
   vi.unstubAllGlobals()
 })
 
@@ -420,5 +424,110 @@ describe('luồng chế độ Research', () => {
     const done = render(<RunTimeline job={readJob({ ...jobPayload().job, status: 'completed', phase: 'completed' })} />)
     expect(done.querySelector('[data-step="done"]')?.getAttribute('data-active')).toBe('true')
     act(() => { done.remove() })
+  })
+})
+
+/** Thẻ báo cáo hoàn tất kèm hồ sơ — dùng cho D-1/D-5. */
+function completedJob() {
+  return readJob({
+    ...jobPayload().job,
+    status: 'completed',
+    dossier: { relative_path: '.research/x/v3-abc.md', version: 3, gate: 'pass', critique: '' },
+  })
+}
+
+describe('sửa lỗi vòng kiểm thử trình duyệt (D-1, D-3, D-4, D-5)', () => {
+  it('D-1: nút "Cập nhật" của thẻ báo cáo có `data-testid`', () => {
+    const host = render(<ResearchReportCard job={completedJob()} />)
+    expect(host.querySelector('[data-testid="research-report-update"]')).toBeTruthy()
+    act(() => { host.remove() })
+  })
+
+  it('D-3: run `paused` hiện ĐÚNG nhãn trạng thái + nút Tiếp tục ở panel và thẻ phạm vi', async () => {
+    const api = stubApi()
+    const paused = readJob({ ...jobPayload().job, status: 'paused', revision: 7 })
+    useResearchStore.setState({ jobs: [paused], mode: { ...RESEARCH_MODE_OFF, on: true, activeRunId: 'R1' } })
+
+    const panel = render(<ResearchPanel />)
+    const badge = panel.querySelector('[data-testid="research-status-badge"]')
+    expect(badge?.getAttribute('data-status')).toBe('paused')
+    expect(badge?.textContent).toContain('Paused')
+    // Tạm dừng rồi thì nút "Tạm dừng" vô nghĩa — chỉ còn "Tiếp tục" và "Hủy".
+    expect(panel.querySelector('[data-testid="research-panel-pause"]')).toBeNull()
+    await act(async () => {
+      panel.querySelector<HTMLButtonElement>('[data-testid="research-panel-resume"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    const panelResume = api.calls.find((call) => call.body?.action === 'resume')
+    expect(panelResume?.body?.revision).toBe(7)
+    act(() => { panel.remove() })
+
+    // Thẻ phạm vi: cùng nhãn, kèm dòng hỏi "Tiếp tục run X?" và nút resume gửi cùng patch.
+    const scopeHost = render(<ScopeCard job={paused} scope={{ ...scopePayload } as never} />)
+    expect(scopeHost.querySelector('[data-testid="research-status-badge"]')?.getAttribute('data-status')).toBe('paused')
+    expect(scopeHost.querySelector('[data-testid="research-scope-resume-ask"]')?.textContent).toContain('Run R-R1 is paused')
+    expect(scopeHost.querySelector('[data-testid="research-run-pause"]')).toBeNull()
+    await act(async () => {
+      scopeHost.querySelector<HTMLButtonElement>('[data-testid="research-scope-resume"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(api.calls.filter((call) => call.body?.action === 'resume')).toHaveLength(2)
+    act(() => { scopeHost.remove() })
+  })
+
+  it('D-4: thẻ `/research status` vẽ `message` và nút × gỡ nó', () => {
+    useResearchStore.setState({
+      sessionId: 's1',
+      mode: { ...RESEARCH_MODE_OFF, on: false },
+      statusCard: {
+        researchId: 'R1', message: 'R1 · researching · pha searching', status: 'researching',
+        phase: 'searching', background: false, seq: 7,
+      },
+    })
+    const host = render(<ResearchConversationCards suggest={null} />)
+    const card = host.querySelector('[data-testid="research-status-card"]')
+    expect(card).toBeTruthy()
+    expect(card?.textContent).toContain('pha searching')
+    expect(card?.textContent).toContain('Search')
+    click(host, '[data-testid="research-status-card-dismiss"]')
+    expect(host.querySelector('[data-testid="research-status-card"]')).toBeNull()
+    expect(useResearchStore.getState().statusCard).toBeNull()
+    act(() => { host.remove() })
+  })
+
+  it('D-5: "Dùng cho plan" tắt mode rồi gửi lượt main đúng nội dung', async () => {
+    // Run đã xong ⇒ không có lời hỏi thoát, PUT trả về ngay.
+    const api = stubApi({ modeResponse: () => jsonResponse({ mode: { on: false, activeRunId: 'R1', revision: 5 } }) })
+    useHarnessChatStore.setState({ sessions: { s1: { id: 'sid-1', status: 'idle', events: [], error: null } } })
+    useResearchStore.setState({ sessionId: 's1', mode: { ...RESEARCH_MODE_OFF, on: true, activeRunId: 'R1' } })
+
+    const host = render(<ResearchReportCard job={completedJob()} />)
+    const button = host.querySelector<HTMLButtonElement>('[data-testid="research-report-use-for-plan"]')!
+    expect(button.disabled).toBe(false)
+    await act(async () => {
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    const modeCall = api.calls.find((call) => call.url.includes('/research-mode'))
+    expect(modeCall?.body).toMatchObject({ on: false })
+    const turnCall = api.calls.find((call) => call.url.includes('/turns'))
+    expect(turnCall?.body?.prompt).toContain('R1')
+    expect(turnCall?.body?.prompt).toContain('v3')
+    act(() => { host.remove() })
+  })
+
+  it('D-5: server đòi chọn số phận run (409) ⇒ KHÔNG gửi lượt plan', async () => {
+    // Mặc định của `stubApi`: tắt mode khi chưa có `exitChoice` ⇒ 409 kèm lời hỏi thoát.
+    const api = stubApi()
+    useHarnessChatStore.setState({ sessions: { s1: { id: 'sid-1', status: 'idle', events: [], error: null } } })
+    useResearchStore.setState({ sessionId: 's1', mode: { ...RESEARCH_MODE_OFF, on: true, activeRunId: 'R1' } })
+
+    const host = render(<ResearchReportCard job={completedJob()} />)
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="research-report-use-for-plan"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(api.calls.some((call) => call.url.includes('/research-mode'))).toBe(true)
+    expect(api.calls.some((call) => call.url.includes('/turns'))).toBe(false)
+    expect(useResearchStore.getState().exitChoice).not.toBeNull()
+    act(() => { host.remove() })
   })
 })

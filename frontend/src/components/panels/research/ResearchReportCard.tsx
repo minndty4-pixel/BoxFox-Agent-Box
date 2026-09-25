@@ -5,11 +5,17 @@
  * dùng đã tắt chế độ. Đường dẫn hồ sơ in ĐÚNG dạng `.research/<slug>-<yyyymmdd-hhmm>/v<N>-<id>.md`
  * do server trả về — không tự dựng lại (bảng 4.8).
  *
- * "Dùng cho plan" chuyển sang tab Kế hoạch với ngữ cảnh run; các nút Đào sâu/Cập nhật đi qua
- * `PATCH /research/jobs/{id}` (`deepen`/`refresh`, hợp đồng §5.12).
+ * "Dùng cho plan" (§4.5 + §5.10): TẮT chế độ (nếu đang bật), rồi gửi MỘT lượt main đúng nội dung
+ * "Lập plan dựa trên báo cáo research <id> v<N>". Kế hoạch có nêu `researchDependencies` trong siêu
+ * dữ liệu lượt, nhưng tuyến `POST /sessions/{sid}/turns` không có kênh siêu dữ liệu; khối bàn giao
+ * research→main được chèn vào lượt main kế tiếp đã mang sẵn researchId/version/hash và dặn mô hình
+ * truyền `researchDependencies` cho `write_plan`. Vì vậy KHÔNG bịa thêm trường siêu dữ liệu, KHÔNG
+ * gọi `showTab`. Các nút Đào sâu/Cập nhật đi qua `PATCH /research/jobs/{id}` (`deepen`/`refresh`, §5.12).
  */
+import { useState } from 'react'
 import { useT } from '../../../i18n/context'
 import { useUiStore } from '../../../store/uiStore'
+import { useHarnessChatStore } from '../../../store/harnessChatStore'
 import { useResearchStore } from '../../../store/researchStore'
 import { runLabel, type ResearchJob } from '../../../lib/researchMode'
 import { formatClock } from './format'
@@ -19,6 +25,8 @@ export function ResearchReportCard({ job, inBackground }: { job: ResearchJob; in
   const t = useT()
   const showTab = useUiStore((s) => s.showTab)
   const updateJob = useResearchStore((s) => s.updateJob)
+  // Trong khi gửi lượt plan thì khoá nút: gửi hai lần mở hai lượt main cùng nội dung.
+  const [busy, setBusy] = useState(false)
 
   const dossier = job.dossier
   if (!dossier && job.status !== 'completed') return null
@@ -26,6 +34,29 @@ export function ResearchReportCard({ job, inBackground }: { job: ResearchJob; in
   const incomplete = latestReview?.verdict === 'revise' || latestReview?.verdict === 'rejected'
   // `deepen` bắt buộc có đích: facet của run, hoặc câu hỏi. Không có đích thì không gửi (server 400).
   const deepenTarget = job.coverage.facets[0]?.id ?? job.questions[0]?.id ?? ''
+
+  /**
+   * Nút "Dùng cho plan" (§4.5 + §5.10): (1) tắt chế độ nếu đang bật; (2) gửi lượt main. Khi server
+   * đòi người dùng chọn số phận run (`exit-choice`) hoặc PUT hỏng (`error`) thì DỪNG — thẻ thoát đã
+   * sở hữu lựa chọn của người dùng, tuyệt đối không gửi lượt trong trường hợp đó.
+   */
+  async function useForPlan() {
+    if (!dossier || busy) return
+    setBusy(true)
+    try {
+      const store = useResearchStore.getState()
+      if (store.mode.on) {
+        const outcome = await store.setMode(false, 'toggle')
+        if (outcome === 'exit-choice' || outcome === 'error') return
+      }
+      const sessionId = useResearchStore.getState().sessionId
+      if (!sessionId) return
+      const text = t('research.useForPlanTurn', { id: job.researchId, version: dossier.version })
+      await useHarnessChatStore.getState().send(sessionId, text, null)
+    } finally {
+      setBusy(false)
+    }
+  }
 
   return (
     <section
@@ -100,8 +131,10 @@ export function ResearchReportCard({ job, inBackground }: { job: ResearchJob; in
         <button
           type="button"
           data-testid="research-report-use-for-plan"
-          onClick={() => showTab('plan', { researchId: job.researchId })}
-          className="rounded bg-zinc-100 px-2 py-0.5 text-zinc-900 transition hover:bg-white cursor-pointer"
+          data-busy={busy ? 'true' : 'false'}
+          disabled={!dossier || busy}
+          onClick={() => void useForPlan()}
+          className="rounded bg-zinc-100 px-2 py-0.5 text-zinc-900 transition hover:bg-white disabled:opacity-40 cursor-pointer"
         >
           {t('research.reportUseForPlan')}
         </button>
@@ -119,6 +152,7 @@ export function ResearchReportCard({ job, inBackground }: { job: ResearchJob; in
         </button>
         <button
           type="button"
+          data-testid="research-report-update"
           onClick={() => void updateJob(job.researchId, { action: 'refresh', revision: job.revision })}
           className="rounded border border-line px-2 py-0.5 text-muted transition hover:text-fg cursor-pointer"
         >

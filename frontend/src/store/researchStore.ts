@@ -9,7 +9,9 @@
 import { create } from 'zustand'
 import {
   activeJob,
+  asBool,
   asRecord,
+  asString,
   isResearchEvent,
   readJobs,
   readJob,
@@ -43,6 +45,12 @@ interface ResearchState {
   lastEventSeq: number
   /** Lời hỏi 409 khi tắt mode lúc run còn chạy: có thì phải neo thẻ vào nút Research. */
   exitChoice: ResearchExitChoice | null
+  /**
+   * D-4: thẻ trạng thái của `/research status`. Server phát sự kiện `research_run` mang `message`
+   * nhưng giao diện KHÔNG có chỗ nào đọc ⇒ lệnh đúng ở tầng server mà im lặng với người dùng.
+   * `null` khi chưa có (hoặc sau khi người dùng đóng).
+   */
+  statusCard: ResearchStatusCard | null
 
   sync: (sessionId: string, config: unknown, events: readonly { seq: number; type: string; data: Record<string, unknown> }[]) => void
   refresh: () => Promise<void>
@@ -51,9 +59,45 @@ interface ResearchState {
   setMode: (on: boolean, by: 'toggle' | 'command') => Promise<'ok' | 'exit-choice' | 'error'>
   resolveExit: (choice: 'pause' | 'background') => Promise<void>
   clearExitChoice: () => void
+  /** Đóng thẻ `/research status` (sự kiện cũ vẫn còn trên luồng, không tự mọc lại). */
+  dismissStatusCard: () => void
   answerPrompt: (promptId: string, body: ResearchPromptAnswerBody) => Promise<boolean>
   dismissPrompt: (promptId: string) => Promise<void>
   updateJob: (researchId: string, body: { action: string; revision?: number } & Record<string, unknown>) => Promise<boolean>
+}
+
+/** Dữ liệu thẻ trạng thái suy từ sự kiện `research_run` của `/research status`. */
+export interface ResearchStatusCard {
+  researchId: string
+  message: string
+  status: string
+  phase: string
+  background: boolean
+  /** `seq` của sự kiện nguồn — để biết thẻ này đã cũ hay chưa. */
+  seq: number
+}
+
+/** Sự kiện `research_run` kiểu `status` mới nhất có `message` ⇒ thẻ trạng thái; không có ⇒ `null`. */
+function statusCardFrom(events: readonly { seq: number; type: string; data: Record<string, unknown> }[]): ResearchStatusCard | null {
+  let newest: ResearchStatusCard | null = null
+  for (const event of events) {
+    if (event.type !== 'research_run') continue
+    const data = asRecord(event.data)
+    if (asString(data.kind) !== 'status') continue
+    const message = asString(data.message)
+    if (!message) continue
+    // Giữ sự kiện có `seq` lớn nhất: nhiều lần `/research status` trong một vòng thì thẻ mới nhất thắng.
+    if (newest && event.seq <= newest.seq) continue
+    newest = {
+      researchId: asString(data.researchId),
+      message,
+      status: asString(data.status),
+      phase: asString(data.phase),
+      background: asBool(data.background),
+      seq: event.seq,
+    }
+  }
+  return newest
 }
 
 function message(error: unknown): string {
@@ -88,19 +132,26 @@ export const useResearchStore = create<ResearchState>((set, get) => ({
   error: null,
   lastEventSeq: 0,
   exitChoice: null,
+  statusCard: null,
 
   sync: (sessionId, config, events) => {
     if (!sessionId) {
-      set({ sessionId: '', mode: RESEARCH_MODE_OFF, jobs: [], detail: null, detailId: '', lastEventSeq: 0, exitChoice: null })
+      set({ sessionId: '', mode: RESEARCH_MODE_OFF, jobs: [], detail: null, detailId: '', lastEventSeq: 0, exitChoice: null, statusCard: null })
       return
     }
     const mode = readResearchMode(config)
     const switched = sessionId !== get().sessionId
-    const fresh = events.filter((event) => isResearchEvent(event) && event.seq > get().lastEventSeq)
+    // Đổi phiên ⇒ `seq` bắt đầu lại từ 0, nên mốc so sánh cũng phải là 0 (nếu không, sự kiện đầu
+    // của phiên mới mang `seq` nhỏ hơn `lastEventSeq` của phiên cũ sẽ bị coi là "cũ").
+    const baseline = switched ? 0 : get().lastEventSeq
+    const fresh = events.filter((event) => isResearchEvent(event) && event.seq > baseline)
     const lastEventSeq = events.reduce((max, event) => Math.max(max, event.seq), switched ? 0 : get().lastEventSeq)
     const modeChanged = switched || mode.on !== get().mode.on || mode.activeRunId !== get().mode.activeRunId
       || mode.revision !== get().mode.revision
-    set({ sessionId, mode, lastEventSeq })
+    // D-4: chỉ nhận sự kiện MỚI. Đổi phiên thì xoá thẻ cũ; còn lại giữ thẻ cho tới khi người dùng
+    // đóng (sự kiện `research_run` đã nằm trong `events` nên vòng sau nó không còn "mới" nữa).
+    const statusCard = statusCardFrom(fresh) ?? (switched ? null : get().statusCard)
+    set({ sessionId, mode, lastEventSeq, statusCard })
     if (switched || fresh.length > 0 || modeChanged) void get().refresh()
   },
 
@@ -195,6 +246,8 @@ export const useResearchStore = create<ResearchState>((set, get) => ({
   },
 
   clearExitChoice: () => set({ exitChoice: null }),
+
+  dismissStatusCard: () => set({ statusCard: null }),
 
   answerPrompt: async (promptId, body) => {
     try {
