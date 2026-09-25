@@ -87,8 +87,10 @@ def test_delegate_task_schema_states_the_result_shape_and_stays_backward_compati
     schema = next(s for s in SCHEMAS if s['function']['name'] == 'delegate_task')['function']
     properties = schema['parameters']['properties']
     # T6 (vòng 22) thêm `wait` (sinh con không chặn) và `deliverTo` (con giao kết quả cho ai).
+    # P3 (§5.9): thêm `taskKind` (kiểu việc của nhánh) và `facetId` (hướng bao phủ). Cả hai
+    # đều KHÔNG bắt buộc, nên lệnh gọi cũ `role`/`goal` đi nguyên.
     assert set(properties) == {'role', 'goal', 'context', 'expect', 'wait', 'deliverTo',
-                               'reviewTarget', 'questionId'}
+                               'reviewTarget', 'questionId', 'taskKind', 'facetId'}
     assert properties['wait']['type'] == 'boolean' and properties['deliverTo']['type'] == 'array'
     assert schema['parameters']['required'] == ['role', 'goal'], \
         'existing callers send role/goal/context only: nothing new may become required'

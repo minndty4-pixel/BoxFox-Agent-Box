@@ -102,7 +102,10 @@ def test_each_specialist_policy_and_lineage(tmp_path, role):
         child = store.get(event['data']['sessionId'])
         assert child['parent_id'] == s['id'] and child['role'] == role
         assert child['status'] == 'completed'
-        assert set(child['config']['tools']) <= set(s['config']['tools'])
+        # Con không được vượt quyền cha, TRỪ những đường ghi CỐ Ý chỉ dành cho con mà
+        # orchestrator không giữ (`claim_assess` của research-review, `research_branch_report`
+        # của research — xem `roles.allowed_tools`).
+        assert set(child['config']['tools']) - {'research_branch_report'} <= set(s['config']['tools'])
         assert 'delegate_task' not in child['config']['tools']
         assert ROLES[role].instructions in child['messages'][0]['content']
         assert any(m['role'] == 'tool' and 'child evidence' in m['content'] for m in store.get(s['id'])['messages'])

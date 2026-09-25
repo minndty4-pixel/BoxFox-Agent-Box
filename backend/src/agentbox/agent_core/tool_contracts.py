@@ -208,6 +208,20 @@ SCHEMAS = [
                                     'must show, which sources). The child must return exactly this.'},
           'questionId': {'type': 'string', 'description': 'For a new-format research job, the question id '
                          'from research_brief/research_status that this branch will answer.'},
+          'taskKind': {'type': 'string',
+                       'enum': ['branch', 'deep-read', 'counter', 'critique', 'evidence', 'coverage'],
+                       'description': 'P3: WHAT KIND of branch this is, when role is research or '
+                                      'research-review. `branch` (default) is an ordinary line of '
+                                      'enquiry; `deep-read` extracts full fields from a few pillar '
+                                      'sources; `counter` hunts contrary evidence; `critique`, '
+                                      '`evidence` and `coverage` are the three review modes. An '
+                                      'unknown value is refused (RESEARCH_TASK_KIND_INVALID) instead '
+                                      'of being quietly treated as `branch`. It does not widen the '
+                                      'role tools: the runtime builds the child brief from the scope '
+                                      'card, so you do not restate requirements here.'},
+          'facetId': {'type': 'string', 'description': 'P3: the coverage-map facet (direction) this '
+                        'branch explores, so its rows, claims and coverage land on the right entry '
+                        'of the map. Leave it out when the branch is not tied to one direction.'},
           'reviewTarget': {'type': 'object', 'description': 'Required for research-review or plan-review: '
                            '{kind:"research", researchId, version, mode:"evidence"|"critique"} '
                            'or {kind:"plan", identity, version}. '
@@ -323,8 +337,40 @@ SCHEMAS = [
           'profile': {'type': 'string', 'description': 'Profile key: law, health, finance, paper, vendor-doc, '
                                                        'repo, price, competitor or users.'},
           'tables': {'type': 'array', 'items': {'type': 'object', 'properties': {'name': STRING, 'markdown': STRING}}},
-          'review': STRING, 'critique': STRING, 'rows': {'type': 'array', 'items': STRING}},
+          'review': STRING, 'critique': STRING, 'rows': {'type': 'array', 'items': STRING},
+          'report': {'type': 'object', 'description': 'P3: the machine-readable sidecar of this '
+                     'dossier version — modules present, sections written, claims used with their '
+                     'confidence and cap, and the unexplored directions. The runtime validates it '
+                     'against the ledger and the coverage map and refuses a dossier whose report '
+                     'disagrees with them; leave it out and the dossier is judged by its markdown '
+                     'alone.'}},
          ['researchId', 'markdown', 'level']),
+    tool('research_branch_report',
+         'P3: a research BRANCH hands work back in structure instead of prose. Records ledger rows '
+         '(each with the exact excerpt you read), the claims those rows support, the coverage-map '
+         'facet state and blocked leads in ONE call, so the parent can merge them without re-reading '
+         'your summary. Only a `research` child holds this tool; the confidence cap of every claim '
+         'is computed from the ledger by the harness, and you may only lower a level, never raise it '
+         'above the cap.',
+         {'researchId': STRING, 'questionId': STRING, 'facetId': STRING,
+          'rows': {'type': 'array', 'items': {'type': 'object', 'properties': {
+              'claim': STRING, 'url': STRING, 'excerpt': STRING, 'type': STRING,
+              'publishedAt': STRING, 'sourceKind': STRING, 'accessLevel': STRING,
+              'origin': STRING, 'payload': {'type': 'object'}}}},
+          'claims': {'type': 'array', 'items': {'type': 'object', 'properties': {
+              'text': STRING, 'rowIds': {'type': 'array', 'items': STRING},
+              'claimType': STRING,
+              'stanceOrigin': {'type': 'string', 'enum': ['source-stated', 'agent-inference',
+                                                          'agent-proposal']},
+              'confidence': {'type': 'string', 'enum': ['high', 'medium', 'low', 'unknown']},
+              'facetId': STRING, 'conflict': {'type': 'boolean'}}, 'required': ['text']}},
+          'status': {'type': 'string', 'enum': ['unexplored', 'searched', 'saturated', 'thin',
+                                               'blocked', 'out-of-scope']},
+          'label': STRING, 'kind': STRING,
+          'newTerms': {'type': 'array', 'items': STRING},
+          'blocked': {'type': 'object', 'properties': {'url': STRING, 'reason': STRING}},
+          'leads': {'type': 'array', 'items': STRING}, 'note': STRING},
+         ['rows', 'claims']),
     tool('research_brief',
          'Open a durable research job BEFORE spawning branches. Set the decision goal, important questions, '
          'methods, output and aggregate budget; mixed methods are allowed. The tier guides child limits, and '
@@ -365,6 +411,13 @@ SCHEMAS = [
           'verdict': {'type': 'string', 'enum': ['ok', 'revise']},
           'issues': {'type': 'array', 'items': {'type': 'object', 'properties': {
               'severity': {'type': 'string', 'enum': ['high', 'medium', 'low']},
+              'kind': {'type': 'string',
+                       'enum': ['unsupported', 'misattributed', 'outdated', 'missing-direction',
+                                'counter-evidence', 'reasoning', 'fit', 'unlabeled-assumption'],
+                       'description': 'P3: WHICH class of defect this finding is, so the harness can '
+                                      'count them and label a dossier with `bao phủ chưa đủ` when a '
+                                      'high missing-direction finding is left unhandled. Optional: a '
+                                      'finding without a kind keeps the old shape.'},
               'text': STRING, 'fix': STRING}, 'required': ['severity', 'text']}},
           'summary': STRING},
          ['researchId', 'version', 'verdict']),

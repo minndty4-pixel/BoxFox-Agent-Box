@@ -24,8 +24,13 @@ SOURCE_TOOLS = frozenset({'source_add', 'source_list'})
 #: Vai phản biện ĐỌC sổ + trạng thái việc (iface.md §1: `source_list`, `source_verify`,
 #: `research_status`) — không công cụ nào ở đây ghi được gì.
 SOURCE_READ = frozenset({'source_list', 'source_verify', 'research_status'})
+# P3 (§5.9): đường TRẢ BÀI có cấu trúc của một nhánh con — dòng sổ, nhận định đã gắn trần, trạng thái facet và
+# chỗ bị chặn trong MỘT lượt gọi. Công cụ này ở ĐÚNG vai `research`; vai `research-review` vẫn chỉ-đọc (nó không được gieo
+# bằng chứng cho hồ sơ nó chấm), và orchestrator không có (hồ sơ do main ghi bằng `dossier_write`). Vì orchestrator không giữ nó,
+# `allowed_tools` phải tự thêm lại — cùng khuôn với `claim_assess` của vai `research-review`.
+BRANCH_REPORT = frozenset({'research_branch_report'})
 RESEARCH = READ | {'browser_use', 'web_search', 'web_fetch', 'read_source', 'paper_citations'} \
-    | SOURCE_TOOLS | SOURCE_READ
+    | SOURCE_TOOLS | SOURCE_READ | BRANCH_REPORT
 
 
 @dataclass(frozen=True)
@@ -163,7 +168,8 @@ Operational Protocol:
    owner supplied. The harness assigns your row ids (r1, r2, …).
 7. You Cannot Write Files: your dossier is written by the main agent from your ledger rows, so your answer must carry the
    conclusions, the row ids, and the list of places you opened and places you could not open. Do not paste whole pages.
-8. Output Requirement: Return a structured Markdown report with:
+8. Structured Branch Report: when the brief names a branch kind, hand work back with `research_branch_report` instead of prose — one call with your ledger `rows` (each with the exact URL and verbatim excerpt), the `claims` those rows support, the coverage facet's `status`/`newTerms`/`leads`/`blocked` and your `note`. The harness computes each claim's confidence cap from the ledger and stores it; you may only LOWER a declared level, never raise it above the cap, and an agent-inference claim is not a source-stated fact. Requirements come from the scope card in your brief, not from you: never restate, widen or reinterpret them.
+9. Output Requirement: Return a structured Markdown report with:
    ### Verified Facts & Technical Specifications
    ### Primary Sources & Citations (REQUIRED: the exact URL, file path or doc chapter next to each fact, with its row id when you recorded one; "no external source reachable" is a valid citation entry)
    ### Inferences & Working Assumptions
@@ -270,6 +276,10 @@ def allowed_tools(role, parent=None):
             # This reviewer-only assessment is intentionally absent from the
             # orchestrator's own tool set; the child still needs it.
             inherited.add('claim_assess')
+        if role == 'research' and 'source_add' in inherited:
+            # P3: the branch report is a child-only write path, so it is absent
+            # from ORCHESTRATOR_TOOLS and must be added back for the branch.
+            inherited.add('research_branch_report')
         names = names & inherited
     if not peer_mesh_enabled():
         names = set(names) - PEER

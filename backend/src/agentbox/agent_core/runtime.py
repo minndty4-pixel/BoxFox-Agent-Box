@@ -54,7 +54,7 @@ from .limits import (ANSWER_LENGTH_HINT, ANSWER_LENGTH_WARN_CODE, ANSWER_MAX_CHA
                      RESEARCH_PROGRESS_NUDGE_SECONDS, RESEARCH_HARD_CEILING_NOTICE_CODE,
                      WRAP_UP_MAX_TOKENS,
                      WRAP_UP_READ_TOOL_CALLS, WRAP_UP_STEPS_RESERVED, WRAP_UP_TIMEOUT_SECONDS)
-from . import plan_quality, research_runtime
+from . import plan_quality, research_review, research_runtime
 from .plan_quality import check_plan_quality
 from .roles import ROLES, allowed_tools
 from .limits import OWNER_STEER_PREFIX, RESEARCH_NUDGE_PREFIX
@@ -80,7 +80,8 @@ from .limits import (RESEARCH_MODE_ENV, RESEARCH_MODE_MODES, RESEARCH_MODE_DEFAU
                      RESEARCH_JOB_ORIGIN, RESEARCH_JOB_ORIGIN_MAIN, RESEARCH_SCOPE_MAX_QUESTIONS,
                      RESEARCH_EXIT_CHOICES, RESEARCH_CRITIQUE_LABEL,
                      RESEARCH_HANDOFF_BLOCK_MARKER, RESEARCH_HANDOFF_BLOCK_END,
-                     RESEARCH_BACKGROUND_BLOCK_MARKER, RESEARCH_BACKGROUND_BLOCK_END)
+                     RESEARCH_BACKGROUND_BLOCK_MARKER, RESEARCH_BACKGROUND_BLOCK_END,
+                     research_branch_report_enabled)  # P3 (§5.9)
 
 def _env_switch(env_name, modes, default, env=None):
     """Đọc một công tắc `on|off`; giá trị lạ ⇒ mặc định (không bao giờ ném)."""
@@ -4195,6 +4196,9 @@ class HarnessRuntime(RuntimeCommands):
             return await self.research_ledger_tool(session, name, args)
         if name == 'claim_assess':
             return research_runtime.claim_assess(self, session, args)
+        if name == 'research_branch_report':
+            # P3 (§5.9): vỏ mỏng — luật ghi sổ/thẻ nằm ở `research_review`.
+            return research_review.apply_branch_report(self, session, args)
         if name == 'dossier_write':
             return await research_runtime.dossier_write(self, session, args)
         if name == 'research_brief':
@@ -5723,6 +5727,11 @@ class HarnessRuntime(RuntimeCommands):
         goal = args.get('goal', '')
         if not isinstance(goal, str) or not goal.strip():
             raise ValueError('Child goal required')
+        # P3 (§5.9): `taskKind` là kiểu VIỆC của nhánh (không phải vai mới). Giá trị lạ bị TỪ
+        # CHỐI kèm mã `RESEARCH_TASK_KIND_INVALID` thay vì lặng lẽ thành `branch`; thiếu thì
+        # mặc định `branch`. `facetId` ghim nhánh vào một hướng của bản đồ bao phủ.
+        task_kind = research_review.resolve_task_kind(args.get('taskKind'))
+        facet_id = str(args.get('facetId') or '').strip()
         research_question_id = None
         research_cfg = research_runtime.research_config(session)
         if role == 'research' and research_cfg.get('jobMode') == 'v2':
@@ -5813,7 +5822,10 @@ class HarnessRuntime(RuntimeCommands):
                 child['config']['reviewTarget'] = review_target
             if research_question_id:
                 child['config']['researchQuestionId'] = research_question_id
-            if review_target is not None or research_question_id:
+            child['config']['taskKind'] = task_kind
+            if facet_id:
+                child['config']['facetId'] = facet_id
+            if review_target is not None or research_question_id or task_kind or facet_id:
                 self.store.update_config(child['id'], child['config'])
         except BaseException:
             # Một slot rò làm mọi lần sinh con sau của cha này `FANOUT_BUSY` vĩnh viễn.
@@ -5824,7 +5836,19 @@ class HarnessRuntime(RuntimeCommands):
         self.track_child_slot(child['id'], parent_id)
         context_data = str(args.get('context', ''))[:16000] if args.get('context') else ''
         expectation = str(args.get('expect', ''))[:CHILD_EXPECT_MAX_CHARS] if args.get('expect') else ''
-        prompt_parts = [goal]
+        # P3 (§5.9): brief của con do RUNTIME dựng từ `job.state.scope` — mô hình KHÔNG tự viết
+        # yêu cầu. Phần "đã xác nhận" chỉ nhận mục `status='confirmed'` VÀ `source.kind='user'`;
+        # mọi mục còn lại vào phần giả định kèm nhãn. Công tắc `BOXFOX_RESEARCH_BRANCH_REPORT=off`
+        # giữ nguyên hành vi cũ: con chỉ nhận `goal` tự do như trước.
+        branch_brief = None
+        if (role == 'research' and research_cfg.get('jobMode') == 'v2'
+                and research_branch_report_enabled()):
+            scope_job = self.store.research_job(research_cfg.get('researchId'))
+            scope_card = ((scope_job or {}).get('state') or {}).get('scope')
+            branch_brief = research_review.build_child_brief(scope_card, question=goal,
+                                                             task_kind=task_kind)
+        prompt_parts = ([branch_brief['text']] if branch_brief and branch_brief.get('text')
+                        else [goal])
         if review_target is not None:
             prompt_parts.append('Binding from the harness: read the complete file with file_read before '
                                 f'judging it: {review_target["path"]}. This review is only for '
@@ -5872,6 +5896,7 @@ class HarnessRuntime(RuntimeCommands):
             'goal': echo_goal,
             'context': echo_context,
             'prompt': echo_prompt,
+            'taskKind': task_kind,
         })
         try:
             # T3 — `wallMs` đo đúng thời gian CON chạy, không tính lúc xếp hàng chờ slot.
