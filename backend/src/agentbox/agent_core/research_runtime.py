@@ -1367,6 +1367,50 @@ def _changelog_body(rt, research_id, version) -> str:
     return '\n'.join(lines) + '\n'
 
 
+def evidence_rows(rt, sid, research_id, limit=50):
+    """Hàng bằng chứng của MỘT run cho giao diện (§5.12, bảng 4.8) — read-only.
+
+    Cặp (nhận định, đoạn trích, nguồn) của chính run, kèm mức truy cập của đoạn trích, quan hệ đã
+    soát và độ tin cậy trong `research_claim_meta`. Sổ hỏng hay thiếu thì trả `[]`: đường đọc của
+    giao diện không được vỡ vì dữ liệu phụ.
+    """
+    try:
+        rows = list(rt.store.evidence_claims(sid, research_id) or [])
+    except Exception:  # pragma: no cover - phòng khi DB cũ thiếu bảng P2
+        rows = []
+    try:
+        meta = {str(item.get('claimId') or ''): item
+                for item in (rt.store.claim_meta_list(research_id) or [])}
+    except Exception:  # pragma: no cover
+        meta = {}
+    rows.sort(key=lambda item: int(item.get('rowSeq') or 0), reverse=True)
+    out = []
+    for item in rows[:max(1, int(limit))]:
+        claim_id = str(item.get('claimId') or '')
+        declared = meta.get(claim_id) or {}
+        out.append({'rowId': item.get('rowId') or '', 'claimId': claim_id,
+                    'claim': item.get('text') or '', 'url': item.get('url') or '',
+                    'excerpt': item.get('excerpt') or '', 'host': item.get('host') or '',
+                    'origin': item.get('origin') or '', 'tier': int(item.get('tier') or 0),
+                    'status': item.get('status') or '',
+                    'accessLevel': item.get('accessLevel') or 'snippet',
+                    'sourceAccessLevel': item.get('sourceAccessLevel') or '',
+                    'sectionKind': item.get('sectionKind') or '',
+                    'eventDate': item.get('eventDate') or '',
+                    'publishedAt': item.get('publishedAt') or '',
+                    'updatedAt': item.get('updatedAt') or '',
+                    'originCluster': item.get('originCluster') or '',
+                    'sourceKind': item.get('sourceKind') or '',
+                    'relation': item.get('relation') or '',
+                    'confidence': declared.get('confidence') or 'unknown',
+                    'confidenceCap': declared.get('confidenceCap') or 'unknown',
+                    'claimType': declared.get('claimType') or '',
+                    'stanceOrigin': declared.get('stanceOrigin') or '',
+                    'questionId': declared.get('questionId') or '',
+                    'facetId': declared.get('facetId') or ''})
+    return out
+
+
 def _dossier_sidecars(rt, research_id, version, *, report=None, coverage=None, scope=None,
                       job_types=(), extractions=None) -> dict:
     """Tệp phụ của run, TÊN lấy từ `research_report.sidecar_names()` — không chép tay tên nào.

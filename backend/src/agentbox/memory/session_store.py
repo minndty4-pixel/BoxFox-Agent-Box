@@ -1305,7 +1305,13 @@ class SessionStore:
         """
         sql = ('SELECT r.row_id,c.claim_id,c.text,p.passage_id,p.access_level,p.section_kind,'
                'p.event_date,p.excerpt,s.url,s.source_id,l.tier,s.host,s.origin,s.source_kind,s.published_at,'
-               's.updated_at,s.access_level_max,s.origin_cluster,s.research_id '
+               's.updated_at,s.access_level_max,s.origin_cluster,s.research_id,'
+               'l.id AS row_seq,l.status,'
+               # Quan hệ ĐÃ SOÁT của cặp (đoạn trích, nhận định): phán quyết mới nhất của người soát
+               # (`research_assessments`), vì `research_relations` chỉ giữ liên kết chứ không giữ quan hệ.
+               '(SELECT a.relation FROM research_assessments a WHERE a.session_id=r.session_id'
+               ' AND a.passage_id=r.passage_id AND a.claim_id=r.claim_id'
+               ' ORDER BY a.created DESC LIMIT 1) AS judged_relation '
                'FROM research_relations r '
                'JOIN research_claims c ON c.session_id=r.session_id AND c.claim_id=r.claim_id '
                'JOIN research_passages p ON p.session_id=r.session_id AND p.passage_id=r.passage_id '
@@ -1337,7 +1343,12 @@ class SessionStore:
                         'publishedAt': item.get('published_at') or '',
                         'updatedAt': item.get('updated_at') or '',
                         'originCluster': item.get('origin_cluster') or '',
-                        'researchId': item.get('research_id') or ''})
+                        'researchId': item.get('research_id') or '',
+                        # Thứ tự ghi trong sổ (0 khi dòng sổ đã biến mất) — nơi gọi sắp theo thứ tự này
+                        # thay vì so chuỗi `row_id` (`r10` đứng trước `r2` nếu so chuỗi).
+                        'rowSeq': int(item.get('row_seq') or 0),
+                        'status': item.get('status') or '',
+                        'relation': item.get('judged_relation') or ''})
         return out
 
     @staticmethod

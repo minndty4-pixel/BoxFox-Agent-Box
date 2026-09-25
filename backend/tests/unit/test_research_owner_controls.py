@@ -143,6 +143,60 @@ def test_deepen_needs_a_target_and_an_existing_facet(tmp_path):
     assert 'RESEARCH_FACET_UNKNOWN' in str(error.value)
 
 
+# --- bằng chứng theo run (bảng 4.8) ------------------------------------------
+
+def test_the_job_endpoints_return_evidence_rows_of_this_run_only(tmp_path):
+    store = SessionStore(tmp_path / 'sessions.sqlite')
+    job = scope_job(store)
+    sid = job['session_id']
+    mine = store.source_add(sid, {'claim': 'Nhận định của run', 'url': 'https://a.example/x',
+                                  'host': 'a.example', 'tier': 1, 'excerpt': 'x' * 120,
+                                  'published_at': '2026-03-02', 'access_level': 'fulltext-read',
+                                  'origin_cluster': 'a.example', 'research_id': 'RS1'})
+    link = store.evidence_link(sid, mine['rowId'], 'Nhận định của run',
+                               access_level='fulltext-read', research_id='RS1')
+    store.evidence_assess(sid, link['passageId'], link['claimId'], 'reviewer-1', 'hash-1',
+                          'contradicts', 'số liệu ngược chiều')
+    store.source_add(sid, {'claim': 'Nhận định của run khác', 'url': 'https://b.example/y',
+                           'host': 'b.example', 'tier': 2, 'excerpt': 'y' * 120,
+                           'research_id': 'RS2'})
+
+    async def flow():
+        server = TestServer(create_app(FakeRuntime(store)))
+        await server.start_server()
+        try:
+            async with ClientSession() as http:
+                for url in (server.make_url(f'/api/agent/research/jobs?sessionId={sid}'),
+                            server.make_url('/api/agent/research/jobs/RS1')):
+                    answer = await (await http.get(url, headers=HEADERS)).json()
+                    rows = answer['jobs'][0]['evidence'] if 'jobs' in answer \
+                        else answer['evidence']
+                    assert [row['claim'] for row in rows] == ['Nhận định của run']
+                    assert rows[0]['accessLevel'] == 'fulltext-read'
+                    assert rows[0]['publishedAt'] == '2026-03-02'
+                    assert rows[0]['originCluster'] == 'a.example'
+                    assert rows[0]['relation'] == 'contradicts'
+                    assert rows[0]['confidence'] == 'unknown'
+        finally:
+            await server.close()
+
+    asyncio.run(flow())
+
+
+def test_evidence_rows_are_newest_first_and_capped(tmp_path):
+    store = SessionStore(tmp_path / 'sessions.sqlite')
+    job = scope_job(store)
+    sid = job['session_id']
+    for index in range(4):
+        added = store.source_add(sid, {'claim': f'Nhận định {index}',
+                                       'url': f'https://a.example/{index}', 'host': 'a.example',
+                                       'tier': 1, 'excerpt': 'x' * 120, 'research_id': 'RS1'})
+        store.evidence_link(sid, added['rowId'], f'Nhận định {index}', research_id='RS1')
+    rows = research_runtime.evidence_rows(object_with_store(store), sid, 'RS1', limit=3)
+    assert [row['claim'] for row in rows] == ['Nhận định 3', 'Nhận định 2', 'Nhận định 1']
+    assert research_runtime.evidence_rows(object_with_store(store), sid, 'RS-none', limit=5) == []
+
+
 # --- tuyến HTTP mà giao diện gọi -------------------------------------------
 
 def test_the_job_endpoints_accept_scope_and_deepen_and_return_coverage(tmp_path):

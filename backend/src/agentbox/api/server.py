@@ -551,7 +551,10 @@ def create_app(runtime):
             'usedSeconds': runtime.store.research_job_used_seconds(sid, job['research_id']),
             'remainingSeconds': max(0, job['state'].get('budgetSeconds', 0)
                                     - runtime.store.research_job_used_seconds(sid, job['research_id'])),
-            'evidence': runtime.store.source_rows(sid, limit=50, newest_first=True),
+            # Bằng chứng của CHÍNH run (cặp nhận định/đoạn trích/nguồn + mức truy cập + quan hệ đã
+            # soát), không phải cả sổ của phiên: thẻ báo cáo đếm nguồn theo run, dòng thời gian đếm
+            # nguồn theo mức truy cập (bảng 4.8).
+            'evidence': research_runtime.evidence_rows(runtime, sid, job['research_id'], limit=20),
             'evidenceGraph': runtime.store.evidence_graph(sid, limit=50),
             'dependentPlans': runtime.store.research_dependent_plans(job['research_id']),
             'branches': [{**branch, 'questionId':
@@ -726,7 +729,7 @@ def create_app(runtime):
             'questions': state.get('questions') or [],
             'findings': state.get('findings') or [],
             'blockedSources': state.get('blockedSources') or [],
-            'evidence': runtime.store.source_rows(sid, research_id=research_id, limit=50, newest_first=True),
+            'evidence': research_runtime.evidence_rows(runtime, sid, research_id, limit=50),
             'dossier': runtime.store.dossier_latest(research_id),
             'reviews': runtime.store.research_verifications(research_id, limit=10)})
 
