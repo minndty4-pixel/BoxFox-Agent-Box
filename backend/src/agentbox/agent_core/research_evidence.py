@@ -287,11 +287,17 @@ def in_window_support(evidence: Any, *, window_days: int, as_of: Any = None) -> 
 
 def stale_current_claim(claim_type: Any, evidence: Any, *, window_days: int,
                         as_of: Any = None) -> dict:
-    """Nhận định hiện trạng mà **mọi** nguồn đỡ đều ngoài cửa sổ ⇒ lỗi cổng (§5.6)."""
+    """Nhận định hiện trạng mà **mọi** nguồn đỡ đều ngoài cửa sổ ⇒ lỗi cổng (§5.6).
+
+    Cửa sổ chưa khai (`window_days <= 0`) ⇒ KHÔNG có "ngoài cửa sổ" nào để nói: trả về không-cũ.
+    `date_in_window` coi mọi ngày là ngoài cửa sổ khi `window_days <= 0`, nên nếu không chặn ở đây
+    hàm sẽ phán bừa `stale=True` cho người gọi sau (`finding 9`).
+    """
     kind = normalize_claim_type(claim_type)
     support = in_window_support(evidence, window_days=window_days, as_of=as_of)
     counts = support['counts']
-    stale = bool(kind in CURRENT_CLAIM_TYPES and counts['outside'] > 0 and counts['inWindow'] == 0)
+    stale = bool(int(window_days or 0) > 0 and kind in CURRENT_CLAIM_TYPES
+                 and counts['outside'] > 0 and counts['inWindow'] == 0)
     return {'stale': stale, 'rule': 'stale-current-claim' if stale else '',
             'inWindow': counts['inWindow'], 'outside': counts['outside'], 'undated': counts['undated']}
 
@@ -510,18 +516,32 @@ def confidence_cap(claim_type: Any, evidence: Any, *, stance_origin: Any = 'sour
             return _result('medium', 'single-secondary', basis, ['Một nguồn thứ cấp duy nhất.'])
         return _result('medium', 'single-secondary', basis, ['Một nguồn đỡ, chưa đủ hai cụm.'])
     if kind == 'method':
-        if _has_section(rows, ('method', 'methods', 'methodology', 'approach')) and any(
-                normalize_access_level(row.get('accessLevel') or row.get('access_level')) == 'fulltext-read'
-                for row in rows):
+        # §5.7: \"đã đọc mục phương pháp trong toàn văn\" là thuộc tính của MỘT lần đọc, nên mục và
+        # mức truy cập phải nằm trên CÙNG một hàng (một hàng `method` + một hàng full-text khác
+        # KHÔNG đủ — `finding 5`).
+        read = any(
+            _slug(row.get('sectionKind') or row.get('section_kind')) in
+            ('method', 'methods', 'methodology', 'approach')
+            and normalize_access_level(row.get('accessLevel') or row.get('access_level')) == 'fulltext-read'
+            for row in rows)
+        if read:
             return _result('high', 'method-fulltext', basis, ['Đã đọc mục phương pháp trong toàn văn.'])
         if best_access in ('abstract', 'fulltext-available') or _min_tier(rows) <= 2:
             return _result('medium', 'method-abstract', basis, ['Mới có abstract hoặc mô tả cấp cao.'])
         return _result('low', 'method-secondary', basis, ['Mô tả thứ cấp về phương pháp.'])
     if kind == 'benchmark':
         conditions = any(_flag(row, 'recordedConditions', 'recorded_conditions') for row in rows)
-        replicated = any(_flag(row, 'independentReplication', 'independent_replication') for row in rows)
         numbers = _has_section(rows, ('results', 'experiments', 'benchmark', 'table', 'tables'))
-        if conditions and (replicated or clusters >= 2) and numbers:
+        # §5.7: bảng số, điều kiện ghi rõ và mức đọc toàn văn là thuộc tính của CÙNG một lần đọc.
+        # `clusters` là số hạng duy nhất được phép gộp qua nhiều hàng (`finding 5`).
+        read = next((row for row in rows
+                     if _slug(row.get('sectionKind') or row.get('section_kind')) in
+                     ('results', 'experiments', 'benchmark', 'table', 'tables')
+                     and normalize_access_level(row.get('accessLevel') or row.get('access_level'))
+                     == 'fulltext-read'
+                     and _flag(row, 'recordedConditions', 'recorded_conditions')), None)
+        if read is not None and (clusters >= 2 or _flag(read, 'independentReplication',
+                                                        'independent_replication')):
             return _result('high', 'benchmark-conditions+replication', basis,
                            ['Bảng số từ toàn văn, điều kiện ghi rõ, có nguồn độc lập.'])
         if _has_kind(rows, ('blog', 'news', 'forum')):
@@ -534,10 +554,12 @@ def confidence_cap(claim_type: Any, evidence: Any, *, stance_origin: Any = 'sour
                        ['Số liệu đi qua trung gian, không có bảng gốc.'])
     if kind == 'trend':
         support = in_window_support(rows, window_days=window_days, as_of=as_of) if window_days else None
-        inside = support['counts']['inWindow'] if support else len(rows)
+        inside = support['counts']['inWindow'] if support else 0
         survey_seen = any(_flag(row, 'survey', 'isSurvey') for row in rows) or _has_section(
             rows, ('related-work', 'related', 'survey', 'overview'))
-        if inside >= 2 and survey_seen:
+        # Chỉ khi CÓ cửa sổ đo được mới được thưởng \"gần đây\": cửa sổ chưa khai (`window_days = 0`)
+        # không đồng nghĩa mọi hàng đều nằm trong cửa sổ — đó là `finding 3`.
+        if support is not None and inside >= 2 and survey_seen:
             return _result('high', 'trend-window+survey', basis,
                            ['Nhiều cụm gần đây trong cửa sổ và có tổng quan gần.'])
         if clusters >= 2:

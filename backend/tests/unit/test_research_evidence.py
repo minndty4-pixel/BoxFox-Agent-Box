@@ -171,6 +171,15 @@ def test_method_rules_need_the_method_section_in_full_text():
     assert (secondary['cap'], secondary['rule']) == ('low', 'method-secondary')
 
 
+def test_method_full_text_is_a_property_of_the_same_read():
+    """Mục phương pháp ở hàng A và mức toàn văn ở hàng B KHÔNG phải \"đã đọc mục phương pháp\"."""
+    mixed = [entry(claimId='c-section', sectionKind='method', accessLevel='abstract'),
+             entry(claimId='c-read', sectionKind='', accessLevel='fulltext-read')]
+    assert ev.confidence_cap('method', mixed)['rule'] != 'method-fulltext'
+    single = [entry(claimId='c-1', sectionKind='method', accessLevel='fulltext-read')]
+    assert ev.confidence_cap('method', single)['rule'] == 'method-fulltext'
+
+
 def test_benchmark_needs_conditions_and_a_second_source_for_high():
     plain = [entry(tier=1, accessLevel='fulltext-read', sectionKind='results', sourceKind='paper')]
     assert ev.confidence_cap('benchmark', plain)['rule'] == 'benchmark-author-reported'
@@ -179,6 +188,24 @@ def test_benchmark_needs_conditions_and_a_second_source_for_high():
     assert ev.confidence_cap('benchmark', strong)['rule'] == 'benchmark-conditions+replication'
     blog = ev.confidence_cap('benchmark', [entry(tier=4, sourceKind='blog')])
     assert (blog['cap'], blog['rule']) == ('low', 'benchmark-third-party-numbers')
+
+
+def test_benchmark_high_needs_conditions_and_the_table_in_the_same_read():
+    mixed = [entry(claimId='c-conditions', recordedConditions=True),
+             entry(claimId='c-section', sectionKind='results', accessLevel='fulltext-read'),
+             entry(claimId='c-replication', independentReplication=True, originCluster='c.com'),
+             entry(claimId='c-access', accessLevel='fulltext-read', originCluster='d.com')]
+    result = ev.confidence_cap('benchmark', mixed)
+    assert result['rule'] != 'benchmark-conditions+replication'
+    assert result['cap'] != 'high'
+    single = [entry(claimId='c-1', sectionKind='results', accessLevel='fulltext-read',
+                    recordedConditions=True, independentReplication=True)]
+    assert ev.confidence_cap('benchmark', single)['rule'] == 'benchmark-conditions+replication'
+    # Hai cụm vẫn là số hạng GỘP được, miễn là CÙNG một lần đọc đã có bảng + điều kiện.
+    two_clusters = [entry(claimId='c-1', sectionKind='results', accessLevel='fulltext-read',
+                          recordedConditions=True, originCluster='a.com'),
+                    entry(claimId='c-2', originCluster='b.com')]
+    assert ev.confidence_cap('benchmark', two_clusters)['rule'] == 'benchmark-conditions+replication'
 
 
 def test_trend_uses_the_window_and_a_nearby_survey():
@@ -194,6 +221,19 @@ def test_trend_uses_the_window_and_a_nearby_survey():
     assert stale['rule'] == 'trend-two-clusters'
     one = ev.confidence_cap('trend', [entry(originCluster='a.com')])
     assert (one['cap'], one['rule']) == ('low', 'trend-one-cluster')
+
+
+def test_an_undeclared_time_window_never_lifts_a_trend_to_high():
+    """`window_days = 0` (velocity chưa xác nhận) KHÔNG được coi là \"mọi hàng đều trong cửa sổ\"."""
+    rows = [entry(claimId='c-2015', publishedAt='2015-06-01', originCluster='a.com', survey=True),
+            entry(claimId='c-2016', publishedAt='2016-06-01', originCluster='b.com')]
+    undeclared = ev.confidence_cap('trend', rows)
+    declared = ev.confidence_cap('trend', rows, window_days=630, as_of='2026-09-25')
+    assert undeclared['rule'] != 'trend-window+survey'
+    assert undeclared['cap'] != 'high'
+    # Chưa khai cửa sổ thì trần KHÔNG được tốt hơn trần khi đã khai (nguồn đều quá cũ).
+    assert ev.CONFIDENCE_RANK[undeclared['cap']] <= ev.CONFIDENCE_RANK[declared['cap']]
+    assert declared['rule'] == 'trend-two-clusters'
 
 
 def test_gap_is_never_high():
@@ -252,6 +292,17 @@ def test_stale_current_claim_flags_only_out_of_window_current_facts():
     assert ev.stale_current_claim('current-fact', [], window_days=630, as_of='2026-09-25')['stale'] is False
     assert ev.stale_current_claim('current-fact', [entry(publishedAt='')],
                                   window_days=630, as_of='2026-09-25')['stale'] is False
+
+
+def test_stale_current_claim_short_circuits_when_the_window_is_undeclared():
+    """Chưa khai cửa sổ thì không có \"ngoài cửa sổ\" nào để nói — không phán bừa `stale`."""
+    rows = [entry(publishedAt='2018-01-01'), entry(publishedAt='2019-01-01')]
+    unknown = ev.stale_current_claim('current-fact', rows, window_days=0, as_of='2026-09-25')
+    assert unknown['stale'] is False
+    assert unknown['rule'] == ''
+    assert ev.stale_current_claim('current-fact', rows, window_days=-1)['stale'] is False
+    declared = ev.stale_current_claim('current-fact', rows, window_days=630, as_of='2026-09-25')
+    assert declared['stale'] is True and declared['rule'] == 'stale-current-claim'
 
 
 # --- chuẩn hoá và gói basis -------------------------------------------------

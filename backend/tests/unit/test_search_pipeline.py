@@ -300,6 +300,32 @@ def test_run_pipeline_records_search_log_rows(monkeypatch):
     assert rows and any(row['results'] == 1 for row in rows)
 
 
+def test_the_search_log_counts_only_urls_new_to_the_run(monkeypatch):
+    """`relevant_new`/`new_unique` phải là \"mới với RUN\", không phải số kết quả chân trả về."""
+    monkeypatch.setenv('BOXFOX_SEARCH_PIPELINE', 'on')
+    rows = [{'url': 'https://a.example/1', 'title': 'A', 'engine': 'brave'},
+            {'url': 'https://b.example/2', 'title': 'B', 'engine': 'brave'}]
+    monkeypatch.setattr(sp, 'searxng_search', _fake_leg(rows))
+    sp.run_pipeline(['q-new-one'], source='web', count=5, options={},
+                    session_id='s1', research_id='r-new')
+    first = sp._store().search_log(research_id='r-new')
+    assert first
+    assert all(row['results'] == 2 for row in first)
+    assert all(row['new_unique'] == 2 and row['relevant_new'] == 2 for row in first), \
+        'lượt đầu: cả hai URL đều mới với run'
+    # Lượt sau (truy vấn khác để không đọc đệm) trả lại ĐÚNG hai URL cũ ⇒ không còn gì mới.
+    sp.run_pipeline(['q-new-two'], source='web', count=5, options={},
+                    session_id='s1', research_id='r-new')
+    later = sp._store().search_log(research_id='r-new')[len(first):]
+    assert later and all(row['new_unique'] == 0 and row['relevant_new'] == 0 for row in later), \
+        'URL đã thấy trong run thì không được kể là mới nữa'
+    # Sổ đếm gắn với RUN: một run khác không thừa hưởng \"đã thấy\" của run này.
+    sp.run_pipeline(['q-other'], source='web', count=5, options={},
+                    session_id='s2', research_id='r-other')
+    other = sp._store().search_log(research_id='r-other')
+    assert other and all(row['relevant_new'] == 2 for row in other)
+
+
 def test_run_pipeline_rejects_an_empty_query(monkeypatch):
     monkeypatch.setenv('BOXFOX_SEARCH_PIPELINE', 'on')
     with pytest.raises(WebError):

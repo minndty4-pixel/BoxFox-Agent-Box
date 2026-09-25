@@ -115,10 +115,48 @@ def _store() -> search_store.SearchStore:
 
 
 def reset_store() -> None:
-    """Đóng và quên DB đã mở — dùng khi `BOXFOX_SEARCH_DB` đổi (chủ yếu cho test)."""
+    """Đóng và quên DB đã mở (kèm sổ URL đã thấy) — dùng khi `BOXFOX_SEARCH_DB` đổi (chủ yếu cho test)."""
     global _STORE
     with _STORE_LOCK:
         _STORE = None
+    with _SEEN_LOCK:
+        _SEEN_URLS.clear()
+
+
+#: Sổ URL đã thấy trong MỘT run. Bão hoà (§5.5) cần \"mới với RUN NÀY\", không phải \"mới với lời gọi
+#: này\"; một run nằm gọn trong một tiến trình nên sổ này chỉ giữ trong bộ nhớ, có trần kích thước để
+#: một tiến trình dài không phình mãi. Khoá là `research_id`, lùi về `session_id` khi chưa có run.
+_SEEN_LOCK = threading.Lock()
+_SEEN_URLS: dict[str, dict[str, bool]] = {}
+_SEEN_MAX_RUNS = 32
+_SEEN_MAX_URLS = 4000
+
+
+def _seen_key(research_id, session_id) -> str:
+    return str(research_id or session_id or '')
+
+
+def _seen_snapshot(key: str) -> set:
+    """Tập URL đã thấy của run TÍNH TỚI TRƯỚC lời gọi này (rỗng khi chưa theo dõi)."""
+    if not key:
+        return set()
+    with _SEEN_LOCK:
+        return set(_SEEN_URLS.get(key) or {})
+
+
+def _seen_add(key: str, urls) -> None:
+    """Ghi nhớ URL vừa gặp cho lời gọi sau; trần bộ nhớ loại run/URL cũ nhất (dict giữ thứ tự chèn)."""
+    if not key or not urls:
+        return
+    with _SEEN_LOCK:
+        bucket = _SEEN_URLS.setdefault(key, {})
+        for url in urls:
+            if url:
+                bucket[url] = True
+        while len(bucket) > _SEEN_MAX_URLS:
+            del bucket[next(iter(bucket))]
+        while len(_SEEN_URLS) > _SEEN_MAX_RUNS:
+            del _SEEN_URLS[next(iter(_SEEN_URLS))]
 
 
 def _academic():
@@ -994,18 +1032,33 @@ def run_pipeline(queries: list[str], *, source: str, count: int, options: dict,
     store.cache_put(cache_key, str(source), queries[0], payload['filters'], payload,
                     _cache_ttl(str(source), options))
 
-    # Bước 9 — nhật ký tìm kiếm (số đo cho bão hoà 5.5 và 8.7).
+    # Bước 9 — nhật ký tìm kiếm (số đo cho bão hoà 5.5 và 8.7). `relevant_new` phải là số THẬT
+    # \"mới với run này\": số URL chuẩn run chưa từng thấy (không phải số kết quả chân trả về), còn
+    # `new_unique` giữ đúng nghĩa \"mới/độc nhất trong run\". Thiếu số đo (mặc định 0) làm mọi facet
+    # bão hoà sau hai sóng — đó là `finding 1`.
+    run_key = _seen_key(research_id, session_id)
+    seen_before = _seen_snapshot(run_key)
+    ranked_urls = {canonical_url(str(row.get('canonical') or row.get('url') or '')) for row in ranked}
+    touched: set = set()
     for leg in legs:
         try:
+            results = [row for row in (leg.get('results') or []) if isinstance(row, dict)]
+            leg_urls = [canonical_url(str(row.get('url') or '')) for row in results]
+            # Kết quả của chân `local-index` là trang ĐÃ tải trong run ⇒ không phải \"mới\".
+            fresh = [] if leg.get('engine') == 'local-index' else [
+                url for url in leg_urls if url and url not in seen_before]
             store.log_search({'research_id': research_id, 'session_id': session_id,
                               'facet_id': facet_id or str(facet.get('facet_id') or ''),
                               'query': leg.get('query'), 'variant_kind': leg.get('variant_kind'),
                               'engines': leg.get('engines'),
-                              'results': len(leg.get('results') or []),
-                              'new_unique': len(leg.get('results') or []),
+                              'results': len(results),
+                              'new_unique': len(fresh),
+                              'relevant_new': len([url for url in fresh if url in ranked_urls]),
                               'latency_ms': int(leg.get('latencyMs') or 0)})
+            touched.update(url for url in leg_urls if url)
         except Exception:                              # pragma: no cover - nhật ký không làm chết ống
             pass
+    _seen_add(run_key, touched)
     return payload
 
 

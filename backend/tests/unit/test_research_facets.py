@@ -6,8 +6,15 @@ from agentbox.agent_core import research_facets as rf
 
 
 def log(results, relevant_new, created=0.0, facet_id='f-1', research_id='R1'):
+    """Một dòng nhật ký tìm ĐÚNG hình dạng `search_store.search_log()` trả về (camelCase, có số đo)."""
     return {'facetId': facet_id, 'researchId': research_id, 'results': results,
-            'relevantNew': relevant_new, 'created': created}
+            'newUnique': relevant_new, 'relevantNew': relevant_new, 'created': created}
+
+
+def unmeasured(results, created=0.0, facet_id='f-1', research_id='R1'):
+    """Dòng KHÔNG mang số đo lợi suất (`relevant_*`) — nhà ghi khác/dòng cũ, phải là \"chưa đo\"."""
+    return {'facetId': facet_id, 'researchId': research_id, 'results': results,
+            'newUnique': results, 'created': created}
 
 
 # --- khoá và chuẩn hoá ------------------------------------------------------
@@ -84,6 +91,32 @@ def test_saturation_threshold_is_the_limits_constant():
     assert rf.saturation_state([log(100, 10), log(100, 10)])['status'] == 'searched'
     assert limits.RESEARCH_SATURATION_WAVES == 2
     assert limits.RESEARCH_SATURATION_NEW_RATIO == 0.10
+
+
+def test_a_row_without_a_yield_measurement_is_unmeasured_not_zero():
+    """Dòng thiếu `relevant_*` KHÔNG được đọc thành 0 — nếu không mọi facet bão hoà sau hai sóng."""
+    mixed = rf.saturation_state([log(20, 0, 1.0), unmeasured(20, 2.0), unmeasured(20, 3.0)])
+    assert mixed['status'] == 'searched', 'hai sóng CHƯA ĐO không được kết luận bão hoà'
+    # `waves` đếm sóng ĐO ĐƯỢC liên tiếp cuối cùng: ba dòng vào nhưng chỉ một dòng có số đo.
+    assert mixed['waves'] == 1
+    assert mixed['ratios'] == [0.0]
+    assert mixed['lastRatio'] == 0.0
+    never = rf.saturation_state([unmeasured(10, 1.0), unmeasured(10, 2.0), unmeasured(10, 3.0)])
+    assert never['status'] == 'searched' and never['ratios'] == [] and never['lastRatio'] == -1.0
+    assert never['waves'] == 0, 'không có sóng nào đo được thì không có sóng lặng nào để đếm'
+    assert rf.saturation_state([unmeasured(10, 1.0)])['status'] == 'searched'
+    assert rf.saturation_state([])['status'] == 'unexplored'
+
+
+def test_two_genuinely_low_yield_measured_waves_still_saturate():
+    rows = [log(20, 12, 1.0), log(10, 0, 2.0), log(10, 0, 3.0)]
+    state = rf.saturation_state(rows)
+    assert state['status'] == 'saturated'
+    assert state['waves'] == 2
+    assert state['ratios'] == [0.6, 0.0, 0.0]
+    # Dòng CHƯA ĐO chen giữa cũng không cản hai sóng ĐO ĐƯỢC cuối cùng bão hoà.
+    mixed = rf.saturation_state([log(10, 0, 1.0), unmeasured(10, 2.0), log(10, 0, 3.0)])
+    assert mixed['status'] == 'saturated' and mixed['ratios'] == [0.0, 0.0]
 
 
 def test_saturation_ignores_order_of_arrival_and_reads_both_key_styles():

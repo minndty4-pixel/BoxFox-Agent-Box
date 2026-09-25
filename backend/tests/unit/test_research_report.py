@@ -134,6 +134,16 @@ def test_module_promise_and_unknown_modules_are_gate_errors():
     assert named == []
 
 
+def test_an_undeclared_job_type_promises_no_module():
+    """`modules_for(())` lùi về `M-landscape` (đề xuất), nhưng run KHÔNG khai gì thì không hứa gì."""
+    assert rr.validate_report(full_report(modules=[])) == []
+    # Kiểu việc CÓ khai thì lời hứa vẫn được thi hành (`quick` ⇒ `M-extras`, chưa cần bắt buộc).
+    assert codes(rr.validate_report(full_report(modules=[]), job_types=['quick'])) == [
+        rr.ERROR_MODULE_MISSING]
+    # Không khai kiểu việc nhưng CÓ mô-đun ⇒ không lỗi.
+    assert rr.validate_report(full_report(modules=['M-gaps'])) == []
+
+
 def test_frame_sections_are_all_required():
     errors = rr.validate_report(full_report(sections=['conclusions', 'scope']))
     assert codes(errors) == [rr.ERROR_SECTION_MISSING] * 6
@@ -180,7 +190,7 @@ def test_unexplored_section_must_match_the_facets_that_are_not_saturated():
 
 
 def test_gate_errors_are_reported_as_whole_codes():
-    errors = rr.validate_report(full_report(modules=[], sections=[]))
+    errors = rr.validate_report(full_report(modules=[], sections=[]), job_types=['gap'])
     assert rr.error_codes(errors) == (rr.ERROR_MODULE_MISSING, rr.ERROR_SECTION_MISSING)
     assert rr.error_codes(None) == ()
     assert rr.error_codes([{'code': 'x'}, {'code': 'x'}, 'y']) == ('x', 'y')

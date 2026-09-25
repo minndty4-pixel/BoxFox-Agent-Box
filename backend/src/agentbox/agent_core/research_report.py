@@ -230,7 +230,10 @@ def validate_report(report: Any, *, job_types: Any = (), level: int = 2, facets:
             errors.append({'code': ERROR_MODULE_UNKNOWN,
                            'detail': 'Mô-đun không có trong danh mục: %s' % _text(item.get('title')
                                                                                   or item.get('name'))})
-    promised = set(modules_for(job_types))
+    # Chỉ hứa mô-đun khi run ĐÃ khai kiểu việc: `modules_for(())` lùi về `M-landscape` (đề xuất cho
+    # thẻ phạm vi trống), nhưng một run không khai gì thì không hứa gì — không được bịa ra mô-đun
+    # rồi bắt hồ sơ phải có (`finding 4`).
+    promised = set(modules_for(job_types)) if normalize_job_types(job_types) else set()
     for module_id in _seq(report.get('modules')):
         if isinstance(module_id, str) and not normalize_module(module_id):
             errors.append({'code': ERROR_MODULE_UNKNOWN, 'detail': 'Mô-đun lạ: %s' % _text(module_id)})

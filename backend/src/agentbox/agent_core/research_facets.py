@@ -9,7 +9,8 @@ Ba câu hỏi tệp này trả lời:
    kèm `seedSource` (survey / scope / citation-cluster / agent) để giao diện nói được vì sao facet
    có mặt.
 2. **Đã bão hoà chưa?** — `saturation_state` đọc **nhật ký tìm**, không dò từ khoá trong văn bản:
-   `last_new_ratio = relevant_new / results`, hai sóng liên tiếp dưới ngưỡng ⇒ `saturated`.
+   `last_new_ratio = relevant_new / results`, hai sóng liên tiếp dưới ngưỡng ⇒ `saturated`. Dòng
+   không mang số đo (`relevant_*`) là **chưa đo**, không phải 0 — nó không được tính vào luật bão hoà.
 3. **Được dừng chưa?** — `stop_checks` gói bốn điều kiện dừng của §5.5 thành danh sách chặn có mã.
 """
 
@@ -172,14 +173,32 @@ def _log_field(row: Any, *names: str, default: Any = None) -> Any:
     return default
 
 
-def _ratio(row: Any) -> float:
+def _relevant_new(row: Any) -> Any:
+    """Số \"mới và liên quan\" của một dòng nhật ký, hoặc `None` khi dòng KHÔNG mang số đo.
+
+    Khác biệt này là chủ ý: `search_store.log_search` mặc định cột `relevant_new` về 0, nên một
+    dòng thiếu số đo (nhà ghi khác, dòng cũ, dữ liệu dựng tay) mà bị đọc thành 0 sẽ khiến MỌI facet
+    bão hoà sau hai sóng (`finding 1`). Dòng thiếu số đo phải là \"chưa đo\", không phải \"không có gì mới\".
+    """
+    if not isinstance(row, Mapping):
+        return None
+    for name in ('relevantNew', 'relevant_new'):
+        if name in row and row[name] is not None:
+            return row[name]
+    return None
+
+
+def _ratio(row: Any) -> float | None:
+    """`relevant_new / results` của một dòng; `None` khi dòng chưa có số đo (KHÔNG phải 0.0)."""
+    new_raw = _relevant_new(row)
+    if new_raw is None:
+        return None
     try:
         results = int(_log_field(row, 'results', default=0) or 0)
     except (TypeError, ValueError):
         results = 0
-    new = _log_field(row, 'relevantNew', 'relevant_new', default=0)
     try:
-        new = int(new or 0)
+        new = int(new_raw or 0)
     except (TypeError, ValueError):
         new = 0
     if results <= 0:
@@ -211,10 +230,11 @@ def saturation_state(rows: Any, *, waves: int = limits.RESEARCH_SATURATION_WAVES
     """Trạng thái bão hoà của **một** facet từ các bản ghi nhật ký tìm (cũ → mới).
 
     `waves` sóng liên tiếp cuối cùng có `relevant_new / results` dưới `threshold` ⇒ `saturated`.
+    Dòng **thiếu số đo** (`relevant_*`) bị bỏ qua: chưa đo được thì không được tính là \"sóng lặng\".
     """
     ordered = [row for row in (rows if isinstance(rows, (list, tuple)) else []) if isinstance(row, Mapping)]
     ordered = sorted(ordered, key=_stamp) if any(_stamp(row) for row in ordered) else list(ordered)
-    ratios = [_ratio(row) for row in ordered]
+    ratios = [ratio for ratio in (_ratio(row) for row in ordered) if ratio is not None]
     limit = max(int(waves or 0), 1)
     below = 0
     for ratio in reversed(ratios):
@@ -224,7 +244,7 @@ def saturation_state(rows: Any, *, waves: int = limits.RESEARCH_SATURATION_WAVES
             break
     if not ordered:
         status = 'unexplored'
-    elif below >= limit and len(ordered) >= limit:
+    elif below >= limit and len(ratios) >= limit:
         status = 'saturated'
     else:
         status = 'searched'
