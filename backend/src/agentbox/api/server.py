@@ -101,8 +101,12 @@ async def research_continuation_step(runtime):
             used = runtime.store.research_job_used_seconds(sid, job['research_id'])
             remaining = int(state.get('budgetSeconds') or 0) - used
             if remaining < 60:
-                runtime.store.research_job_save(job['research_id'], sid, state,
-                                                status='partial', revision=job['revision'])
+                # F6 (§5.3/§5.10): bơm cạn ngân sách cũng là một đường KẾT THÚC. Ghi `partial` rồi
+                # đi qua cửa duy nhất, nếu không run nền biến mất im lặng (không thẻ báo cáo, không
+                # thông báo, `state.background` còn mãi).
+                exhausted = runtime.store.research_job_save(
+                    job['research_id'], sid, state, status='partial', revision=job['revision'])
+                research_runtime.finish_background_run(runtime, session, exhausted)
                 continue
             turn = int(session.get('turn_count') or 0)
             if turn <= int(state.get('lastContinuationTurn') or 0) and \
@@ -118,8 +122,10 @@ async def research_continuation_step(runtime):
                          lastContinuationTurn=turn, lastContinuationAt=time.time(),
                          continuationAttempt=int(state.get('continuationAttempt') or 0) + 1)
             if stalled >= 2:
-                runtime.store.research_job_save(job['research_id'], sid, state,
-                                                status='partial', revision=job['revision'])
+                # F6: hai lượt bơm không tiến được ⇒ kết thúc y như cạn ngân sách, qua cùng cửa.
+                stalled_job = runtime.store.research_job_save(
+                    job['research_id'], sid, state, status='partial', revision=job['revision'])
+                research_runtime.finish_background_run(runtime, session, stalled_job)
                 continue
             runtime.store.research_job_save(job['research_id'], sid, state,
                                             revision=job['revision'])
@@ -613,6 +619,15 @@ def create_app(runtime):
         body = await request.json()
         if 'on' not in body:
             raise ApiError('RESEARCH_MODE_BODY_INVALID', 'body needs `on` (true/false)')
+        # F4: công tắc `BOXFOX_RESEARCH_MODE=off` giết cả tính năng (lệnh `/research` là lệnh vai
+        # cũ, hai cổng brief tắt, bơm từ chối job của mode). API phải nói THẲNG điều đó thay vì bật
+        # lên một chế độ nửa vời mà phần còn lại của hệ thống không phục vụ.
+        from ..agent_core import runtime as runtime_module
+        from ..agent_core.limits import RESEARCH_MODE_UNAVAILABLE_CODE
+        if not runtime_module.research_mode_available():
+            raise ApiError(RESEARCH_MODE_UNAVAILABLE_CODE,
+                           'Research mode is switched off in this build (BOXFOX_RESEARCH_MODE=off) — '
+                           'turn the switch on before using it', 409)
         try:
             result = research_runtime.apply_research_mode(runtime, session, body)
         except ValueError as exc:

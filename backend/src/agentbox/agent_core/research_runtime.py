@@ -379,10 +379,9 @@ def source_list(rt, session, args):
         except (TypeError, ValueError):
             turn = None
     # P1 (§5.3): một phiên có thể có nhiều RUN — lọc theo run khi người gọi chỉ đích danh, hoặc khi
-    # run đang mở đã có dòng được ghim. Phiên cũ (chưa có cột) giữ nguyên hành vi.
+    # `config.research` đã mở run. KHÔNG bỏ bộ lọc khi run chưa có dòng nào: làm vậy thì sổ của run
+    # mới hiện dòng của run KHÁC (review "nhỏ" — rò rỉ giữa các run).
     scope_id = str(args.get('researchId') or research_config(session).get('researchId') or '').strip()
-    if scope_id and not rt.store.source_rows(owner, research_id=scope_id, limit=1, newest_first=True):
-        scope_id = ''
     rows = rt.store.source_rows(owner, child_id=args.get('childId') or None, turn=turn, tier=tier,
                                 limit=limit, newest_first=True, research_id=scope_id or None)
     counts = _ledger_counts(rt, owner)
@@ -769,6 +768,15 @@ async def research_brief(rt, session, args):
                  'background': bool(prior_state.get('background'))}
         rt.store.research_job_save(slug, sid, state,
                                    status=previous['status'] if previous else 'scoping')
+        # P1 (§5.3, F3): run do MODE mở phải được ghim làm `researchMode.activeRunId`. Thiếu dòng
+        # này thì bơm không bao giờ thấy nó (`server.research_job_pumpable` đòi `mode.on` VÀ
+        # `activeRunId == job id`) — thiết kế \"lượt ngắn ≤ 600 s rồi tiếp bằng bơm\" chết, và
+        # `POST /prompts/{id}/answer` trả `resume: true` mà không mở lượt nào. Chỉ ghim khi mode
+        # đang BẬT: việc nhẹ do main tự mở (`origin='main'`) không được giành quyền bơm.
+        mode_now = _mode_mod().research_mode(session)
+        if state.get('origin') == RESEARCH_JOB_ORIGIN and mode_now['on']:
+            mode_now['activeRunId'] = slug
+            session.setdefault('config', {})['researchMode'] = mode_now
     inherited_rows = _copy_inherited_rows(rt, sid, inherits, slug) if inherits else 0
     if inherits:
         # Dòng kế thừa phải qua `source_verify` LẠI trước khi dùng cho nhận định "hiện tại" (§5.3).
@@ -1589,9 +1597,10 @@ def research_update(rt, session, args):
         status = 'partial'
     updated = rt.store.research_job_save(research_id, session['id'], state, status,
                                          revision=args.get('revision'))
-    if updated['status'] in {'completed', 'partial'} and state.get('background'):
+    if updated['status'] in {'completed', 'partial'}:
         # P1 (§5.10): run CHẠY NỀN xong (mode đã tắt) ⇒ thẻ báo cáo + thông báo, và tắt cờ nền.
-        _finish_background(rt, session, updated)
+        # `finish_background_run` là cửa duy nhất, tự bỏ qua khi run không chạy nền (F6).
+        finish_background_run(rt, session, updated)
     return {'researchId': research_id, 'status': updated['status'],
             'revision': updated['revision'], 'questions': state['questions'],
             'usedSeconds': used, 'remainingSeconds': max(0, state['budgetSeconds'] - used)}
@@ -1977,12 +1986,17 @@ def answer_prompt(rt, session_id, job, payload):
         raise ValueError('RESEARCH_PROMPT_UNKNOWN: no such prompt on this run')
     if prompt.get('status') == 'answered':
         raise ValueError('RESEARCH_PROMPT_ANSWERED: that prompt is already answered')
+    scope = state.get('scope') if isinstance(state.get('scope'), dict) else {}
+    # Khoá lạc quan so với revision SỐNG của phạm vi, KHÔNG phải revision đã đóng băng trong
+    # `prompt['revision']`: thẻ trả lời sau khi phạm vi bị viết lại (revision tăng) phải bị từ chối,
+    # kể cả khi `prompt['revision']` vẫn là con số cũ (review F10).
+    live_revision = int(scope.get('revision') or 0) if scope else int(prompt.get('revision') or 0)
     expected = payload.get('revision')
-    if expected is not None and int(expected) != int(prompt.get('revision') or 0):
-        raise ValueError(f'{RESEARCH_SCOPE_REVISION_STALE_CODE}: the prompt changed — reload the card and answer again')
+    if expected is not None and int(expected) != live_revision:
+        raise ValueError(f'{RESEARCH_SCOPE_REVISION_STALE_CODE}: phạm vi đã đổi (revision '
+                         f'{live_revision}) — tải lại thẻ rồi trả lời lại')
     answers = payload.get('answers') if isinstance(payload.get('answers'), list) else []
     given = {str(item.get('questionId') or ''): item for item in answers if isinstance(item, dict)}
-    scope = state.get('scope') if isinstance(state.get('scope'), dict) else {}
     open_questions = scope.get('openQuestions') or []
     for question in open_questions:
         answer = given.get(str(question.get('id')))
@@ -2074,10 +2088,15 @@ def apply_research_mode(rt, session, payload):
     # Tắt mode.
     if active:
         choice = str(payload.get('exitChoice') or payload.get('activeRun') or '').strip().lower()
-        if choice not in ('pause', 'background'):
+        if not runtime_module.background_runs_enabled():
+            # F7 (§5.13): công tắc `BOXFOX_RESEARCH_BACKGROUND_RUNS=off` ⇒ thoát mode LUÔN tạm dừng
+            # run và KHÔNG mời lựa chọn chạy nền — một lời mời mà bơm sẽ không thực hiện được là lời
+            # mời dối. Người dùng có gửi 'background' cũng bị hạ về 'pause'.
+            choice = 'pause'
+        elif choice not in ('pause', 'background'):
             prompt = dict(payload.get('prompt') or {}) if isinstance(payload.get('prompt'), dict) else {}
             if not prompt.get('promptId'):
-                question = [{'id': 'exit1', 'text': f'Run {job["research_id"]} đang chạy. Bạn muốn tạm dừng hay để nó '
+                question = [{'id': 'exit', 'text': f'Run {job["research_id"]} đang chạy. Bạn muốn tạm dừng hay để nó '
                                                    f'chạy nền?',
                              'options': [{'id': 'pause', 'label': 'Tạm dừng run'},
                                          {'id': 'background', 'label': 'Tiếp tục chạy nền'}],
@@ -2177,6 +2196,23 @@ def _copy_inherited_rows(rt, sid, inherits, new_run_id):
                         f'{new_run_id} với cờ inherited — phải `source_verify` lại trước khi dùng cho '
                         f'nhận định "hiện tại"')})
     return copied
+
+
+def finish_background_run(rt, session, job):
+    """Cửa kết thúc DUY NHẤT của một run chạy nền (§5.10, F6).
+
+    Mọi nhánh kết thúc run (mô hình gọi `research_update status=completed`, bơm cạn ngân sách, bơm
+    phát hiện đứng yên) phải đi qua ĐÂY — nếu không, run biến mất im lặng: không `research_report`,
+    không `research_notice{background-done}`, và `state.background` còn mãi khiến bơm chạy lại phần
+    đã xong. Trả về job sau khi ghi (đã tắt cờ nền), hoặc chính `job` khi nó không chạy nền.
+    """
+    if job is None:
+        return job
+    state = job.get('state') if isinstance(job.get('state'), dict) else {}
+    if not state.get('background'):
+        return job
+    _finish_background(rt, session, job)
+    return rt.store.research_job(job['research_id'])
 
 
 def _finish_background(rt, session, job):

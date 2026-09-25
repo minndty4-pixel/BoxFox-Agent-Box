@@ -5,7 +5,9 @@ import time
 import uuid
 from ..agent_core import research_runtime
 from ..agent_core.limits import (STEER_MAX_PENDING, RESEARCH_MODE_BLOCK_MARKER,
-                                 RESEARCH_MODE_BLOCK_END, RESEARCH_MODE_EVENT_CODE)
+                                 RESEARCH_MODE_BLOCK_END, RESEARCH_MODE_EVENT_CODE,
+                                 RESEARCH_HANDOFF_BLOCK_MARKER, RESEARCH_HANDOFF_BLOCK_END,
+                                 RESEARCH_BACKGROUND_BLOCK_MARKER, RESEARCH_BACKGROUND_BLOCK_END)
 from dataclasses import asdict
 from .commands import INFO, ROLE_SKILLS, EXTERNAL
 from ..agent_core.attachments import (attachment_prompt_block, validate_attachments,
@@ -14,6 +16,19 @@ from ..agent_core.failures import classify_failure, failure_detail
 from ..observability.system_log import system_log
 from ..agent_core.compression import ContextCompressor, context_estimate, estimate_tokens
 
+
+def _strip_prompt_block(text, marker, end_marker):
+    """Gỡ MỘT khối đã chèn (đủ cặp mốc) khỏi prompt, giữ nguyên phần còn lại.
+
+    Chỉ gỡ khi tìm thấy ĐÚNG khối đã chèn: khối luôn khép bằng `end_marker`, còn một câu nhắc
+    trong SOP/AGENT.md chỉ *nhắc tên* khối. Thiếu end_marker ⇒ đó là câu nhắc, không phải khối —
+    gỡ theo nó sẽ nuốt phần đuôi của prompt (đo được 2026-09-25: prompt còn 5 647 ký tự).
+    """
+    start = text.rfind(marker)
+    end = text.find(end_marker, start) if start != -1 else -1
+    if start == -1 or end == -1:
+        return text
+    return text[:start] + text[end + len(end_marker):]
 
 class RuntimeCommands:
     async def submit(self, sid, prompt, image=None, route=None, invocation_id=None, images=None,
@@ -161,19 +176,19 @@ class RuntimeCommands:
                 result['status'] = self.store.get(sid)['status']
             if outcome.get('submit'):
                 session = self.store.get(sid)
-                self._next_turn_skills(session, enabled)
+                self._next_turn_skills(session, enabled, invocation_id)
                 self.start(sid, resolved.prompt, image, route,
                            await self.route_metadata(session, route), images=images,
                            attachments=attachments, invocation_id=invocation_id)
         elif resolved.kind == 'message':
-            self._next_turn_skills(session, enabled)
+            self._next_turn_skills(session, enabled, invocation_id)
             # Route của lượt có thể đổi model; tra metadata của CHÍNH model đó (cùng
             # nguồn như lúc tạo phiên) để `start()` vẫn đối chiếu được `thinkingLevel`
             # thay vì bỏ qua kiểm tra (B13).
             self.start(sid, prompt, image, route, await self.route_metadata(session, route),
                        images=images, attachments=attachments, invocation_id=invocation_id)
         else:
-            self._next_turn_skills(session, enabled)
+            self._next_turn_skills(session, enabled, invocation_id)
             session = self.store.get(sid)
             if route:
                 session['config']['route'] = route
@@ -208,26 +223,28 @@ class RuntimeCommands:
             self.store.db.execute('UPDATE command_invocations SET result=? WHERE session_id=? AND id=?', (json.dumps(result), sid, invocation_id))
         return result
 
-    def _sync_mode_block(self, session):
-        """Chèn/gỡ khối ACTIVE MODE + khối bàn giao theo TỪNG LƯỢT (§5.2, §5.10).
+    def _sync_mode_block(self, session, invocation_id=None):
+        """Chèn/gỡ khối ACTIVE MODE + khối run chạy nền + khối bàn giao theo TỪNG LƯỢT
+        (§5.2, §5.10).
 
-        Cùng cách với khối ENABLED SKILLS: chỉ viết lại khi mode đổi, để không phá bộ đệm tiền tố
-        của mô hình ở các lượt khác. Khối bàn giao chỉ dựng khi mode TẮT và chưa bàn giao bản hồ sơ
-        ấy cho lượt main nào.
+        Cùng cách với khối ENABLED SKILLS: mỗi khối được GỠ trước rồi chèn lại, nên số lần xuất
+        hiện trong prompt hệ thống luôn là MỘT (review F5). Khối bàn giao chỉ dựng khi mode TẮT và
+        chưa bàn giao bản hồ sơ ấy cho lượt main nào.
+
+        `invocation_id` phải là id của LƯỢT này: lượt bơm `research-resume-<id>` dùng hồ sơ
+        research (kể cả khi mode đã tắt), nên khối của nó không phải khối main (review F8). Không
+        truyền ⇒ giữ nguyên hành vi cũ cho lượt thường.
         """
         messages = session.get('messages') or []
         if not messages:
             return
-        profile = self.turn_profile(session)
+        profile = self.turn_profile(session, invocation_id)
         current = messages[0].get('content') or ''
-        marker, end_marker = RESEARCH_MODE_BLOCK_MARKER, RESEARCH_MODE_BLOCK_END
-        # Chỉ gỡ khi tìm thấy ĐÚNG khối đã chèn: khối mode luôn khép bằng `end_marker`, còn một câu
-        # nhắc trong SOP/AGENT.md chỉ *nhắc tên* khối. Thiếu end_marker ⇒ đó là câu nhắc, không phải
-        # khối — gỡ theo nó sẽ nuốt phần đuôi của prompt (đo được 2026-09-25: prompt còn 5 647 ký tự).
-        start = current.rfind(marker)
-        end = current.find(end_marker, start) if start != -1 else -1
-        if start != -1 and end != -1:
-            current = current[:start] + current[end + len(end_marker):]
+        # Gỡ cả ba khối đã chèn ở lượt trước: khối mode, dòng nhắc run nền, và khối bàn giao.
+        for marker, end_marker in ((RESEARCH_MODE_BLOCK_MARKER, RESEARCH_MODE_BLOCK_END),
+                                   (RESEARCH_BACKGROUND_BLOCK_MARKER, RESEARCH_BACKGROUND_BLOCK_END),
+                                   (RESEARCH_HANDOFF_BLOCK_MARKER, RESEARCH_HANDOFF_BLOCK_END)):
+            current = _strip_prompt_block(current, marker, end_marker)
         handoff = self.research_handoff(session)
         content = current.rstrip()
         for block in [profile['promptBlock'], (handoff or {}).get('block')]:
@@ -331,6 +348,20 @@ class RuntimeCommands:
         if low == 'off':
             job = self._active_mode_job(sid)
             if job is not None:
+                from ..agent_core.runtime import background_runs_enabled
+                if not background_runs_enabled():
+                    # F7 (§5.13): công tắc chạy nền TẮT ⇒ `/research off` tạm dừng run rồi tắt
+                    # mode luôn; không phát lời hỏi thoát vì không còn lựa chọn "chạy nền" nào.
+                    state = dict(job['state'] or {})
+                    state['background'] = False
+                    self.store.research_job_save(job['research_id'], sid, state, 'paused')
+                    self.store.emit(sid, 'research_run', {
+                        'researchId': job['research_id'], 'status': 'paused',
+                        'phase': state.get('phase'), 'background': False,
+                        'revision': job['revision'] + 1})
+                    self._set_mode(sid, session, False, 'command')
+                    result['output'] = 'Đã tắt chế độ Research và tạm dừng run.'
+                    return {'result': result}
                 prompt = self._emit_prompt(sid, job, self._exit_choice_prompt(job))
                 result['output'] = ('Run đang chạy — chọn "Tạm dừng" hoặc "Tiếp tục chạy nền" '
                                     '(lời hỏi exit-choice).')
@@ -343,7 +374,12 @@ class RuntimeCommands:
         result['output'] = 'Đã bật chế độ Research.'
         return {'result': result, 'submit': bool(arg)}
 
-    def _next_turn_skills(self, session, enabled):
+    def _next_turn_skills(self, session, enabled, invocation_id=None):
+        """Viết lại khối kỹ năng + khối mode/nền/bàn giao cho LƯỢT này.
+
+        `invocation_id` đi tiếp xuống `_sync_mode_block` để lượt bơm `research-resume-*` nhận
+        đúng hồ sơ research ngay ở bước dựng prompt (review F8).
+        """
         session['config']['skills'] = list(enabled)
         self.store.update_config(session['id'], session['config'])
         messages = session['messages']
@@ -363,7 +399,7 @@ class RuntimeCommands:
                 m['content'] = '[Historical skill read. Reload with skill_view if needed for the new turn.]'
         self.skill_loader.reset(session['id'])
         # P1 (§5.2/§5.10): chèn/gỡ khối ACTIVE MODE và khối bàn giao theo LƯỢT này.
-        self._sync_mode_block(session)
+        self._sync_mode_block(session, invocation_id)
         self.store.save(session['id'], messages)
 
     async def _command_task(self, sid, resolved, block='', images=None):

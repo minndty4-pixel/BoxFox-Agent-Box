@@ -9,12 +9,25 @@ import asyncio
 import copy
 import json
 
+import pytest
+
 from agentbox.agent_core.runtime import (CHILD_ANSWER_MAX_CHARS, CHILD_ECHO_MAX_CHARS,
                                          CHILD_EXPECT_MAX_CHARS, CHILD_RESULT_CONTRACT, HarnessRuntime)
 from agentbox.agent_core.tool_contracts import SCHEMAS
 from agentbox.memory.session_store import SessionStore
 
 BIG_CONTEXT = 'C' * 20000
+
+
+@pytest.fixture(autouse=True)
+def _legacy_research_mode(monkeypatch):
+    """Giữ đường CŨ cho bộ kiểm hợp đồng uỷ quyền.
+
+    Các ca ở đây uỷ quyền vai `research` mà KHÔNG gọi `research_brief`, nên khi công tắc
+    `BOXFOX_RESEARCH_MODE` bật (mặc định từ F4) nhánh đầu bị kẹp mức 1 — trần bước/giây của con đổi
+    và các khẳng định về trần sẽ sai. Bộ kiểm này khoá HỢP ĐỒNG uỷ quyền (hình dạng kết quả, kẹp theo
+    cha), không khoá chế độ Research; hành vi mới được khoá trong `test_research_mode_shell.py`."""
+    monkeypatch.setenv('BOXFOX_RESEARCH_MODE', 'off')
 
 
 def answer(text='done', calls=None, finish='stop'):

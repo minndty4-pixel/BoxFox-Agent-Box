@@ -247,7 +247,13 @@ ORCHESTRATOR_TOOLS = WRITE | VISUAL | {'delegate_task', 'session_search', 'write
                                        'cancel_child',
                                        # P1 — cửa 1: main GỢI Ý bật mode (không tự bật). Công cụ này chỉ
                                        # phát sự kiện `research_suggested`, không đổi cấu hình (M-06).
-                                       'research_suggest'} | PEER
+                                       'research_suggest',
+                                       # P1 — thẻ phạm vi của run (§5.3): nguồn sự thật cho mục tiêu, câu
+                                       # hỏi, cửa sổ thời gian, độ sâu và ngân sách; cũng là chỗ hỏi phỏng
+                                       # vấn nhiều câu. Chỉ orchestrator có (con research ghi phạm vi vào
+                                       # câu trả lời). Thiếu ở đây thì mode không có thẻ ⇒ `state.phase`
+                                       # không rời `clarifying` và bơm từ chối tiếp tục run (review F1).
+                                       'research_scope'} | PEER
 
 
 def allowed_tools(role, parent=None):

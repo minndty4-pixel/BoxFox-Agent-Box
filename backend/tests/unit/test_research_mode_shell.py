@@ -13,10 +13,10 @@ import pytest
 from aiohttp import ClientSession
 from aiohttp.test_utils import TestServer
 
-from agentbox.agent_core import limits, research_runtime
+from agentbox.agent_core import limits, research_runtime, tool_contracts
 from agentbox.agent_core import runtime as runtime_module
 from agentbox.agent_core.runtime import HarnessRuntime
-from agentbox.api.server import create_app, research_job_pumpable
+from agentbox.api.server import create_app, research_continuation_step, research_job_pumpable
 from agentbox.memory.session_store import SessionStore
 from agentbox.skills.commands import CommandRegistry
 from agentbox.skills.catalog import SkillCatalog
@@ -608,3 +608,312 @@ def test_with_the_mode_switch_off_everything_behaves_like_before(monkeypatch, tm
                             status='needs_user')
     assert 'needs' not in {job['research_id'] for job in store.research_jobs_active()}
     store.close()
+
+
+# ------------------------------------------------------------------ Sửa soát mã: F1, F2, F3, F4, F5, F6, F7, F8, F9, F10 + rò rỉ sổ
+# (phiếu `/code/.plans/review-mode-api-findings.md`). Mỗi ca dựng ĐÚNG tình huống mà bản gốc hỏng:
+# đi qua hồ sơ lượt thật / tuyến bơm thật / API thật, không tự tay viết lại `state`.
+
+
+def test_f1_research_scope_is_offered_in_the_turn_when_the_mode_is_on(harness):
+    """F1: công cụ cấp thẻ phạm vi phải NẰM TRONG bộ công cụ của lượt + có schema."""
+    store, runtime, sid = harness
+    model = RecordingModel()
+    runtime.client = model
+    research_runtime.apply_research_mode(runtime, session_of(store, sid), {'on': True})
+    run_turn(runtime, sid, 'mở một run mới cho việc này')
+    offered = model.offered[-1]
+    assert 'research_scope' in offered, 'mode ra lệnh dùng `research_scope` nhưng không cấp schema ⇒ vô nghĩa'
+    names = {schema['function']['name'] for schema in tool_contracts.schemas_for(offered)}
+    assert 'research_scope' in names
+    assert set(offered) & set(limits.RESEARCH_MODE_EXCLUDED_TOOLS) == set()
+    # Và nhóm công cụ của runtime phải mô tả đúng: hợp của các nhóm = bộ orchestrator.
+    from agentbox.agent_core.tool_groups import TOOL_GROUPS
+    union = {tool for group in TOOL_GROUPS for tool in group['tools']}
+    assert 'research_scope' in union
+
+
+def test_f2_research_halt_inside_its_own_resume_turn_writes_the_status_without_waiting_for_itself(harness):
+    """F2: lượt bơm tự tạm dừng job của mình — không được `await` chính nó, và phải GHI TRƯỚC."""
+    store, runtime, sid = harness
+    store.research_job_save('run-self', sid, {'origin': 'mode', 'phase': 'searching',
+                                              'budgetSeconds': 600, 'questions': []}, status='researching')
+    job = store.research_job('run-self')
+    seen = {}
+
+    async def scenario():
+        runtime.turn_invocations[sid] = 'research-resume-run-self-1'
+        runtime.tasks[sid] = asyncio.current_task()
+        seen['updated'] = await runtime.research_halt(job, 'pause')
+
+    # `research_halt` phải TRẢ VỀ ngay (bản gốc `await asyncio.gather(task)` chờ chính nó ⇒ treo tới
+    # 60 s rồi `RecursionError`). Việc dừng lượt bơm đang chạy là hệ quả ĐÚNG: task tự huỷ chính nó,
+    # nên `CancelledError` ở đây là tín hiệu lượt bơm đã dừng, không phải lỗi của phép thử.
+    try:
+        asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+    except asyncio.CancelledError:
+        pass
+    assert seen['updated']['status'] == 'paused', 'trạng thái phải ghi TRƯỚC khi dừng lượt'
+    assert store.research_job('run-self')['status'] == 'paused'
+    assert events(store, sid, 'research_run')[-1]['status'] == 'paused'
+
+
+def test_f3_a_run_opened_in_the_mode_becomes_the_active_run_and_is_pumpable(harness):
+    """F3: `research_brief` trong mode phải ghim `activeRunId`, nếu không bơm không bao giờ thấy run."""
+    store, runtime, sid = harness
+    research_runtime.apply_research_mode(runtime, session_of(store, sid), {'on': True})
+    answer = asyncio.run(runtime.dispatch(session_of(store, sid), 'research_brief', {
+        'tier': 2, 'question': 'Mức hưởng chuyển tuyến 2026?', 'rationale': 'cần dẫn nguồn văn bản',
+        'goal': 'Toàn cảnh mức hưởng', 'methods': ['web'], 'output': 'báo cáo',
+        'questions': [{'text': 'Tuyến nào?', 'importance': 'high'}]}))
+    run_id = answer['researchId']
+    assert session_of(store, sid)['config']['researchMode']['activeRunId'] == run_id, \
+        'run do mode mở phải là run đang hoạt động'
+    # Pha `clarifying` CHƯA bơm được (lượt của nó là lượt đang chờ người dùng) — nhưng phải thấy run.
+    assert research_job_pumpable(runtime, store.research_job(run_id), session_of(store, sid)) is False
+    asked = asyncio.run(runtime.dispatch(session_of(store, sid), 'research_scope', {
+        'action': 'ask', 'researchId': run_id, 'questions': [
+            {'id': 'iq1', 'text': 'Tuyến nào?', 'blocking': True,
+             'options': [{'id': 'o1', 'label': 'Tuyến huyện'}]}]}))
+    assert asked['needsUser'] is True
+    job = store.research_job(run_id)
+    prompt = job['state']['prompts'][0]
+    research_runtime.answer_prompt(runtime, sid, job, {
+        'promptId': prompt['promptId'], 'revision': prompt['revision'], 'start': True,
+        'answers': [{'questionId': 'iq1', 'optionId': 'o1'}]})
+    job = store.research_job(run_id)
+    assert (job['state'] or {}).get('phase') == 'planning'
+    assert research_job_pumpable(runtime, job, session_of(store, sid)) is True, \
+        'run của mode phải bơm được sau khi trả lời hết câu chặn'
+
+
+def test_f4_the_default_is_on_and_the_api_refuses_a_half_built_mode_when_switched_off(monkeypatch, tmp_path):
+    """F4: mặc định `on` (tính năng CÓ MẶT); khi công tắc tắt, API phải trả lỗi rõ."""
+    assert limits.RESEARCH_MODE_DEFAULT_MODE == 'on'
+    assert runtime_module.research_mode_available(env={}) is True
+    assert runtime_module.research_mode_available(env={'BOXFOX_RESEARCH_MODE': 'off'}) is False
+    monkeypatch.setenv(limits.RESEARCH_MODE_ENV, 'off')
+    assert runtime_module.research_mode_available() is False
+    store = SessionStore(tmp_path / 'unavailable.db')
+    runtime = HarnessRuntime(store, FixtureExecutor(), FixtureRouterClient())
+    sid = runtime.create({'skills': [], 'connectionId': 'c1', 'modelId': 'm1',
+                          'timeoutSeconds': 30})['id']
+
+    async def run():
+        async with TestServer(create_app(runtime)) as server:
+            async with ClientSession(headers=HEADERS) as http:
+                async with http.put(str(server.make_url(f'/api/agent/sessions/{sid}/research-mode')),
+                                    json={'on': True}) as resp:
+                    return resp.status, await resp.json()
+
+    status, body = asyncio.run(run())
+    store.close()
+    assert status == 409
+    assert body['code'] == limits.RESEARCH_MODE_UNAVAILABLE_CODE
+
+
+def test_f5_the_background_run_block_is_appended_exactly_once_per_turn(harness):
+    """F5: khối run nền phải được GỠ trước khi nối — đo sống trước khi vá: 1, 2, 3 lần."""
+    store, runtime, sid = harness
+    store.research_job_save('run-bg-block', sid, {'origin': 'mode', 'phase': 'searching',
+                                                  'background': True, 'budgetSeconds': 600,
+                                                  'questions': []}, status='researching')
+    counts = []
+    for _ in range(3):
+        session = session_of(store, sid)
+        runtime._sync_mode_block(session)
+        store.save(sid, session['messages'])
+        counts.append(store.get(sid)['messages'][0]['content'].count(
+            limits.RESEARCH_BACKGROUND_BLOCK_MARKER))
+    assert counts == [1, 1, 1], f'khối run nền bị chất đống: {counts}'
+
+
+def test_f5_the_handoff_block_disappears_after_it_is_delivered_once(harness):
+    """F5 (nửa bàn giao): giao một lần rồi phải biến mất khỏi prompt, không nằm lại vĩnh viễn."""
+    store, runtime, sid = harness
+    store.research_job_save('run-hand', sid, {'origin': 'mode', 'phase': 'done', 'budgetSeconds': 600,
+                                              'tier': 2, 'reviewModes': ['critique'], 'questions': [],
+                                              'goal': 'X', 'scope': {'revision': 1}}, status='partial')
+    store.record_dossier(sid, 'run-hand', 1, '.research/run-hand/v1.md', quality_ok=True)
+    session = session_of(store, sid)
+    runtime._sync_mode_block(session)
+    store.save(sid, session['messages'])
+    assert limits.RESEARCH_HANDOFF_BLOCK_MARKER in store.get(sid)['messages'][0]['content']
+    session = session_of(store, sid)
+    runtime._sync_mode_block(session)
+    store.save(sid, session['messages'])
+    assert limits.RESEARCH_HANDOFF_BLOCK_MARKER not in store.get(sid)['messages'][0]['content'], \
+        'bàn giao xong thì khối cũ phải bị gỡ'
+
+
+def _background_job(store, sid, research_id, state):
+    store.research_job_save(research_id, sid, {'origin': 'mode', 'background': True,
+                                               'budgetSeconds': 600, 'questions': [], **state},
+                            status='researching')
+
+
+def test_f6_the_pump_ending_on_the_budget_floor_still_emits_the_report_and_the_notice(harness):
+    """F6: bơm cạn ngân sách ghi `partial` thẳng ⇒ phải đi qua cửa kết thúc duy nhất."""
+    store, runtime, sid = harness
+    _background_job(store, sid, 'run-floor', {'phase': 'searching', 'budgetSeconds': 0})
+    asyncio.run(research_continuation_step(runtime))
+    job = store.research_job('run-floor')
+    assert job['status'] == 'partial'
+    assert job['state']['background'] is False, 'cờ nền phải tắt, nếu không bơm chạy lại phần đã xong'
+    kinds = [row['type'] for row in store.events(sid)]
+    assert 'research_report' in kinds and 'research_notice' in kinds
+
+
+def test_f6_the_pump_ending_on_a_stall_still_emits_the_report_and_the_notice(harness):
+    """F6 (đường đứng yên): hai lượt bơm không tiến được cũng phải kết thúc QUA CỬA."""
+    store, runtime, sid = harness
+    _background_job(store, sid, 'run-stall', {'phase': 'searching', 'lastProgress': [0, 0, 0, 0],
+                                              'stalledTurns': 1, 'lastContinuationAt': 0})
+    asyncio.run(research_continuation_step(runtime))
+    job = store.research_job('run-stall')
+    assert job['status'] == 'partial'
+    assert job['state']['background'] is False
+    kinds = [row['type'] for row in store.events(sid)]
+    assert 'research_report' in kinds and 'research_notice' in kinds
+
+
+def test_f7_with_background_runs_off_turning_the_mode_off_always_pauses_and_offers_no_choice(harness, monkeypatch):
+    """F7: công tắc `BOXFOX_RESEARCH_BACKGROUND_RUNS=off` ⇒ thoát mode luôn tạm dừng, không mời lựa chọn."""
+    store, runtime, sid = harness
+    monkeypatch.setenv(limits.RESEARCH_BACKGROUND_RUNS_ENV, 'off')
+    research_runtime.apply_research_mode(runtime, session_of(store, sid), {'on': True})
+    store.research_job_save('run-pause-only', sid, {'origin': 'mode', 'phase': 'searching',
+                                                    'budgetSeconds': 600, 'questions': []},
+                            status='researching')
+    config = session_of(store, sid)['config']
+    config['researchMode']['activeRunId'] = 'run-pause-only'
+    store.update_config(sid, config)
+    result = research_runtime.apply_research_mode(runtime, session_of(store, sid), {'on': False})
+    assert result['on'] is False
+    assert store.research_job('run-pause-only')['status'] == 'paused'
+    # Gửi thẳng lựa chọn "chạy nền" cũng bị hạ về tạm dừng — không có đường chạy nền khi công tắc tắt.
+    research_runtime.apply_research_mode(runtime, session_of(store, sid), {'on': True})
+    store.research_job_save('run-pause-only', sid, {'origin': 'mode', 'phase': 'searching',
+                                                   'budgetSeconds': 600, 'questions': []},
+                            status='researching')
+    config = session_of(store, sid)['config']
+    config['researchMode']['activeRunId'] = 'run-pause-only'
+    store.update_config(sid, config)
+    research_runtime.apply_research_mode(runtime, session_of(store, sid),
+                                        {'on': False, 'exitChoice': 'background'})
+    assert store.research_job('run-pause-only')['state']['background'] is False
+    assert store.research_job('run-pause-only')['status'] == 'paused'
+
+
+def test_f7_the_off_command_pauses_when_background_runs_are_off(harness, monkeypatch):
+    """F7 (cửa lệnh): `/research off` không phát lời hỏi thoát khi không còn lựa chọn chạy nền."""
+    store, runtime, sid = harness
+    model = RecordingModel()
+    runtime.client = model
+    asyncio.run(runtime.submit(sid, '/research'))
+    monkeypatch.setenv(limits.RESEARCH_BACKGROUND_RUNS_ENV, 'off')
+    store.research_job_save('run-off', sid, {'origin': 'mode', 'phase': 'searching',
+                                             'budgetSeconds': 600, 'questions': []}, status='researching')
+    result = asyncio.run(runtime.submit(sid, '/research off'))
+    assert session_of(store, sid)['config']['researchMode']['on'] is False
+    assert result['status'] == 'idle'
+    assert store.research_job('run-off')['status'] == 'paused'
+    assert model.calls == 0, 'lệnh điều khiển không gọi mô hình'
+
+
+def test_f8_the_pump_turn_gets_the_research_block_not_the_background_one(harness):
+    """F8: `_sync_mode_block` phải truyền id lượt, nếu không lượt bơm nhận khối main."""
+    store, runtime, sid = harness
+    model = RecordingModel()
+    runtime.client = model
+    _background_job(store, sid, 'run-pump', {'phase': 'searching'})
+    run_turn(runtime, sid, 'tiếp tục run', invocation_id='research-resume-run-pump-1')
+    content = session_of(store, sid)['messages'][0]['content']
+    assert limits.RESEARCH_MODE_BLOCK_MARKER in content, 'lượt bơm phải dùng khối hồ sơ research'
+    assert limits.RESEARCH_BACKGROUND_BLOCK_MARKER not in content
+    store.research_job_save('run-pump', sid, {'origin': 'mode', 'phase': 'searching',
+                                              'background': True, 'budgetSeconds': 600, 'questions': []},
+                            status='researching')
+    run_turn(runtime, sid, 'lượt người dùng')
+    content = session_of(store, sid)['messages'][0]['content']
+    assert limits.RESEARCH_MODE_BLOCK_MARKER not in content, 'lượt thường của main không mang khối mode'
+    assert limits.RESEARCH_BACKGROUND_BLOCK_MARKER in content
+
+
+def test_f9_the_mode_only_delegates_to_the_research_roles(harness):
+    """F9: trong mode chỉ `research`/`research-review`/`explore` được giao nhánh."""
+    store, runtime, sid = harness
+    session = session_of(store, sid)
+    session['config']['subagents'] = [{'id': 'build', 'enabled': True},
+                                      {'id': 'research', 'enabled': True}]
+    store.update_config(sid, session['config'])
+    research_runtime.apply_research_mode(runtime, session_of(store, sid), {'on': True})
+    session = session_of(store, sid)
+    with pytest.raises(PermissionError, match='RESEARCH_MODE_DELEGATE_ROLE'):
+        asyncio.run(runtime.delegate(session, {'role': 'build', 'goal': 'viết code'}))
+    # Vai được phép thì KHÔNG bị chặn ở cửa này (chỉ cần vượt qua kiểm tra vai).
+    with pytest.raises(ValueError, match='Child goal required'):
+        asyncio.run(runtime.delegate(session, {'role': 'research', 'goal': '   '}))
+
+
+def test_f9_the_exit_choice_prompt_uses_one_question_id(harness):
+    """F9 (id lời hỏi): đường API và đường lệnh phải cùng một id câu hỏi thoát."""
+    store, runtime, sid = harness
+    research_runtime.apply_research_mode(runtime, session_of(store, sid), {'on': True})
+    store.research_job_save('run-exit', sid, {'origin': 'mode', 'phase': 'searching',
+                                              'budgetSeconds': 600, 'questions': []}, status='researching')
+    config = session_of(store, sid)['config']
+    config['researchMode']['activeRunId'] = 'run-exit'
+    store.update_config(sid, config)
+    with pytest.raises(ValueError) as caught:
+        research_runtime.apply_research_mode(runtime, session_of(store, sid), {'on': False})
+    prompt = caught.value.payload['prompt']
+    assert prompt['questions'][0]['id'] == 'exit'
+    assert runtime._exit_choice_prompt(store.research_job('run-exit'))['questions'][0]['id'] == 'exit'
+
+
+def test_f10_a_card_answered_after_the_scope_was_rewritten_is_refused(harness):
+    """F10: khoá lạc quan so với revision SỐNG của phạm vi, không phải revision đóng băng trong prompt."""
+    store, runtime, sid = harness
+    research_runtime.apply_research_mode(runtime, session_of(store, sid), {'on': True})
+    scope_job(store, sid)
+    asyncio.run(runtime.dispatch(session_of(store, sid), 'research_scope',
+                                 {'action': 'ask', 'researchId': 'run-scope', 'questions': [
+                                     {'id': 'iq1', 'text': 'Dùng để làm gì?', 'blocking': True,
+                                      'options': [{'id': 'o1', 'label': 'Dùng ngay'}]}]}))
+    job = store.research_job('run-scope')
+    prompt = job['state']['prompts'][0]
+    # Phạm vi bị viết lại SAU khi thẻ được tạo ⇒ revision SỐNG tăng, revision của thẻ đứng yên.
+    state = dict(job['state'])
+    state['scope'] = {**state['scope'], 'revision': int(state['scope']['revision']) + 1}
+    store.research_job_save('run-scope', sid, state, status=job['status'])
+    job = store.research_job('run-scope')
+    assert job['state']['scope']['revision'] != prompt['revision']
+    with pytest.raises(ValueError, match=limits.RESEARCH_SCOPE_REVISION_STALE_CODE):
+        research_runtime.answer_prompt(runtime, sid, job, {
+            'promptId': prompt['promptId'], 'revision': prompt['revision'], 'start': True,
+            'answers': [{'questionId': 'iq1', 'optionId': 'o1'}]})
+    done = research_runtime.answer_prompt(runtime, sid, store.research_job('run-scope'), {
+        'promptId': prompt['promptId'], 'revision': job['state']['scope']['revision'],
+        'start': True, 'answers': [{'questionId': 'iq1', 'optionId': 'o1'}]})
+    assert done['resume'] is True
+
+
+LONG_EXCERPT = ('Mức hưởng chuyển tuyến bảo hiểm y tế được quy định theo tuyến và theo từng nhóm '
+                'đối tượng, kèm danh mục giấy tờ phải nộp. ') * 2
+
+
+def test_the_ledger_list_keeps_the_run_filter_when_the_run_has_no_rows_yet(harness):
+    """Rò rỉ (mục 'nhỏ'): run mới chưa có dòng nào KHÔNG được hiện dòng của run khác."""
+    store, runtime, sid = harness
+    session = session_of(store, sid)
+    session['config']['research'] = {'researchId': 'run-a'}
+    store.update_config(sid, session['config'])
+    asyncio.run(runtime.dispatch(session_of(store, sid), 'source_add',
+                                 {'claim': 'x', 'url': 'https://moh.gov.vn/a', 'excerpt': LONG_EXCERPT}))
+    session = session_of(store, sid)
+    session['config']['research'] = {'researchId': 'run-b'}
+    store.update_config(sid, session['config'])
+    listed = asyncio.run(runtime.dispatch(session_of(store, sid), 'source_list', {}))
+    assert listed['rows'] == [], 'sổ của run mới không được mang dòng của run khác'
+

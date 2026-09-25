@@ -519,7 +519,10 @@ SOURCE_FAKE_SUCCESS_MIN_CHARS = 300
 # (mode chỉ bật khi người dùng bấm nút hoặc gõ `/research`). `off` ⇒ mọi hành vi cũ của f17d54b.
 RESEARCH_MODE_ENV = 'BOXFOX_RESEARCH_MODE'
 RESEARCH_MODE_MODES = ('on', 'off')
-RESEARCH_MODE_DEFAULT_MODE = 'off'
+# Mặc định `on`: tính năng CÓ MẶT (vỏ mode + cửa 1..4 chạy thật). Người dùng vẫn phải TỰ bật mode
+# cho từng phiên. `off` là công tắc giết, quay về đúng f17d54b. Docstring `runtime.research_mode_available`
+# và ý O1 của kế hoạch đã nói `on`; để `off` thì cả P1 là mã chết (review F4).
+RESEARCH_MODE_DEFAULT_MODE = 'on'
 
 # Mức 3 chỉ mở được trong mode (cổng bốn cửa, §5.2). `off` ⇒ main được mở mức 3 như cũ.
 RESEARCH_TIER3_MODE_ONLY_ENV = 'BOXFOX_RESEARCH_TIER3_MODE_ONLY'
@@ -538,12 +541,26 @@ RESEARCH_TURN_TARGET_SECONDS = 600
 # Mã lỗi/sự kiện ổn định cho giao diện và test.
 RESEARCH_MODE_REQUIRED_CODE = 'RESEARCH_MODE_REQUIRED'
 RESEARCH_MODE_EXIT_CHOICE_REQUIRED_CODE = 'RESEARCH_EXIT_CHOICE_REQUIRED'
+# Công tắc `BOXFOX_RESEARCH_MODE=off`: API bật/tắt mode phải trả lỗi RÕ thay vì bật một chế độ
+# nửa vời (mọi cổng khác đều tắt khi công tắc tắt).
+RESEARCH_MODE_UNAVAILABLE_CODE = 'RESEARCH_MODE_UNAVAILABLE'
 RESEARCH_SCOPE_REVISION_STALE_CODE = 'RESEARCH_SCOPE_REVISION_STALE'
 RESEARCH_JOB_BUDGET_EXHAUSTED_CODE = 'RESEARCH_JOB_BUDGET_EXHAUSTED'
 RESEARCH_MODE_ENTRY_BY = ('toggle', 'command')
 RESEARCH_MODE_BLOCK_MARKER = '=== ACTIVE MODE: RESEARCH ==='
 RESEARCH_MODE_BLOCK_END = '=== END ACTIVE MODE ==='
 RESEARCH_MODE_EVENT_CODE = 'research_mode'
+# Khối bàn giao research → main (§5.10). Cặp mốc này là hợp đồng để `_sync_mode_block` GỠ được khối
+# cũ trước khi chèn khối mới: chỉ-ghi-thêm thì mỗi bản hồ sơ để lại một khối cũ nằm mãi trong
+# prompt hệ thống (đo sống 2026-09-25: hồ sơ v4 ⇒ prompt mang CẢ nhãn `partial` của v3 lẫn
+# `status completed` của v4).
+RESEARCH_HANDOFF_BLOCK_MARKER = '=== RESEARCH HANDOFF ==='
+RESEARCH_HANDOFF_BLOCK_END = '=== END RESEARCH HANDOFF ==='
+# Dòng nhắc "run đang chạy nền" ở lượt main (§5.2). Cặp mốc cũng là hợp đồng để `_sync_mode_block`
+# GỠ khối của lượt trước trước khi chèn lại: chỉ-ghi-thêm thì mỗi lượt chất thêm một bản (đo sống
+# 2026-09-25: ba lượt ⇒ ba khối trong cùng một prompt hệ thống).
+RESEARCH_BACKGROUND_BLOCK_MARKER = '=== BACKGROUND RESEARCH RUN ==='
+RESEARCH_BACKGROUND_BLOCK_END = '=== END BACKGROUND RESEARCH RUN ==='
 
 # Công cụ bị BỎ khỏi hồ sơ lượt khi ở mode: mode không có công cụ ghi (5.2, M-14).
 RESEARCH_MODE_EXCLUDED_TOOLS = frozenset({'file_write', 'file_edit_block', 'terminal_exec',

@@ -78,7 +78,9 @@ from .limits import (RESEARCH_MODE_ENV, RESEARCH_MODE_MODES, RESEARCH_MODE_DEFAU
                      RESEARCH_BACKGROUND_RUNS_MODES, RESEARCH_BACKGROUND_RUNS_DEFAULT_MODE,
                      RESEARCH_TURN_TARGET_SECONDS_ENV, RESEARCH_TURN_TARGET_SECONDS,
                      RESEARCH_JOB_ORIGIN, RESEARCH_JOB_ORIGIN_MAIN, RESEARCH_SCOPE_MAX_QUESTIONS,
-                     RESEARCH_EXIT_CHOICES, RESEARCH_CRITIQUE_LABEL)
+                     RESEARCH_EXIT_CHOICES, RESEARCH_CRITIQUE_LABEL,
+                     RESEARCH_HANDOFF_BLOCK_MARKER, RESEARCH_HANDOFF_BLOCK_END,
+                     RESEARCH_BACKGROUND_BLOCK_MARKER, RESEARCH_BACKGROUND_BLOCK_END)
 
 def _env_switch(env_name, modes, default, env=None):
     """Đọc một công tắc `on|off`; giá trị lạ ⇒ mặc định (không bao giờ ném)."""
@@ -3268,12 +3270,14 @@ class HarnessRuntime(RuntimeCommands):
         background = self.background_run(session)
         if background is not None:
             state = background.get('state') or {}
-            block = ('=== BACKGROUND RESEARCH RUN ===\n'
+            # Cặp mốc là hợp đồng để `_sync_mode_block` GỠ khối của lượt trước rồi chèn lại đúng MỘT
+            # lần (review F5) — đừng viết lại hai mốc này bằng chuỗi trần ở chỗ khác.
+            block = (f'{RESEARCH_BACKGROUND_BLOCK_MARKER}\n'
                      f'Run {background["research_id"]} is still running in the background '
                      f'(status {background["status"]}, phase {state.get("phase") or "unknown"}). You may '
                      'call `research_status` and `research_update` (pause/cancel) for it, but do NOT '
                      'delegate branches to it and do NOT open a new tier-3 run while the mode is off.\n'
-                     '=== END BACKGROUND RESEARCH RUN ===')
+                     f'{RESEARCH_BACKGROUND_BLOCK_END}')
         return {'mode': 'main', 'tools': list(config.get('tools') or []), 'promptBlock': block}
 
     def research_handoff(self, session):
@@ -3321,7 +3325,7 @@ class HarnessRuntime(RuntimeCommands):
             if not confirmed and not assumed:
                 assumed.append('goal: ' + str(state.get('goal') or state.get('question') or '(unset)'))
             budget = int(state.get('budgetSeconds') or 0)
-            lines = ['=== RESEARCH HANDOFF ===',
+            lines = [RESEARCH_HANDOFF_BLOCK_MARKER,
                      f'researchId: {job["research_id"]}  dossier: {dossier["relative_path"]} '
                      f'(version {version}, hash {dossier.get("content_hash") or "n/a"})',
                      'labels: ' + (', '.join(labels) if labels else 'none'),
@@ -3335,7 +3339,7 @@ class HarnessRuntime(RuntimeCommands):
                 lines.append('open questions: ' + '; '.join(open_questions))
             lines.append('Rule: do NOT raise the confidence of the run; keep the labels above. When you '
                          'write a plan, pass researchDependencies.')
-            lines.append('=== END RESEARCH HANDOFF ===')
+            lines.append(RESEARCH_HANDOFF_BLOCK_END)
             return {'block': '\n'.join(lines), 'researchId': job['research_id'], 'version': version}
         return None
 
@@ -3352,8 +3356,11 @@ class HarnessRuntime(RuntimeCommands):
         """Dừng/huỷ MỘT run theo job (§5.3, M-09) — KHÔNG bao giờ `stop` cả phiên.
 
         `reason` = `'pause'` ⇒ `status='paused'`; mọi giá trị khác ⇒ `status='cancelled'`. Pha cũ
-        được giữ trong `state.phase`/`phaseHistory`. Con của job bị huỷ qua `cancel_child`. Lượt
-        đang chạy chỉ bị dừng khi nó ĐÚNG là lượt tiếp tục của job (`research-resume-<id>`).
+        được giữ trong `state.phase`/`phaseHistory`. Thứ tự theo §5.3: (1) ghi trạng thái TRƯỚC,
+        (2) huỷ con của job, (3) dừng lượt đang chạy — và chỉ khi lượt ấy ĐÚNG là lượt tiếp tục
+        của job (`research-resume-<id>`). Bước (3) KHÔNG bao giờ `await` chính task đang gọi
+        `research_halt`: lượt bơm tự tạm dừng job của mình là đường hợp lệ, mà chờ chính mình thì
+        treo lượt và mất luôn trạng thái vừa ghi (review F2).
         """
         sid = job['session_id']
         state = dict(job['state'] or {})
@@ -3362,6 +3369,12 @@ class HarnessRuntime(RuntimeCommands):
         history.append({'phase': state.get('phase'), 'at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
                         'reason': str(reason)})
         state['phaseHistory'] = history
+        updated = self.store.research_job_save(job['research_id'], sid, state, status=status)
+        self.store.emit(sid, 'research_run', {'researchId': job['research_id'], 'status': updated['status'],
+                                              'phase': state.get('phase'), 'background': bool(state.get('background')),
+                                              'revision': updated['revision']})
+        system_log.write('research.job.halted', level='info', session_id=sid, code='RESEARCH_JOB_HALTED',
+                         researchId=job['research_id'], status=status, reason=str(reason))
         question_ids = {item.get('id') for item in (state.get('questions') or []) if isinstance(item, dict)}
         try:
             owner = self.store.get(sid)
@@ -3379,13 +3392,8 @@ class HarnessRuntime(RuntimeCommands):
         task = self.tasks.get(sid)
         if task is not None and not task.done() and invocation.startswith(f'research-resume-{job["research_id"]}'):
             task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-        updated = self.store.research_job_save(job['research_id'], sid, state, status=status)
-        self.store.emit(sid, 'research_run', {'researchId': job['research_id'], 'status': updated['status'],
-                                              'phase': state.get('phase'), 'background': bool(state.get('background')),
-                                              'revision': updated['revision']})
-        system_log.write('research.job.halted', level='info', session_id=sid, code='RESEARCH_JOB_HALTED',
-                         researchId=job['research_id'], status=status, reason=str(reason))
+            if task is not asyncio.current_task():
+                await asyncio.gather(task, return_exceptions=True)
         return updated
 
     async def _run(self, sid):
@@ -5705,6 +5713,13 @@ class HarnessRuntime(RuntimeCommands):
         configured = next((r for r in session['config']['subagents'] if r['id'] == role and r.get('enabled', True)), None)
         if not configured:
             raise PermissionError('Specialist is disabled or unknown')
+        # F9 (§5.2): trong mode `delegate_task` chỉ được giao cho `RESEARCH_MODE_DELEGATE_ROLES`.
+        # Mode không có công cụ ghi, nên một nhánh `build`/`debug`/`plan` được giao từ đây là một
+        # nhánh không thể làm việc — từ chối sớm thay vì để con chết giữa đường.
+        if research_mode(session)['on'] and role not in RESEARCH_MODE_DELEGATE_ROLES:
+            raise PermissionError('RESEARCH_MODE_DELEGATE_ROLE: trong chế độ Research chỉ được giao cho '
+                                  + ', '.join(sorted(RESEARCH_MODE_DELEGATE_ROLES))
+                                  + f' — vai {role!r} cần công cụ ghi mà mode đã bỏ')
         goal = args.get('goal', '')
         if not isinstance(goal, str) or not goal.strip():
             raise ValueError('Child goal required')
