@@ -108,10 +108,70 @@ def test_the_live_path_needs_a_delegate_even_when_the_gate_is_open(seeded, monke
 
     def fake_delegate(role, task_kind, prompt):
         seen.append((role, task_kind))
-        return ('số không khớp; gán sai; cũ; thiếu hướng; đề xuất; giả định; cùng nguồn; '
-                'điều kiện; không có nguồn')
+        return ('số không khớp; gán sai; nguồn cũ; thiếu hướng; đề xuất của chính mình; '
+                'giả định chưa xác nhận; cùng nguồn; điều kiện đo; không có nguồn')
 
     live = seeded.run_live(fixtures=seeded.load_fixtures(), delegate=fake_delegate)
     assert live['allowed'] is True and live['total'] == len(seen) == len(briefs)
     assert live['catchRate'] == 1.0
     assert all(role == 'research-review' for role, _ in seen)
+    # Đường live tự nói nó chỉ là tín hiệu khói, không phải điểm đo chất lượng.
+    assert live['smoke'] is True and live['signal'] == 'smoke' and 'TÍN HIỆU KHÓI' in live['note']
+
+
+def test_the_live_hit_needs_phrase_level_evidence_not_generic_words(seeded):
+    """Bài soát chung chung (chỉ có "số", "so sánh", "điều kiện") KHÔNG được tính là bắt lỗi."""
+    generic = 'Bài này có nhiều số và cần so sánh điều kiện giữa các bảng đo.'
+    assert seeded._live_hit('wrong-number', generic) is False
+    assert seeded._live_hit('mismatched-benchmark', generic) is False
+    assert seeded._live_hit('same-origin-independent', generic) is False
+    # Cụm từ đặc trưng của đúng loại lỗi thì mới tính.
+    assert seeded._live_hit('wrong-number', 'Số không khớp với đoạn trích.') is True
+    assert seeded._live_hit('mismatched-benchmark', 'Hai bảng đo khác điều kiện nên không so được.') is True
+    assert seeded._live_hit('same-origin-independent', 'Hai dòng cùng một nguồn, không độc lập.') is True
+
+
+
+def test_the_two_formerly_shared_detectors_read_their_own_signal(seeded):
+    """R4: `same-origin-independent` và `mismatched-benchmark` không còn dùng chung một bộ dò."""
+    assert seeded.same_origin_independent is not seeded.mismatched_benchmark
+    collapse = {'rows': [
+        {'rowId': 'r1', 'url': 'https://a.example/p', 'host': 'a.example', 'excerpt': 'x'},
+        {'rowId': 'r2', 'url': 'https://a.example/q', 'host': 'a.example', 'excerpt': 'y'}],
+        'claims': [{'claimId': 'c1', 'claimType': 'numeric', 'confidence': 'high',
+                    'rowIds': ['r1', 'r2']}]}
+    distinct = {'rows': [
+        {'rowId': 'r1', 'url': 'https://a.example/p', 'host': 'a.example', 'excerpt': 'x'},
+        {'rowId': 'r2', 'url': 'https://b.example/q', 'host': 'b.example', 'excerpt': 'y'}],
+        'claims': collapse['claims']}
+    # Tín hiệu riêng của same-origin: hai dòng thu về MỘT cụm gốc.
+    assert seeded.same_origin_independent(collapse)['detected'] is True
+    assert seeded.same_origin_independent(distinct)['detected'] is False
+    # Tín hiệu riêng của mismatched-benchmark: điều kiện đo không được ghi lại.
+    unrecorded = {'rows': [{'rowId': 'r1', 'host': 'a.example', 'excerpt': 'x',
+                            'recordedConditions': False}],
+                  'claims': [{'claimId': 'c1', 'claimType': 'benchmark', 'confidence': 'high',
+                              'rowIds': ['r1']}]}
+    recorded = {'rows': [dict(unrecorded['rows'][0], recordedConditions=True)],
+                'claims': unrecorded['claims']}
+    assert seeded.mismatched_benchmark(unrecorded)['detected'] is True
+    assert seeded.mismatched_benchmark(recorded)['detected'] is False
+    # Mỗi bộ dò chỉ bắt đúng loại của mình.
+    assert seeded.mismatched_benchmark(collapse)['detected'] is False
+    assert seeded.same_origin_independent(unrecorded)['detected'] is False
+
+
+def test_the_survey_anchor_is_the_frozen_scope_survey_date_with_a_legacy_fallback(seeded):
+    """R3: mốc khảo sát đọc `scope.surveyDate` (hình dạng sản xuất) trước, `timePolicy.asOf` là đường lùi."""
+    assert seeded._scope_as_of({'scope': {'surveyDate': '2026-09-25'}}) == '2026-09-25'
+    assert seeded._scope_as_of({'scope': {'timePolicy': {'asOf': '2020-01-01'}}}) == '2020-01-01'
+    assert seeded._scope_as_of(
+        {'scope': {'surveyDate': '2026-09-25', 'timePolicy': {'asOf': '2020-01-01'}}}) \
+        == '2026-09-25', 'surveyDate thắng khi cả hai cùng có'
+    assert seeded._scope_as_of({}) == ''
+    # Bộ ca outdated nay dùng ĐÚNG hình dạng sản xuất ghi, không còn `timePolicy.asOf`.
+    fixture = next(item for item in seeded.load_fixtures()
+                   if item['kind'] == 'outdated-supports-current')
+    scopes = [bundle['scope'] for key in ('clean', 'injected') for bundle in fixture[key]]
+    assert scopes and all('surveyDate' in scope for scope in scopes)
+    assert all('asOf' not in (scope.get('timePolicy') or {}) for scope in scopes)

@@ -19,9 +19,9 @@
     {
       "scope": {
         "timePolicy": {
-          "velocity": "fast",
-          "asOf": "2026-09-25"
-        }
+          "velocity": "fast"
+        },
+        "surveyDate": "2026-09-25"
       },
       "rows": [
         {
@@ -51,9 +51,9 @@
     {
       "scope": {
         "timePolicy": {
-          "velocity": "fast",
-          "asOf": "2026-09-25"
-        }
+          "velocity": "fast"
+        },
+        "surveyDate": "2026-09-25"
       },
       "rows": [
         {
@@ -85,9 +85,9 @@
     {
       "scope": {
         "timePolicy": {
-          "velocity": "fast",
-          "asOf": "2026-09-25"
-        }
+          "velocity": "fast"
+        },
+        "surveyDate": "2026-09-25"
       },
       "rows": [
         {
@@ -117,9 +117,9 @@
     {
       "scope": {
         "timePolicy": {
-          "velocity": "fast",
-          "asOf": "2026-09-25"
-        }
+          "velocity": "fast"
+        },
+        "surveyDate": "2026-09-25"
       },
       "rows": [
         {

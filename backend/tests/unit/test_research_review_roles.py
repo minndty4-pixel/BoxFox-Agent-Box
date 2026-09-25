@@ -9,11 +9,49 @@ Một nguồn sự thật cho "có phải phản biện không": `research_revie
 * hai bên soát ĐỘC LẬP mâu thuẫn ⇒ nhận định bị tranh chấp, trần lấy mức THẤP NHẤT và hồ sơ phải
   nói ra — không lấy theo đa số.
 """
+import pathlib
 import pytest
 
-from agentbox.agent_core import limits, research_review, roles
+from agentbox.agent_core import limits, research_evidence, research_review, research_runtime, roles
+from agentbox.agent_core.runtime import HarnessRuntime
+from agentbox.memory.session_store import SessionStore
 
 OFF = {limits.RESEARCH_CRITIQUE_TIER2_ENV: 'off'}
+
+
+class _FixtureExecutor:
+    async def execute(self, name, args, sid):
+        return {'content': 'ok'}
+
+    async def cleanup(self, sid):
+        pass
+
+
+class _FixtureModel:
+    async def complete(self, messages, tools, route, max_tokens=4096, on_thought=None, on_content=None):
+        return {'choices': [{'message': {'content': 'ok'}, 'finish_reason': 'stop'}]}
+
+
+def _harness(tmp_path):
+    store = SessionStore(pathlib.Path(tmp_path) / 'sessions.db')
+    runtime = HarnessRuntime(store, _FixtureExecutor(), _FixtureModel())
+    return store, runtime
+
+
+def _research_branch(store, runtime, research_id, scope):
+    """Một phiên con `research` mở sẵn một run với thẻ phạm vi cho trước."""
+    sid = runtime.create({'skills': [], 'research': {'researchId': research_id}},
+                         role='research')['id']
+    store.research_job_save(research_id, sid, {'scope': scope, 'questions': []},
+                            status='researching')
+    return store.get(sid)
+
+
+def _row(row_id, host, published_at='2020-06-01', survey=True):
+    return {'rowId': row_id, 'claim': f'nguồn {row_id}', 'url': f'https://{host}/bai',
+            'host': host, 'excerpt': f'đoạn trích {row_id}', 'publishedAt': published_at,
+            'accessLevel': 'fulltext-read', 'payload': {'survey': survey}}
+
 
 
 # --- chế độ soát -------------------------------------------------------------
@@ -166,3 +204,113 @@ def test_the_branch_report_tool_belongs_to_the_research_branch_only():
                                                            parent=roles.ORCHESTRATOR_TOOLS)
     assert 'claim_assess' in roles.allowed_tools('research-review',
                                                  parent=roles.ORCHESTRATOR_TOOLS)
+
+
+def test_two_anonymous_records_are_never_a_contested_disagreement():
+    """Danh tính KHÔNG được bịa: hai hồ sơ không tên không tính là hai bên soát độc lập."""
+    anonymous = research_review.resolve_disagreement(
+        [{'verdict': 'ok', 'cap': 'high'}, {'verdict': 'revise', 'cap': 'low'}], claim_id='c1')
+    assert anonymous['contested'] is False and anonymous['mustReport'] is False
+    assert anonymous['distinctReviewers'] == []
+    assert anonymous['reportLine'] == ''
+    # Một bên có tên + một bên vô danh cũng KHÔNG đủ hai bên độc lập.
+    mixed = research_review.resolve_disagreement(
+        [{'reviewer': 'a', 'verdict': 'ok'}, {'verdict': 'revise'}])
+    assert mixed['contested'] is False and mixed['distinctReviewers'] == ['a']
+
+
+# --- thẻ nhánh `research_branch_report` --------------------------------------
+
+def test_the_branch_report_caps_against_the_frozen_survey_date_not_today(tmp_path):
+    """R3: thẻ nhánh và cổng hồ sơ phải kẹp cùng mốc `scope['surveyDate']`, không phải hôm nay."""
+    store, runtime = _harness(tmp_path)
+    scope = {'surveyDate': '2020-01-01', 'timePolicy': {'velocity': 'fast'}}
+    session = _research_branch(store, runtime, 'rs1', scope)
+    sid = session['id']
+    result = research_review.apply_branch_report(runtime, session, {
+        'researchId': 'rs1', 'facetId': 'f-x',
+        'rows': [_row('r1', 'alpha.example', published_at='2019-06-01'),
+                 _row('r2', 'beta.example', published_at='2019-06-01')],
+        'claims': [{'claimId': 'c1', 'text': 'Xu hướng nguồn đang tăng.',
+                    'claimType': 'trend', 'stanceOrigin': 'source-stated',
+                    'confidence': 'high', 'rowIds': ['r1', 'r2']}],
+    })
+    assert result['rowIds'] == ['r1', 'r2']
+    stored = store.claim_meta('rs1', result['claimIds'][0])
+    # `2019-06-01` nằm TRONG cửa sổ của mốc khảo sát 2020-01-01, nhưng NGOÀI cửa sổ của hôm nay.
+    assert stored['confidenceCap'] == 'high'
+    survey, days, _velocity = research_runtime._scope_time_window(
+        runtime, 'rs1', store.research_job('rs1'))
+    assert survey == '2020-01-01' and days == research_evidence.window_days('fast')
+    cited = [store.source_row(sid, row_id) for row_id in ('r1', 'r2')]
+    expected = research_evidence.confidence_cap('trend', cited, stance_origin='source-stated',
+                                                window_days=days, as_of=survey)
+    assert stored['confidenceCap'] == expected['cap'] == 'high'
+    assert research_evidence.confidence_cap(
+        'trend', cited, stance_origin='source-stated', window_days=days,
+        as_of=research_evidence.survey_date())['cap'] == 'medium', \
+        'mốc hôm nay phải cho mức trần KHÁC — ca kiểm này thực sự phân biệt hai mốc'
+    store.close()
+
+
+def test_every_cited_row_is_linked_to_the_claim(tmp_path):
+    """R7a: nhận định nhiều nguồn giữ đủ dấu vết trong sổ liên kết, không chỉ dòng đầu."""
+    store, runtime = _harness(tmp_path)
+    session = _research_branch(store, runtime, 'rs2', {'surveyDate': '2020-01-01'})
+    sid = session['id']
+    research_review.apply_branch_report(runtime, session, {
+        'researchId': 'rs2',
+        'rows': [_row('r1', 'alpha.example'), _row('r2', 'beta.example')],
+        'claims': [{'claimId': 'c1', 'text': 'Một nhận định do hai nguồn đỡ.',
+                    'claimType': 'numeric', 'confidence': 'high', 'rowIds': ['r1', 'r2']}],
+    })
+    linked = {row['row_id'] for row in store.evidence_graph(sid)}
+    assert linked == {'r1', 'r2'}, 'mọi dòng được dẫn phải có liên kết (chỉ dòng đầu là thiếu)'
+    store.close()
+
+
+def test_the_facet_clusters_are_unioned_across_all_claims(tmp_path):
+    """R7b: `originClusters` là HỢP của mọi nhận định, không phải giá trị của nhận định cuối."""
+    store, runtime = _harness(tmp_path)
+    session = _research_branch(store, runtime, 'rs3', {'surveyDate': '2020-01-01'})
+    research_review.apply_branch_report(runtime, session, {
+        'researchId': 'rs3', 'facetId': 'f-x',
+        'rows': [_row('r1', 'alpha.example'), _row('r2', 'beta.example')],
+        'claims': [{'claimId': 'c1', 'text': 'Nhận định một.', 'claimType': 'numeric',
+                    'confidence': 'high', 'rowIds': ['r1']},
+                   {'claimId': 'c2', 'text': 'Nhận định hai.', 'claimType': 'numeric',
+                    'confidence': 'high', 'rowIds': ['r2']}],
+    })
+    facet = store.facet('rs3', 'f-x')
+    assert facet['originClusters'] == 2, 'hợp hai cụm khác nhau, không chỉ cụm của nhận định cuối'
+    store.close()
+
+
+def test_an_unknown_row_id_does_not_resurrect_an_unrelated_source(tmp_path):
+    """R7d: mã dòng lạ không được gắn nhận định vào dòng đầu tiên của báo cáo."""
+    store, runtime = _harness(tmp_path)
+    session = _research_branch(store, runtime, 'rs4', {'surveyDate': '2020-01-01'})
+    sid = session['id']
+    result = research_review.apply_branch_report(runtime, session, {
+        'researchId': 'rs4',
+        'rows': [_row('r1', 'alpha.example')],
+        'claims': [{'text': 'Nhận định trỏ vào dòng không tồn tại.',
+                    'claimType': 'numeric', 'confidence': 'high', 'rowIds': ['rBogus']}],
+    })
+    assert result['claimIds'] == []
+    # `source_add` ghim nhận định của chính dòng lên nó; điều KHÔNG được xảy ra là nhận định trỏ
+    # vào mã dòng lạ bị gắn vào dòng r1.
+    assert 'Nhận định trỏ vào dòng không tồn tại.' not in {
+        row['claim'] for row in store.evidence_graph(sid)}, \
+        'không được hồi sinh dòng r1 cho một mã dòng lạ'
+    store.close()
+
+
+def test_the_branch_report_tool_refuses_anyone_but_the_research_branch(tmp_path):
+    """R7e: cổng vai là `research` — không chỉ `orchestrator`/rỗng."""
+    store, runtime = _harness(tmp_path)
+    for role in ('orchestrator', 'research-review', 'explore'):
+        sid = runtime.create({'skills': []}, role=role)['id']
+        with pytest.raises(PermissionError):
+            research_review.apply_branch_report(runtime, store.get(sid), {'researchId': 'rs5'})
+    store.close()

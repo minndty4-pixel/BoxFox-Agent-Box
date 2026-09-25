@@ -302,9 +302,9 @@ def mismatched_benchmark(bundle):
     evidence = harness_module('research_evidence')
     by_id = {row.get('rowId'): row for row in _rows(bundle)}
     for claim in _claims(bundle):
-        kind = (_text(claim.get('claimType') or claim.get('type')).casefold().replace('_', '-'))
-        if evidence is not None:
-            kind = evidence.normalize_claim_type(claim.get('claimType') or claim.get('type'))
+        raw_kind = claim.get('claimType') or claim.get('type')
+        kind = (evidence.normalize_claim_type(raw_kind) if evidence is not None
+                else _text(raw_kind).casefold().replace('_', '-'))
         if kind != 'benchmark':
             continue
         cited = _cited(claim, by_id)
