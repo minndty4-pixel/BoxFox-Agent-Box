@@ -195,7 +195,13 @@ def _action_error(exc, statuses=None, default=400):
 _RESEARCH_CONFLICT_STATUS = {'RESEARCH_SCOPE_REVISION_STALE': 409,
                              'RESEARCH_JOB_REVISION_CONFLICT': 409,
                              'RESEARCH_FACET_UNKNOWN': 404,
-                             'RESEARCH_QUESTION_UNKNOWN': 404}
+                             'RESEARCH_QUESTION_UNKNOWN': 404,
+                             # P5 (§5.8): bốn cửa từ chối của `action='refresh'` — công tắc tắt, chưa
+                             # có hồ sơ, run gốc đang chạy, đã có run làm mới đang chạy.
+                             'RESEARCH_REFRESH_DISABLED': 409,
+                             'RESEARCH_REFRESH_NO_DOSSIER': 409,
+                             'RESEARCH_REFRESH_SOURCE_ACTIVE': 409,
+                             'RESEARCH_REFRESH_RUN_ACTIVE': 409}
 
 
 def _plan_review_json(row):
@@ -594,7 +600,7 @@ def create_app(runtime):
         body = await request.json()
         action = str(body.get('action') or '')
         if action not in {'pause', 'resume', 'cancel', 'prioritize', 'skip', 'budget', 'scope',
-                          'deepen'}:
+                          'deepen', 'refresh'}:
             raise ApiError('RESEARCH_ACTION_INVALID', action)
         if action == 'scope':
             # §5.12: chủ nhà sửa thẻ phạm vi trên giao diện. Khoá lạc quan là `revision` của THẺ.
@@ -608,6 +614,14 @@ def create_app(runtime):
             try:
                 return web.json_response(research_runtime.deepen(runtime, job['session_id'],
                                                                  job, body))
+            except ValueError as exc:
+                raise _action_error(exc, _RESEARCH_CONFLICT_STATUS) from None
+        if action == 'refresh':
+            # P5 (§5.8, use case H): mở RUN LÀM MỚI kế thừa sổ nguồn của một run đã có hồ sơ. Công
+            # tắc `BOXFOX_RESEARCH_REFRESH=off` do chính `refresh_run` chặn (một chỗ đọc công tắc).
+            try:
+                return web.json_response(await research_runtime.refresh_run(
+                    runtime, runtime.store.get(job['session_id']), job, body))
             except ValueError as exc:
                 raise _action_error(exc, _RESEARCH_CONFLICT_STATUS) from None
         if action in {'pause', 'cancel'}:

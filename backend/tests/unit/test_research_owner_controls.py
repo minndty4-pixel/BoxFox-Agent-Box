@@ -270,3 +270,102 @@ def test_the_scope_event_reaches_the_session_stream(tmp_path):
 def object_with_store(store):
     """Runtime tối thiểu cho hàm runtime: chỉ `store` là được đọc."""
     return types.SimpleNamespace(store=store, search_db_path=None)
+
+
+# --- hợp đồng lỗi của tuyến (đợt soát `ed485f3`, finding 2/6/7/8) -------------
+
+def test_the_scope_lock_answers_a_contract_code_for_a_non_integer_revision(tmp_path):
+    """`revision` không phải số ⇒ `RESEARCH_SCOPE_REVISION_INVALID`, KHÔNG phải thông báo của Python."""
+    store = SessionStore(tmp_path / 'sessions.sqlite')
+    job = scope_job(store)
+
+    async def flow():
+        server = TestServer(create_app(FakeRuntime(store)))
+        await server.start_server()
+        try:
+            async with ClientSession() as http:
+                base = server.make_url('/api/agent/research/jobs/RS1')
+                for revision in ({}, 'banana'):
+                    answer = await http.patch(base, headers=HEADERS,
+                                              json={'action': 'scope', 'revision': revision,
+                                                    'scope': {'depth': 'deep'}})
+                    assert answer.status == 400
+                    body = await answer.json()
+                    assert body['code'] == 'RESEARCH_SCOPE_REVISION_INVALID'
+                    assert 'int()' not in body['error'] and 'invalid literal' not in body['error']
+                    assert body['error'].count('RESEARCH_SCOPE_REVISION_INVALID') == 1
+        finally:
+            await server.close()
+
+    asyncio.run(flow())
+
+
+def test_a_stale_job_revision_answers_409_without_a_doubled_code(tmp_path):
+    """Khoá lạc quan của VIỆC cũng là 409, và chi tiết không lặp lại mã lỗi."""
+    store = SessionStore(tmp_path / 'sessions.sqlite')
+    scope_job(store)
+
+    async def flow():
+        server = TestServer(create_app(FakeRuntime(store)))
+        await server.start_server()
+        try:
+            async with ClientSession() as http:
+                answer = await http.patch(server.make_url('/api/agent/research/jobs/RS1'),
+                                          headers=HEADERS,
+                                          json={'action': 'budget', 'revision': 99,
+                                                'budgetSeconds': 600})
+                assert answer.status == 409
+                body = await answer.json()
+                assert body['code'] == 'RESEARCH_JOB_REVISION_CONFLICT'
+                assert body['error'] == 'RESEARCH_JOB_REVISION_CONFLICT'
+        finally:
+            await server.close()
+
+    asyncio.run(flow())
+
+
+def test_two_owner_scope_edits_leave_two_history_rows(tmp_path):
+    """Sửa thẻ hai lần ⇒ hai hàng `phaseHistory` (finding 7), không bị luật chống trùng nuốt."""
+    store = SessionStore(tmp_path / 'sessions.sqlite')
+    job = scope_job(store)
+    runtime = object_with_store(store)
+    research_runtime.scope_update(runtime, job['session_id'], store.research_job('RS1'),
+                                  {'revision': 1, 'scope': {'depth': 'deep'}})
+    research_runtime.scope_update(runtime, job['session_id'], store.research_job('RS1'),
+                                  {'revision': 2, 'scope': {'depth': 'standard'}})
+    history = store.research_job('RS1')['state']['phaseHistory']
+    assert [row['reason'] for row in history] == ['scope-edited', 'scope-edited']
+
+
+def test_deepen_refuses_an_unknown_question_and_queues_nothing(tmp_path):
+    store = SessionStore(tmp_path / 'sessions.sqlite')
+    job = scope_job(store)
+
+    async def flow():
+        server = TestServer(create_app(FakeRuntime(store)))
+        await server.start_server()
+        try:
+            async with ClientSession() as http:
+                answer = await http.patch(server.make_url('/api/agent/research/jobs/RS1'),
+                                          headers=HEADERS,
+                                          json={'action': 'deepen', 'questionId': 'q-không-có',
+                                                'note': 'x'})
+                assert answer.status == 404
+                body = await answer.json()
+                assert body['code'] == 'RESEARCH_QUESTION_UNKNOWN'
+                assert body['error'].count('RESEARCH_QUESTION_UNKNOWN') == 1
+        finally:
+            await server.close()
+
+    assert store.research_job('RS1')['state'].get('deepenRequests') in (None, [])
+
+
+def test_reading_coverage_never_creates_the_search_database(tmp_path):
+    """`write=False` (tuyến danh sách/chi tiết) không được sinh cơ sở dữ liệu tìm kiếm."""
+    store = SessionStore(tmp_path / 'sessions.sqlite')
+    scope_job(store)
+    missing = tmp_path / 'chưa-có.db'
+    runtime = types.SimpleNamespace(store=store, search_db_path=str(missing))
+    coverage = research_runtime.coverage_refresh(runtime, 'RS1', write=False)
+    assert coverage  # công tắc đang bật ở mặc định
+    assert not missing.exists()

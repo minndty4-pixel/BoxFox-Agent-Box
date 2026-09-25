@@ -16,6 +16,7 @@ import re
 import time
 import unicodedata
 import urllib.parse
+from pathlib import Path
 from typing import Any
 
 from . import journal, research_header, research_ledger, research_profiles, research_quality
@@ -48,6 +49,11 @@ from .limits import (
     RESEARCH_MODE_REQUIRED_CODE, RESEARCH_MODE_EXIT_CHOICE_REQUIRED_CODE, RESEARCH_MODE_EVENT_CODE,
     RESEARCH_JOB_ORIGIN, RESEARCH_JOB_ORIGIN_MAIN,
     RESEARCH_SCOPE_MAX_QUESTIONS, RESEARCH_SCOPE_REVISION_INVALID_CODE,
+    RESEARCH_REFRESH_DISABLED_CODE, RESEARCH_REFRESH_INHERITED_STATUS,
+    RESEARCH_REFRESH_MODE_UNKNOWN_CODE, RESEARCH_REFRESH_NO_DOSSIER_CODE,
+    RESEARCH_REFRESH_RUN_ACTIVE_CODE, RESEARCH_REFRESH_SOURCE_ACTIVE_CODE,
+    RESEARCH_REFRESH_WITHDRAWN_STATUSES,
+    RESEARCH_REFRESH_ENV, RESEARCH_REFRESH_MODES, RESEARCH_REFRESH_DEFAULT_MODE,
     RESEARCH_SCOPE_REVISION_STALE_CODE,
     RESEARCH_STALE_CURRENT_CLAIM_CODE, RESEARCH_STALE_CURRENT_CLAIM_LABEL,
     RESEARCH_COVERAGE_LABEL,
@@ -108,6 +114,9 @@ def research_tier_limits(tier) -> dict:
 # Mode mà `research_verify` phải GHI được thì hồ sơ mới coi là đã soát. `coverage` có mặt trong
 # `reviewModes` để nhắc giao việc, nhưng cổng hồ sơ không đòi bản ghi ấy (thiếu nó không chặn ghi).
 GATE_REVIEW_MODES = ('evidence', 'critique')
+
+# §5.8: trạng thái nào của run gốc thì được phép mở run làm mới (run đang chạy thì không).
+_REFRESHABLE_JOB_STATUSES = frozenset({'completed', 'partial', 'cancelled', 'paused'})
 
 
 def _review_modes_for(state: dict | None, tier: int) -> list[str]:
@@ -1370,11 +1379,109 @@ def _scope_time_window(rt, research_id, job):
 
 
 def _changelog_body(rt, research_id, version) -> str:
-    """`changelog.md` của kiểu việc `refresh`: danh sách bản đã ghi + bản này (§5.8)."""
+    """`changelog.md` của kiểu việc `refresh` (§5.8).
+
+    Run làm mới (`state.refreshOf`) ghi bản so NGUỒN với run gốc; run thường giữ nguyên danh sách
+    các bản đã ghi — tệp cũ đọc y như trước.
+    """
+    job = rt.store.research_job(research_id)
+    state = dict(job['state'] or {}) if job else {}
+    source_id = str(state.get('refreshOf') or '').strip()
+    if source_id:
+        return refresh_changelog(rt, job['session_id'], source_id, research_id, version=version)
     lines = ['# Nhật ký thay đổi', '']
     for item in rt.store.dossier_versions(research_id):
         lines.append(f'- bản v{int(item)}')
     lines.append(f'- bản v{int(version)} (bản này)')
+    return '\n'.join(lines) + '\n'
+
+
+def _refresh_mode(env=None) -> tuple[str, str | None]:
+    """`(mode, unknown)` của công tắc làm mới (`off` ⇒ API từ chối `action='refresh'`)."""
+    return _mode(RESEARCH_REFRESH_ENV, RESEARCH_REFRESH_MODES, RESEARCH_REFRESH_DEFAULT_MODE, env)
+
+
+def _row_urls(rt, sid, research_id) -> dict:
+    """Dòng sổ của MỘT run, khoá theo URL — dòng không có URL thì bỏ (không so được).
+
+    Đọc SỔ NGUỒN chứ không đọc cặp (nhận định, đoạn trích): nguồn kế thừa từ run gốc chỉ nằm ở sổ
+    (chưa qua `evidence_link`), mà `changelog.md` phải kể được cả chúng. Cùng một URL có nhiều dòng
+    (làn sóng sau đọc lại) thì dòng MỚI NHẤT là dòng đại diện.
+    """
+    out = {}
+    for row in rt.store.source_rows(sid, research_id=research_id, limit=SOURCE_ROW_LIMIT_MAX,
+                                    newest_first=True):
+        url = str(row.get('url') or '').strip()
+        if url:
+            out.setdefault(url, row)
+    return out
+
+
+def _row_inherited(row) -> bool:
+    """Dòng này là dòng CHÉP từ run gốc (`payload.inherited`, §5.3) hay không."""
+    payload = row.get('payload')
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload or '{}')
+        except ValueError:
+            return False
+    return bool((payload or {}).get('inherited'))
+
+
+def _row_changed(before, after) -> bool:
+    """Một nguồn ĐỔI khi trạng thái, đoạn trích hoặc mức truy cập khác đi (§5.8)."""
+    for key in ('status', 'excerpt', 'accessLevel'):
+        if str(before.get(key) or '') != str(after.get(key) or ''):
+            return True
+    return False
+
+
+def _row_line(row) -> str:
+    """Một dòng changelog: nguồn, tầng, trạng thái, nhận định, độ dài đoạn trích."""
+    return (f'- {row.get("url") or ""} · tầng {row.get("tier")} · {row.get("status") or "chưa rõ"} · '
+            f'{row.get("accessLevel") or "snippet"} · {str(row.get("claim") or "")[:120]} · đoạn trích '
+            f'{len(str(row.get("excerpt") or ""))} ký tự')
+
+
+def refresh_changelog(rt, sid, source_id, research_id, *, version=0) -> str:
+    """`changelog.md` của một lần làm mới: Nguồn mới / đổi / rút / giữ nguyên (§5.8).
+
+    So hai run theo URL nguồn. "Rút" gồm cả nguồn biến mất khỏi run mới LẪN nguồn mang trạng thái
+    rút (`limits.RESEARCH_REFRESH_WITHDRAWN_STATUSES`). Mốc khảo sát cũ đọc từ `state.refreshSince`
+    của run làm mới — con số của lượt mở run, không suy lại theo giờ đọc tệp.
+    """
+    job = rt.store.research_job(research_id)
+    state = dict(job['state'] or {}) if job else {}
+    before = _row_urls(rt, sid, source_id)
+    after = _row_urls(rt, sid, research_id)
+    new_rows, changed, withdrawn, kept = [], [], [], []
+    for url, row in after.items():
+        old = before.get(url)
+        if old is None:
+            new_rows.append(row)
+        elif _row_inherited(row):
+            # Dòng chép từ run gốc CỐ Ý mang `unverified`: nguồn không đổi, chỉ phải xác minh lại —
+            # xếp vào "giữ nguyên" để nhóm "đổi" nói về nguồn, không nói về cờ nội bộ.
+            kept.append(row)
+        elif str(row.get('status') or '') in RESEARCH_REFRESH_WITHDRAWN_STATUSES:
+            withdrawn.append(row)
+        elif _row_changed(old, row):
+            changed.append(row)
+        else:
+            kept.append(row)
+    for url, row in before.items():
+        if url not in after:
+            withdrawn.append(row)
+    lines = ['# Nhật ký thay đổi', '',
+             f'- Run gốc: `{source_id}`',
+             f'- Run làm mới: `{research_id}`',
+             f'- Mốc khảo sát cũ: {state.get("refreshSince") or "không rõ"}',
+             f'- Bản hồ sơ: v{int(version or 0)}']
+    for title, rows in (('Nguồn mới', new_rows), ('Nguồn đổi', changed),
+                        ('Nguồn rút', withdrawn), ('Nguồn giữ nguyên', kept)):
+        lines.append('')
+        lines.append(f'## {title} ({len(rows)})')
+        lines.extend(_row_line(row) for row in rows)
     return '\n'.join(lines) + '\n'
 
 
@@ -2917,6 +3024,106 @@ def dismiss_prompt(rt, session_id, job, prompt_id):
     return {'researchId': job['research_id'], 'promptId': prompt_id, 'status': 'dismissed'}
 
 
+async def refresh_run(rt, session, job, payload=None):
+    """`action='refresh'` (§5.8): mở RUN LÀM MỚI kế thừa nguồn của một run đã có bản hồ sơ.
+
+    Bản hồ sơ cũ là dấu vết của một thời điểm — KHÔNG sửa nó. Run mới giữ nguyên câu hỏi và mức, chép
+    sổ nguồn sang với cờ `inherited` và trạng thái `unverified`, rồi ghim `refreshOf`/`refreshSince`/
+    `supersedes` để `changelog.md` đọc được cái gì mới/đổi/rút.
+    """
+    payload = payload if isinstance(payload, dict) else {}
+    sid = session['id']
+    source_id = str(job['research_id'])
+    mode, unknown = _refresh_mode()
+    if unknown:
+        mode_notice(rt, sid, RESEARCH_REFRESH_MODE_UNKNOWN_CODE, RESEARCH_REFRESH_ENV, unknown,
+                    RESEARCH_REFRESH_DEFAULT_MODE)
+    if mode != 'on':
+        raise ValueError(f'{RESEARCH_REFRESH_DISABLED_CODE}: công tắc {RESEARCH_REFRESH_ENV} đang '
+                         f'{mode!r} — không mở run làm mới')
+    state = dict(job['state'] or {})
+    scope = state.get('scope') if isinstance(state.get('scope'), dict) else {}
+    latest = rt.store.dossier_latest(source_id)
+    if latest is None:
+        raise ValueError(f'{RESEARCH_REFRESH_NO_DOSSIER_CODE}: {source_id} chưa có bản hồ sơ nào — '
+                         f'phải có hồ sơ rồi mới có cái để làm mới')
+    if str(job.get('status') or '') not in _REFRESHABLE_JOB_STATUSES:
+        raise ValueError(f'{RESEARCH_REFRESH_SOURCE_ACTIVE_CODE}: {source_id} đang '
+                         f'{job.get("status")!r} — tạm dừng hoặc để nó xong rồi hãy làm mới')
+    for other in rt.store.research_jobs_for(sid):
+        other_state = other.get('state') or {}
+        if str(other_state.get('refreshOf') or '') == source_id \
+                and str(other.get('status') or '') not in _REFRESHABLE_JOB_STATUSES:
+            raise ValueError(f'{RESEARCH_REFRESH_RUN_ACTIVE_CODE}: run làm mới '
+                             f'{other["research_id"]!r} của {source_id} đang '
+                             f'{other.get("status")!r} — chờ nó xong')
+    since = str(scope.get('surveyDate') or '').strip() or research_evidence.survey_date()
+    kinds = [str(item).strip() for item in (scope.get('jobKinds') or []) if str(item).strip()]
+    if 'refresh' not in kinds:
+        kinds.append('refresh')
+    config = research_config(session)
+    question = str(state.get('question') or config.get('question') or '').strip() \
+        or str(state.get('goal') or '').strip()
+    if not question:
+        raise ValueError(f'{RESEARCH_REFRESH_NO_DOSSIER_CODE}: run {source_id} không có câu hỏi nào '
+                         f'để làm mới')
+    questions = [{'text': str(item.get('text') or '').strip(),
+                  'importance': str(item.get('importance') or 'medium'),
+                  'doneWhen': str(item.get('doneWhen') or '')}
+                 for item in (state.get('questions') or [])
+                 if isinstance(item, dict) and str(item.get('text') or '').strip()]
+    answer = await research_brief(rt, session, {
+        'question': question,
+        'rationale': (f'làm mới {source_id}: giữ nguyên câu hỏi và mức, dựng lại nguồn từ mốc khảo '
+                      f'sát {since}'),
+        'tier': int(state.get('tier') or config.get('tier') or RESEARCH_TIER_DEFAULT),
+        'jobProfile': str(config.get('jobProfile') or '').strip(),
+        'goal': str(state.get('goal') or question),
+        'output': str(state.get('output') or ''),
+        'questions': questions,
+        'methods': [str(item) for item in (state.get('methods') or []) if str(item).strip()],
+        'budgetSeconds': int(state.get('budgetSeconds') or 0) or None,
+        'newRun': True,
+        'inheritsFrom': source_id,
+        'researchId': str(payload.get('researchId') or '').strip() or None,
+        'scope': {**scope, 'jobKinds': kinds},
+    })
+    new_id = str(answer.get('researchId') or '')
+    if not new_id or new_id == source_id:
+        raise ValueError(f'{RESEARCH_REFRESH_NO_DOSSIER_CODE}: run làm mới không được ghi tách khỏi '
+                         f'{source_id}')
+    new_job = rt.store.research_job(new_id)
+    new_state = dict(new_job['state'] or {}) if new_job else {}
+    new_scope = dict(new_state.get('scope') or scope)
+    new_scope['jobKinds'] = kinds
+    # Mốc khảo sát của RUN MỚI là hôm nay: "hiện tại" của lần làm mới không thể là mốc của run cũ.
+    new_scope['surveyDate'] = research_evidence.survey_date()
+    _scope_window(new_scope)
+    new_state['scope'] = new_scope
+    new_state['refreshOf'] = source_id
+    new_state['refreshSince'] = since
+    new_state['supersedes'] = int(latest['version'])
+    saved = rt.store.research_job_save(new_id, sid, new_state,
+                                      status=(new_job or {}).get('status') or 'scoping')
+    inherited = int(answer.get('inheritedRows') or 0)
+    dependent = rt.store.research_dependent_plans(source_id)
+    rt.store.emit(sid, 'research_refresh', {
+        'researchId': new_id, 'refreshOf': source_id, 'sinceDate': since,
+        'inheritedRows': inherited, 'dependentPlans': len(dependent),
+        'at': journal.utc_now_iso()})
+    if dependent:
+        rt.store.emit(sid, 'notice', {
+            'code': 'RESEARCH_REFRESH_PLANS', 'partial': False, 'researchId': new_id,
+            'message': (f'RESEARCH_REFRESH_PLANS: {len(dependent)} kế hoạch đang dựa vào {source_id} — '
+                        f'dùng lại chúng thì phải soi lại theo bản hồ sơ mới')})
+    return {'researchId': new_id, 'refreshOf': source_id, 'sinceDate': since,
+            'inheritedRows': inherited, 'dependentPlans': len(dependent), 'scope': new_scope,
+            'supersedes': int(latest['version']), 'revision': saved['revision'],
+            'changelog': _changelog_body(rt, new_id, 0),
+            'next': (f'run {new_id} đã chép {inherited} dòng sổ của {source_id} ở trạng thái '
+                     f'{RESEARCH_REFRESH_INHERITED_STATUS} — `source_verify` lại trước khi dùng cho '
+                     f'nhận định "hiện tại"')}
+
 async def _halt_action(rt, session, job, action):
     """Pause/cancel MỘT job qua `runtime.research_halt` (§4.6/§5.3). Không dừng cả phiên."""
     await rt.research_halt(job, 'pause' if action == 'pause' else 'cancel')
@@ -2943,7 +3150,8 @@ def _copy_inherited_rows(rt, sid, inherits, new_run_id):
             'claim': row.get('claim') or '', 'url': row.get('url') or '', 'host': row.get('host') or '',
             'tier': row.get('tier'), 'type': row.get('type'), 'excerpt': row.get('excerpt') or '',
             'fetched_at': row.get('fetchedAt') or '', 'origin': row.get('origin'),
-            'method': row.get('method'), 'status': 'unverified', 'fingerprint': row.get('fingerprint') or '',
+            'method': row.get('method'), 'status': RESEARCH_REFRESH_INHERITED_STATUS,
+            'fingerprint': row.get('fingerprint') or '',
             'payload': payload, 'branches': [], 'child_id': None,
             'job': new_run_id, 'research_id': new_run_id,
             'turn': int(rt.active_turn.get(sid) or 0), 'step': rt.active_step.get(sid)})

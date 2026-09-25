@@ -545,6 +545,9 @@ RESEARCH_MODE_EXIT_CHOICE_REQUIRED_CODE = 'RESEARCH_EXIT_CHOICE_REQUIRED'
 # nửa vời (mọi cổng khác đều tắt khi công tắc tắt).
 RESEARCH_MODE_UNAVAILABLE_CODE = 'RESEARCH_MODE_UNAVAILABLE'
 RESEARCH_SCOPE_REVISION_STALE_CODE = 'RESEARCH_SCOPE_REVISION_STALE'
+# Khoá lạc quan nhận thẳng từ thân HTTP: giá trị không phải số phải trả về một MÃ hợp đồng, chứ
+# không phải `int() argument must be ...` của Python (đợt soát `ed485f3`, finding 2).
+RESEARCH_SCOPE_REVISION_INVALID_CODE = 'RESEARCH_SCOPE_REVISION_INVALID'
 RESEARCH_JOB_BUDGET_EXHAUSTED_CODE = 'RESEARCH_JOB_BUDGET_EXHAUSTED'
 RESEARCH_MODE_ENTRY_BY = ('toggle', 'command')
 RESEARCH_MODE_BLOCK_MARKER = '=== ACTIVE MODE: RESEARCH ==='
@@ -648,6 +651,24 @@ RESEARCH_SEEDED_DEFECT_KINDS = ('wrong-number', 'unsupported-claim', 'misattribu
                                 'unlabeled-assumption', 'same-origin-independent',
                                 'mismatched-benchmark')
 
+# --- P5 (làm mới báo cáo) ----------------------------------------------------
+#: Run LÀM MỚI (`refresh`, use case H của §5.1) — công tắc giết: `off` ⇒ tuyến `refresh` biến mất,
+#: hành vi y hệt `6eb2fd8`.
+RESEARCH_REFRESH_ENV = 'BOXFOX_RESEARCH_REFRESH'
+RESEARCH_REFRESH_MODES = ('on', 'off')
+RESEARCH_REFRESH_DEFAULT_MODE = 'on'
+RESEARCH_REFRESH_MODE_UNKNOWN_CODE = 'RESEARCH_REFRESH_MODE_UNKNOWN'
+#: Dòng sổ của run cũ chép sang run làm mới được đánh dấu thế nào (§5.3): chưa đọc lại thì không
+#: được đỡ một nhận định "hiện trạng".
+RESEARCH_REFRESH_INHERITED_STATUS = 'unverified'
+#: Trạng thái một dòng sổ coi như RÚT khỏi run làm mới (nguồn cũ không còn đọc lại được).
+RESEARCH_REFRESH_WITHDRAWN_STATUSES = ('blocked', 'unverified', 'gone', 'removed')
+#: Mã lỗi của tuyến làm mới.
+RESEARCH_REFRESH_DISABLED_CODE = 'RESEARCH_REFRESH_DISABLED'
+RESEARCH_REFRESH_NO_DOSSIER_CODE = 'RESEARCH_REFRESH_NO_DOSSIER'
+RESEARCH_REFRESH_SOURCE_ACTIVE_CODE = 'RESEARCH_REFRESH_SOURCE_ACTIVE'
+RESEARCH_REFRESH_RUN_ACTIVE_CODE = 'RESEARCH_REFRESH_RUN_ACTIVE'
+
 
 # --- Công tắc P2/P3: một chỗ đọc --------------------------------------------
 # `runtime._env_switch` là bản riêng tư của P1. P2/P3 đọc công tắc qua đây để không mọc bản sao thứ
@@ -694,3 +715,9 @@ def research_branch_report_enabled(env=None):
     """`BOXFOX_RESEARCH_BRANCH_REPORT`: `on` ⇒ con research trả thẻ có cấu trúc; `off` ⇒ văn bản tự do."""
     return env_switch(RESEARCH_BRANCH_REPORT_ENV, RESEARCH_BRANCH_REPORT_MODES,
                       RESEARCH_BRANCH_REPORT_DEFAULT_MODE, env) == 'on'
+
+
+def research_refresh_enabled(env=None):
+    """`BOXFOX_RESEARCH_REFRESH`: `on` (mặc định) ⇒ `PATCH .../jobs/{id}` nhận `action: 'refresh'`."""
+    return env_switch(RESEARCH_REFRESH_ENV, RESEARCH_REFRESH_MODES,
+                      RESEARCH_REFRESH_DEFAULT_MODE, env) == 'on'
