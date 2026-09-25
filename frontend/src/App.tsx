@@ -50,10 +50,13 @@ import { SettingsModal } from './components/settings/SettingsModal'
 import { CompletionEmailNotice } from './components/CompletionEmailNotice'
 import { SearchSessionsModal } from './components/shell/SearchSessionsModal'
 import { useCompletionEmail } from './hooks/useCompletionEmail'
+import { formatTokenCount } from './components/panels/ContextUsageBar'
+import { formatClock } from './components/panels/research/format'
 
 const TAB_LABEL_KEY: Record<PanelTabId, string> = {
   plan: 'tabs.plan',
-  research: 'tabs.plan',
+  // P4: tab Research có nhãn riêng — trước đây dùng nhờ `tabs.plan`.
+  research: 'tabs.research',
   sandbox: 'tabs.sandbox',
   subagents: 'tabs.subagents',
   ide: 'tabs.ide',
@@ -81,6 +84,29 @@ const TAB_ICON: Record<PanelTabId, React.ComponentType<{ className?: string }>> 
   audit: ScrollText,
   files: FolderOpen,
   system_log: Activity,
+}
+
+/**
+ * Đồng hồ của epoch hiện tại, tính bằng giây. Bộ đếm chỉ nhích khi agent đang
+ * chạy (`running`) và đặt lại về 0 khi `taskEpoch` đổi — nghỉ thì con số đứng
+ * yên, không tự cộng thêm thời gian người dùng không nhìn agent làm gì.
+ *
+ * Table 4.8 dòng 11 cần chỗ cho "thời gian" này ở thanh trên: route đánh giá
+ * miễn phí chỉ có token + thời gian, không có USD (#6079).
+ */
+function useEpochElapsedSeconds(taskEpoch: number, running: boolean): number {
+  const [startedAt, setStartedAt] = useState(() => Date.now())
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    setStartedAt(Date.now())
+    setNow(Date.now())
+  }, [taskEpoch])
+  useEffect(() => {
+    if (!running) return
+    const id = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(id)
+  }, [running, taskEpoch])
+  return Math.max(0, Math.floor((now - startedAt) / 1000))
 }
 
 const AVAILABLE_PANEL_TABS: { id: PanelTabId; label: string; desc: string; icon: React.ComponentType<{ className?: string }> }[] = [
@@ -132,6 +158,9 @@ export default function App() {
   const mode = useAgentStore((s) => s.mode)
   const taskEpoch = useAgentStore((s) => s.taskEpoch)
   const budget = useAgentStore((s) => s.budget)
+  // Thời gian của epoch hiện tại (Table 4.8 dòng 11). Đồng hồ chỉ nhích khi agent
+  // đang chạy, nên con số đứng yên lúc nghỉ thay vì tự cộng thêm.
+  const elapsedSeconds = useEpochElapsedSeconds(taskEpoch, mode === 'ACT')
   const proposal = useAgentStore((s) => s.proposal)
   const rejectBundle = useAgentStore((s) => s.rejectBundle)
   const context = useAgentStore((s) => s.context)
@@ -231,6 +260,7 @@ export default function App() {
           mode={mode}
           taskEpoch={taskEpoch}
           budget={budget}
+          elapsedSeconds={elapsedSeconds}
           context={context}
           // Công tắc bảng Workspace (Kế hoạch E2): tên đọc nêu cả số view đang xếp
           // hàng và tên của chúng, để huy hiệu không chỉ là một con số.
@@ -302,7 +332,7 @@ export default function App() {
                             : 'text-muted'
                         }`}
                     />
-                    <span>{tab === 'research' ? 'Research' : tab === 'decisions' ? 'Decisions' : tab === 'subagents' ? 'Sub-agents' : t(TAB_LABEL_KEY[tab] as 'tabs.plan')}</span>
+                    <span>{tab === 'decisions' ? 'Decisions' : tab === 'subagents' ? 'Sub-agents' : t(TAB_LABEL_KEY[tab] as 'tabs.plan')}</span>
 
                     {isDecisionsWithPending && (
                       <span
@@ -403,11 +433,12 @@ export default function App() {
   )
 }
 
-function TopBar({
+export function TopBar({
   title,
   mode,
   taskEpoch,
   budget,
+  elapsedSeconds,
   context,
   workspaceHidden,
   workspaceToggleDisabled,
@@ -419,6 +450,12 @@ function TopBar({
   mode: string
   taskEpoch: number
   budget: { steps: number; tokens: number; costUsd: number; capUsd: number }
+  /**
+   * Thời gian đã chạy của epoch hiện tại, tính bằng giây. Table 4.8 dòng 11:
+   * thanh trên hiện token + thời gian; USD chỉ hiện khi route có giá (#6079) —
+   * route đánh giá miễn phí không được vẽ `$0.00`.
+   */
+  elapsedSeconds: number
   context: { integrity_floor: string; confidentiality_ceiling: string }
   /** Bảng Workspace (cùng cột với màn Máy) đang bị người dùng ẩn. */
   workspaceHidden: boolean
@@ -481,8 +518,24 @@ function TopBar({
           {mode}
         </span>
         <span className="text-[11px] font-mono text-muted">epoch #{taskEpoch}</span>
-        <span className="hidden text-[11px] font-mono text-muted lg:inline">
-          {budget.tokens.toLocaleString()} tokens · ${budget.costUsd.toFixed(2)}
+        <span
+          data-testid="topbar-budget"
+          className="hidden text-[11px] font-mono text-muted lg:inline"
+        >
+          {budget.costUsd > 0
+            ? t(
+                budget.capUsd > 0 ? 'shell.budgetTokensTimeCapped' : 'shell.budgetTokensTimeCost',
+                {
+                  tokens: formatTokenCount(budget.tokens),
+                  time: formatClock(elapsedSeconds),
+                  cost: budget.costUsd.toFixed(2),
+                  cap: budget.capUsd.toFixed(2),
+                },
+              )
+            : t('shell.budgetTokensTime', {
+                tokens: formatTokenCount(budget.tokens),
+                time: formatClock(elapsedSeconds),
+              })}
         </span>
       </div>
 
