@@ -343,7 +343,10 @@ class RuntimeCommands:
         if low == 'status':
             card = self._research_status_card(sid)
             result['output'] = card['message']
-            self.store.emit(sid, 'research_run', {k: v for k, v in card.items() if k != 'message'})
+            # D-4 (vòng kiểm thử P2–P5): sự kiện phải mang `message`. Trước đây trường này bị cắt
+            # nên `/research status` đúng ở tầng server mà im lặng với người dùng: giao diện dựng
+            # thẻ trạng thái từ chính sự kiện này, không có chỗ nào khác để đọc câu trạng thái.
+            self.store.emit(sid, 'research_run', card)
             return {'result': result}
         if low == 'off':
             job = self._active_mode_job(sid)

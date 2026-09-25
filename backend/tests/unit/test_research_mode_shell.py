@@ -146,6 +146,10 @@ def test_m16_slash_research_status_replays_the_card_without_a_turn_or_a_model_ca
     before = model.calls
     result = asyncio.run(runtime.submit(sid, '/research status'))
     assert 'run-a' in result['output'] and 'searching' in result['output']
+    # D-4 (vòng kiểm thử P2–P5): sự kiện phải mang `message` — giao diện dựng thẻ trạng thái từ CHÍNH
+    # sự kiện này; bản trước cắt trường ấy nên `/research status` đúng ở server mà im lặng với người dùng.
+    card = events(store, sid, 'research_run')[-1]
+    assert card['kind'] == 'status' and card['message'] == result['output']
     assert model.calls == before, 'M-16: `/research status` không gọi mô hình'
     assert sid not in runtime.tasks or runtime.tasks[sid].done()
 

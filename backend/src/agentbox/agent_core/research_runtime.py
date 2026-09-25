@@ -1012,7 +1012,19 @@ async def research_brief(rt, session, args):
                                                                  'paused'}:
             raise ValueError(f'RESEARCH_RUN_ACTIVE: run {existing.get("researchId")!r} đang '
                              f'{prior_job["status"]}; tạm dừng hoặc huỷ nó trước khi mở run mới')
-        slug = f'{slug[:27].rstrip("-")}-r{len(rt.store.research_jobs_for(sid)) + 1}'
+        # D-2 (vòng kiểm thử P2–P5): mã run do CHỦ NHÀ chỉ định phải được tôn trọng NGUYÊN VĂN.
+        # Giao diện `Cập nhật` ghim sẵn một mã ở `refresh_run`; cộng thêm `-r{n}` ở đây từng sinh
+        # mã `r-2-r4-r4` và đổi lén cả mã gõ tay (`r-3-explicit-test` → `r-3-explicit-test-r4`).
+        # Chỉ tự sinh hậu tố khi KHÔNG ai chỉ định mã.
+        explicit_id = str(args.get('researchId') or '').strip().lower()
+        if explicit_id and explicit_id == slug:
+            if any(job['research_id'].lower() == explicit_id
+                   for job in rt.store.research_jobs_for(sid)):
+                raise ValueError(f'RESEARCH_BRIEF_INVALID: researchId {explicit_id!r} đã là một run '
+                                 f'của phiên này — run mới phải là một mã RIÊNG')
+            slug = explicit_id
+        else:
+            slug = f'{slug[:27].rstrip("-")}-r{len(rt.store.research_jobs_for(sid)) + 1}'
     inherits = str(args.get('inheritsFrom') or args.get('inherits_from') or '').strip()
     # Một việc = MỘT phòng: hỏi tiếp cùng việc ở lượt sau thì ghi tiếp vào chính phòng ấy (bản `v2`,
     # `v3`… nối tiếp, đúng thứ mà `dossier_versions` đếm), câu hỏi mới ⇒ phòng mới vì phòng đặt tên

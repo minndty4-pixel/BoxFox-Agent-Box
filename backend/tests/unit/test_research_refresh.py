@@ -235,6 +235,42 @@ def test_the_natural_slug_cannot_make_the_new_run_reuse_the_old_id(harness):
     assert store.research_job(answer['researchId'])['state']['supersedes'] == 3
 
 
+def briefed_run(store, runtime, sid, session, question='Câu hỏi gốc của run'):
+    """Run đi qua `research_brief` THẬT rồi chốt hồ sơ — chỉ khi ấy nhánh tự sinh hậu tố mới chạy.
+
+    `run()` ở trên ghi thẳng hàng job nên `config['research']` rỗng: `new_run and existing` sai, nhánh
+    hậu tố `-r{n}` không chạy, và lỗi D-2 (mã chủ nhà chỉ định bị cộng hậu tố LẦN HAI) không lộ ra.
+    """
+    asyncio.run(runtime.dispatch(session, 'research_brief', {
+        'tier': 2, 'question': question, 'rationale': 'vì cần nguồn mới',
+        'goal': 'mục tiêu', 'methods': ['web'],
+        'questions': [{'text': 'Câu hỏi 1', 'importance': 'high'}]}))
+    run_id = research_runtime.research_config(store.get(sid))['researchId']
+    job = store.research_job(run_id)
+    store.research_job_save(run_id, sid, job['state'], status='completed')
+    store.record_dossier(sid, run_id, 3, f'.research/{run_id}-20260105-0900/v3.md',
+                         profile='mixed', level=2, rows=1)
+    return run_id
+
+
+def test_a_named_id_survives_a_briefed_session_without_a_second_suffix(harness):
+    """D-2 (vòng kiểm thử P2–P5): mã gõ tay từng bị đổi thành `r-3-explicit-test-r4`."""
+    store, runtime, sid, session = harness
+    source_id = briefed_run(store, runtime, sid, session)
+    answer = refresh(runtime, store.get(sid), source_id, {'researchId': 'rs1-lam-moi'})
+    assert answer['researchId'] == 'rs1-lam-moi'
+    assert store.research_job('rs1-lam-moi') is not None
+
+
+def test_without_a_named_id_the_new_run_still_gets_its_own_code(harness):
+    """Đường tự sinh vẫn phải KHÁC run gốc — bản vá D-2 không được nới luật cũ."""
+    store, runtime, sid, session = harness
+    source_id = briefed_run(store, runtime, sid, session)
+    answer = refresh(runtime, store.get(sid), source_id)
+    assert answer['researchId'] != source_id
+    assert answer['researchId'].startswith(source_id[:30].rstrip('-'))
+
+
 def test_a_named_id_that_names_the_source_run_is_refused_before_any_write(harness):
     store, runtime, sid, session = harness
     run(store, sid, 'RS1')
