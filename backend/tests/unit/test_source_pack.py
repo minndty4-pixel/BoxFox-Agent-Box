@@ -158,3 +158,45 @@ def test_pack_fetch_refuses_an_absolute_file(monkeypatch, tmp_path):
     (tmp_path / 'pack.json').write_text(json.dumps(manifest), encoding='utf-8')
     monkeypatch.setenv('BOXFOX_WEB_PACK', str(tmp_path))
     assert source_pack.pack_fetch('https://evil.example/y') is None
+
+
+def test_a_pack_written_by_the_shipped_builder_is_readable(monkeypatch, tmp_path):
+    """Vòng soát 2 (lỗ B-1): cặp GHI (`scripts/eval/packs/build_pack.py`) — ĐỌC (`pack_fetch`) phải
+    được kiểm với nhau. Bản đầu chỉ ghép `pages/` vào `file`, mà `build_pack` đã ghi `pages/<tệp>`
+    theo đúng hợp đồng §3, nên MỌI gói thật đọc trượt (`<gói>/pages/pages/<tệp>`) và `web_fetch`
+    báo "không có trong gói" — phá đúng phép so sánh ngoại tuyến mà gói tồn tại vì nó.
+    """
+    import sys
+    from pathlib import Path as _Path
+
+    eval_dir = _Path(__file__).resolve().parents[3] / 'scripts' / 'eval'
+    sys.path.insert(0, str(eval_dir / 'packs'))
+    try:
+        import build_pack
+    finally:
+        sys.path.pop(0)
+
+    page = tmp_path / 'nguon' / 'rag.html'
+    page.parent.mkdir(parents=True, exist_ok=True)
+    page.write_text('<html><body><p>Retrieval augmented generation.</p></body></html>',
+                    encoding='utf-8')
+    manifest = tmp_path / 'sources.json'
+    manifest.write_text(json.dumps({'scenarioId': 's-roundtrip', 'sources': [
+        {'url': 'https://a.example/rag', 'title': 'RAG', 'date': '2026-03-01', 'kind': 'page',
+         # `build_pack` kiểm theo từ vựng của GÓI (`open|abstract|paywalled|metadata`); tầng ra
+         # cho mô hình mới là từ vựng chung của harness — hai từ vựng, một chiều ánh xạ.
+         'accessLevel': 'open', 'file': 'nguon/rag.html'}]}), encoding='utf-8')
+    queries = tmp_path / 'queries.jsonl'
+    queries.write_text(json.dumps({'query': 'retrieval augmented generation',
+                                   'results': [{'url': 'https://a.example/rag', 'rank': 1,
+                                                'snippet': 'RAG'}]}) + '\n', encoding='utf-8')
+    pack_dir = tmp_path / 'pack'
+    built = build_pack.build_pack(manifest, pack_dir, queries_path=queries,
+                                  built_at='2026-09-25T00:00:00Z')
+    assert built['files'] == ['pages/a-example-rag.html']
+
+    monkeypatch.setenv('BOXFOX_WEB_PACK', str(pack_dir))
+    found = source_pack.pack_search('retrieval augmented generation', 5, {})
+    assert found and found[0]['url'] == 'https://a.example/rag'
+    page_body = source_pack.pack_fetch('https://a.example/rag')
+    assert page_body and 'Retrieval augmented generation' in page_body['text']

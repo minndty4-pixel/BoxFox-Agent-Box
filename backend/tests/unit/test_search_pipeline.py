@@ -340,6 +340,41 @@ def test_no_dedupe_ablation_keeps_the_duplicate_the_full_pipeline_merges(monkeyp
     assert len(ablated['results']) == 2 and ablated['pipeline']['steps']['ablation'] == 'no-dedupe'
 
 
+def test_no_rrf_ablation_picks_the_leg_by_variant_order_not_thread_order():
+    """Vòng soát 2: `as_completed` trả theo thứ tự luồng xong trước, nên bản bỏ `no-rrf` phải chọn
+    chân theo thứ tự BIẾN THỂ — nếu không, cùng một truy vấn cho hai thứ hạng khác nhau giữa hai lần
+    chạy, và bảng 8.7 không lặp lại được."""
+    variants = [{'query': 'first query'}, {'query': 'second query'}]
+    early = {'engine': 'searxng', 'query': 'first query',
+             'results': [{'url': 'https://a.example/1'}]}
+    late = {'engine': 'searxng', 'query': 'second query',
+            'results': [{'url': 'https://b.example/1'}]}
+    assert sp._first_nonempty_leg([early, late], variants) is early
+    assert sp._first_nonempty_leg([late, early], variants) is early
+    assert sp._first_nonempty_leg([late], variants) is late
+    assert sp._first_nonempty_leg([], variants) is None
+
+
+def test_no_rrf_ablation_ranking_follows_the_first_variant(monkeypatch):
+    monkeypatch.setenv('BOXFOX_SEARCH_PIPELINE', 'on')
+    shared = 'retrieval augmented generation systems combine retrieval with generation'
+    options = {'facet': {'label': shared, 'terms': []}, 'ablation': 'no-rrf'}
+    by_query: dict[str, list[dict]] = {}
+
+    def fake(query, *, engines, count, time_range=None, language='', timeout=None):
+        rows = by_query.get(query) or [{'url': 'https://a.example/1', 'title': query,
+                                        'engine': 'brave'}]
+        by_query[query] = rows
+        return {'results': rows, 'engines': list(engines), 'unresponsive': [], 'error': None,
+                'latencyMs': 5}
+
+    monkeypatch.setattr(sp, 'searxng_search', fake)
+    payload = sp.run_pipeline([shared], source='web', count=5, options=dict(options))
+    first_query = payload['perQuery'][0]['query']
+    assert payload['results'][0]['url'] == 'https://a.example/1'
+    assert payload['perQuery'][0]['query'] == first_query
+
+
 def test_unknown_ablation_value_falls_back_to_the_full_pipeline(monkeypatch):
     monkeypatch.setenv('BOXFOX_SEARCH_PIPELINE', 'on')
     monkeypatch.setenv(sp.ABLATION_ENV, 'làm-cho-có')

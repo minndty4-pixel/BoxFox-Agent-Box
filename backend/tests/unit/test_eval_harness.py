@@ -508,6 +508,29 @@ def test_a_terminal_session_reached_before_the_deadline_is_not_poll_exhausted(mo
     assert runner.classify_validity(result) == runner.QUALITY_VALID
 
 
+def test_an_immediate_non_terminal_status_is_infra_not_quality(monkeypatch):
+    """Vòng soát 2: harness trả NGAY `paused`/`pending`/`error` cũng không phải dữ liệu chất lượng.
+
+    Lỗ còn lại của H4: vòng dò thoát vì trạng thái khác `running`/`awaiting_decision`, nên cạn poll
+    không bật (`pollExhausted=False`) mà `terminal` vẫn `False` — lượt chưa chạy xong từng được chấm
+    `quality-valid` với báo cáo rỗng.
+    """
+    def fake_request_json(url, *, method='GET', payload=None, headers=None, timeout=30):
+        if method == 'POST' and url.endswith('/sessions'):
+            return {'id': 'sess-1'}
+        if method == 'POST':
+            return {}
+        return {'status': 'paused'}
+
+    monkeypatch.setattr(runner.net, 'request_json', fake_request_json)
+    monkeypatch.setattr(runner, 'POLL_SECONDS', 0.0)
+    result = runner._drive_session({'prompt': 'x', 'budget': {'wall_seconds': 5}}, {'id': 'c1'},
+                                   seed=0, attempt=0)
+    assert result['status'] == 'paused'
+    assert result['terminal'] is False and result['pollExhausted'] is False
+    assert runner.classify_validity(result) == runner.INFRA_FAILED
+
+
 # --------------------------------------------------------------------------- M10 · cache giám khảo
 def test_judge_cache_is_keyed_by_query_and_url_not_by_positional_label(tmp_path):
     class FakeRunner:

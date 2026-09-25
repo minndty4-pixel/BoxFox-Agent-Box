@@ -695,12 +695,31 @@ def _variant_reason(legs: list[dict]) -> str:
     return ' | '.join(errors[:3]) or 'every engine refused or returned nothing'
 
 
-def _first_nonempty_leg(legs: list[dict]) -> dict | None:
-    """Chân ĐẦU có kết quả — bản bỏ `no-rrf` lấy thứ tự của đúng chân này (một engine tốt nhất)."""
-    for leg in legs or []:
-        if leg.get('results'):
-            return leg
-    return None
+def _first_nonempty_leg(legs: list[dict], variants: list[dict] | None = None) -> dict | None:
+    """Chân ĐẦU có kết quả, xét THEO THỨ TỰ BIẾN THỂ (không theo thứ tự luồng nào xong trước).
+
+    Vòng soát 2: `as_completed` trả về theo thứ tự luồng hoàn thành, nên bản bỏ `no-rrf` cho kết quả
+    khác nhau giữa hai lần chạy cùng một truy vấn — số đo không lặp lại được. Nay chân SearXNG của
+    biến thể đầu tiên (theo `variants`) được chọn trước, rồi mới tới chân chỉ mục cục bộ và các chân
+    còn lại; hết cách mới rơi về thứ tự trong `legs`.
+    """
+    pool = [leg for leg in (legs or []) if leg.get('results')]
+    if not pool:
+        return None
+    order: list[str] = []
+    for variant in variants or []:
+        query = str(variant.get('query') or '')
+        if query and query not in order:
+            order.append(query)
+    for query in order:
+        for leg in pool:
+            if str(leg.get('query') or '') == query and leg.get('engine') == 'searxng':
+                return leg
+    for query in order:
+        for leg in pool:
+            if str(leg.get('query') or '') == query:
+                return leg
+    return pool[0]
 
 
 def _exclude_hosts(options: dict) -> set[str]:
@@ -883,7 +902,7 @@ def run_pipeline(queries: list[str], *, source: str, count: int, options: dict,
 
     # Bước 4 — gộp hạng. Bản bỏ `no-rrf` chỉ lấy thứ tự của chân đầu có kết quả (một engine tốt nhất).
     if ablation == 'no-rrf':
-        first = _first_nonempty_leg(legs)
+        first = _first_nonempty_leg(legs, variants)
         fused = rrf_fuse([first], k=SEARCH_RRF_K) if first else []
     else:
         fused = rrf_fuse(legs, k=SEARCH_RRF_K)

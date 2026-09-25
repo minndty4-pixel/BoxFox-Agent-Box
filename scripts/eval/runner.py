@@ -78,6 +78,11 @@ def classify_validity(result: dict) -> str:
     # lượng (H4): một `awaiting_decision` chưa từng chạy xong không được chấm như dữ liệu chất lượng.
     if result.get('pollExhausted'):
         return INFRA_FAILED
+    # Vòng soát 2 phát hiện lỗ còn lại của H4: harness trả NGAY một trạng thái không kết thúc
+    # (`paused`, `pending`, `error`) thì vòng dò thoát trước khi cạn poll, nên `pollExhausted`
+    # không bật mà `terminal` vẫn False — lượt ấy cũng KHÔNG được chấm như dữ liệu chất lượng.
+    if result.get('terminal') is False:
+        return INFRA_FAILED
     if result.get('toolingFailed'):
         return INFRA_FAILED
     code = str(result.get('errorCode') or '').strip().upper()

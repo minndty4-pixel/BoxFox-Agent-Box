@@ -508,6 +508,15 @@ def report(bench: dict) -> str:
                      f"{_show(metrics.get('latencyP95Ms'))} |")
     lines.append('')
     lines.append('`chưa đo` = thiếu nhãn/bản đồ/cửa sổ — không ghi 0 để giả có số.')
+    # Vòng soát 2 — hai bản bỏ có giới hạn CẤU TRÚC của thước này, nói trước để không đọc sai bảng:
+    lines.append('')
+    lines.append('Hai bản bỏ có giới hạn riêng của thước này (đọc kèm, đừng kết luận "bước vô dụng"):')
+    lines.append('- `ablation-no-local-index`: DB của thước bắt đầu RỖNG và không nạp trang nào vào '
+                 'chỉ mục, nên bước 9 vốn không có gì để trả — hai dòng trùng nhau là hệ quả của '
+                 'thước, không phải của ống. Muốn đo thật phải nạp chỉ mục trước (P6).')
+    lines.append('- `ablation-no-rrf`: chỉ lấy một chân (một engine) nên với truy vấn chung, các chân '
+                 'trùng kết quả thì thứ hạng cuối trùng với ống đầy đủ; chỉ khác khi các chân thật sự '
+                 'khác nhau.')
     # M9 — nói thẳng cổng §8.7 "map ≥ Brave proxy" chưa thể đo cho tới khi P6 dựng bản đồ tham chiếu.
     if not bench.get('maps'):
         lines.append('')

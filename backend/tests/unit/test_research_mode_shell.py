@@ -206,6 +206,40 @@ def test_m07_the_first_unbriefed_branch_is_clamped_to_tier_one(harness):
     assert clamp == {'tier': 1, 'childSteps': 20, 'childSeconds': 180}
 
 
+# ------------------------------------------------- công tắc mặc định: phải là BẬT (F4, lưới vòng 2)
+
+
+def test_default_config_has_the_mode_on_and_keeps_the_mode_gates(tmp_path, monkeypatch):
+    """Vòng soát 2: bài này chạy trên cấu hình MẶC ĐỊNH (không đặt biến công tắc).
+
+    Ba tệp kiểm cũ (`test_research_brief`, `test_fanout`, `test_delegation_contract`) đã được ghim
+    `BOXFOX_RESEARCH_MODE=off` để giữ hành vi cũ, nên nếu không có bài này thì cấu hình thật của chủ
+    nhà chỉ còn một tấm lưới. Ở đây: tính năng phải CÓ MẶT khi không đặt biến, và khi đó
+    `research_brief`/`delegate_task` đi qua cửa của mode (mức 3 ngoài mode bị từ chối).
+    """
+    monkeypatch.delenv(limits.RESEARCH_MODE_ENV, raising=False)
+    store = SessionStore(tmp_path / 'sessions.db')
+    runtime = HarnessRuntime(store, FixtureExecutor(), FixtureRouterClient())
+    sid = runtime.create({'skills': [], 'connectionId': 'c1', 'modelId': 'm1',
+                          'timeoutSeconds': 30, 'deadlineSeconds': 60})['id']
+    try:
+        assert runtime_module.research_mode_available() is True, 'mặc định phải là BẬT'
+        session = session_of(store, sid)
+        # Ngoài mode: mức 3 vẫn là cổng của mode (main không được mở mức 3 khi chưa bật mode).
+        assert runtime_module.tier3_mode_only() is True
+        assert research_runtime.quick_lookup_clamp(runtime, session, 'research') == {
+            'tier': 1, 'childSteps': 20, 'childSeconds': 180}
+        # Trong mode: chỉ vai research được giao nhánh (cổng F9 trên cấu hình mặc định).
+        session['config']['subagents'] = [{'id': 'build', 'enabled': True}]
+        store.update_config(sid, session['config'])
+        research_runtime.apply_research_mode(runtime, session_of(store, sid), {'on': True})
+        with pytest.raises(PermissionError, match='RESEARCH_MODE_DELEGATE_ROLE'):
+            asyncio.run(runtime.delegate(session_of(store, sid),
+                                         {'role': 'build', 'goal': 'viết code'}))
+    finally:
+        store.close()
+
+
 # ------------------------------------------------------------------ M-08 (bơm)
 
 
@@ -917,3 +951,52 @@ def test_the_ledger_list_keeps_the_run_filter_when_the_run_has_no_rows_yet(harne
     listed = asyncio.run(runtime.dispatch(session_of(store, sid), 'source_list', {}))
     assert listed['rows'] == [], 'sổ của run mới không được mang dòng của run khác'
 
+
+
+# ------------------------------------- khối prompt: thay chứ không xếp chồng (B-2, B-3, F5)
+
+
+def test_the_background_block_is_replaced_each_turn_not_stacked(harness, monkeypatch):
+    """Vòng soát 2 (lỗ B-3/F5): khối run nền từng bị nối thêm mỗi lượt — đo được `[1, 2, 3]` và
+    prompt phình 321 ký tự mỗi lượt. Bài này kiểm trên đúng đường prompt hệ thống."""
+    store, runtime, sid = harness
+    session = session_of(store, sid)
+    session['messages'] = [{'role': 'system', 'content': 'NỀN === ANSWER LENGTH ===\nngắn'}]
+    block = (f'{limits.RESEARCH_BACKGROUND_BLOCK_MARKER}\nrun nền đang chạy\n'
+             f'{limits.RESEARCH_BACKGROUND_BLOCK_END}')
+    monkeypatch.setattr(runtime, 'turn_profile',
+                        lambda s, invocation_id=None: {'mode': 'off', 'tools': [],
+                                                       'promptBlock': block})
+    monkeypatch.setattr(runtime, 'research_handoff', lambda s: None)
+    sizes = []
+    for _ in range(3):
+        runtime._sync_mode_block(session)
+        text = session['messages'][0]['content']
+        assert text.count(limits.RESEARCH_BACKGROUND_BLOCK_MARKER) == 1
+        sizes.append(len(text))
+    assert sizes == [sizes[0]] * 3, f'prompt phình theo lượt: {sizes}'
+    assert '=== ANSWER LENGTH ===' in session['messages'][0]['content']
+
+
+def test_the_handoff_block_disappears_after_it_is_delivered(harness, monkeypatch):
+    """Vòng soát 2 (lỗ B-2): khối bàn giao từng ở lại mãi, nên bằng chứng `partial` cũ nằm cạnh
+    bản `completed` mới. Sau khi giao, lượt sau không được còn khối ấy."""
+    store, runtime, sid = harness
+    session = session_of(store, sid)
+    session['messages'] = [{'role': 'system', 'content': 'NỀN'}]
+    block = (f'{limits.RESEARCH_HANDOFF_BLOCK_MARKER}\nhồ sơ v3\n'
+             f'{limits.RESEARCH_HANDOFF_BLOCK_END}')
+    delivered: list[tuple[str, str]] = []
+    monkeypatch.setattr(runtime, 'turn_profile',
+                        lambda s, invocation_id=None: {'mode': 'off', 'tools': [], 'promptBlock': ''})
+    monkeypatch.setattr(runtime, 'research_handoff',
+                        lambda s: {'block': block, 'researchId': 'r-ho', 'version': 3})
+    monkeypatch.setattr(runtime, 'mark_handoff_delivered',
+                        lambda s, rid, version: delivered.append((rid, version)))
+    runtime._sync_mode_block(session)
+    assert session['messages'][0]['content'].count(limits.RESEARCH_HANDOFF_BLOCK_MARKER) == 1
+    assert delivered == [('r-ho', 3)]
+    monkeypatch.setattr(runtime, 'research_handoff', lambda s: None)
+    runtime._sync_mode_block(session)
+    assert limits.RESEARCH_HANDOFF_BLOCK_MARKER not in session['messages'][0]['content']
+    assert 'NỀN' in session['messages'][0]['content']
