@@ -17,7 +17,7 @@ import { useT } from '../../../i18n/context'
 import { useUiStore } from '../../../store/uiStore'
 import { useHarnessChatStore } from '../../../store/harnessChatStore'
 import { useResearchStore } from '../../../store/researchStore'
-import { runLabel, type ResearchJob } from '../../../lib/researchMode'
+import { runLabel, STATUS_TONE_CLASS, jobStatusKey, jobStatusTone, type ResearchJob } from '../../../lib/researchMode'
 import { formatClock } from './format'
 import { critiqueLabel } from './RunTimeline'
 
@@ -25,8 +25,13 @@ export function ResearchReportCard({ job, inBackground }: { job: ResearchJob; in
   const t = useT()
   const showTab = useUiStore((s) => s.showTab)
   const updateJob = useResearchStore((s) => s.updateJob)
+  // Nút "Dùng cho plan" phải đổi trạng thái khi vòng 1200 ms làm mới `session.config.researchMode`:
+  // đăng ký `mode` để React vẽ lại khi `handoffDeliveredVersion` đổi.
+  const mode = useResearchStore((s) => s.mode)
   // Trong khi gửi lượt plan thì khoá nút: gửi hai lần mở hai lượt main cùng nội dung.
   const [busy, setBusy] = useState(false)
+  // Lời hỏi thoát còn mở: nút chưa gửi được, hiện một dòng nhắc thay vì im lặng.
+  const [needsChoice, setNeedsChoice] = useState(false)
 
   const dossier = job.dossier
   if (!dossier && job.status !== 'completed') return null
@@ -34,6 +39,8 @@ export function ResearchReportCard({ job, inBackground }: { job: ResearchJob; in
   const incomplete = latestReview?.verdict === 'revise' || latestReview?.verdict === 'rejected'
   // `deepen` bắt buộc có đích: facet của run, hoặc câu hỏi. Không có đích thì không gửi (server 400).
   const deepenTarget = job.coverage.facets[0]?.id ?? job.questions[0]?.id ?? ''
+  // Bàn giao đã xong cho ĐÚNG phiên bản hồ sơ đang thấy ⇒ nút chỉ còn để đọc, bấm không gửi gì.
+  const delivered = dossier !== null && mode.handoffDeliveredVersion[job.researchId] === String(dossier.version)
 
   /**
    * Nút "Dùng cho plan" (§4.5 + §5.10): (1) tắt chế độ nếu đang bật; (2) gửi lượt main. Khi server
@@ -41,13 +48,18 @@ export function ResearchReportCard({ job, inBackground }: { job: ResearchJob; in
    * sở hữu lựa chọn của người dùng, tuyệt đối không gửi lượt trong trường hợp đó.
    */
   async function useForPlan() {
-    if (!dossier || busy) return
+    if (!dossier || busy || delivered) return
     setBusy(true)
     try {
       const store = useResearchStore.getState()
       if (store.mode.on) {
-        const outcome = await store.setMode(false, 'toggle')
-        if (outcome === 'exit-choice' || outcome === 'error') return
+        // Bấm nút không phải hành động gạt toggle ở ô soạn tin ⇒ `by: 'command'`.
+        const outcome = await store.setMode(false, 'command')
+        if (outcome === 'exit-choice') {
+          setNeedsChoice(true)
+          return
+        }
+        if (outcome === 'error') return
       }
       const sessionId = useResearchStore.getState().sessionId
       if (!sessionId) return
@@ -71,8 +83,12 @@ export function ResearchReportCard({ job, inBackground }: { job: ResearchJob; in
             {t('research.reportVersion', { n: dossier.version })}
           </span>
         )}
-        <span className="ml-auto rounded bg-emerald-500/15 px-1 py-px text-[10px] font-medium text-emerald-300">
-          {t('research.statusDone')}
+        <span
+          data-testid="research-report-status"
+          data-status={job.status}
+          className={`ml-auto rounded px-1 py-px text-[10px] font-medium ${STATUS_TONE_CLASS[jobStatusTone(job)]}`}
+        >
+          {t(jobStatusKey(job))}
         </span>
       </header>
       <p className="mt-0.5 text-muted" data-testid="research-report-meta">
@@ -127,16 +143,23 @@ export function ResearchReportCard({ job, inBackground }: { job: ResearchJob; in
         </p>
       )}
 
+      {needsChoice && (
+        <p className="mt-1 text-[10px] text-amber-300" data-testid="research-use-for-plan-needs-choice">
+          {t('research.useForPlanNeedsChoice')}
+        </p>
+      )}
+
       <footer className="mt-1.5 flex flex-wrap items-center gap-1.5">
         <button
           type="button"
           data-testid="research-report-use-for-plan"
           data-busy={busy ? 'true' : 'false'}
-          disabled={!dossier || busy}
+          data-handoff={delivered ? 'done' : 'ready'}
+          disabled={!dossier || busy || delivered}
           onClick={() => void useForPlan()}
           className="rounded bg-zinc-100 px-2 py-0.5 text-zinc-900 transition hover:bg-white disabled:opacity-40 cursor-pointer"
         >
-          {t('research.reportUseForPlan')}
+          {delivered ? t('research.handoffDone') : t('research.reportUseForPlan')}
         </button>
         <button
           type="button"

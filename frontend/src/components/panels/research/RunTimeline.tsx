@@ -5,12 +5,14 @@
  * facet, mâu thuẫn và ngân sách. Tạm dừng/Hủy chỉ áp dụng cho RUN (không phải phiên) — đi qua
  * `PATCH /research/jobs/{id}` với `action` là `pause`/`cancel`.
  */
-import { Pause, Square } from 'lucide-react'
+import { Pause, Play, Square } from 'lucide-react'
 import { useT, type TKey } from '../../../i18n/context'
 import { useResearchStore } from '../../../store/researchStore'
 import {
   activeStepIndex,
   jobIsActive,
+  jobIsSuspendable,
+  jobStatusKey,
   RESEARCH_STEPS,
   runLabel,
   type ResearchJob,
@@ -40,7 +42,8 @@ function stepStateLabel(t: ReturnType<typeof useT>, job: ResearchJob, index: num
   if (job.status === 'completed') return t('research.stepDone')
   const active = activeStepIndex(job.phase, job.status)
   if (index < active) return t('research.stepDone')
-  if (index === active) return t('research.statusRunning')
+  // Run tạm dừng/dở dang KHÔNG được vẽ là "đang chạy" — cùng luật `jobStatusKey` như badge đầu panel.
+  if (index === active) return t(jobIsSuspendable(job) ? jobStatusKey(job) : 'research.statusRunning')
   return ''
 }
 
@@ -70,15 +73,28 @@ export function RunTimeline({ job }: { job: ResearchJob }) {
         </span>
         {jobIsActive(job) && (
           <div className="flex items-center gap-1">
-            <button
-              type="button"
-              data-testid="research-timeline-pause"
-              onClick={() => void updateJob(job.researchId, { action: 'pause', revision: job.revision })}
-              className="inline-flex items-center gap-1 rounded border border-line px-1.5 py-0.5 text-muted transition hover:text-fg cursor-pointer"
-            >
-              <Pause className="size-2.5" />
-              {t('research.pauseRun')}
-            </button>
+            {/* Run tạm dừng/dở dang: nút "Tạm dừng" vô nghĩa — "Tiếp tục" là đường DUY NHẤT quay lại. */}
+            {jobIsSuspendable(job) ? (
+              <button
+                type="button"
+                data-testid="research-timeline-resume"
+                onClick={() => void updateJob(job.researchId, { action: 'resume', revision: job.revision })}
+                className="inline-flex items-center gap-1 rounded border border-line px-1.5 py-0.5 text-muted transition hover:text-fg cursor-pointer"
+              >
+                <Play className="size-2.5" />
+                {t('research.resumeRun')}
+              </button>
+            ) : (
+              <button
+                type="button"
+                data-testid="research-timeline-pause"
+                onClick={() => void updateJob(job.researchId, { action: 'pause', revision: job.revision })}
+                className="inline-flex items-center gap-1 rounded border border-line px-1.5 py-0.5 text-muted transition hover:text-fg cursor-pointer"
+              >
+                <Pause className="size-2.5" />
+                {t('research.pauseRun')}
+              </button>
+            )}
             <button
               type="button"
               data-testid="research-timeline-cancel"

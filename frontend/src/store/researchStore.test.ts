@@ -18,7 +18,7 @@ const jobsPayload = { jobs: [{ research_id: 'R1', status: 'researching', state: 
 beforeEach(() => {
   useResearchStore.setState({
     sessionId: '', mode: RESEARCH_MODE_OFF, jobs: [], detail: null, detailId: '', loading: false,
-    error: null, lastEventSeq: 0, exitChoice: null, statusCard: null,
+    error: null, lastEventSeq: 0, exitChoice: null, statusCard: null, seenSeqBySession: {},
   })
 })
 
@@ -162,7 +162,15 @@ describe('researchStore thẻ trạng thái /research status (D-4)', () => {
 
   it('sự kiện `research_run` kiểu `status` có `message` MỚI ⇒ điền `statusCard`', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(jobsPayload)))
+    // Lịch sử của phiên (trước lần đồng bộ đầu) KHÔNG dựng thẻ: chỉ bản phát lại MỚI mới dựng.
     useResearchStore.getState().sync('s1', { researchMode: { on: true, activeRunId: 'R1' } }, [
+      statusEvent(6, 'thẻ cũ từ tuần trước'),
+    ])
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(useResearchStore.getState().statusCard).toBeNull()
+
+    useResearchStore.getState().sync('s1', { researchMode: { on: true, activeRunId: 'R1' } }, [
+      statusEvent(6, 'thẻ cũ từ tuần trước'),
       statusEvent(7, 'R1 · researching · pha searching · chạy nền'),
     ])
     await new Promise((resolve) => setTimeout(resolve, 0))
@@ -176,6 +184,8 @@ describe('researchStore thẻ trạng thái /research status (D-4)', () => {
 
   it('nhiều sự kiện mới ⇒ thẻ mới nhất (seq lớn nhất) thắng', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(jobsPayload)))
+    useResearchStore.getState().sync('s1', { researchMode: { on: true, activeRunId: 'R1' } }, [])
+    await new Promise((resolve) => setTimeout(resolve, 0))
     useResearchStore.getState().sync('s1', { researchMode: { on: true, activeRunId: 'R1' } }, [
       statusEvent(3, 'cũ'),
       statusEvent(9, 'mới'),
@@ -187,6 +197,8 @@ describe('researchStore thẻ trạng thái /research status (D-4)', () => {
 
   it('dismissStatusCard xoá thẻ; sự kiện CŨ (`seq` không tăng) không dựng lại nó', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(jobsPayload)))
+    useResearchStore.getState().sync('s1', { researchMode: { on: true, activeRunId: 'R1' } }, [])
+    await new Promise((resolve) => setTimeout(resolve, 0))
     const events = [statusEvent(7, 'R1 · researching')]
     useResearchStore.getState().sync('s1', { researchMode: { on: true, activeRunId: 'R1' } }, events)
     await new Promise((resolve) => setTimeout(resolve, 0))
@@ -208,6 +220,33 @@ describe('researchStore thẻ trạng thái /research status (D-4)', () => {
       statusCard: { researchId: 'R1', message: 'cũ', status: 'researching', phase: 'searching', background: false, seq: 7 },
     })
     useResearchStore.getState().sync('s2', { researchMode: { on: false } }, [])
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(useResearchStore.getState().statusCard).toBeNull()
+  })
+
+  it('quay lại phiên cũ: sự kiện lịch sử đã tiêu thụ KHÔNG dựng lại thẻ đã đóng (mốc seq theo phiên)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(jobsPayload)))
+    const events = [statusEvent(7, 'R1 · researching')]
+    useResearchStore.getState().sync('s1', { researchMode: { on: true, activeRunId: 'R1' } }, [])
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    useResearchStore.getState().sync('s1', { researchMode: { on: true, activeRunId: 'R1' } }, events)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(useResearchStore.getState().statusCard).not.toBeNull()
+    useResearchStore.getState().dismissStatusCard()
+
+    // Sang phiên khác rồi quay về s1 với ĐÚNG sự kiện cũ: mốc `seq` của s1 đã tiêu thụ ⇒ không mọc lại.
+    useResearchStore.getState().sync('s2', { researchMode: { on: false } }, [])
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    useResearchStore.getState().sync('s1', { researchMode: { on: true, activeRunId: 'R1' } }, events)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(useResearchStore.getState().statusCard).toBeNull()
+    expect(useResearchStore.getState().seenSeqBySession.s1).toBe(7)
+  })
+
+  it('phiên chưa từng thấy khi đổi phiên KHÔNG nhận thẻ trạng thái từ lịch sử', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(jobsPayload)))
+    useResearchStore.setState({ sessionId: 's1' })
+    useResearchStore.getState().sync('s2', { researchMode: { on: true, activeRunId: 'R1' } }, [statusEvent(7, 'R1 · researching')])
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(useResearchStore.getState().statusCard).toBeNull()
   })

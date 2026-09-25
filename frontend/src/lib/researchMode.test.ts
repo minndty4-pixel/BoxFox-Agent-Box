@@ -35,7 +35,17 @@ describe('readResearchMode', () => {
 
   it('đọc đúng cấu hình server gửi', () => {
     expect(readResearchMode({ researchMode: { on: true, since: 's', enteredBy: 'command', activeRunId: 'R1', revision: 4 } }))
-      .toEqual({ on: true, since: 's', enteredBy: 'command', activeRunId: 'R1', revision: 4 })
+      .toEqual({ on: true, since: 's', enteredBy: 'command', activeRunId: 'R1', revision: 4, handoffDeliveredVersion: {} })
+  })
+
+  it('đọc `handoffDeliveredVersion`: chỉ nhận chữ/số, ép về chuỗi, bỏ giá trị lạ', () => {
+    const mode = readResearchMode({
+      researchMode: { on: true, handoffDeliveredVersion: { R1: '3', R2: 4, R3: null, R4: { v: 1 }, R5: true } },
+    })
+    expect(mode.handoffDeliveredVersion).toEqual({ R1: '3', R2: '4' })
+    // Không phải bản đồ ⇒ rỗng, KHÔNG ném.
+    expect(readResearchMode({ researchMode: { on: true, handoffDeliveredVersion: 'rác' } }).handoffDeliveredVersion).toEqual({})
+    expect(readResearchMode({ researchMode: { on: true } }).handoffDeliveredVersion).toEqual({})
   })
 })
 

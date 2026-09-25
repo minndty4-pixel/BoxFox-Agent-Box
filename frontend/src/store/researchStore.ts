@@ -43,6 +43,12 @@ interface ResearchState {
   error: string | null
   /** `seq` lớn nhất của sự kiện `research_*` đã xử lý — vòng 1200 ms không tải lại vô ích. */
   lastEventSeq: number
+  /**
+   * Mốc `seq` đã tiêu thụ của TỪNG phiên (`sessionId -> seq`). Đổi phiên không được kéo `seq` về 0
+   * cho mọi phiên: làm vậy thì mọi sự kiện lịch sử của phiên mới bị coi là "mới", và một thẻ trạng
+   * thái đã bị người dùng đóng lại mọc lên (D-4).
+   */
+  seenSeqBySession: Record<string, number>
   /** Lời hỏi 409 khi tắt mode lúc run còn chạy: có thì phải neo thẻ vào nút Research. */
   exitChoice: ResearchExitChoice | null
   /**
@@ -133,25 +139,33 @@ export const useResearchStore = create<ResearchState>((set, get) => ({
   lastEventSeq: 0,
   exitChoice: null,
   statusCard: null,
+  seenSeqBySession: {},
 
   sync: (sessionId, config, events) => {
     if (!sessionId) {
-      set({ sessionId: '', mode: RESEARCH_MODE_OFF, jobs: [], detail: null, detailId: '', lastEventSeq: 0, exitChoice: null, statusCard: null })
+      set({ sessionId: '', mode: RESEARCH_MODE_OFF, jobs: [], detail: null, detailId: '', lastEventSeq: 0, exitChoice: null, statusCard: null, seenSeqBySession: {} })
       return
     }
     const mode = readResearchMode(config)
     const switched = sessionId !== get().sessionId
-    // Đổi phiên ⇒ `seq` bắt đầu lại từ 0, nên mốc so sánh cũng phải là 0 (nếu không, sự kiện đầu
-    // của phiên mới mang `seq` nhỏ hơn `lastEventSeq` của phiên cũ sẽ bị coi là "cũ").
-    const baseline = switched ? 0 : get().lastEventSeq
+    const seenSeqBySession = get().seenSeqBySession
+    const maxSeq = events.reduce((max, event) => Math.max(max, event.seq), 0)
+    // Mốc của TỪNG phiên: sự kiện chỉ "mới" khi vượt mốc đã tiêu thụ của chính phiên đó.
+    const mark = seenSeqBySession[sessionId]
+    const known = mark !== undefined
+    // Phiên CHƯA từng thấy: mọi sự kiện đang có là LỊCH SỬ, mốc khởi đầu là `seq` lớn nhất — nếu
+    // không thì một `research_run`/`status` từ tuần trước sẽ mọc lên như trạng thái hiện tại (§4.1
+    // dòng ~205: thẻ trạng thái là bản phát lại theo yêu cầu, không phải trạng thái nền).
+    const baseline = known ? mark : maxSeq
     const fresh = events.filter((event) => isResearchEvent(event) && event.seq > baseline)
+    const nextMark = Math.max(baseline, maxSeq)
     const lastEventSeq = events.reduce((max, event) => Math.max(max, event.seq), switched ? 0 : get().lastEventSeq)
     const modeChanged = switched || mode.on !== get().mode.on || mode.activeRunId !== get().mode.activeRunId
       || mode.revision !== get().mode.revision
-    // D-4: chỉ nhận sự kiện MỚI. Đổi phiên thì xoá thẻ cũ; còn lại giữ thẻ cho tới khi người dùng
-    // đóng (sự kiện `research_run` đã nằm trong `events` nên vòng sau nó không còn "mới" nữa).
+    // D-4: chỉ nhận sự kiện MỚI của phiên này (phiên chưa từng thấy ⇒ không nhận gì từ lịch sử).
+    // Đổi phiên thì xoá thẻ cũ; còn lại giữ thẻ cho tới khi người dùng đóng.
     const statusCard = statusCardFrom(fresh) ?? (switched ? null : get().statusCard)
-    set({ sessionId, mode, lastEventSeq, statusCard })
+    set({ sessionId, mode, lastEventSeq, statusCard, seenSeqBySession: { ...seenSeqBySession, [sessionId]: nextMark } })
     if (switched || fresh.length > 0 || modeChanged) void get().refresh()
   },
 

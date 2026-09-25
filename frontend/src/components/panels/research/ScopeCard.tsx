@@ -26,10 +26,10 @@ import {
   jobStatusKey,
   jobStatusTone,
   runLabel,
+  STATUS_TONE_CLASS,
   type ResearchJob,
   type ResearchPrompt,
   type ResearchScope,
-  type ResearchStatusTone,
 } from '../../../lib/researchMode'
 import { formatClock, formatMinutes } from './format'
 import { ResearchPromptCard } from './ResearchPromptCard'
@@ -54,14 +54,6 @@ const TIERS = [1, 2, 3] as const
 
 const SELECT_CLASS =
   'w-full rounded border border-line bg-bg px-1.5 py-0.5 text-[11px] text-fg outline-hidden focus:border-brand'
-
-/** Sắc thái badge trạng thái (khớp `jobStatusTone`) — dùng chung cho header thẻ phạm vi. */
-const STATUS_TONE_CLASS: Record<ResearchStatusTone, string> = {
-  warn: 'bg-amber-500/15 text-amber-300',
-  brand: 'bg-brand/15 text-brand',
-  muted: 'bg-zinc-500/15 text-muted',
-  done: 'bg-emerald-500/15 text-emerald-300',
-}
 
 /**
  * Một dòng sửa được: nhãn + giá trị + nút "Sửa" mở ô nhập ngay tại chỗ.
@@ -248,7 +240,7 @@ export function ScopeCard({
           {t('research.rev', { n: scope.revision })}
         </span>
         <span
-          data-testid="research-status-badge"
+          data-testid="research-scope-status-badge"
           data-status={job.status}
           className={`ml-auto shrink-0 rounded px-1 py-px text-[10px] font-medium ${STATUS_TONE_CLASS[jobStatusTone(job)]}`}
         >
@@ -441,9 +433,9 @@ export function ScopeCard({
       )}
 
       <footer className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[10px] text-muted">
-        <span>{t('research.applyNextWave')}</span>
         {!blocked && !suspendable && (
           <>
+            <span>{t('research.applyNextWave')}</span>
             <button
               type="button"
               data-testid="research-run-pause"

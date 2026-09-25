@@ -48,6 +48,12 @@ export interface ResearchMode {
   enteredBy: string
   activeRunId: string
   revision: number
+  /**
+   * `researchId -> version` của mọi hồ sơ ĐÃ bàn giao sang lượt main. Backend ghi vào chính khối
+   * `session.config.researchMode` (`runtime.mark_handoff_delivered`) và giao một lần cho mỗi phiên
+   * bản hồ sơ. Giao diện cần nó để nút \"Dùng cho plan\" chỉ gửi ĐÚNG MỘT lần.
+   */
+  handoffDeliveredVersion: Record<string, string>
 }
 
 export const RESEARCH_MODE_OFF: ResearchMode = {
@@ -56,6 +62,7 @@ export const RESEARCH_MODE_OFF: ResearchMode = {
   enteredBy: '',
   activeRunId: '',
   revision: 0,
+  handoffDeliveredVersion: {},
 }
 
 /** Đọc `session.config.researchMode`; thiếu/`null` ⇒ chế độ tắt (không bao giờ ném). */
@@ -67,7 +74,19 @@ export function readResearchMode(config: unknown): ResearchMode {
     enteredBy: asString(value.enteredBy),
     activeRunId: asString(value.activeRunId),
     revision: asNumber(value.revision) ?? 0,
+    handoffDeliveredVersion: readHandoffVersions(value.handoffDeliveredVersion),
   }
+}
+
+/** `researchId -> version` bàn giao: chỉ nhận chữ/số, ép về chuỗi, bỏ mọi giá trị khác. */
+function readHandoffVersions(value: unknown): Record<string, string> {
+  const raw = asRecord(value)
+  const versions: Record<string, string> = {}
+  for (const [researchId, item] of Object.entries(raw)) {
+    if (typeof item === 'string') versions[researchId] = item
+    else if (typeof item === 'number' && Number.isFinite(item)) versions[researchId] = String(item)
+  }
+  return versions
 }
 
 // ── Lời hỏi nhiều câu (`research_prompt`) ──────────────────────────────────
@@ -508,6 +527,14 @@ export function jobIsRunningInBackground(job: ResearchJob): boolean {
  * `warn` (chờ người dùng) · `brand` (đang chạy) · `muted` (tạm dừng/dở dang/đã huỷ) · `done` (xong).
  */
 export type ResearchStatusTone = 'warn' | 'brand' | 'muted' | 'done'
+
+/** Lớp Tailwind của badge trạng thái run — nguồn DUY NHẤT cho màu badge ở mọi nơi vẽ trạng thái. */
+export const STATUS_TONE_CLASS: Record<ResearchStatusTone, string> = {
+  warn: 'bg-amber-500/15 text-amber-300',
+  brand: 'bg-brand/15 text-brand',
+  muted: 'bg-zinc-500/15 text-muted',
+  done: 'bg-emerald-500/15 text-emerald-300',
+}
 
 /** Run đang tạm dừng hoặc dở dang — hiện nút "Tiếp tục" thay cho "Tạm dừng". */
 export function jobIsSuspendable(job: ResearchJob): boolean {

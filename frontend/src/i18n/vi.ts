@@ -301,6 +301,8 @@ const vi = {
     reportDeepen: 'Đào sâu',
     reportUpdate: 'Cập nhật',
     reportUseForPlan: 'Dùng cho plan',
+    handoffDone: 'Đã bàn giao cho plan',
+    useForPlanNeedsChoice: 'Chọn xử lý run đang chạy trước khi lập plan',
     useForPlanTurn: 'Lập plan dựa trên báo cáo research {{id}} v{{version}}',
     reportExit: 'Thoát chế độ Research',
     reportFailedCritique: 'chưa đạt phản biện',

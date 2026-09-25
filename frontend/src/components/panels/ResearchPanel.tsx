@@ -17,10 +17,10 @@ import {
   jobStatusKey,
   jobStatusTone,
   runLabel,
+  STATUS_TONE_CLASS,
   stepForPhase,
   type ResearchEvidenceRow,
   type ResearchJob,
-  type ResearchStatusTone,
 } from '../../lib/researchMode'
 import { formatClock } from './research/format'
 import { ResearchPromptCard } from './research/ResearchPromptCard'
@@ -108,14 +108,6 @@ function EvidenceRow({ row }: { row: ResearchEvidenceRow }) {
       )}
     </li>
   )
-}
-
-/** Sắc thái badge trạng thái (khớp `jobStatusTone`) — dùng chung cho header của panel. */
-const STATUS_TONE_CLASS: Record<ResearchStatusTone, string> = {
-  warn: 'bg-amber-500/15 text-amber-300',
-  brand: 'bg-brand/15 text-brand',
-  muted: 'bg-zinc-500/15 text-muted',
-  done: 'bg-emerald-500/15 text-emerald-300',
 }
 
 function JobHeader({ job }: { job: ResearchJob }) {

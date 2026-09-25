@@ -298,6 +298,8 @@ const en: SameShape<typeof vi> = {
     reportDeepen: 'Go deeper',
     reportUpdate: 'Update',
     reportUseForPlan: 'Use for plan',
+    handoffDone: 'Handed off to plan',
+    useForPlanNeedsChoice: 'Choose what happens to the running run before writing a plan',
     useForPlanTurn: 'Write a plan based on research report {{id}} v{{version}}',
     reportExit: 'Exit Research mode',
     reportFailedCritique: 'failed critique',

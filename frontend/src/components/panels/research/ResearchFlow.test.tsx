@@ -197,6 +197,7 @@ beforeEach(() => {
     lastEventSeq: 0,
     exitChoice: null,
     statusCard: null,
+    seenSeqBySession: {},
   })
 })
 
@@ -463,7 +464,7 @@ describe('sửa lỗi vòng kiểm thử trình duyệt (D-1, D-3, D-4, D-5)', (
 
     // Thẻ phạm vi: cùng nhãn, kèm dòng hỏi "Tiếp tục run X?" và nút resume gửi cùng patch.
     const scopeHost = render(<ScopeCard job={paused} scope={{ ...scopePayload } as never} />)
-    expect(scopeHost.querySelector('[data-testid="research-status-badge"]')?.getAttribute('data-status')).toBe('paused')
+    expect(scopeHost.querySelector('[data-testid="research-scope-status-badge"]')?.getAttribute('data-status')).toBe('paused')
     expect(scopeHost.querySelector('[data-testid="research-scope-resume-ask"]')?.textContent).toContain('Run R-R1 is paused')
     expect(scopeHost.querySelector('[data-testid="research-run-pause"]')).toBeNull()
     await act(async () => {
@@ -528,6 +529,95 @@ describe('sửa lỗi vòng kiểm thử trình duyệt (D-1, D-3, D-4, D-5)', (
     expect(api.calls.some((call) => call.url.includes('/research-mode'))).toBe(true)
     expect(api.calls.some((call) => call.url.includes('/turns'))).toBe(false)
     expect(useResearchStore.getState().exitChoice).not.toBeNull()
+    act(() => { host.remove() })
+  })
+})
+
+describe('sửa lỗi vòng 2 (D-3, D-5, exit-choice, thứ tự gọi)', () => {
+  it('D-3: dòng thời gian của run `paused` hiện ĐÚNG nhãn + nút Tiếp tục, gửi PATCH `resume`', async () => {
+    const api = stubApi()
+    const paused = readJob({ ...jobPayload().job, status: 'paused', revision: 7 })
+    const host = render(<RunTimeline job={paused} />)
+    // Bước đang chạy KHÔNG được vẽ là "đang chạy" khi run đã tạm dừng.
+    const activeStep = host.querySelector('[data-step][data-active="true"]')
+    expect(activeStep?.textContent).toContain('Paused')
+    // "Tạm dừng" vô nghĩa với run đã tạm dừng — chỉ còn "Tiếp tục" và "Hủy".
+    expect(host.querySelector('[data-testid="research-timeline-pause"]')).toBeNull()
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="research-timeline-resume"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    const resume = api.calls.find((call) => call.body?.action === 'resume')
+    expect(resume?.body?.revision).toBe(7)
+    expect(host.querySelector('[data-testid="research-timeline-cancel"]')).toBeTruthy()
+    act(() => { host.remove() })
+  })
+
+  it('D-3: thẻ báo cáo của run `partial` hiện nhãn "Partial" (không phải DONE)', () => {
+    const partial = readJob({
+      ...jobPayload().job,
+      status: 'partial',
+      dossier: { relative_path: '.research/x/v3-abc.md', version: 3, gate: 'pass', critique: '' },
+    })
+    const host = render(<ResearchReportCard job={partial} />)
+    const badge = host.querySelector('[data-testid="research-report-status"]')
+    expect(badge?.getAttribute('data-status')).toBe('partial')
+    expect(badge?.textContent).toContain('Partial')
+    expect(host.querySelector('[data-testid="research-report-status"]')?.textContent).not.toContain('DONE')
+    act(() => { host.remove() })
+  })
+
+  it('D-5: phiên bản hồ sơ đã bàn giao ⇒ nút khoá, bấm KHÔNG gửi PUT lẫn POST', async () => {
+    const api = stubApi()
+    useHarnessChatStore.setState({ sessions: { s1: { id: 'sid-1', status: 'idle', events: [], error: null } } })
+    useResearchStore.setState({
+      sessionId: 's1',
+      mode: { ...RESEARCH_MODE_OFF, on: true, activeRunId: 'R1', handoffDeliveredVersion: { R1: '3' } },
+    })
+    const host = render(<ResearchReportCard job={completedJob()} />)
+    const button = host.querySelector<HTMLButtonElement>('[data-testid="research-report-use-for-plan"]')!
+    expect(button.disabled).toBe(true)
+    expect(button.getAttribute('data-handoff')).toBe('done')
+    expect(button.textContent).toContain('Handed off to plan')
+    await act(async () => {
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(api.calls.some((call) => call.url.includes('/research-mode'))).toBe(false)
+    expect(api.calls.some((call) => call.url.includes('/turns'))).toBe(false)
+    act(() => { host.remove() })
+  })
+
+  it('D-5: bấm "Dùng cho plan" gửi PUT research-mode TRƯỚC rồi mới POST /turns', async () => {
+    const api = stubApi({ modeResponse: () => jsonResponse({ mode: { on: false, activeRunId: 'R1', revision: 5 } }) })
+    useHarnessChatStore.setState({ sessions: { s1: { id: 'sid-1', status: 'idle', events: [], error: null } } })
+    useResearchStore.setState({ sessionId: 's1', mode: { ...RESEARCH_MODE_OFF, on: true, activeRunId: 'R1' } })
+
+    const host = render(<ResearchReportCard job={completedJob()} />)
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="research-report-use-for-plan"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    const modeIndex = api.calls.findIndex((call) => call.url.includes('/research-mode'))
+    const turnIndex = api.calls.findIndex((call) => call.url.includes('/turns'))
+    expect(modeIndex).toBeGreaterThanOrEqual(0)
+    expect(turnIndex).toBeGreaterThan(modeIndex)
+    act(() => { host.remove() })
+  })
+
+  it('exit-choice: đường thoát hiện dòng nhắc thay vì im lặng, và không gửi lượt', async () => {
+    // Mặc định `stubApi`: tắt mode ⇒ 409 kèm lời hỏi thoát.
+    const api = stubApi()
+    useHarnessChatStore.setState({ sessions: { s1: { id: 'sid-1', status: 'idle', events: [], error: null } } })
+    useResearchStore.setState({ sessionId: 's1', mode: { ...RESEARCH_MODE_OFF, on: true, activeRunId: 'R1' } })
+
+    const host = render(<ResearchReportCard job={completedJob()} />)
+    expect(host.querySelector('[data-testid="research-use-for-plan-needs-choice"]')).toBeNull()
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="research-report-use-for-plan"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    const hint = host.querySelector('[data-testid="research-use-for-plan-needs-choice"]')
+    expect(hint).toBeTruthy()
+    expect(hint?.textContent).toContain('Choose what happens to the running run')
+    expect(api.calls.some((call) => call.url.includes('/turns'))).toBe(false)
     act(() => { host.remove() })
   })
 })
