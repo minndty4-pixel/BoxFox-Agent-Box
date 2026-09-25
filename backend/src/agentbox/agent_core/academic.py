@@ -826,13 +826,6 @@ _SEARCHERS = {
     'openalex': _search_openalex,
 }
 
-_SOURCE_KIND = {
-    'semantic_scholar': 'paper', 'crossref': 'paper', 'arxiv': 'preprint',
-    'europepmc': 'paper', 'dblp': 'paper', 'openreview': 'paper',
-    'opencitations': 'paper', 'github': 'code', 'huggingface': 'model',
-    'openalex': 'paper',
-}
-
 
 def connectors() -> dict[str, dict]:
     """Metadata for every keyless connector: rate, whether it needs a key, and its role."""

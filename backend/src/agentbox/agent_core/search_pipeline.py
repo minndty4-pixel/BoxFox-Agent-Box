@@ -216,6 +216,19 @@ def _variant_key(variant: dict) -> str:
     return f"{text}|{str(variant.get('language') or '').strip().lower()}"
 
 
+def _dedupe_variants(variants: list[dict]) -> list[dict]:
+    """Bỏ biến thể TRÙNG sau chuẩn hoá, GIỮ thứ tự ưu tiên (từ khoá trước, mở rộng sau)."""
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for variant in variants:
+        key = _variant_key(variant)
+        if not key.strip('|') or key in seen:
+            continue
+        seen.add(key)
+        unique.append(variant)
+    return unique
+
+
 def plan_queries(facet: dict, scope: dict, *, wave: int = 1) -> list[dict]:
     """Sinh biến thể truy vấn cho một facet (bước 1). Máy làm trước; mô hình chỉ thêm sau.
 
@@ -266,15 +279,7 @@ def plan_queries(facet: dict, scope: dict, *, wave: int = 1) -> list[dict]:
             add(f'{label} {time.strftime("%Y")}', 'fresh', tr=time_range)
 
     # Bỏ biến thể trùng sau chuẩn hoá, GIỮ thứ tự ưu tiên (từ khoá trước, mở rộng sau).
-    seen: set[str] = set()
-    unique: list[dict] = []
-    for variant in variants:
-        key = _variant_key(variant)
-        if not key.strip('|') or key in seen:
-            continue
-        seen.add(key)
-        unique.append(variant)
-    return unique[:cap]
+    return _dedupe_variants(variants)[:cap]
 
 
 # ------------------------------------------------------------------ bước 4 · RRF
@@ -680,14 +685,7 @@ def run_pipeline(queries: list[str], *, source: str, count: int, options: dict,
             variant['query'] = extra
             variant['variant_kind'] = 'user'
             variants.append(variant)
-    seen: set[str] = set()
-    unique_variants = []
-    for variant in variants:
-        key = _variant_key(variant)
-        if key.strip('|') and key not in seen:
-            seen.add(key)
-            unique_variants.append(variant)
-    variants = unique_variants
+    variants = _dedupe_variants(variants)
 
     engine_kind = 'news' if scope.get('needs_fresh') else 'web'
     engines = pick_engines(SEARCH_ENGINE_ROTATION_N, kind=engine_kind) or list(search_store.ENGINE_FALLBACK)
@@ -784,6 +782,7 @@ def run_pipeline(queries: list[str], *, source: str, count: int, options: dict,
     # Bước 6 — BM25 (tầng A luôn chạy) + đoạn chỉ mục cục bộ cho top-30 (2 KB đầu trang).
     for row in ranked:
         meta = store.index_get(str(row.get('canonical') or row.get('url') or ''))
+        row['_meta'] = meta
         if meta is not None:
             row['indexExcerpt'] = str(meta.get('text') or '')[:INDEX_EXCERPT_CHARS]
     bm25_rerank(ranked, queries[0], list(facet.get('terms') or []))
@@ -795,10 +794,9 @@ def run_pipeline(queries: list[str], *, source: str, count: int, options: dict,
         row['freshScore'] = _fresh_score(row, scope)
         row['score'] = final_score(row)
     ranked.sort(key=lambda row: float(row.get('score') or 0.0), reverse=True)
-    # Bước 8 — ngày + nguồn ngày.
+    # Bước 8 — ngày + nguồn ngày (dùng lại meta đã đọc ở bước 6, không truy vấn DB lần hai).
     for row in ranked:
-        meta = store.index_get(str(row.get('canonical') or row.get('url') or ''))
-        row['_dates'] = resolve_dates(row, meta)
+        row['_dates'] = resolve_dates(row, row.get('_meta'))
 
     # Bước 10 — đầu ra cho mô hình (5.4.4): trần nội bộ `SEARCH_PIPELINE_TOP_K` (mặc định 8),
     # vẫn kẹp theo `count` người gọi.

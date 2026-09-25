@@ -34,7 +34,6 @@ import net  # noqa: E402
 QUALITY_VALID = 'quality-valid'
 INFRA_FAILED = 'infra-failed'
 HARNESS_BUG = 'harness-bug'
-VALIDITY_VALUES = (QUALITY_VALID, INFRA_FAILED, HARNESS_BUG)
 
 #: Mã lỗi của nhà cung cấp/hạ tầng ⇒ `infra-failed`. `UPSTREAM_*` phủ hết các mã
 #: `UPSTREAM_HTTP_<status>`/`UPSTREAM_TIMEOUT`/`UPSTREAM_UNREACHABLE`.

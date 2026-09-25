@@ -23,7 +23,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import unicodedata
 from pathlib import Path
 
 from . import reading
@@ -35,13 +34,8 @@ _MAX_PAGES_BYTES = 4 * 1024 * 1024
 
 
 def _fold(value: str) -> str:
-    out = []
-    for ch in str(value or ''):
-        low = ch.lower().replace('đ', 'd')
-        if len(low) != 1:
-            low = ch
-        out.append(unicodedata.normalize('NFD', low)[0])
-    return ''.join(out)
+    """Bỏ dấu + hạ chữ để so khớp truy vấn — dùng chung `reading.fold_text`."""
+    return reading.fold_text(str(value or ''))
 
 
 def _tokens(value: str) -> set[str]:
@@ -193,11 +187,20 @@ def pack_fetch(url: str) -> dict | None:
         file_name = str(source.get('file') or '')
         if not file_name:
             return None
-        path = root / 'pages' / file_name
-        try:
-            if not path.is_file():
-                return None
-        except OSError:
+        # Hợp đồng §3 (và `build_pack.validate_pack`) nói `file` là đường dẫn TƯƠNG ĐỐI TRONG GÓI,
+        # tức đã gồm tiền tố `pages/`. Bản đầu chỉ ghép thêm `pages/` nên mọi gói do `build_pack.py`
+        # dựng đều đọc trượt (`<gói>/pages/pages/<tệp>`) và `web_fetch` báo "không có trong gói".
+        # Vẫn nhận dạng cũ (tên tệp trần, tương đối trong `pages/`) để gói tự dựng tay không vỡ.
+        candidates = [root / file_name, root / 'pages' / file_name]
+        path = None
+        for candidate in candidates:
+            try:
+                if candidate.is_file() and root.resolve() in candidate.resolve().parents:
+                    path = candidate
+                    break
+            except OSError:
+                continue
+        if path is None:
             return None
         text, content_type = _read_page(path)
         if not text.strip():

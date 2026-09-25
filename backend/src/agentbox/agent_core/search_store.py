@@ -26,6 +26,7 @@ import threading
 import time
 from pathlib import Path
 
+from . import reading
 from .limits import SEARCH_ENGINE_FAIL_STREAK, SEARCH_ENGINE_SUSPEND_SECONDS
 
 __all__ = ['default_path', 'connect', 'SearchStore', 'SearchStoreError',
@@ -103,15 +104,8 @@ def default_path() -> Path:
 
 
 def _fold(value) -> str:
-    """Bỏ dấu + hạ chữ để so khớp truy vấn chỉ mục — cùng luật với `reading.fold_text`."""
-    import unicodedata
-    out = []
-    for ch in str(value or ''):
-        low = ch.lower().replace('đ', 'd')
-        if len(low) != 1:
-            low = ch
-        out.append(unicodedata.normalize('NFD', low)[0])
-    return ''.join(out)
+    """Bỏ dấu + hạ chữ để so khớp truy vấn chỉ mục — dùng chung `reading.fold_text`."""
+    return reading.fold_text(str(value or ''))
 
 
 def _tokens(text: str) -> list[str]:

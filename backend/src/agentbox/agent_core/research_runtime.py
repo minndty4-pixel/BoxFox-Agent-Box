@@ -1751,14 +1751,6 @@ def _mode_mod():
     return runtime_module
 
 
-def _research_config_owner(rt, session, research_id):
-    """Chủ sở hữu THẬT của job: người gọi có thể là con nên phải tìm lên phiên gốc."""
-    job = rt.store.research_job(research_id)
-    if job is None:
-        return None, None
-    return job, job['session_id']
-
-
 def research_suggest(rt, session, args):
     """`research_suggest`: main ĐỀ XUẤT mở research mode cho một việc lớn.
 

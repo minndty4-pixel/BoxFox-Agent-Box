@@ -566,15 +566,14 @@ def create_app(runtime):
             return web.json_response({'job': halted})
         state = dict(job['state'])
         status = job['status']
-        if action in {'resume'}:
+        if action == 'resume':
             status = 'researching'
-            if action == 'resume' and job['status'] not in {'paused', 'partial', 'needs_user'}:
+            if job['status'] not in {'paused', 'partial', 'needs_user'}:
                 raise ApiError('RESEARCH_RESUME_INVALID', 'Job is not paused or partial')
-            if action == 'resume':
-                # A paused job may have stopped in the same turn the pump last saw.
-                # Explicit resume must wake it even without a new user turn.
-                state['lastContinuationTurn'] = -1
-                state['stalledTurns'] = 0
+            # A paused job may have stopped in the same turn the pump last saw.
+            # Explicit resume must wake it even without a new user turn.
+            state['lastContinuationTurn'] = -1
+            state['stalledTurns'] = 0
         elif action == 'budget':
             seconds = body.get('budgetSeconds')
             if isinstance(seconds, bool) or not isinstance(seconds, int) or not 60 <= seconds <= 86400:
