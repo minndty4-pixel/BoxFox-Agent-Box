@@ -1910,12 +1910,20 @@ def research_critique(rt, sid, research_id, version, mode='critique'):
         if int(child.get('answer_chars') or 0) < RESEARCH_REVIEW_MIN_ANSWER_CHARS:
             continue
         target = (rt.store.get(child['session_id']).get('config') or {}).get('reviewTarget') or {}
+        # Danh tính + MỨC SOÁT đứng NGOÀI nhánh `content_hash` (đợt soát `3dc745f`, finding 7): một
+        # con CÓ khai đích danh bản/mức thì phải khớp — kể cả khi hàng hồ sơ không có băm. Trước đây
+        # cả khối kiểm nằm trong `if row.get('content_hash')`, nên với hàng cũ không băm, lượt quét
+        # MỚI-NHẤT-TRƯỚC (A2) có thể nhận một con `evidence` cho một lần kiểm `critique`/`coverage`,
+        # hoặc một con trỏ vào bản khác, chỉ vì nó xong sau cùng.
+        if target.get('kind') == 'research':
+            if target.get('researchId') != research_id or target.get('version') != version \
+                    or target.get('mode') != mode \
+                    or (target.get('path') and target.get('path') != row['relative_path']):
+                continue
         if row.get('content_hash'):
             if target.get('kind') != 'research' or target.get('researchId') != research_id \
                     or target.get('version') != version or target.get('path') != row['relative_path'] \
                     or target.get('contentHash') != row.get('content_hash'):
-                continue
-            if target.get('mode') != mode:
                 continue
             if not _review_read_proof(rt, child['session_id'], row['relative_path'],
                                       row.get('content_hash') or ''):
@@ -1951,7 +1959,7 @@ def research_critique(rt, sid, research_id, version, mode='critique'):
     # `research-review` "hoàn thành" với câu trả lời cụt. Lời khuyên cũ ("hỏi nó dòng verdict rồi
     # gọi lại") đã khiến phiên chính lục 40 lượt `peer_read` cho một dòng KHÔNG hề tồn tại; nay
     # thông điệp nói đúng sự thật của con mới nhất và kèm luôn hai dòng cuối của nó.
-    truncated = rt.partial_turn(newest['session_id']) if hasattr(rt, 'partial_turn') else None
+    truncated = rt.partial_turn(newest['session_id'])
     if truncated:
         raise ValueError(
             f'{RESEARCH_VERIFY_VERDICT_MISSING_CODE}: con {str(newest["session_id"])[:8]} bị nhà cung cấp '
@@ -2044,9 +2052,10 @@ async def research_verify(rt, session, args):
         'combined': combined, 'issues': issues, 'coverageLabel': coverage_label,
         'summary': summary, 'criticSessionId': critic['session_id'], 'criticAnswerChars': answer_chars,
         'at': journal.utc_now_iso()})
-    # C1 (§5.3): pha đi theo việc THẬT — `evidence` là bước kiểm chứng, `critique` là bước phản
-    # biện, và một phán quyết `revise` mở pha viết lại.
-    set_phase(rt, sid, job, 'verifying' if mode == 'evidence' else 'critiquing',
+    # C1 (§5.3): pha đi theo việc THẬT — `evidence` và `coverage` là hai mặt của bước KIỂM CHỨNG
+    # (bảng pha của §5.2 xếp "Claim verifier, coverage reviewer" chung một bước), còn `critique` là
+    # bước phản biện; một phán quyết `revise` mở pha viết lại.
+    set_phase(rt, sid, job, 'verifying' if mode in {'evidence', 'coverage'} else 'critiquing',
               f'research-verify-{mode}')
     if verdict == 'revise':
         set_phase(rt, sid, job, 'revising', 'research-verdict-revise')
@@ -2200,29 +2209,26 @@ def research_update(rt, session, args):
         status = 'partial'
     if status in {'completed', 'partial'}:
         # B1 (§5.3): `completed`/`partial` là pha ĐÓNG của một run, không phải một checkpoint giữa
-        # đường. Đo sống 2026-09-26: model ghi `partial` ở hàng cuối (`co-hoi-nao-con-trong`, seq 8107)
-        # để nói thật "chưa xong"; code cũ chỉ lưu rồi im — pha kẹt ở `planning`, vòng tiếp sức tự
-        # dừng, và chủ nhà không nhận thẻ báo cáo nào cho một run TIỀN CẢNH. Nay: pha `done`, ghim
-        # `stopReason` (lý do đọc được), và thẻ `research_report` + event `research_run` cho cả run
-        # tiền cảnh (run nền vẫn đi qua `finish_background_run`).
-        if status == 'partial' and not state.get('stopReason'):
-            state['stopReason'] = str(args.get('stopReason') or args.get('finding') or '')[:2000]
-        state['phase'] = PHASE_DONE
-        _phase_history(state, PHASE_DONE, f'job-{status}')
-    updated = rt.store.research_job_save(research_id, session['id'], state, status,
-                                         revision=args.get('revision'))
-    if updated['status'] in {'completed', 'partial'}:
-        # P1 (§5.10): run CHẠY NỀN xong (mode đã tắt) ⇒ thẻ báo cáo + thông báo, và tắt cờ nền.
-        # `finish_background_run` là cửa duy nhất cho run nền và tự bỏ qua khi cờ nền tắt (F6); run
-        # tiền cảnh nhận thẻ qua `emit_report_card` — nếu không thì nó đóng mà không nói gì.
-        was_background = bool((updated['state'] or {}).get('background'))
-        finish_background_run(rt, session, updated)
-        if not was_background:
-            emit_report_card(rt, session['id'], updated, updated['state'] or {})
-            rt.store.emit(session['id'], 'research_run', {
-                'researchId': research_id, 'status': updated['status'], 'phase': PHASE_DONE,
-                'background': False, 'revision': updated['revision'],
-                'reason': f'job-{updated["status"]}', 'at': journal.utc_now_iso()})
+        # đường. Đo sống 2026-09-26: model ghi `partial` ở hàng cuối (`co-hoi-nao-con-trong`, seq
+        # 8107) để nói thật "chưa xong"; code cũ chỉ lưu rồi im — pha kẹt ở `planning`, vòng tiếp
+        # sức tự dừng, và chủ nhà không nhận thẻ báo cáo nào cho một run TIỀN CẢNH. Nay lần ĐÓNG đi
+        # qua `close_run`: pha `done`, `stopReason` đọc được, thẻ `research_report` + event
+        # `research_run` cho cả run tiền cảnh (run nền vẫn qua `finish_background_run`).
+        #
+        # Một lần gọi LẶP LẠI (không kèm `status`, nên phân giải về đúng status đang đứng) không
+        # đóng lần nữa: đợt soát `3dc745f` đo được nó phát thêm một thẻ báo cáo và một `research_run`
+        # cho cùng một run. Lần đóng đổi trạng thái thật (`partial` ⇒ `completed`) thì vẫn qua cửa.
+        reclosed = job['status'] == status
+        if reclosed:
+            updated = rt.store.research_job_save(research_id, session['id'], state, status,
+                                                 revision=args.get('revision'))
+        else:
+            updated = close_run(rt, session, job, state, status,
+                                args.get('stopReason') or args.get('finding') or '',
+                                revision=args.get('revision'))
+    else:
+        updated = rt.store.research_job_save(research_id, session['id'], state, status,
+                                             revision=args.get('revision'))
     # P2 (§7.4): sau mỗi sóng, bản đồ bao phủ được ghép thêm facet/từ khoá mô hình gửi rồi ĐO LẠI
     # bão hoà từ nhật ký tìm — điểm dừng đi kèm để người gọi biết còn hướng nào chưa đóng.
     for item in (args.get('facets') or []):
@@ -2919,28 +2925,27 @@ def set_phase(rt, sid, job, phase, reason, *, force=False):
     `research_run` — nhưng máy pha chưa hề được nối vào việc thật. Đo sống 2026-09-26 (run
     `co-hoi-nao-con-trong`, phiên `9ccdb26b…`): run chạy bốn lượt, ghi hồ sơ tới bản v2, kiểm chứng
     hai vòng, mà `state.phase` vẫn đứng ở `planning` — thanh tiến trình và `/research status` nói sai
-    chuyện đã xảy ra. Đây là cửa DUY NHẤT để đổi pha, nên hai thứ đó không thể lệch nhau nữa.
+    chuyện đã xảy ra. Đây là cửa chung cho mọi bước tiến pha do HARNESS ghi (nhánh con, hồ sơ,
+    kiểm chứng, kết thúc), nên hai thứ đó không thể lệch nhau nữa; chỗ duy nhất còn tự ghi pha là
+    `apply_research_mode` lúc BẬT mode — nó ghi `searching` như một phần của chính thao tác bật,
+    kèm `research_run` riêng.
 
-    Không ghi lại pha đang đứng và không lùi khỏi `done` (trừ `force`). Nhích `phase` KHÔNG nhích
-    `revision`: pha là việc của harness, còn `revision` là khoá lạc quan của model
-    (`research_update(revision=…)`) — nhích nó ở đây là tự tạo va chạm giả. Trả về hàng job sau khi
-    ghi, hoặc `None` khi không có gì để ghi.
+    Luật "có gì để ghi không" nằm trong `store.research_job_phase` (nó đọc hàng TƯƠI): pha đang
+    đứng thì không ghi, và run đã ở pha `done` thì không lùi khỏi đó — trừ `force`, dành cho chủ
+    nhà bấm Tiếp tục trên một run ĐÃ ĐÓNG. Nhích `phase` KHÔNG nhích `revision`: pha là việc của
+    harness, còn `revision` là khoá lạc quan của model (`research_update(revision=…)`) — nhích nó ở
+    đây là tự tạo va chạm giả. Trả về hàng job sau khi ghi, hoặc `None` khi không có gì để ghi.
     """
     if job is None:
         return None
-    state = dict(job['state'] or {})
-    current = str(state.get('phase') or '')
-    if str(phase) == current:
+    updated = rt.store.research_job_phase(job['research_id'], sid, str(phase), reason,
+                                         journal.utc_now_iso(), force=force)
+    if updated is None:
         return None
-    if current == PHASE_DONE and not force:
-        return None
-    patch = {'phaseHistory': list(state.get('phaseHistory') or [])}
-    _phase_history(patch, phase, reason, repeat=force)
-    updated = rt.store.research_job_phase(job['research_id'], sid, phase, patch['phaseHistory'])
     rt.store.emit(sid, 'research_run', {
         'researchId': job['research_id'], 'status': updated['status'], 'phase': str(phase),
-        'background': bool(state.get('background')), 'revision': updated['revision'],
-        'reason': reason, 'at': journal.utc_now_iso()})
+        'background': bool((updated['state'] or {}).get('background')),
+        'revision': updated['revision'], 'reason': reason, 'at': journal.utc_now_iso()})
     return updated
 
 
@@ -3299,6 +3304,39 @@ def _copy_inherited_rows(rt, sid, inherits, new_run_id):
     return copied
 
 
+def close_run(rt, session, job, state, status, reason, revision=None):
+    """Đóng một run qua MỘT cửa: ghim lý do, đưa pha về `done`, lưu, rồi phát thẻ báo cáo.
+
+    Ba đường cùng kết thúc một run đi qua đây: model khai `completed`/`partial`
+    (`research_update`), bơm cạn ngân sách, và bơm phát hiện đứng yên hai lượt (`api/server.py`).
+    Đo sống 2026-09-26: `partial` do model khai đóng run mà không có thẻ báo cáo nào (gap B), còn
+    hai đường BƠM thì tệ hơn — chúng gọi thẳng `finish_background_run`, hàm này tự bỏ qua khi
+    `state.background` tắt, nên một run TIỀN CẢNH biến mất không thẻ, không `research_run`, và
+    `phase` kẹt ở `searching` để thanh tiến trình kể về một run đã chết (đợt soát `3dc745f`,
+    finding 2). Thẻ báo cáo của run nền do `_finish_background` phát (qua cùng `emit_report_card`),
+    nên ở đây chỉ phát thêm khi run KHÔNG chạy nền.
+
+    `revision` là khoá lạc quan của model khi nó gửi kèm (`research_update`), và hàng vừa đọc khi
+    không (bơm): truyền `None` là dùng `job['revision']`.
+    """
+    state = dict(state or job['state'] or {})
+    if status == 'partial' and not state.get('stopReason'):
+        state['stopReason'] = str(reason or '')[:2000]
+    state['phase'] = PHASE_DONE
+    _phase_history(state, PHASE_DONE, f'job-{status}')
+    updated = rt.store.research_job_save(job['research_id'], session['id'], state, status,
+                                         revision=job['revision'] if revision is None else revision)
+    was_background = bool((updated['state'] or {}).get('background'))
+    finish_background_run(rt, session, updated)
+    if not was_background:
+        emit_report_card(rt, session['id'], updated)
+        rt.store.emit(session['id'], 'research_run', {
+            'researchId': job['research_id'], 'status': updated['status'], 'phase': PHASE_DONE,
+            'background': False, 'revision': updated['revision'],
+            'reason': f'job-{updated["status"]}', 'at': journal.utc_now_iso()})
+    return updated
+
+
 def finish_background_run(rt, session, job):
     """Cửa kết thúc DUY NHẤT của một run chạy nền (§5.10, F6).
 
@@ -3316,18 +3354,20 @@ def finish_background_run(rt, session, job):
     return rt.store.research_job(job['research_id'])
 
 
-def emit_report_card(rt, sid, job, state):
+def emit_report_card(rt, sid, job):
     """Phát `research_report` — thẻ báo cáo của một run đã đóng — và trả về số phiên bản hồ sơ.
 
     Tách khỏi `_finish_background` từ khi run TIỀN CẢNH cũng cần thẻ (B1): nhãn của thẻ (`partial`,
     `chưa đạt phản biện`, `bao phủ chưa đủ`) là hợp đồng người dùng đọc được, nên nó phải do ĐÚNG một
-    hàm dựng — hai bản chép tay sẽ lệch nhau ở lần sửa thứ ba.
+    hàm dựng — hai bản chép tay sẽ lệch nhau ở lần sửa thứ ba. `state` đọc từ chính hàng job: cả hai
+    cửa gọi đều truyền hàng vừa ghi, nên một tham số `state` chỉ là chỗ để hai bên lệch nhau.
     """
     latest = rt.store.dossier_latest(job['research_id'])
     labels = []
     if job['status'] == 'partial':
         labels.append('partial')
-    review_modes = [name for name in GATE_REVIEW_MODES if name in (state.get('reviewModes') or [])]
+    review_modes = [name for name in GATE_REVIEW_MODES
+                    if name in ((job.get('state') or {}).get('reviewModes') or [])]
     if latest is not None and review_modes and latest.get('critique') != 'ok':
         labels.append(RESEARCH_CRITIQUE_LABEL)
     if latest is not None and not latest.get('quality_ok') and job['status'] != 'partial':
@@ -3360,7 +3400,7 @@ def _finish_background(rt, session, job):
     state = dict(job['state'] or {})
     state['background'] = False
     rt.store.research_job_save(job['research_id'], sid, state)
-    version = emit_report_card(rt, sid, job, state)
+    version = emit_report_card(rt, sid, job)
     rt.store.emit(sid, 'research_notice', {'researchId': job['research_id'], 'kind': 'background-done'})
     rt.store.emit(sid, 'research_run', {'researchId': job['research_id'], 'status': job['status'],
                                         'phase': state.get('phase'), 'background': False,

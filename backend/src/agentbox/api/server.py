@@ -101,12 +101,13 @@ async def research_continuation_step(runtime):
             used = runtime.store.research_job_used_seconds(sid, job['research_id'])
             remaining = int(state.get('budgetSeconds') or 0) - used
             if remaining < 60:
-                # F6 (§5.3/§5.10): bơm cạn ngân sách cũng là một đường KẾT THÚC. Ghi `partial` rồi
-                # đi qua cửa duy nhất, nếu không run nền biến mất im lặng (không thẻ báo cáo, không
-                # thông báo, `state.background` còn mãi).
-                exhausted = runtime.store.research_job_save(
-                    job['research_id'], sid, state, status='partial', revision=job['revision'])
-                research_runtime.finish_background_run(runtime, session, exhausted)
+                # F6 (§5.3/§5.10): bơm cạn ngân sách cũng là một đường KẾT THÚC, và đi qua CÙNG cửa
+                # với `research_update` (`close_run`): run TIỀN CẢNH cũng nhận pha `done` + thẻ báo
+                # cáo, không chỉ run nền — `finish_background_run` tự bỏ qua khi cờ nền tắt, nên
+                # trước đây một run tiền cảnh biến mất im lặng (đợt soát `3dc745f`, finding 2).
+                research_runtime.close_run(runtime, session, job, state, 'partial',
+                                           f'hết ngân sách: còn {remaining} s trên '
+                                           f'{int(state.get("budgetSeconds") or 0)} s')
                 continue
             turn = int(session.get('turn_count') or 0)
             if turn <= int(state.get('lastContinuationTurn') or 0) and \
@@ -122,10 +123,11 @@ async def research_continuation_step(runtime):
                          lastContinuationTurn=turn, lastContinuationAt=time.time(),
                          continuationAttempt=int(state.get('continuationAttempt') or 0) + 1)
             if stalled >= 2:
-                # F6: hai lượt bơm không tiến được ⇒ kết thúc y như cạn ngân sách, qua cùng cửa.
-                stalled_job = runtime.store.research_job_save(
-                    job['research_id'], sid, state, status='partial', revision=job['revision'])
-                research_runtime.finish_background_run(runtime, session, stalled_job)
+                # F6: hai lượt bơm không tiến được ⇒ kết thúc y như cạn ngân sách, qua cùng cửa
+                # (`close_run`), nên run tiền cảnh cũng có pha `done`, lý do, và thẻ báo cáo.
+                research_runtime.close_run(runtime, session, job, state, 'partial',
+                                           'bơm hai lượt liền không tiến được: câu trả lời, hàng '
+                                           'nguồn và bản hồ sơ đều đứng yên')
                 continue
             runtime.store.research_job_save(job['research_id'], sid, state,
                                             revision=job['revision'])
@@ -663,11 +665,10 @@ def create_app(runtime):
             # B1/C1 (§5.3): `completed`/`partial` là pha ĐÓNG, mà `resume` mở LẠI run — một run đang
             # chạy lại không được mang pha `done`, nếu không luật "done là cuối" chặn mọi bước tiến pha
             # sau đó và thanh tiến trình nói "xong" cho một run vừa được hồi sức. Chỉ run ĐÃ ĐÓNG mới
-            # cần rời `done`; một run `paused` giữ nguyên pha thật của nó lúc bị tạm dừng.
-            research_runtime.set_phase(runtime, job['session_id'],
-                                       runtime.store.research_job(research_id), 'searching',
-                                       'owner-resume', force=True)
-            updated = runtime.store.research_job(research_id)
+            # cần rời `done`; một run `paused` giữ nguyên pha thật của nó lúc bị tạm dừng. `set_phase`
+            # trả về hàng job vừa ghi, nên không cần đọc lại lần nữa.
+            updated = research_runtime.set_phase(runtime, job['session_id'], updated, 'searching',
+                                                'owner-resume', force=True) or updated
         if action == 'skip':
             owner = runtime.store.get(job['session_id'])
             for branch in runtime.store.children_of(job['session_id']):

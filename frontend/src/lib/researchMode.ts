@@ -387,8 +387,18 @@ const PHASE_STEP: Record<string, ResearchStepKey> = {
   reading: 'read',
   analyzing: 'read',
   synthesizing: 'synthesize',
-  critiquing: 'critique',
+  // `revising` là pha mở ra sau một phán quyết `revise` (§5.2: "Tổng hợp = `synthesizing` +
+  // `revising`"): bước hiển thị vẫn là Tổng hợp. Thiếu hàng này thì `stepForPhase` rơi về
+  // `clarify` và thanh tiến trình của một run vừa kiểm chứng xong nhảy về bước 0 (đợt soát
+  // `3dc745f`, finding 1).
+  revising: 'synthesize',
+  // `deep-reading` là tên pha trong bảng §5.2 (bước hiển thị `read`); chưa có đường nào ghi nó,
+  // nhưng để sẵn ở đây thì một người ghi sau không vô tình vẽ nó thành bước 0.
+  'deep-reading': 'read',
+  // `verifying` (claim verifier + coverage reviewer) và `critiquing` (phản biện) là hai pha của
+  // cùng một bước hiển thị theo bảng pha §5.2 (line 369).
   verifying: 'critique',
+  critiquing: 'critique',
   reviewing: 'critique',
   completed: 'done',
   done: 'done',

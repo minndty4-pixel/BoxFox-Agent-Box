@@ -432,14 +432,6 @@ async function* translateResponsesStream(response) {
   let nextToolIndex = 0;
   let sawToolCall = false;
   let finishReason = null;
-  // A Responses stream ends with a `response.completed`/`response.done` event; the
-  // `finish` line below is synthesised by US. Measured live 2026-09-26 on a
-  // `muse-spark-1.3-contributor-free` review turn: the provider cut the stream
-  // mid-sentence, sent no completion event and no usage, and the default here made
-  // the harness read a severed answer as a clean `stop` - so a critique without its
-  // required final `VERDICT:` line looked like a finished critique. Missing the
-  // terminal event IS the truncation signal; `length` is the honest reason.
-  let completed = false;
 
   const toolIndexOf = outputIndex => {
     if (toolIndexByOutput.has(outputIndex)) return toolIndexByOutput.get(outputIndex);
@@ -505,17 +497,19 @@ async function* translateResponsesStream(response) {
       throw new RouterError('UNAVAILABLE', `OpenCode Free stream failed: ${String(detail).slice(0, 300)}`, 502, true);
     }
     if (data.type === 'response.completed' || data.type === 'response.done') {
-      completed = true;
       const usage = usageFrom(data.response?.usage);
       if (usage) yield { type: 'usage', usage };
       finishReason = sawToolCall ? 'tool_calls' : normalizeFinishReason(data.response?.status === 'incomplete' ? 'length' : 'stop');
       continue;
     }
   }
-  // `length` when the terminal event never arrived, and only then: a provider that does
-  // send `response.completed` keeps its own reason (`stop`/`tool_calls`/`length`).
-  const fallback = completed ? (sawToolCall ? 'tool_calls' : 'stop') : 'length';
-  yield { type: 'finish', finishReason: finishReason || fallback };
+  // A `response.completed`/`response.done` event is the ONLY thing that sets `finishReason`
+  // above, but the `finish` line is synthesised by US - so a stream cut mid-answer (no
+  // terminal event, hence no `finishReason`) must not be reported as a clean stop.
+  // Measured live 2026-09-26 on a `muse-spark-1.3-contributor-free` review turn: the
+  // severed answer looked complete, so a critique without its required final `VERDICT:`
+  // line passed as a finished critique. `length` is the honest reason.
+  yield { type: 'finish', finishReason: finishReason || 'length' };
 }
 
 async function* aggregate(events) {
@@ -524,6 +518,14 @@ async function* aggregate(events) {
   const calls = new Map();
   let usage = null;
   let finishReason = 'stop';
+  // A `finish` event is the provider SAYING it finished. `aggregate` folds a provider stream into
+  // ONE response, so a stream that ended without that event was cut: the aggregated `stop` default
+  // would hand the caller a severed answer that looks complete (measured live 2026-09-26 on a
+  // `muse-spark-1.3-contributor-free` review turn - a critique without its required final
+  // `VERDICT:` line passed as a finished critique). The harness reads this field on its
+  // non-streaming fallback after a broken SSE channel, so `length` is the honest reason and it wins
+  // over the tool-call guess below.
+  let sawFinish = false;
   for await (const event of events) {
     if (event.type === 'delta') {
       if (event.delta.content) content += event.delta.content;
@@ -539,7 +541,7 @@ async function* aggregate(events) {
       continue;
     }
     if (event.type === 'usage') usage = event.usage;
-    if (event.type === 'finish') finishReason = event.finishReason;
+    if (event.type === 'finish') { sawFinish = true; finishReason = event.finishReason; }
   }
   const delta = {};
   if (content) delta.content = content;
@@ -551,7 +553,8 @@ async function* aggregate(events) {
   }
   if (Object.keys(delta).length) yield { type: 'delta', delta };
   if (usage) yield { type: 'usage', usage };
-  if (calls.size && finishReason === 'stop') finishReason = 'tool_calls';
+  if (!sawFinish) finishReason = 'length';
+  else if (calls.size && finishReason === 'stop') finishReason = 'tool_calls';
   yield { type: 'finish', finishReason };
 }
 

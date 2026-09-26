@@ -3946,8 +3946,9 @@ class HarnessRuntime(RuntimeCommands):
                             'code': TRUNCATED_OUTPUT_NOTICE_CODE,
                             'partial': True,
                             'outputTokens': (response.get('usage') or {}).get('completion_tokens'),
-                            'message': (f'{TRUNCATED_OUTPUT_NOTICE_CODE}: the provider stopped at the output '
-                                        f'cap twice — this turn only produced a partial answer'),
+                            'message': (f'{TRUNCATED_OUTPUT_NOTICE_CODE}: the provider ended the answer '
+                                        f'before its terminal chunk twice (an output cap OR a severed '
+                                        f'stream) — this turn only produced a partial answer'),
                         })
                         truncated_partial = True
                     if not calls and not truncated_partial and (choice.get('finish_reason') not in {'stop', 'end_turn'} or not text.strip()):
@@ -5949,14 +5950,13 @@ class HarnessRuntime(RuntimeCommands):
                                    if item['id'] == research_question_id and
                                    item.get('status') == 'unexplored' else item)
                                   for item in state.get('questions', [])]
-            self.store.research_job_save(research_cfg['researchId'], parent_id, state,
-                                         status='researching', revision=job['revision'])
+            saved = self.store.research_job_save(research_cfg['researchId'], parent_id, state,
+                                                 status='researching', revision=job['revision'])
             # C1 (§5.3): nhánh tra cứu đầu tiên đưa run sang pha `searching` — sổ pha phải kể được
             # việc đã xảy ra. `research_job_phase` KHÔNG nhích `revision`, nên nó không đụng vào khoá
-            # lạc quan vừa dùng ở dòng trên.
-            research_runtime.set_phase(self, parent_id,
-                                       self.store.research_job(research_cfg['researchId']),
-                                       'searching', 'branch-delegated')
+            # lạc quan vừa dùng ở dòng trên. Dùng luôn hàng vừa ghi (`research_job_save` trả về hàng
+            # ấy) thay vì đọc lại lần nữa.
+            research_runtime.set_phase(self, parent_id, saved, 'searching', 'branch-delegated')
         # T5 — slot sống bằng VÒNG ĐỜI của con, không bằng khối `async with`: con `wait=false`
         # (T6) trả về ngay trong khi nó vẫn chạy, nên chỗ nhả duy nhất đúng là lúc task đóng
         # (chạy cả khi con bị huỷ).

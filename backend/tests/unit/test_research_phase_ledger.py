@@ -20,6 +20,7 @@ import asyncio
 import pytest
 
 import agentbox.agent_core.research_runtime as research_runtime
+from agentbox.api.server import research_continuation_step
 from agentbox.agent_core.runtime import HarnessRuntime
 from agentbox.memory.session_store import SessionStore
 
@@ -127,6 +128,85 @@ def test_partial_is_a_closed_phase_with_a_reason_and_a_report_card(harness):
     runs = _events(store, sid, 'research_run')
     assert runs[-1]['phase'] == 'done' and runs[-1]['reason'] == 'job-partial'
     assert runs[-1]['status'] == 'partial'
+
+def test_a_repeat_close_never_emits_a_second_report_card(harness):
+    """Đợt soát `3dc745f`, finding 3: một `research_update` LẶP LẠI (không kèm `status`, nên phân
+    giải về đúng status đang đứng) từng phát thêm một thẻ báo cáo và một `research_run` cho cùng
+    một run — thẻ báo cáo là hợp đồng người dùng đọc được, nên đóng một lần chỉ được có một thẻ.
+    """
+    store, runtime, sid, session = harness
+    store.record_dossier(sid, 'RS1', 1, '.research/RS1/v1-RS1.md', profile='price', level=3,
+                         critique='none', gate='warn', rows=3, bytes=1200)
+    _job(store, sid, extra={'reviewModes': ['evidence', 'critique'], 'background': False})
+    research_runtime.research_update(runtime, session, {
+        'researchId': 'RS1', 'status': 'partial', 'finding': 'thiếu dòng VERDICT'})
+    research_runtime.research_update(runtime, session, {
+        'researchId': 'RS1', 'finding': 'checkpoint giữa đường'})
+    history = store.research_job('RS1')['state']['phaseHistory']
+    assert [row['phase'] for row in history].count('done') == 1, 'pha ĐÓNG ghi đúng một lần'
+    assert len(_events(store, sid, 'research_report')) == 1
+    done_runs = [item for item in _events(store, sid, 'research_run') if item['phase'] == 'done']
+    assert len(done_runs) == 1
+
+
+def test_the_pump_closing_a_foreground_run_writes_done_and_a_report_card(harness):
+    """Đợt soát `3dc745f`, finding 2: hai đường BƠM của `api/server.py` từng kết thúc một run TIỀN
+    CẢNH bằng `finish_background_run` — hàm này tự bỏ qua khi cờ nền tắt — nên run biến mất không
+    thẻ báo cáo và `phase` kẹt ở `searching` để thanh tiến trình kể về một run đã chết.
+    """
+    store, runtime, sid, _session = harness
+    research_runtime.apply_research_mode(runtime, store.get(sid), {'on': True})
+    store.record_dossier(sid, 'RS1', 1, '.research/RS1/v1-RS1.md', profile='price', level=3,
+                         critique='none', gate='warn', rows=3, bytes=1200)
+    _job(store, sid, phase='searching', extra={'origin': 'mode', 'budgetSeconds': 0})
+    config = store.get(sid)['config']
+    config['researchMode']['activeRunId'] = 'RS1'
+    store.update_config(sid, config)
+    asyncio.run(research_continuation_step(runtime))
+    job = store.research_job('RS1')
+    assert job['status'] == 'partial'
+    assert job['state']['phase'] == 'done'
+    assert 'ngân sách' in job['state']['stopReason']
+    reports = _events(store, sid, 'research_report')
+    assert len(reports) == 1 and 'partial' in reports[0]['labels']
+    assert _events(store, sid, 'research_run')[-1]['phase'] == 'done'
+    assert _events(store, sid, 'research_notice') == [], 'run tiền cảnh không đi qua thông báo nền'
+    assert 'RS1' not in {item['research_id'] for item in store.research_jobs_active()}
+
+
+def test_a_coverage_verdict_lands_in_the_verifying_step(harness):
+    """Đợt soát `3dc745f`, finding 6: bảng pha §5.2 xếp "Claim verifier, coverage reviewer" CÙNG
+    bước `verifying`, nên một lần soát bao phủ phải ghi pha `verifying`, không phải `critiquing`.
+    Bộ kiểm này đi hết đường: con `coverage` đọc hồ sơ ⇒ `research_verify(mode='coverage')`.
+    """
+    store, runtime, sid, session = harness
+    store.record_dossier(sid, 'study', 1, '.research/study/v1-study.md', profile='deep', level=2,
+                         critique='none', gate='warn', rows=5, bytes=2000)
+    _job(store, sid, 'study', phase='synthesizing',
+         extra={'tier': 2, 'reviewModes': ['evidence', 'critique']})
+    child = runtime.create({'skills': []}, parent_id=sid, role='research-review')
+    # `create` chỉ nhận các khoá nằm trong danh sách trắng của nó; `delegate_task` ghim
+    # `reviewTarget` vào config SAU đó bằng `update_config` — dựng đúng hàng ấy ở đây.
+    child_config = store.get(child['id'])['config']
+    child_config['reviewTarget'] = {'kind': 'research', 'researchId': 'study',
+                                    'version': 1, 'mode': 'coverage'}
+    store.update_config(child['id'], child_config)
+    store.child_start(child['id'], sid, 1, 1, 'research-review', 'soát bao phủ')
+    text = ('Đã đối chiếu bản đồ bao phủ với sổ nguồn: ba hướng của thẻ phạm vi chưa có hàng nào, '
+            'và một hướng trong đó là high-impact vì nó quyết định giá. ' + 'Nội dung dài hơn. ' * 16 +
+            '\nVERDICT: ok\n')
+    assert len(text) >= research_runtime.RESEARCH_REVIEW_MIN_ANSWER_CHARS
+    store.emit(child['id'], 'assistant', {'text': text})
+    store.child_finish(child['id'], 'completed', answer_chars=len(text))
+    asyncio.run(research_runtime.research_verify(runtime, session, {
+        'researchId': 'study', 'version': 1, 'verdict': 'ok', 'mode': 'coverage',
+        'summary': 'bao phủ đủ'}))
+    job = store.research_job('study')
+    assert job['state']['phase'] == 'verifying'
+    assert job['state']['phaseHistory'][-1]['reason'] == 'research-verify-coverage'
+    verified = _events(store, sid, 'research_verified')
+    assert verified and verified[-1]['mode'] == 'coverage' and verified[-1]['verdict'] == 'ok'
+
 
 
 def test_a_coverage_review_can_be_delegated_and_an_unknown_mode_is_still_refused(tmp_path):

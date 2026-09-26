@@ -1756,20 +1756,37 @@ class SessionStore:
                              current['created'] if current else now, now))
         return self.research_job(research_id)
 
-    def research_job_phase(self, research_id, session_id, phase, history):
+    def research_job_phase(self, research_id, session_id, phase, reason, at, *, force=False):
         """Ghim `phase`/`phaseHistory` của một run mà KHÔNG nhích `revision` (§5.3).
 
         Đổi pha là việc của harness đi kèm một tool call khác, không phải một bản ghi mới của run:
         nhích `revision` ở đây sẽ làm `research_update(revision=…)` của model va chạm giả
-        (`RESEARCH_JOB_REVISION_CONFLICT`) ngay sau khi hồ sơ vừa được ghi. Đọc lại hàng NGAY trước
-        khi ghi để không đè mất trường mà lượt đang chạy vừa ghi vào `state`.
+        (`RESEARCH_JOB_REVISION_CONFLICT`) ngay sau khi hồ sơ vừa được ghi.
+
+        LUẬT CỦA PHA NẰM Ở ĐÂY, trên hàng ĐỌC LẠI NGAY TRƯỚC KHI GHI: người gọi cầm một bản chụp
+        job đã cũ — một lượt chạy song song có thể vừa thêm hàng lịch sử (chủ nhà tạm dừng giữa
+        lượt) hoặc vừa đóng run — nên cả hai quyết định ("có gì để ghi không", "ghép lịch sử thế
+        nào") phải tính từ hàng TƯƠI. Trả về hàng sau khi ghi, hoặc `None` khi không có gì để
+        ghi: pha đang đứng, hay run đã ở pha ĐÓNG `done` mà không có `force` (chủ nhà bấm Tiếp
+        tục một run đã đóng, xem `research_runtime.PHASE_DONE`).
+
+        `at` do người gọi cấp (`agent_core.journal.utc_now_iso()`): lớp này không import mô-đun
+        `agent_core` (vòng import chạy ngược), và mốc thời gian phải cùng khuôn với mọi hàng
+        `phaseHistory` khác.
         """
         job = self.research_job(research_id)
         if job is None or job['session_id'] != session_id:
             raise ValueError('RESEARCH_JOB_UNKNOWN')
         state = dict(job['state'] or {})
+        current = str(state.get('phase') or '')
+        if str(phase) == current:
+            return None
+        if current == 'done' and not force:
+            return None
+        history = list(state.get('phaseHistory') or [])
+        history.append({'phase': str(phase), 'at': str(at or ''), 'reason': str(reason or '')})
         state['phase'] = str(phase)
-        state['phaseHistory'] = list(history or [])
+        state['phaseHistory'] = history
         with self.db:
             self.db.execute('UPDATE research_jobs SET state=?, updated=? WHERE research_id=?',
                             (json.dumps(state, ensure_ascii=False), time.time(), str(research_id)))

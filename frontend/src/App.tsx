@@ -110,20 +110,22 @@ function useEpochElapsedSeconds(taskEpoch: number, running: boolean): number {
   return Math.max(0, Math.floor((now - startedAt) / 1000))
 }
 
+// Icon của mỗi mục lấy từ `TAB_ICON` — icon tab là MỘT sự thật (TabBar và menu cùng vẽ nó),
+// nên đổi icon chỉ phải đổi ở một chỗ (#6108).
 const AVAILABLE_PANEL_TABS: { id: PanelTabId; label: string; desc: string; icon: React.ComponentType<{ className?: string }> }[] = [
-  { id: 'plan', label: 'Plan Document', desc: 'Architecture blueprint & step review', icon: FileText },
-  { id: 'research', label: 'Research', desc: 'Questions, evidence gaps & budget', icon: Microscope },
-  { id: 'sandbox', label: 'Sandbox Machine', desc: 'Live container vision & browser frame', icon: Monitor },
-  { id: 'subagents', label: 'Sub-agents Console', desc: 'Autonomous specialists activity & thinking', icon: BrainCircuit },
-  { id: 'ide', label: 'IDE (VS Code Web)', desc: 'code-server running inside the box', icon: Code2 },
-  { id: 'terminal', label: 'Integrated Terminal', desc: 'Interactive shell in sandbox container', icon: Terminal },
-  { id: 'design', label: 'Design Canvas', desc: 'Interactive UI canvas, visual flow & mockup editor', icon: Shapes },
-  { id: 'decisions', label: 'Decisions & Approvals', desc: 'Security permission requests & design choices', icon: ShieldAlert },
-  { id: 'pull_requests', label: 'Pull Requests', desc: 'Git branches, PR diffs & CI checks', icon: GitPullRequest },
-  { id: 'labels', label: 'Labels & Leases', desc: 'IFC security provenance & active leases', icon: Tag },
-  { id: 'audit', label: 'Audit Logs', desc: 'Immutable security action ledger', icon: ScrollText },
-  { id: 'files', label: 'Workspace Files', desc: 'Browse, preview & manage workspace files', icon: FolderOpen },
-  { id: 'system_log', label: 'System Log', desc: 'Dev log written on the host, outside the box', icon: Activity },
+  { id: 'plan', label: 'Plan Document', desc: 'Architecture blueprint & step review', icon: TAB_ICON.plan },
+  { id: 'research', label: 'Research', desc: 'Questions, evidence gaps & budget', icon: TAB_ICON.research },
+  { id: 'sandbox', label: 'Sandbox Machine', desc: 'Live container vision & browser frame', icon: TAB_ICON.sandbox },
+  { id: 'subagents', label: 'Sub-agents Console', desc: 'Autonomous specialists activity & thinking', icon: TAB_ICON.subagents },
+  { id: 'ide', label: 'IDE (VS Code Web)', desc: 'code-server running inside the box', icon: TAB_ICON.ide },
+  { id: 'terminal', label: 'Integrated Terminal', desc: 'Interactive shell in sandbox container', icon: TAB_ICON.terminal },
+  { id: 'design', label: 'Design Canvas', desc: 'Interactive UI canvas, visual flow & mockup editor', icon: TAB_ICON.design },
+  { id: 'decisions', label: 'Decisions & Approvals', desc: 'Security permission requests & design choices', icon: TAB_ICON.decisions },
+  { id: 'pull_requests', label: 'Pull Requests', desc: 'Git branches, PR diffs & CI checks', icon: TAB_ICON.pull_requests },
+  { id: 'labels', label: 'Labels & Leases', desc: 'IFC security provenance & active leases', icon: TAB_ICON.labels },
+  { id: 'audit', label: 'Audit Logs', desc: 'Immutable security action ledger', icon: TAB_ICON.audit },
+  { id: 'files', label: 'Workspace Files', desc: 'Browse, preview & manage workspace files', icon: TAB_ICON.files },
+  { id: 'system_log', label: 'System Log', desc: 'Dev log written on the host, outside the box', icon: TAB_ICON.system_log },
 ]
 
 /**

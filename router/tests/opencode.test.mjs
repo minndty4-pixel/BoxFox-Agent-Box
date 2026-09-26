@@ -88,6 +88,25 @@ test('the versioned user agent is what the free tier checks', () => {
   assert.equal(hasValidOpencodeVersion('curl/8'), false);
 });
 
+test('a chat stream folded for a non-streaming caller reports `length` when it was cut', async () => {
+  // The harness falls back to a non-streaming POST when the SSE channel breaks; the router folds
+  // the provider stream with `aggregate`, and its `stop` default used to turn a severed answer into
+  // a clean finish (measured live 2026-09-26, `muse-spark-1.3-contributor-free` review turn).
+  const cut = recorder(() => sse(chatFrames().slice(0, -1)));
+  const severed = await collect(createProviders({ fetchImpl: cut.fetchImpl }).opencode.generate({
+    connection, credentials: {}, body: { model: "deepseek-v4-flash-free", messages, stream: false },
+  }));
+  const cutFinish = severed.filter(event => event.type === 'finish').at(-1);
+  assert.equal(cutFinish.finishReason, 'length', 'a stream with no finish chunk was cut');
+  assert.equal(severed.filter(event => event.type === 'delta').at(-1).delta.content, 'Xin chào',
+               'the severed text is still delivered, only its honesty changes');
+  const healthy = recorder(() => sse(chatFrames()));
+  const whole = await collect(createProviders({ fetchImpl: healthy.fetchImpl }).opencode.generate({
+    connection, credentials: {}, body: { model: "deepseek-v4-flash-free", messages, stream: false },
+  }));
+  assert.equal(whole.filter(event => event.type === 'finish').at(-1).finishReason, 'stop');
+});
+
 test('session and request ids use the shapes the free tier accepts', () => {
   const session = mintOpencodeId('ses', 'conversation-a');
   assert.match(session, OPENCODE_SESSION_RE, 'ses_<12hex><14base62>');

@@ -445,8 +445,8 @@ SCHEMAS = [
                     'paused', 'cancelled']},
           'stopReason': {'type': 'string',
                          'description': 'One line saying WHY this run stops. Say it whenever you pass '
-                                        'status `partial` or `completed`: it is pinned as `state.stopReason` '
-                                        'and is the line the owner reads next to the report card.'}}, ['researchId']),
+                                        'status `partial`: it is pinned as `state.stopReason` and is the '
+                                        'line the owner reads next to the report card.'}}, ['researchId']),
     tool('research_suggest',
          'Offer to open Research mode for a question that is bigger than one turn (a landscape, a '
          'literature map, or any job over about ten minutes). This only SHOWS the suggestion card in '

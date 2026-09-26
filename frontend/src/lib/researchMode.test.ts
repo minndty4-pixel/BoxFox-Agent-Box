@@ -125,7 +125,11 @@ describe('bước của run', () => {
     expect(stepForPhase('clarifying')).toBe('clarify')
     expect(stepForPhase('searching')).toBe('search')
     expect(stepForPhase('synthesizing')).toBe('synthesize')
-    expect(stepForPhase('bịa')).toBe('clarify')
+    expect(stepForPhase('verifying')).toBe('critique')
+    // `revising`: một phán quyết `revise` mở bước Tổng hợp, không được rơi về bước 0 (`clarify`)
+    // như trước bản vá này (đợt soát `3dc745f`, finding 1). `deep-reading` là tên pha của §5.2.
+    expect(stepForPhase('revising')).toBe('synthesize')
+    expect(stepForPhase('deep-reading')).toBe('read')
   })
 
   it('run xong thì đứng ở bước cuối', () => {
