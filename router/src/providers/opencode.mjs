@@ -432,6 +432,14 @@ async function* translateResponsesStream(response) {
   let nextToolIndex = 0;
   let sawToolCall = false;
   let finishReason = null;
+  // A Responses stream ends with a `response.completed`/`response.done` event; the
+  // `finish` line below is synthesised by US. Measured live 2026-09-26 on a
+  // `muse-spark-1.3-contributor-free` review turn: the provider cut the stream
+  // mid-sentence, sent no completion event and no usage, and the default here made
+  // the harness read a severed answer as a clean `stop` - so a critique without its
+  // required final `VERDICT:` line looked like a finished critique. Missing the
+  // terminal event IS the truncation signal; `length` is the honest reason.
+  let completed = false;
 
   const toolIndexOf = outputIndex => {
     if (toolIndexByOutput.has(outputIndex)) return toolIndexByOutput.get(outputIndex);
@@ -497,13 +505,17 @@ async function* translateResponsesStream(response) {
       throw new RouterError('UNAVAILABLE', `OpenCode Free stream failed: ${String(detail).slice(0, 300)}`, 502, true);
     }
     if (data.type === 'response.completed' || data.type === 'response.done') {
+      completed = true;
       const usage = usageFrom(data.response?.usage);
       if (usage) yield { type: 'usage', usage };
       finishReason = sawToolCall ? 'tool_calls' : normalizeFinishReason(data.response?.status === 'incomplete' ? 'length' : 'stop');
       continue;
     }
   }
-  yield { type: 'finish', finishReason: finishReason || (sawToolCall ? 'tool_calls' : 'stop') };
+  // `length` when the terminal event never arrived, and only then: a provider that does
+  // send `response.completed` keeps its own reason (`stop`/`tool_calls`/`length`).
+  const fallback = completed ? (sawToolCall ? 'tool_calls' : 'stop') : 'length';
+  yield { type: 'finish', finishReason: finishReason || fallback };
 }
 
 async function* aggregate(events) {

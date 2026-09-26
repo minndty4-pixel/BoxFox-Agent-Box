@@ -315,3 +315,20 @@ test('helpers keep their shape on odd input', () => {
   assert.deepEqual(responsesTools([{ type: 'function', function: { name: '' } }]), []);
   assert.deepEqual(responsesTools([{ name: 'x', parameters: { type: 'object' } }])[0].parameters, { type: 'object', properties: {} });
 });
+test('a stream cut before its completion event reports `length`, not a clean stop', async () => {
+  // Measured live 2026-09-26: a muse-spark-1.3 review turn was severed mid-sentence, the
+  // provider sent no `response.completed` and no usage, and the adapter's default made the
+  // harness call the severed answer a finished one. The missing terminal event is the signal.
+  const cut = responsesEvent(responsesFrames().filter(frame => frame !== '[DONE]'
+    && !(typeof frame === 'object' && (frame.type === 'response.completed' || frame.type === 'response.done'))));
+  const { fetchImpl } = recorder(() => sse(cut));
+  const adapter = createProviders({ fetchImpl }).opencode;
+  const events = await collect(adapter.generate({ connection, credentials: {}, body: { model: 'muse-spark-1.3-contributor-free', messages, stream: false } }));
+  assert.equal(events.at(-1).type, 'finish');
+  assert.equal(events.at(-1).finishReason, 'length', 'a severed answer is not a completed one');
+  assert.equal(events.some(event => event.type === 'usage'), false, 'and it carries no usage to pretend with');
+
+  const healthy = recorder(() => sse(responsesEvent(responsesFrames())));
+  const whole = await collect(createProviders({ fetchImpl: healthy.fetchImpl }).opencode.generate({ connection, credentials: {}, body: { model: 'muse-spark-1.3-contributor-free', messages, stream: false } }));
+  assert.equal(whole.at(-1).finishReason, 'tool_calls', 'a stream that does complete keeps its own reason');
+});

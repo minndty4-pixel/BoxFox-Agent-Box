@@ -6,7 +6,7 @@
  * Khi chế độ tắt mà còn run chạy nền: nút mang chấm trạng thái và bấm vào mở tab Research
  * (mockup `background-run-indicator.html`).
  */
-import { BrainCircuit } from 'lucide-react'
+import { Microscope } from 'lucide-react'
 import { useT } from '../../../i18n/context'
 import { useUiStore } from '../../../store/uiStore'
 import { useResearchStore } from '../../../store/researchStore'
@@ -47,7 +47,7 @@ export function ResearchToggle({ compact }: { compact?: boolean }) {
       aria-label={label}
       aria-pressed={mode.on}
     >
-      <BrainCircuit className="size-3" />
+      <Microscope className="size-3" />
       {!compact && <span>{t('research.name')}</span>}
       {/* Chấm trạng thái: xanh khi chế độ bật; hổ phách khi chỉ còn run chạy nền. */}
       <span

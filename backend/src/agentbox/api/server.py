@@ -659,6 +659,15 @@ def create_app(runtime):
                                                       status=status, revision=body.get('revision'))
         except ValueError as exc:
             raise _action_error(exc, _RESEARCH_CONFLICT_STATUS) from None
+        if action == 'resume' and (job['state'] or {}).get('phase') == research_runtime.PHASE_DONE:
+            # B1/C1 (§5.3): `completed`/`partial` là pha ĐÓNG, mà `resume` mở LẠI run — một run đang
+            # chạy lại không được mang pha `done`, nếu không luật "done là cuối" chặn mọi bước tiến pha
+            # sau đó và thanh tiến trình nói "xong" cho một run vừa được hồi sức. Chỉ run ĐÃ ĐÓNG mới
+            # cần rời `done`; một run `paused` giữ nguyên pha thật của nó lúc bị tạm dừng.
+            research_runtime.set_phase(runtime, job['session_id'],
+                                       runtime.store.research_job(research_id), 'searching',
+                                       'owner-resume', force=True)
+            updated = runtime.store.research_job(research_id)
         if action == 'skip':
             owner = runtime.store.get(job['session_id'])
             for branch in runtime.store.children_of(job['session_id']):

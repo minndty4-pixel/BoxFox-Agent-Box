@@ -409,3 +409,51 @@ def test_reading_coverage_never_creates_the_search_database(tmp_path):
     coverage = research_runtime.coverage_refresh(runtime, 'RS1', write=False)
     assert coverage  # công tắc đang bật ở mặc định
     assert not missing.exists()
+
+def test_resuming_a_closed_run_moves_its_phase_off_done_and_keeps_a_paused_one(tmp_path):
+    """`partial` là pha ĐÓNG: `resume` mở LẠI run nên pha phải rời `done` — nhưng không bịa bước.
+
+    Đo sống 2026-09-26: run `co-hoi-nao-con-trong` ghi `partial` và pha kẹt ở `planning`; sau khi B1
+    đóng pha ở `done`, một lần chủ nhà bấm resume mà pha vẫn `done` thì luật "done là cuối" (C1) chặn
+    mọi bước tiến pha sau đó, còn thanh tiến trình thì nói "xong" cho một run vừa được hồi sức. Mặt
+    kia cũng phải đúng: run `paused` giữ nguyên pha THẬT của nó lúc bị tạm dừng.
+    """
+    store = SessionStore(tmp_path / 'sessions.sqlite')
+    sid = a_session(store)
+    closed = store.research_job_save('RS1', sid, {
+        'goal': 'mục tiêu', 'phase': 'done',
+        'phaseHistory': [{'phase': 'done', 'reason': 'job-partial'}]}, status='partial')
+    store.research_job_save('RS2', sid, {
+        'goal': 'mục tiêu', 'phase': 'verifying',
+        'phaseHistory': [{'phase': 'verifying', 'reason': 'research-verify-evidence'}]}, status='paused')
+    runtime = FakeRuntime(store)
+
+    async def flow():
+        app = create_app(runtime)
+        server = TestServer(app)
+        await server.start_server()
+        try:
+            async with ClientSession() as http:
+                resumed = await http.patch(server.make_url(f'/api/agent/research/jobs/{closed["research_id"]}'),
+                                          headers=HEADERS, json={'action': 'resume'})
+                assert resumed.status == 200
+                body = await resumed.json()
+                job = body['job']
+                assert job['status'] == 'researching' and job['state']['phase'] == 'searching'
+                assert job['state']['phaseHistory'][-1]['reason'] == 'owner-resume'
+                assert closed['research_id'] in {item['research_id']
+                                                 for item in store.research_jobs_active()}
+                runs = [event['data'] for event in store.events(sid) if event['type'] == 'research_run']
+                assert runs[-1]['phase'] == 'searching' and runs[-1]['status'] == 'researching'
+
+                woken = await http.patch(server.make_url('/api/agent/research/jobs/RS2'),
+                                        headers=HEADERS, json={'action': 'resume'})
+                assert woken.status == 200
+                paused = (await woken.json())['job']
+                assert paused['status'] == 'researching' and paused['state']['phase'] == 'verifying'
+                assert paused['state']['phaseHistory'] == [{'phase': 'verifying',
+                                                            'reason': 'research-verify-evidence'}]
+        finally:
+            await server.close()
+
+    asyncio.run(flow())

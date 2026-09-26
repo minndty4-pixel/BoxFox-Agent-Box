@@ -223,13 +223,14 @@ SCHEMAS = [
                         'branch explores, so its rows, claims and coverage land on the right entry '
                         'of the map. Leave it out when the branch is not tied to one direction.'},
           'reviewTarget': {'type': 'object', 'description': 'Required for research-review or plan-review: '
-                           '{kind:"research", researchId, version, mode:"evidence"|"critique"} '
+                           '{kind:"research", researchId, version, mode:"evidence"|"critique"|"coverage"} '
                            'or {kind:"plan", identity, version}. '
                            'The runtime binds the exact saved '
                            'path and content hash; the child must read every slice of that file.',
                            'properties': {'kind': STRING, 'researchId': STRING, 'identity': STRING,
                                           'version': {'type': 'integer'},
-                                          'mode': {'type': 'string', 'enum': ['evidence', 'critique']}}},
+                                          'mode': {'type': 'string',
+                                                   'enum': ['evidence', 'critique', 'coverage']}}},
           'wait': {'type': 'boolean',
                    'description': 'false = start the child and return at once with its sessionId; you read the '
                                   'result later with `await_children` (or it is delivered to you). Default true: '
@@ -441,7 +442,11 @@ SCHEMAS = [
                              'attempt': STRING, 'impact': STRING}},
           'status': {'type': 'string', 'enum': ['scoping', 'researching', 'verifying',
                     'synthesizing', 'critiquing', 'needs_user', 'completed', 'partial',
-                    'paused', 'cancelled']}}, ['researchId']),
+                    'paused', 'cancelled']},
+          'stopReason': {'type': 'string',
+                         'description': 'One line saying WHY this run stops. Say it whenever you pass '
+                                        'status `partial` or `completed`: it is pinned as `state.stopReason` '
+                                        'and is the line the owner reads next to the report card.'}}, ['researchId']),
     tool('research_suggest',
          'Offer to open Research mode for a question that is bigger than one turn (a landscape, a '
          'literature map, or any job over about ten minutes). This only SHOWS the suggestion card in '

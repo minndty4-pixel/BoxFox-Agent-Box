@@ -754,6 +754,9 @@ class RouterClient:
                     reasoning_content = ''
                     tool_calls = {}
                     finish_reason = 'stop'
+                    # A cut stream SAYS NOTHING: an OpenAI-compatible stream ends with a chunk
+                    # carrying `finish_reason`, so its absence is the truncation signal.
+                    saw_finish = False
                     req_id = 'resp_' + uuid.uuid4().hex[:12]
                     usage = None
                     boxfox_meta = None
@@ -780,6 +783,7 @@ class RouterClient:
                         choice = choices[0]
                         if choice.get('finish_reason'):
                             finish_reason = choice['finish_reason']
+                            saw_finish = True
                         delta = choice.get('delta') or {}
                         if delta.get('content'):
                             content += delta['content']
@@ -813,6 +817,15 @@ class RouterClient:
                                 old['thought_signature'] = sig
                                 old['thoughtSignature'] = sig
 
+                    if not saw_finish:
+                        # Measured live 2026-09-26 on a `muse-spark-1.3-contributor-free` review turn:
+                        # the provider cut the answer mid-sentence, sent no usage and no final chunk, and
+                        # the default `stop` above made that severed answer look complete - so a review
+                        # without its required final `VERDICT:` line passed as a finished review and the
+                        # parent burned 40 tool calls chasing a line that never arrived. `length` is the
+                        # honest reason here: it is the one the C2 branch already turns into
+                        # PROVIDER_OUTPUT_TRUNCATED (status `partial`), instead of a clean stop.
+                        finish_reason = 'length'
                     if not content and not tool_calls:
                         raise ValueError('Upstream did not return any SSE completion content')
                     return {
@@ -5782,7 +5795,7 @@ class HarnessRuntime(RuntimeCommands):
                              'version': requested['version'], 'path': dossier['relative_path'],
                              'contentHash': dossier.get('content_hash') or '',
                              'mode': requested.get('mode') or 'critique'}
-            if review_target['mode'] not in {'evidence', 'critique'}:
+            if review_target['mode'] not in research_review.REVIEW_MODES:
                 raise ValueError('RESEARCH_REVIEW_MODE_INVALID')
         if role == 'plan-review':
             requested = args.get('reviewTarget') or {}
@@ -5938,6 +5951,12 @@ class HarnessRuntime(RuntimeCommands):
                                   for item in state.get('questions', [])]
             self.store.research_job_save(research_cfg['researchId'], parent_id, state,
                                          status='researching', revision=job['revision'])
+            # C1 (§5.3): nhánh tra cứu đầu tiên đưa run sang pha `searching` — sổ pha phải kể được
+            # việc đã xảy ra. `research_job_phase` KHÔNG nhích `revision`, nên nó không đụng vào khoá
+            # lạc quan vừa dùng ở dòng trên.
+            research_runtime.set_phase(self, parent_id,
+                                       self.store.research_job(research_cfg['researchId']),
+                                       'searching', 'branch-delegated')
         # T5 — slot sống bằng VÒNG ĐỜI của con, không bằng khối `async with`: con `wait=false`
         # (T6) trả về ngay trong khi nó vẫn chạy, nên chỗ nhả duy nhất đúng là lúc task đóng
         # (chạy cả khi con bị huỷ).

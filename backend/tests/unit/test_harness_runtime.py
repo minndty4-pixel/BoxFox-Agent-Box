@@ -308,3 +308,45 @@ def test_an_empty_provider_stream_keeps_the_router_verdict_and_stays_retryable()
         assert seen == [True, False]
     asyncio.run(run())
 
+
+def test_a_stream_cut_before_its_finish_chunk_is_reported_as_truncated():
+    """Nhà cung cấp cắt stream giữa câu mà KHÔNG gửi chunk `finish_reason` ⇒ `length`, không `stop`.
+
+    Đo sống 2026-09-26 (`muse-spark-1.3-contributor-free`): một lượt soát trả lời cụt giữa câu, không
+    `usage`, và router ghi `finishReason: stop` — chỉ vì bên gọi mặc định `stop` khi không ai nói gì.
+    Hệ quả: lượt ấy được coi là đã xong, `delegate_task` báo `completed` cho một phản biện không có
+    dòng `VERDICT:` cuối cùng, và phiên chính lục 40 lượt công cụ đi tìm một dòng không hề tồn tại.
+    Phép kiểm này ghim dấu hiệu THẬT của một stream bị cắt — thiếu chunk cuối — và ghim luôn mặt kia:
+    một stream LÀNH (có chunk cuối) giữ nguyên lý do của chính nó.
+    """
+    from aiohttp import web
+    from aiohttp.test_utils import TestServer
+
+    async def run():
+        async def cut(request):
+            body = (b'data: {"choices": [{"index": 0, "delta": {"content": "c\\u00e2u b\\u1ecb c\\u1eaft gi\\u1eefa"}}]}\n\n'
+                    b'data: [DONE]\n\n')
+            return web.Response(body=body, content_type='text/event-stream')
+
+        async def healthy(request):
+            body = (b'data: {"choices": [{"index": 0, "delta": {"content": "xong"}}]}\n\n'
+                    b'data: {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}\n\n'
+                    b'data: [DONE]\n\n')
+            return web.Response(body=body, content_type='text/event-stream')
+
+        def server(post):
+            app = web.Application()
+            app.router.add_post('/api/router/chat', post)
+            return TestServer(app)
+
+        async with server(cut) as cut_server:
+            client = RouterClient(str(cut_server.make_url('')).rstrip('/'))
+            severed = await client.complete([{'role': 'user', 'content': 'soát'}], [], {'model': 'x'})
+        assert severed['choices'][0]['finish_reason'] == 'length'
+        assert severed['choices'][0]['message']['content'] == 'câu bị cắt giữa'
+        async with server(healthy) as healthy_server:
+            client = RouterClient(str(healthy_server.make_url('')).rstrip('/'))
+            whole = await client.complete([{'role': 'user', 'content': 'soát'}], [], {'model': 'x'})
+        assert whole['choices'][0]['finish_reason'] == 'stop'
+
+    asyncio.run(run())

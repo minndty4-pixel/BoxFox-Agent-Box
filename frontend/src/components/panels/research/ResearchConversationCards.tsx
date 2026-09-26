@@ -8,7 +8,7 @@
  * `background-run-indicator.html`.
  */
 import { type ReactNode } from 'react'
-import { BrainCircuit } from 'lucide-react'
+import { Microscope } from 'lucide-react'
 import { useT } from '../../../i18n/context'
 import { useResearchStore } from '../../../store/researchStore'
 import { jobIsRunningInBackground, runLabel, stepForPhase, type ResearchJob, type ResearchPrompt } from '../../../lib/researchMode'
@@ -30,7 +30,7 @@ export function ResearchSuggestCard({ reason, draftGoal }: { reason: string; dra
       className="rounded-lg border border-brand/30 bg-brand/5 p-2 text-[11px] text-brand"
     >
       <header className="flex items-center gap-1.5">
-        <BrainCircuit className="size-3" />
+        <Microscope className="size-3" />
         <span className="font-medium">{t('research.suggestTitle')}</span>
         <span className="ml-auto text-[10px] text-muted">{t('research.suggestFrom')}</span>
       </header>
@@ -73,7 +73,7 @@ function ResearchStatusCard() {
       className="rounded-lg border border-brand/30 bg-brand/5 p-2 text-[11px] text-brand"
     >
       <header className="flex items-center gap-1.5">
-        <BrainCircuit className="size-3" />
+        <Microscope className="size-3" />
         <span className="font-medium">{t('research.statusCardTitle')}</span>
         {statusCard.researchId && <span className="font-mono text-[10px] text-muted">{runLabel(statusCard.researchId)}</span>}
         <button

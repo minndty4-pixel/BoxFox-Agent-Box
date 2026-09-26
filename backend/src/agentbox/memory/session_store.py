@@ -1756,6 +1756,25 @@ class SessionStore:
                              current['created'] if current else now, now))
         return self.research_job(research_id)
 
+    def research_job_phase(self, research_id, session_id, phase, history):
+        """Ghim `phase`/`phaseHistory` của một run mà KHÔNG nhích `revision` (§5.3).
+
+        Đổi pha là việc của harness đi kèm một tool call khác, không phải một bản ghi mới của run:
+        nhích `revision` ở đây sẽ làm `research_update(revision=…)` của model va chạm giả
+        (`RESEARCH_JOB_REVISION_CONFLICT`) ngay sau khi hồ sơ vừa được ghi. Đọc lại hàng NGAY trước
+        khi ghi để không đè mất trường mà lượt đang chạy vừa ghi vào `state`.
+        """
+        job = self.research_job(research_id)
+        if job is None or job['session_id'] != session_id:
+            raise ValueError('RESEARCH_JOB_UNKNOWN')
+        state = dict(job['state'] or {})
+        state['phase'] = str(phase)
+        state['phaseHistory'] = list(history or [])
+        with self.db:
+            self.db.execute('UPDATE research_jobs SET state=?, updated=? WHERE research_id=?',
+                            (json.dumps(state, ensure_ascii=False), time.time(), str(research_id)))
+        return self.research_job(research_id)
+
     def research_job_used_seconds(self, session_id, research_id=None):
         """Cumulative main-turn wall time from persisted events; retries cannot reset it."""
         used: dict[int, float] = {}

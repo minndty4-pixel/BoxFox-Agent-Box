@@ -20,6 +20,7 @@ import {
   ChevronDown,
   FolderOpen,
   BrainCircuit,
+  Microscope,
   PanelRight,
 } from 'lucide-react'
 import { useT } from './i18n/context'
@@ -70,9 +71,9 @@ const TAB_LABEL_KEY: Record<PanelTabId, string> = {
   system_log: 'tabs.system_log',
 }
 
-const TAB_ICON: Record<PanelTabId, React.ComponentType<{ className?: string }>> = {
+export const TAB_ICON: Record<PanelTabId, React.ComponentType<{ className?: string }>> = {
   plan: FileText,
-  research: BrainCircuit,
+  research: Microscope,
   sandbox: Monitor,
   subagents: BrainCircuit,
   ide: Code2,
@@ -111,7 +112,7 @@ function useEpochElapsedSeconds(taskEpoch: number, running: boolean): number {
 
 const AVAILABLE_PANEL_TABS: { id: PanelTabId; label: string; desc: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 'plan', label: 'Plan Document', desc: 'Architecture blueprint & step review', icon: FileText },
-  { id: 'research', label: 'Research', desc: 'Questions, evidence gaps & budget', icon: BrainCircuit },
+  { id: 'research', label: 'Research', desc: 'Questions, evidence gaps & budget', icon: Microscope },
   { id: 'sandbox', label: 'Sandbox Machine', desc: 'Live container vision & browser frame', icon: Monitor },
   { id: 'subagents', label: 'Sub-agents Console', desc: 'Autonomous specialists activity & thinking', icon: BrainCircuit },
   { id: 'ide', label: 'IDE (VS Code Web)', desc: 'code-server running inside the box', icon: Code2 },

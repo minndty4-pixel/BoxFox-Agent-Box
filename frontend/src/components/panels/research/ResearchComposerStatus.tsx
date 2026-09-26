@@ -10,7 +10,7 @@
  * Mọi chữ lấy từ `research.*`; component không viết cứng tiếng Việt.
  */
 import { useState } from 'react'
-import { BrainCircuit, Loader2, Pause, X } from 'lucide-react'
+import { Microscope, Loader2, Pause, X } from 'lucide-react'
 import { useT, type TKey } from '../../../i18n/context'
 import { useUiStore } from '../../../store/uiStore'
 import { useResearchStore } from '../../../store/researchStore'
@@ -41,7 +41,7 @@ function ModeStrip({ job }: { job: ResearchJob | null }) {
       data-testid="research-mode-strip"
       className="mb-2 flex items-center gap-2 rounded-lg border border-brand/30 bg-brand/5 px-2 py-1.5 text-[11px] text-brand"
     >
-      <BrainCircuit className="size-3 shrink-0" />
+      <Microscope className="size-3 shrink-0" />
       <span className="font-medium">{t('research.stripRunning')}</span>
       {job && (
         <span className="truncate font-mono text-[10px] text-muted" title={job.researchId}>
@@ -156,7 +156,7 @@ function BackgroundStrip({ job }: { job: ResearchJob }) {
         finished ? 'border-emerald-500/40 bg-emerald-500/5 text-emerald-300' : 'border-line bg-panel2 text-fg'
       }`}
     >
-      {finished ? <BrainCircuit className="size-3 shrink-0" /> : <Loader2 className="size-3 shrink-0 animate-spin" />}
+      {finished ? <Microscope className="size-3 shrink-0" /> : <Loader2 className="size-3 shrink-0 animate-spin" />}
       <span className="font-medium">
         {finished ? t('research.backgroundDone', { id: runLabel(job.researchId) }) : t('research.backgroundRunning')}
       </span>
@@ -226,7 +226,7 @@ export function ResearchModeBanner() {
       data-testid="research-mode-banner"
       className="mb-2 flex items-start gap-2 rounded-lg border border-brand/30 bg-brand/5 px-2.5 py-2 text-[11px] text-brand"
     >
-      <BrainCircuit className="mt-0.5 size-3 shrink-0" />
+      <Microscope className="mt-0.5 size-3 shrink-0" />
       <div className="min-w-0 flex-1">
         <p className="font-medium">{t('research.bannerTitle')}</p>
         <p className="text-muted">{t('research.bannerBody', { id: runLabel(mode.activeRunId || job?.researchId || '') })}</p>
